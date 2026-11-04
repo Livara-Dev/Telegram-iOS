@@ -53,3 +53,18 @@ The published `xcode-27-xlarge` option offers 5 M2 CPU cores and 14 GB RAM, but 
 The image remains public preview, so queueing/capacity and image changes are possible. Its documented existence does not verify repository permissions, Actions policy, billing limits or successful scheduling for this user. The workflow should expose actionable errors rather than claiming the baseline passed.
 
 An unsigned simulator build does not require an Apple distribution identity. An independently signed device IPA still requires the user's Apple team, certificate/private key, matching app and extension provisioning profiles, bundle IDs/entitlements and own Telegram API ID/hash. These can be supplied through GitHub secrets from Windows; they must not be committed, printed, or included in artifacts. Build only synthetic-test data on a hosted service so archived user messages never enter runner logs or uploaded artifacts. Signature verification and a device installation check remain separate acceptance gates after an IPA is actually produced.
+
+
+## Hosted execution update, 2026-11-04
+
+Subsequent Actions runs confirmed toolchain selection and downloaded the iOS
+26.5 runtime. Actual runs passed the archive and core suites documented in the
+feature matrix. The earlier feasibility observations above are not the current
+execution status.
+
+The full Ghost activity application source compiled at `cd1effef`, but final
+ad-hoc framework signing failed. A projection host at `f295948a` compiled and
+packaged, then timed out during simulator startup. These failures, retained
+evidence and bounded retry/resource changes are documented in
+[BUILD-FAILURES.md](BUILD-FAILURES.md). No successful full application package or
+independently signed device installation is established.

@@ -80,6 +80,10 @@ ios_test_runner(
 
 ios_unit_test(
     name = "ChatLocalTextFilterProjectionTests",
+    # Bazel's default 300s can expire during simulator startup, before the
+    # pinned runner finishes its three bounded 150s startup attempts/reboots.
+    # Allow 900s for that recovery without changing any test assertions.
+    timeout = "long",
     # AccountContext -> LegacyComponents references MPVolumeView.
     linkopts = ["-framework", "MediaPlayer"],
     minimum_os_version = "15.0",
