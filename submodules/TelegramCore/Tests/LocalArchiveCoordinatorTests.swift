@@ -331,6 +331,25 @@ final class LocalArchiveCoordinatorTests: XCTestCase {
         XCTAssertEqual(settings.maxPayloadBytes, 1024 * 1024 * 1024)
     }
 
+    func testTruncatedCompletedFileIsNotArchivedAsCompleteMedia() throws {
+        let resource = CloudDocumentMediaResource(datacenterId: 1, fileId: 9300, accessHash: 0, size: 12, fileReference: nil, fileName: nil)
+        self.fixture.postbox.mediaBox.storeResourceData(resource.id, data: Data([1, 2]), synchronous: true)
+        let file = TelegramMediaFile(fileId: MediaId(namespace: Namespaces.Media.CloudFile, id: 9300), partialReference: nil, resource: resource, previewRepresentations: [], videoThumbnails: [], immediateThumbnailData: nil, mimeType: "application/pdf", size: 12, attributes: [], alternativeRepresentations: [])
+        _ = try self.queueDeletion(92, media: [file])
+        let key = try XCTUnwrap(self.pending().first?.operation?.eventKey)
+        let instance = self.start()
+        try self.awaitStatus(.ready, in: instance)
+        let page = try self.localArchiveValue(try XCTUnwrap(instance.coordinator).deletedMessages())
+        XCTAssertEqual(page.records.first?.storedMediaCount, 0)
+        XCTAssertEqual(page.records.first?.unavailableMediaCount, 1)
+        let store = try XCTUnwrap(instance.storage.with { $0?.store })
+        let done = expectation(description: "missing truncated attachment")
+        var result: Result<ArchivedMedia?, ArchiveError>?
+        store.media(eventKey: key, slot: 0) { result = $0; done.fulfill() }
+        wait(for: [done], timeout: 15)
+        XCTAssertNil(try XCTUnwrap(result).get())
+    }
+
     func testTypedCloudFileBytesSurviveDeletionCacheClearAndRestart() throws {
         let video: TelegramMediaFileAttribute = .Video(duration: 1, size: PixelDimensions(width: 16, height: 16), flags: [], preloadSize: nil, coverTime: nil, videoCodec: nil)
         let round: TelegramMediaFileAttribute = .Video(duration: 1, size: PixelDimensions(width: 16, height: 16), flags: [.instantRoundVideo], preloadSize: nil, coverTime: nil, videoCodec: nil)

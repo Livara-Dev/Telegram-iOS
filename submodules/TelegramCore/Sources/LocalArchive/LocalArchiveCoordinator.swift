@@ -526,6 +526,9 @@ public final class LocalArchiveCoordinator {
             for key in keys where localArchiveSafeResourceKey(key) {
                 let path = self.postbox.mediaBox.storePathsForId(MediaResourceId(key)).complete
                 if let available = try localArchiveReadCompletedMedia(path) {
+                    if let expectedSize = item.byteSize, expectedSize != Int64(available.count) {
+                        continue
+                    }
                     data = available
                     break
                 }
