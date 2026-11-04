@@ -301,6 +301,33 @@ final class ArchiveStoreTests: XCTestCase {
         }
     }
 
+    func testSystemOrCallerParentAliasResolvesWithoutFollowingArchiveEndpoint() throws {
+        let physicalParent = directory.appendingPathComponent("physical-parent")
+        let alias = directory.appendingPathComponent("parent-alias")
+        try FileManager.default.createDirectory(at: physicalParent, withIntermediateDirectories: true)
+        try FileManager.default.createSymbolicLink(at: alias, withDestinationURL: physicalParent)
+        let base = alias.appendingPathComponent("owned-archive")
+        let store: ArchiveStore = try awaitResult {
+            ArchiveStore.open(baseDirectory: base, accountId: 1, keyProvider: Keys(),
+                              callbackQueue: .main, clock: { 1000 }, completion: $0)
+        }
+        stores.append(store)
+        XCTAssertFalse(store.databaseURL.path.contains("parent-alias"))
+        _ = try write(store, [event("alias-regression")])
+        XCTAssertEqual(try records(store).count, 1)
+        close(store)
+        // A link at the archive-owned endpoint itself remains forbidden.
+        let endpointLink = directory.appendingPathComponent("linked-archive")
+        try FileManager.default.createSymbolicLink(at: endpointLink, withDestinationURL: base)
+        let keys = Keys()
+        assertError(.protectionUnavailable) {
+            try awaitResult {
+                ArchiveStore.open(baseDirectory: endpointLink, accountId: 1, keyProvider: keys, completion: $0)
+            }
+        }
+        XCTAssertTrue(keys.createRequests.isEmpty)
+    }
+
     func testOrphanRollbackJournalIsRejectedWithoutKeyCreation() throws {
         let accountDirectory = directory.appendingPathComponent("account-1")
         try FileManager.default.createDirectory(at: accountDirectory, withIntermediateDirectories: true)

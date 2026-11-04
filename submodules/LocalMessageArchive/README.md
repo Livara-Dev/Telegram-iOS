@@ -93,7 +93,9 @@ swift test --package-path submodules/LocalMessageArchive
 The explicit Bazel iOS test target is
 `//submodules/LocalMessageArchive:LocalMessageArchiveTests`; use the repository's
 configured Make.py/Bazel environment. `archive-tests.yml` runs the standalone
-macOS package. These are storage/Keychain boundary tests, not Telegram app tests.
+macOS package, then cross-compiles the module against the selected iOS simulator
+SDK to check the `os(iOS)` code path. Cross-compilation is not an iOS runtime test.
+These are storage/Keychain boundary checks, not Telegram app tests.
 The test suite covers encryption/header defaults, wrong keys, key lifecycle,
 account identity, edits/deletions, rollback/idempotency, policy exclusions,
 retention/reopen, pagination/binding, future schema rejection, and unsafe paths.

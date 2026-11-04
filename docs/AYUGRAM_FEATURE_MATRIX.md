@@ -91,8 +91,12 @@ No media bytes, export/import, settings, search UI or synchronization are presen
 A durable Postbox handoff and purge/replay barrier remain integration prerequisites.
 
 The separate archive workflow runs native host XCTest against the real vendored
-SQLCipher implementation without Telegram secrets. Its first execution is pending;
-no test success is asserted here. Device Data Protection, crash recovery across the
+SQLCipher implementation without Telegram secrets. The first execution, [run
+41794260200](https://github.com/Livara-Dev/Telegram-iOS/actions/runs/41794260200),
+compiled successfully but failed 17 storage tests at database open. Eleven mocked
+Keychain tests and two unsafe-path tests passed. The path fix is being verified;
+this is not a passing storage engine. The workflow additionally compiles the
+module's iOS simulator variant; that compile step is not an iOS runtime test. Device Data Protection, crash recovery across the
 two stores, physical storage quota and iPhone performance remain unverified.
 
 ## Delivery status

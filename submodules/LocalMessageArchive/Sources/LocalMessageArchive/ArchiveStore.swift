@@ -11,15 +11,17 @@ private enum SQLValue { case integer(Int64), optionalInteger(Int64?), text(Strin
 public final class ArchiveStore {
     public let accountId: Int64
     public let databaseURL: URL
+    private let databasePath: String
     private let worker: DispatchQueue
     private let callbackQueue: DispatchQueue
     private let clock: () -> Int64
     private var handle: OpaquePointer?
     private var retention: ArchiveRetentionPolicy
 
-    private init(accountId: Int64, databaseURL: URL, worker: DispatchQueue,
+    private init(accountId: Int64, databasePath: String, worker: DispatchQueue,
                  callbackQueue: DispatchQueue, retention: ArchiveRetentionPolicy, clock: @escaping () -> Int64) {
-        self.accountId = accountId; self.databaseURL = databaseURL; self.worker = worker
+        self.accountId = accountId; self.databasePath = databasePath
+        self.databaseURL = URL(fileURLWithPath: databasePath); self.worker = worker
         self.callbackQueue = callbackQueue; self.retention = retention; self.clock = clock
     }
 
@@ -38,11 +40,14 @@ public final class ArchiveStore {
                 // Validate the caller-owned endpoint first, then resolve system parent aliases
                 // such as macOS /var -> /private/var for SQLITE_OPEN_NOFOLLOW.
                 try protectedDirectory(requestedRoot)
-                let root = requestedRoot.resolvingSymlinksInPath()
+                // Foundation resolvingSymlinksInPath can preserve a /var alias on macOS.
+                // Keep the POSIX physical pathname for SQLite's all-components NOFOLLOW.
+                let root = URL(fileURLWithPath: try physicalPath(requestedRoot), isDirectory: true)
                 let directory = root.appendingPathComponent("account-\(accountId)", isDirectory: true)
                 try protectedDirectory(directory)
-                let url = directory.appendingPathComponent("archive.sqlite")
-                let files = [url] + ["-wal", "-shm", "-journal"].map { URL(fileURLWithPath: url.path + $0) }
+                let databasePath = try physicalPath(directory) + "/archive.sqlite"
+                let url = URL(fileURLWithPath: databasePath)
+                let files = [url] + ["-wal", "-shm", "-journal"].map { URL(fileURLWithPath: databasePath + $0) }
                 let existingFiles = try files.filter { try entryExists($0) }
                 let existed = existingFiles.contains(url)
                 // Orphan sidecars may represent an interrupted/lost database. Never overwrite them.
@@ -52,7 +57,7 @@ public final class ArchiveStore {
                 for file in files where try entryExists(file) { try protectFile(file) }
                 let key = try keyProvider.key(accountId: accountId, createIfMissing: !existed)
                 guard key.count == 32 else { throw ArchiveError.invalidKey }
-                let store = ArchiveStore(accountId: accountId, databaseURL: url, worker: worker,
+                let store = ArchiveStore(accountId: accountId, databasePath: databasePath, worker: worker,
                                          callbackQueue: callbackQueue, retention: retention, clock: clock)
                 do {
                     try store.openDatabase(key: key)
@@ -165,7 +170,7 @@ public final class ArchiveStore {
 
     private func openDatabase(key: Data) throws {
         var opened: OpaquePointer?
-        let code = sqlite3_open_v2(databaseURL.path, &opened, SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE | SQLITE_OPEN_FULLMUTEX | SQLITE_OPEN_NOFOLLOW, nil)
+        let code = sqlite3_open_v2(databasePath, &opened, SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE | SQLITE_OPEN_FULLMUTEX | SQLITE_OPEN_NOFOLLOW, nil)
         guard code == SQLITE_OK, let opened = opened else {
             if let opened = opened { sqlite3_close_v2(opened) }
             throw ArchiveError.unavailable(code)
@@ -328,6 +333,17 @@ public final class ArchiveStore {
         guard policy.maxAgeSeconds > 0, policy.maxPayloadBytes > 0, policy.maxPayloadBytes <= 1024 * 1024 * 1024 else { throw ArchiveError.invalidInput }
     }
     private static func normalized(_ error: Error) -> ArchiveError { (error as? ArchiveError) ?? .unavailable(SQLITE_ERROR) }
+
+    private static func physicalPath(_ url: URL) throws -> String {
+        let resolved = url.withUnsafeFileSystemRepresentation { path -> UnsafeMutablePointer<CChar>? in
+            guard let path = path else { return nil }
+            return realpath(path, nil)
+        }
+        guard let resolved = resolved else { throw ArchiveError.protectionUnavailable }
+        defer { free(resolved) }
+        guard let value = String(validatingUTF8: resolved) else { throw ArchiveError.protectionUnavailable }
+        return value
+    }
 
     /// lstat sees dangling links; fileExists follows them and misses unsafe endpoints.
     private static func entryExists(_ url: URL) throws -> Bool {

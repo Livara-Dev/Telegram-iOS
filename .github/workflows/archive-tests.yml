@@ -59,6 +59,16 @@ jobs:
           { sw_vers; xcodebuild -version; swift --version; git rev-parse HEAD; } > build/archive-evidence/host.txt
           swift test --package-path submodules/LocalMessageArchive 2>&1 | tee build/archive-evidence/swift-test.log
 
+      - name: Compile archive module for the iOS simulator (not a runtime test)
+        run: |
+          set -euo pipefail
+          archive_ios_sdk="$(xcrun --sdk iphonesimulator --show-sdk-path)"
+          xcrun swift build --package-path submodules/LocalMessageArchive \
+            --target LocalMessageArchive --configuration debug \
+            --triple arm64-apple-ios15.0-simulator --sdk "$archive_ios_sdk" \
+            --scratch-path "$RUNNER_TEMP/archive-ios-simulator-build" \
+            2>&1 | tee build/archive-evidence/ios-compile.log
+
       - name: Hash draft evidence
         if: always()
         run: |
