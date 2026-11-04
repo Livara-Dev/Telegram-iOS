@@ -7,7 +7,9 @@ how to obtain and test a device build after the application workflow succeeds.
 
 Use **Archive application integration (hosted macOS)** for the archive,
 Ghost activity, story-view privacy and literal-filter branches. Pushes run it automatically;
-`ci/parallel-device-build` also runs it to verify the build-job split. The
+`ci/parallel-device-build` runs its unsigned device compiler job only, for
+current-source compiler diagnostics without waiting for a simulator. Its artifact
+is not release-qualified; use the feature branch's same-source integration results. The
 `integration-tests` job must pass for the exact commit before the simulator
 `application-build` starts. The `unsigned-device-build` job compiles independently
 of simulator startup, subject to runner capacity. Its output is unverified until

@@ -17,6 +17,9 @@ permissions:
 # job per branch preserves running tests without exhausting all macOS runners.
 jobs:
   integration-tests:
+    # This existing branch is the explicit device compiler diagnostic lane.
+    # Other feature branches still require all integration suites for qualification.
+    if: github.ref != 'refs/heads/ci/parallel-device-build'
     concurrency:
       group: archive-integration-tests-${{ github.ref }}
       cancel-in-progress: false
