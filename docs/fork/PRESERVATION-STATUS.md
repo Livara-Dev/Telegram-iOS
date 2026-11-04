@@ -12,7 +12,8 @@ its native tests and running application have not yet been verified.
 | Incomplete/missing/oversized media | Metadata and caption can survive; missing-file indicator, no silent success | File reads do not start a download. |
 | Timed, view-once, Secret Chat or copy-protected content | Excluded | No expiry/encryption/server-access bypass. |
 | Image viewing | Local bounded-resolution preview of retained images, without writing plaintext temporary files | Native UI/frames unverified. |
-| Video/voice/document playback and media search | Not implemented | Stored bytes alone are not a complete gallery/player. |
+| Video/voice playback | Native AVFoundation entry points implemented in source | Codec, UI and device tests pending; Ogg voice support is not established. |
+| Document viewing and complete media gallery | Not implemented | Stored bytes alone are not a complete gallery/player. |
 
 Schema 5 adds encrypted event-linked media rows. Deletes, retention and explicit
 archive purge remove their bytes and adjust quota accounting transactionally.

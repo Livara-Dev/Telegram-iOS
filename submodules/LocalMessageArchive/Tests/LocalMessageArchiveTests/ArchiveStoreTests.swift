@@ -278,6 +278,19 @@ final class ArchiveStoreTests: XCTestCase {
         XCTAssertLessThanOrEqual(try usage(store).logicalPayloadBytes, 100_000)
     }
 
+    func testEmptyDocumentIsValidButEmptyMediaIsNotReportedAsPreserved() throws {
+        let store = try open()
+        _ = try write(store, [event("empty")])
+        let source = try mediaFile(chunks: 0)
+        for kind in ["photo", "video", "videoMessage", "voice", "animation"] {
+            XCTAssertFalse(try awaitResult { store.recordMediaFile(eventKey: "empty", slot: 0, kind: kind, mimeType: "application/octet-stream", source: source, generation: 0, completion: $0) })
+        }
+        XCTAssertEqual(try records(store).first?.storedMediaCount, 0)
+        XCTAssertTrue(try awaitResult { store.recordMediaFile(eventKey: "empty", slot: 0, kind: "document", mimeType: "application/octet-stream", source: source, expectedSize: 0, generation: 0, completion: $0) })
+        XCTAssertEqual(try awaitResult { store.mediaInfo(eventKey: "empty", slot: 0, completion: $0) }?.byteCount, 0)
+        XCTAssertEqual(try awaitResult { store.mediaRange(eventKey: "empty", slot: 0, offset: 0, count: 32, completion: $0) }, Data())
+    }
+
     func testVersionSixMediaMigrationPreservesBytesCountersAndCascade() throws {
         let store = try open()
         _ = try write(store, [event("migrate-media")])
