@@ -146,10 +146,7 @@ public final class ArchiveStore {
     }
 
     public func usage(completion: @escaping (Result<ArchiveUsage, ArchiveError>) -> Void) {
-        submit(completion) {
-            ArchiveUsage(records: try self.scalar("SELECT COUNT(*) FROM events"),
-                         logicalPayloadBytes: try self.scalar("SELECT COALESCE(SUM(payload_bytes),0) FROM events"))
-        }
+        submit(completion) { try self.currentUsage() }
     }
 
     public func setRetention(_ policy: ArchiveRetentionPolicy, completion: @escaping (Result<Int, ArchiveError>) -> Void) {
@@ -186,33 +183,91 @@ public final class ArchiveStore {
         guard !cipher.isEmpty, try scalar("PRAGMA cipher_plaintext_header_size") == 0 else { throw ArchiveError.invalidKey }
         _ = try scalar("SELECT COUNT(*) FROM sqlite_master") // Authenticate existing pages before mutation.
         let version = try scalar("PRAGMA user_version")
-        guard version == 0 || version == 1 else { throw ArchiveError.unsupportedSchema(Int(version)) }
-        if version == 0 {
-            guard try scalar("SELECT COUNT(*) FROM sqlite_master WHERE name NOT LIKE 'sqlite_%'") == 0 else {
-                throw ArchiveError.unsupportedSchema(0)
+        guard (0...2).contains(version) else { throw ArchiveError.unsupportedSchema(Int(version)) }
+        try transaction {
+            // Another connection may have migrated while this one waited for the writer lock.
+            let lockedVersion = try scalar("PRAGMA user_version")
+            guard (0...2).contains(lockedVersion) else { throw ArchiveError.unsupportedSchema(Int(lockedVersion)) }
+            if lockedVersion == 0 {
+                guard try scalar("SELECT COUNT(*) FROM sqlite_master WHERE name NOT LIKE 'sqlite_%'") == 0 else {
+                    throw ArchiveError.unsupportedSchema(0)
+                }
+                try createInitialSchema()
+            } else {
+                // Validate identity inside the migration transaction before any schema mutation.
+                guard try scalar("SELECT account_id FROM archive_meta WHERE id=1") == accountId else { throw ArchiveError.accountMismatch }
             }
-            try transaction {
-                try execute("CREATE TABLE archive_meta(id INTEGER PRIMARY KEY CHECK(id=1),account_id INTEGER NOT NULL)")
-                try execute("INSERT INTO archive_meta VALUES(1,?)", [.integer(accountId)])
-                try execute("""
-                    CREATE TABLE events(sequence INTEGER PRIMARY KEY AUTOINCREMENT,event_key TEXT NOT NULL UNIQUE,
-                    account_id INTEGER NOT NULL,peer_id INTEGER NOT NULL,namespace INTEGER NOT NULL,message_id INTEGER NOT NULL,
-                    kind INTEGER NOT NULL CHECK(kind IN(1,2)),observed_at INTEGER NOT NULL,server_edit_at INTEGER,
-                    text TEXT NOT NULL,author_id INTEGER,sent_at INTEGER NOT NULL,entities BLOB NOT NULL,payload_bytes INTEGER NOT NULL)
-                    """)
-                try execute("CREATE INDEX events_message ON events(account_id,peer_id,namespace,message_id,sequence)")
-                try execute("CREATE INDEX events_deleted ON events(account_id,kind,sequence)")
-                try execute("CREATE INDEX events_retention ON events(observed_at,sequence)")
-                try execute("PRAGMA user_version=1")
-            }
+            if lockedVersion < 2 { try migrateUsageToVersion2() }
+            _ = try currentUsage()
         }
-        guard try scalar("SELECT account_id FROM archive_meta WHERE id=1") == accountId else { throw ArchiveError.accountMismatch }
         try execute("PRAGMA journal_mode=WAL")
         try execute("PRAGMA synchronous=FULL")
         try execute("PRAGMA secure_delete=ON")
         let now = clock()
         guard now >= 0 else { throw ArchiveError.invalidInput }
         _ = try transaction { try prune(now: now, policy: retention) }
+    }
+
+    private func createInitialSchema() throws {
+        try execute("CREATE TABLE archive_meta(id INTEGER PRIMARY KEY CHECK(id=1),account_id INTEGER NOT NULL)")
+        try execute("INSERT INTO archive_meta VALUES(1,?)", [.integer(accountId)])
+        try execute("""
+            CREATE TABLE events(sequence INTEGER PRIMARY KEY AUTOINCREMENT,event_key TEXT NOT NULL UNIQUE,
+            account_id INTEGER NOT NULL,peer_id INTEGER NOT NULL,namespace INTEGER NOT NULL,message_id INTEGER NOT NULL,
+            kind INTEGER NOT NULL CHECK(kind IN(1,2)),observed_at INTEGER NOT NULL,server_edit_at INTEGER,
+            text TEXT NOT NULL,author_id INTEGER,sent_at INTEGER NOT NULL,entities BLOB NOT NULL,payload_bytes INTEGER NOT NULL)
+            """)
+        try execute("CREATE INDEX events_message ON events(account_id,peer_id,namespace,message_id,sequence)")
+        try execute("CREATE INDEX events_deleted ON events(account_id,kind,sequence)")
+        try execute("CREATE INDEX events_retention ON events(observed_at,sequence)")
+    }
+
+    /// One historical scan during migration; subsequent writes use transactional counters.
+    private func migrateUsageToVersion2() throws {
+        let invalid = try scalar("""
+            SELECT COUNT(*) FROM events WHERE typeof(payload_bytes)!='integer' OR payload_bytes<0
+            OR payload_bytes!=64+length(CAST(text AS BLOB))+length(entities)+length(CAST(event_key AS BLOB))
+            """)
+        guard invalid == 0 else { throw ArchiveError.invalidInput }
+        guard try scalar("SELECT COUNT(*) FROM events WHERE account_id!=?", [.integer(accountId)]) == 0 else { throw ArchiveError.accountMismatch }
+        try execute("""
+            CREATE TABLE archive_usage(id INTEGER PRIMARY KEY CHECK(id=1),
+            record_count INTEGER NOT NULL CHECK(typeof(record_count)='integer' AND record_count>=0),
+            payload_bytes INTEGER NOT NULL CHECK(typeof(payload_bytes)='integer' AND payload_bytes>=0))
+            """)
+        try execute("INSERT INTO archive_usage SELECT 1,COUNT(*),COALESCE(SUM(payload_bytes),0) FROM events")
+        try execute("""
+            CREATE TRIGGER archive_events_validate_insert BEFORE INSERT ON events
+            WHEN typeof(NEW.payload_bytes)!='integer' OR NEW.payload_bytes<0
+            OR NEW.payload_bytes!=64+length(CAST(NEW.text AS BLOB))+length(NEW.entities)+length(CAST(NEW.event_key AS BLOB))
+            BEGIN SELECT RAISE(ABORT,'Invalid archive payload size'); END
+            """)
+        try execute("""
+            CREATE TRIGGER archive_events_insert_usage AFTER INSERT ON events BEGIN
+            UPDATE archive_usage SET record_count=record_count+1,payload_bytes=payload_bytes+NEW.payload_bytes WHERE id=1;
+            END
+            """)
+        try execute("""
+            CREATE TRIGGER archive_events_delete_usage AFTER DELETE ON events BEGIN
+            UPDATE archive_usage SET record_count=record_count-1,payload_bytes=payload_bytes-OLD.payload_bytes WHERE id=1;
+            END
+            """)
+        try execute("""
+            CREATE TRIGGER archive_events_immutable BEFORE UPDATE ON events BEGIN
+            SELECT RAISE(ABORT,'Archive events are immutable'); END
+            """)
+        try execute("PRAGMA user_version=2")
+    }
+
+    private func currentUsage() throws -> ArchiveUsage {
+        let prepared = try statement("SELECT record_count,payload_bytes FROM archive_usage WHERE id=1", [])
+        defer { sqlite3_finalize(prepared) }
+        let code = sqlite3_step(prepared)
+        guard code == SQLITE_ROW else { throw ArchiveError.unavailable(code == SQLITE_DONE ? SQLITE_CORRUPT : code) }
+        let records = sqlite3_column_int64(prepared, 0), bytes = sqlite3_column_int64(prepared, 1)
+        guard sqlite3_column_type(prepared, 0) == SQLITE_INTEGER, sqlite3_column_type(prepared, 1) == SQLITE_INTEGER,
+              records >= 0, bytes >= 0 else { throw ArchiveError.unavailable(SQLITE_CORRUPT) }
+        return ArchiveUsage(records: records, logicalPayloadBytes: bytes)
     }
 
     private func submit<T>(_ completion: @escaping (Result<T, ArchiveError>) -> Void, operation: @escaping () throws -> T) {
@@ -307,15 +362,54 @@ public final class ArchiveStore {
     }
 
     private func prune(now: Int64, policy: ArchiveRetentionPolicy) throws -> Int {
-        let before = try scalar("SELECT COUNT(*) FROM events")
-        try execute("DELETE FROM events WHERE observed_at<?", [.integer(max(0, now - min(now, policy.maxAgeSeconds)))])
-        // Windowed newest-first total avoids loading large histories into Swift memory.
-        try execute("""
-            DELETE FROM events WHERE sequence IN (
-              SELECT sequence FROM (SELECT sequence,SUM(payload_bytes) OVER (ORDER BY observed_at DESC,sequence DESC) AS running FROM events)
-              WHERE running>?)
-            """, [.integer(policy.maxPayloadBytes)])
-        return Int(before - (try scalar("SELECT COUNT(*) FROM events")))
+        let before = try currentUsage().records
+        let cutoff = max(0, now - min(now, policy.maxAgeSeconds))
+        var removed: Int32
+        repeat {
+            // The retention index bounds each selection; the transaction remains atomic.
+            try execute("""
+                DELETE FROM events WHERE sequence IN (SELECT sequence FROM events
+                WHERE observed_at<? ORDER BY observed_at,sequence LIMIT 256)
+                """, [.integer(cutoff)])
+            removed = sqlite3_changes(handle)
+        } while removed == 256
+
+        var usage = try currentUsage()
+        while usage.logicalPayloadBytes > policy.maxPayloadBytes {
+            let excess = usage.logicalPayloadBytes - policy.maxPayloadBytes
+            let oldest = try oldestPayloads()
+            guard !oldest.isEmpty else { throw ArchiveError.unavailable(SQLITE_CORRUPT) }
+            var bytes: Int64 = 0
+            var values: [SQLValue] = []
+            for row in oldest {
+                bytes += row.bytes
+                values.append(.integer(row.sequence))
+                if bytes >= excess { break }
+            }
+            // Only bounded placeholder count is constructed; all sequence values are bound.
+            let placeholders = Array(repeating: "?", count: values.count).joined(separator: ",")
+            try execute("DELETE FROM events WHERE sequence IN (\(placeholders))", values)
+            let updated = try currentUsage()
+            guard updated.records < usage.records else { throw ArchiveError.unavailable(SQLITE_CORRUPT) }
+            usage = updated
+        }
+        return Int(before - usage.records)
+    }
+
+    private func oldestPayloads() throws -> [(sequence: Int64, bytes: Int64)] {
+        let prepared = try statement("SELECT sequence,payload_bytes FROM events ORDER BY observed_at,sequence LIMIT 256", [])
+        defer { sqlite3_finalize(prepared) }
+        var result: [(sequence: Int64, bytes: Int64)] = []
+        var code = sqlite3_step(prepared)
+        while code == SQLITE_ROW {
+            let sequence = sqlite3_column_int64(prepared, 0), bytes = sqlite3_column_int64(prepared, 1)
+            guard result.count < 256, sequence > 0, sqlite3_column_type(prepared, 1) == SQLITE_INTEGER,
+                  bytes >= 0 else { throw ArchiveError.unavailable(SQLITE_CORRUPT) }
+            result.append((sequence, bytes))
+            code = sqlite3_step(prepared)
+        }
+        guard code == SQLITE_DONE else { throw ArchiveError.unavailable(code) }
+        return result
     }
 
     private func validate(_ event: ArchiveEvent, now: Int64) throws {

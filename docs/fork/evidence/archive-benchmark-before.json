@@ -1,0 +1,45 @@
+{
+  "schema": 1,
+  "source_commit": "3f329930db2aa70ee38581a935dc3e4208ecec82",
+  "run_id": 41795234429,
+  "job_id": 126457653435,
+  "platform": "GitHub xcode-27 hosted macOS runner",
+  "xcode": "27.1",
+  "tests": {
+    "total": 32,
+    "failed": 0
+  },
+  "ios_simulator_compilation": "passed",
+  "artifact": {
+    "id": 13304637808,
+    "sha256": "55a082f44ea8debaa652fc3b498cb43ef8761f830a28390d13cc7fda67882217",
+    "expires_at": "2026-11-11T07:54:20Z"
+  },
+  "metrics": {
+    "benchmark": "archive_single_append",
+    "iphone_performance_claim": false,
+    "latency_threshold": "none",
+    "mean_ms": 29.648429200000002,
+    "measurement": "monotonic async API roundtrip including XCTest expectation/wait overhead",
+    "samples_ms": [
+      34.2895,
+      52.306458,
+      28.690708,
+      28.022792,
+      22.678458,
+      18.812667,
+      20.479792,
+      28.001875,
+      36.536667,
+      26.665375
+    ],
+    "synthetic_seed_records": 10000,
+    "warmup_appends": 1
+  },
+  "limitations": [
+    "Single hosted run, not iPhone 15 Pro",
+    "No cold-start, scrolling, memory or energy measurement",
+    "Includes XCTest expectation/wait and async callback overhead",
+    "No performance pass/fail threshold; no optimization result yet"
+  ]
+}

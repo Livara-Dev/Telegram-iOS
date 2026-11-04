@@ -5,6 +5,7 @@ SQLCipher database. It is **not connected to Telegram update processing**. It do
 not yet archive real incoming messages, preserve media, modify search, show UI,
 export/import records, or synchronize anything. Commit `86fcf189` passed 31 native macOS tests (20 storage, 11 mocked Keychain)
 and iOS simulator compilation in [run 41794635275](https://github.com/Livara-Dev/Telegram-iOS/actions/runs/41794635275). This does not establish iOS runtime or Telegram integration behavior.
+The schema-2 counter/migration increment below is pending its own hosted test run.
 
 ## Storage and security contract
 
@@ -41,12 +42,24 @@ successful `record` completion before treating a snapshot as durable. The future
 Postbox adapter needs a durable capture/outbox and deletion barrier; independent
 databases do not offer a shared transaction. No hook is installed by this draft.
 
-Schema version 1 stores account metadata and events with a unique event key,
+Schema version 2 preserves the version-1 event layout: a unique event key,
 account/peer/namespace/message identity, previous text/entity metadata, event kind,
 local observation time, optional server edit time, and monotonically increasing
 local sequence. Timeline pages use capture sequence, not an assumed server order.
-Only empty version-0 databases can initialize. Unknown populated version-0 or
-future schemas fail without schema mutation; no future migration is invented.
+It adds one database-resident usage row with record and logical-payload counters.
+INSERT/DELETE triggers maintain counters in the same transaction as event writes.
+Events are immutable: a trigger rejects UPDATE, including payload-size updates.
+The API uses ordinary INSERT/DELETE only; direct external SQL, REPLACE and disabled
+triggers are unsupported. No in-memory cache of usage can become stale across
+store connections.
+
+Only empty version-0 databases can initialize. Version 1 migrates under an
+IMMEDIATE transaction, validating account identity and stored payload sizes,
+initializing counters from a single snapshot, installing triggers and setting
+version 2 atomically. Negative/non-integer/inconsistent legacy sizes are rejected.
+Opening rechecks the version after acquiring the write lock. Unknown populated
+version-0 or future schemas fail without schema mutation. The counter table rejects
+negative values and integer overflow converted by SQLite to REAL.
 
 The future adapter must supply stable event keys and original observation times
 on retries, and classify cloud/secret/expiring/view-once content explicitly.
@@ -78,9 +91,19 @@ usage: indexes, SQLite free pages and WAL can consume additional space. Newest
 events by observation time/sequence are retained until the cumulative quota is
 exceeded; an individual event larger than the quota is dropped. The implementation
 has no media/file quota, physical-space monitor or compaction scheduler yet.
-Retention scans use SQLite window aggregation rather than loading the history
-into Swift. Large-history runtime, memory, battery and disk behavior have not been
-benchmarked; no iPhone 15 Pro performance claim is made.
+Version-2 retention uses the observation-time/sequence index and reads or deletes
+at most 256 oldest rows per chunk. Quota deletion stops once the required excess
+is removed, preserving the newest contiguous set of events. Normal append/usage
+operations no longer aggregate the entire history; migration computes totals once.
+All chunks still run in one transaction, so a very large expiry/purge can hold the
+writer lock and delay completion. Bounded chunks limit temporary row data, not
+total work or disk allocation. Other writers can encounter SQLite busy errors.
+
+The test suite records monotonic async single-append timings after 10,000 synthetic
+snapshots, including XCTest expectation/wait overhead. It has no latency threshold.
+See [measurement evidence](../../docs/fork/PERFORMANCE.md); the version-2 change
+needs its own measurement before any comparison. Memory, battery, physical disk
+behavior and iPhone 15 Pro performance remain unmeasured.
 
 ## Validation
 
@@ -99,5 +122,10 @@ These are storage/Keychain boundary checks, not Telegram app tests.
 The test suite covers encryption/header defaults, wrong keys, key lifecycle,
 account identity, edits/deletions, rollback/idempotency, policy exclusions,
 retention/reopen, pagination/binding, future schema rejection, and unsafe paths.
+Added schema-2 tests exercise a genuine encrypted version-1 fixture, partial-DDL
+migration rollback/retry, invalid legacy rows, immutable events, counters across
+two live connections, and expiry/quota deletion crossing chunk boundaries. The
+two-connection test alternates operations; simultaneous migration races are not
+claimed as tested.
 Real Keychain accessibility, interruption/storage exhaustion, Telegram deletion
 ordering, media and foreground/background behavior remain integration work.

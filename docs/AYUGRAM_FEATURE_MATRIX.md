@@ -63,7 +63,7 @@ technical claim of impossibility. All entries require actual integration tests.
 | Account-specific settings and archive isolation | Android stores user ID with archive rows; global caches require caution | Separate encrypted DB/key per account; account-scoped local settings and query APIs | DB isolation and mocked Keychain tests pass; settings absent |
 | Sender, group, channel and bot exclusions | Historical bot gate and October save-exception release note; exact modern precedence unavailable | Persist explicit scope/precedence; test sender-vs-chat conflicts and transitions | Draft caller-supplied exclusion policy; integration absent |
 | Cache-clear independence | Docs describe Room storage and saved files separate from usual history | Independent protected archive directory with archive-owned media; verify normal cache purge leaves it intact | Not implemented |
-| Edit/deletion timestamps and migration | Old edit data stores entity creation time; modern schema unavailable | Distinguish observed deletion time from server edit time, idempotent schema versions and rollback recovery | Timestamp/schema-gate tests pass on macOS; future migrations not implemented |
+| Edit/deletion timestamps and migration | Old edit data stores entity creation time; modern schema unavailable | Distinguish observed deletion time from server edit time, idempotent schema versions and rollback recovery | Timestamp/schema-gate tests pass on macOS; v1-to-v2 migration now awaits verification |
 | Configurable disappearing-media retention | Reference advertises retention; API terms forbid defeating expiry | Keep TTL/view-once/Secret Chat capture excluded; no security-control bypass | Not implemented; policy-limited |
 | Case sensitivity, selected-text and spam rules | Old AyuFilter regex flags and find(); current docs rule creation | Typed/literal predicates, explicit case behavior, opt-in bounded regex; no accuracy claim for generic spam detection | Not implemented |
 | Native dark/light, smooth animations, settings search | Upstream native iOS supports appearance; Android redesign and Desktop search reference | Reuse themes and native components; settings registry, VoiceOver/Dynamic Type, frame-recorded UI tests | Upstream appearance only; fork settings not implemented |
@@ -96,6 +96,13 @@ SQLCipher implementation without Telegram secrets. The first execution, [run
 compiled successfully but failed 17 storage tests at database open. Eleven mocked
 Keychain tests and two unsafe-path tests passed. The physical-path fix in `86fcf189` passes [run 41794635275](https://github.com/Livara-Dev/Telegram-iOS/actions/runs/41794635275): **31 native tests** (20 database, 11 mocked Keychain) with zero failures. The module's iOS simulator variant also compiles. These are not iOS runtime or Telegram integration tests. [Machine-readable evidence](fork/evidence/archive-tests-86fcf189.json) records the exact commit, results and artifact digest. Device Data Protection, crash recovery across the
 two stores, physical storage quota and iPhone performance remain unverified.
+
+The next library increment adds schema-2 usage counters, bounded indexed
+retention cleanup and a transactional v1-to-v2 migration. Seven new native tests
+cover migration, rollback and counter consistency; their execution is pending.
+The same 10,000-record benchmark will measure the change. See
+[performance observations](fork/PERFORMANCE.md); no iPhone performance result or
+schema-2 success is claimed yet.
 
 ## Delivery status
 

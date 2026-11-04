@@ -252,10 +252,149 @@ final class ArchiveStoreTests: XCTestCase {
 
     func testFutureSchemaIsRejectedWithoutMigration() throws {
         let store = try open(); close(store)
-        try rawDatabase(store.databaseURL, statements: ["PRAGMA user_version=2"])
+        try rawDatabase(store.databaseURL, statements: ["PRAGMA user_version=3"])
         let before = try Data(contentsOf: store.databaseURL)
-        assertError(.unsupportedSchema(2)) { try open() }
+        assertError(.unsupportedSchema(3)) { try open() }
         XCTAssertEqual(try Data(contentsOf: store.databaseURL), before)
+    }
+
+    private func rawInteger(_ url: URL, query: String) throws -> Int64 {
+        var handle: OpaquePointer?
+        XCTAssertEqual(sqlite3_open(url.path, &handle), SQLITE_OK)
+        let db = try XCTUnwrap(handle); defer { sqlite3_close(db) }
+        let key = Keys().value.map { String(format: "%02x", $0) }.joined()
+        XCTAssertEqual(sqlite3_exec(db, "PRAGMA key = \"x'\(key)'\"", nil, nil, nil), SQLITE_OK)
+        XCTAssertEqual(sqlite3_exec(db, "PRAGMA cipher_plaintext_header_size=0", nil, nil, nil), SQLITE_OK)
+        var statement: OpaquePointer?
+        XCTAssertEqual(sqlite3_prepare_v2(db, query, -1, &statement, nil), SQLITE_OK)
+        let prepared = try XCTUnwrap(statement); defer { sqlite3_finalize(prepared) }
+        XCTAssertEqual(sqlite3_step(prepared), SQLITE_ROW)
+        return sqlite3_column_int64(prepared, 0)
+    }
+
+    /// A genuine encrypted schema-1 fixture, independent of the current store's schema creation.
+    private func legacyV1Database(extraStatements: [String] = []) throws -> URL {
+        let accountDirectory = directory.appendingPathComponent("account-1")
+        try FileManager.default.createDirectory(at: accountDirectory, withIntermediateDirectories: true)
+        let url = accountDirectory.appendingPathComponent("archive.sqlite")
+        try rawDatabase(url, statements: [
+            "CREATE TABLE archive_meta(id INTEGER PRIMARY KEY CHECK(id=1),account_id INTEGER NOT NULL)",
+            "INSERT INTO archive_meta VALUES(1,1)",
+            """
+            CREATE TABLE events(sequence INTEGER PRIMARY KEY AUTOINCREMENT,event_key TEXT NOT NULL UNIQUE,
+            account_id INTEGER NOT NULL,peer_id INTEGER NOT NULL,namespace INTEGER NOT NULL,message_id INTEGER NOT NULL,
+            kind INTEGER NOT NULL CHECK(kind IN(1,2)),observed_at INTEGER NOT NULL,server_edit_at INTEGER,
+            text TEXT NOT NULL,author_id INTEGER,sent_at INTEGER NOT NULL,entities BLOB NOT NULL,payload_bytes INTEGER NOT NULL)
+            """,
+            "CREATE INDEX events_message ON events(account_id,peer_id,namespace,message_id,sequence)",
+            "CREATE INDEX events_deleted ON events(account_id,kind,sequence)",
+            "CREATE INDEX events_retention ON events(observed_at,sequence)",
+            "INSERT INTO events VALUES(7,'legacy-edit',1,42,0,10,2,910,905,'original',7,800,X'00FF',85)",
+            "INSERT INTO events VALUES(9,'legacy-delete',1,42,0,10,1,930,NULL,'final',7,800,X'',82)",
+            "PRAGMA user_version=1"
+        ] + extraStatements)
+        return url
+    }
+
+    func testVersionOneMigrationPreservesHistoryAndInitializesCounters() throws {
+        let url = try legacyV1Database()
+        let store = try open()
+        let expected = [event("legacy-edit", text: "original", kind: .edited, observed: 910, edit: 905, entities: Data([0, 255])),
+                        event("legacy-delete", text: "final", observed: 930)]
+        let timeline: [ArchivedRecord] = try awaitResult { store.timeline(for: expected[0].message, completion: $0) }
+        XCTAssertEqual(timeline.map(\.event), expected)
+        XCTAssertEqual(timeline.map(\.sequence), [7, 9])
+        XCTAssertEqual(try usage(store), ArchiveUsage(records: 2, logicalPayloadBytes: 167))
+        XCTAssertEqual(try rawInteger(url, query: "PRAGMA user_version"), 2)
+        _ = try write(store, [event("after-migration")])
+        XCTAssertEqual(try usage(store).records, 3)
+        close(store)
+        let reopened = try open()
+        XCTAssertEqual(try usage(reopened).records, 3)
+        XCTAssertEqual(try records(reopened).first?.sequence, 10)
+    }
+
+    func testMigrationFailureRollsBackSchemaAndData() throws {
+        let url = try legacyV1Database(extraStatements: [
+            // Name collision occurs after usage creation and earlier trigger creation.
+            "CREATE TRIGGER archive_events_delete_usage AFTER DELETE ON events BEGIN SELECT 1; END"
+        ])
+        XCTAssertThrowsError(try open())
+        XCTAssertEqual(try rawInteger(url, query: "PRAGMA user_version"), 1)
+        XCTAssertEqual(try rawInteger(url, query: "SELECT COUNT(*) FROM events"), 2)
+        XCTAssertEqual(try rawInteger(url, query: "SELECT COUNT(*) FROM sqlite_master WHERE name='archive_usage'"), 0)
+        XCTAssertEqual(try rawInteger(url, query: "SELECT COUNT(*) FROM sqlite_master WHERE name='archive_events_insert_usage'"), 0)
+        // Resolve the malformed legacy fixture; a clean retry must migrate successfully.
+        try rawDatabase(url, statements: ["DROP TRIGGER archive_events_delete_usage"])
+        XCTAssertEqual(try usage(open()).records, 2)
+    }
+
+    func testMigrationRejectsInvalidSizesBeforeMutation() throws {
+        let url = try legacyV1Database()
+        for invalidSize in ["-1", "1.5", "'invalid'", "0"] {
+            try rawDatabase(url, statements: ["UPDATE events SET payload_bytes=\(invalidSize) WHERE sequence=7"])
+            assertError(.invalidInput) { try open() }
+            XCTAssertEqual(try rawInteger(url, query: "PRAGMA user_version"), 1)
+            XCTAssertEqual(try rawInteger(url, query: "SELECT COUNT(*) FROM sqlite_master WHERE name='archive_usage'"), 0)
+        }
+    }
+
+    func testMigrationRejectsWrongMetadataAndRowAccountsBeforeMutation() throws {
+        let url = try legacyV1Database(extraStatements: ["UPDATE archive_meta SET account_id=2"])
+        assertError(.accountMismatch) { try open() }
+        try rawDatabase(url, statements: ["UPDATE archive_meta SET account_id=1", "UPDATE events SET account_id=2 WHERE sequence=7"])
+        assertError(.accountMismatch) { try open() }
+        XCTAssertEqual(try rawInteger(url, query: "PRAGMA user_version"), 1)
+        XCTAssertEqual(try rawInteger(url, query: "SELECT COUNT(*) FROM sqlite_master WHERE name='archive_usage'"), 0)
+    }
+
+    func testCounterTriggersRejectUpdatesAndInvalidInsertedSizes() throws {
+        let store = try open()
+        _ = try write(store, [event("immutable")]); close(store)
+        var handle: OpaquePointer?
+        XCTAssertEqual(sqlite3_open(store.databaseURL.path, &handle), SQLITE_OK)
+        let db = try XCTUnwrap(handle); defer { sqlite3_close(db) }
+        let key = Keys().value.map { String(format: "%02x", $0) }.joined()
+        XCTAssertEqual(sqlite3_exec(db, "PRAGMA key = \"x'\(key)'\"", nil, nil, nil), SQLITE_OK)
+        XCTAssertEqual(sqlite3_exec(db, "PRAGMA cipher_plaintext_header_size=0", nil, nil, nil), SQLITE_OK)
+        XCTAssertEqual(sqlite3_exec(db, "UPDATE events SET text='changed',payload_bytes=0", nil, nil, nil), SQLITE_CONSTRAINT)
+        XCTAssertEqual(sqlite3_exec(db, "INSERT INTO events VALUES(20,'invalid',1,42,0,10,1,900,NULL,'text',7,800,X'',0)", nil, nil, nil), SQLITE_CONSTRAINT)
+        let reopened = try open()
+        XCTAssertEqual(try usage(reopened).records, 1)
+        XCTAssertEqual(try records(reopened).first?.event.content.text, "message")
+    }
+
+    func testCountersStayConsistentAcrossConnectionsRollbackAndPurge() throws {
+        let first = try open(), second = try open()
+        _ = try write(first, [event("first", text: "one")])
+        _ = try write(second, [event("second", text: "two")])
+        let baseline = try usage(first)
+        XCTAssertEqual(try usage(second), baseline)
+        XCTAssertEqual(baseline.records, 2)
+        assertError(.eventConflict) { try write(second, [event("rolled-back", text: "large payload"), event("first", text: "conflict")]) }
+        XCTAssertEqual(try usage(first), baseline)
+        XCTAssertEqual(try usage(second), baseline)
+        let _: Void = try awaitResult { first.purge(completion: $0) }
+        XCTAssertEqual(try usage(second), ArchiveUsage(records: 0, logicalPayloadBytes: 0))
+        _ = try write(second, [event("after-purge")])
+        XCTAssertEqual(try usage(first).records, 1)
+    }
+
+    func testRetentionDeletesMultipleChunksAndOnlyRequiredQuotaRows() throws {
+        let store = try open()
+        for start in stride(from: 0, to: 600, by: 200) {
+            _ = try write(store, (start..<(start + 200)).map {
+                event(String(format: "s%03d", $0), text: "a", message: Int32($0 + 1), observed: $0 < 300 ? 800 : 990)
+            })
+        }
+        // 300 expired records cross a chunk boundary. 300 remaining cost 69 bytes each;
+        // retain exactly 17, requiring a full quota chunk plus a partial chunk.
+        let removed: Int = try awaitResult {
+            store.setRetention(ArchiveRetentionPolicy(maxAgeSeconds: 100, maxPayloadBytes: 17 * 69), completion: $0)
+        }
+        XCTAssertEqual(removed, 583)
+        XCTAssertEqual(try usage(store), ArchiveUsage(records: 17, logicalPayloadBytes: 17 * 69))
+        XCTAssertEqual(try records(store).map(\.event.eventKey), (583..<600).reversed().map { String(format: "s%03d", $0) })
     }
 
     func testUnknownUnversionedDatabaseIsNotAdopted() throws {
