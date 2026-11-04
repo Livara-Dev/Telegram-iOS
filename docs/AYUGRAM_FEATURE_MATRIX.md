@@ -64,24 +64,24 @@ technical claim of impossibility. All entries require actual integration tests.
 | Local folder colors/tags | October post 61. | Local presentation metadata only; server premium entitlement/limits stay authoritative. Test folder identity changes and account isolation. | Not implemented |
 | Premium-like cosmetics | `shared/ghost.md:65` explicitly says local premium does not raise server limits. | Use independent local cosmetic settings; do not falsify entitlement responses or bypass authentication/payment architecture. | Not implemented |
 | Themes, native settings and settings search | Android October redesign; Desktop April post 55 adds settings search; Desktop README includes enhanced appearance. | Reuse iOS native controls/theme/localization/accessibility; integrate all feature policies into a searchable settings registry and migrations. | Native themed archive, Ghost activity and filter controls authored; localization, settings search and recorded UI verification outstanding |
-| Optional reviewed E2E sync | Old Android contains optional AyuSync REST/WebSocket integration; its edited-upload loop is commented out. Inspected docs do not establish E2E encryption. | Default off and absent from initial local-only release. Requires a separately reviewed authenticated encryption/key management design and explicit endpoint/identity choice. No developer-run service, telemetry, plaintext payloads or implicit archive sync. | Not implemented |
+| Optional reviewed E2E sync | [Protocol review](fork/AYUSYNC-REVIEW.md): legacy Android sends readable read-state JSON; edited-upload loop is commented out. Backend source unavailable; Desktop AyuSync is synchronous forwarding, not this service. | Default off and absent from initial local-only release. Requires a separately reviewed authenticated encryption/key management design and explicit endpoint/identity choice. No developer-run service, telemetry, plaintext payloads or implicit archive sync. | Not implemented |
 
 ## Additional requirements and explicit gaps
 
 | Feature | Android/reference evidence | Proposed iOS equivalent and limitations | iOS status |
 | --- | --- | --- | --- |
 | Quick Ghost toggle and active-protection indication | Historical aggregate ghost setting; Desktop toggle; see reference audit | Per-account effective policy, chat toolbar control, individual capability labels; no perfect-invisibility badge | Activity-only toggle/status in avatar menu and native settings authored; full-app/UI verification pending |
-| Account-specific settings and archive isolation | Android stores user ID with archive rows; global caches require caution | Separate encrypted DB/key per account; account-scoped local settings and query APIs | DB isolation and mocked Keychain tests pass; account settings/worker authored, integration tests pending |
+| Account-specific settings and archive isolation | Android stores user ID with archive rows; global caches require caution | Separate encrypted DB/key per account; account-scoped local settings and query APIs | DB isolation, per-account preferences and real-Postbox worker tests passed at `387177fd`; actual Keychain/device tests pending |
 | Sender, group, channel and bot exclusions | Historical bot gate and October save-exception release note; exact modern precedence unavailable | Persist explicit scope/precedence; test sender-vs-chat conflicts and transitions | Capture policy and account persistence authored; dedicated exclusion picker absent |
 | Cache-clear independence | Docs describe Room storage and saved files separate from usual history | Independent protected archive directory with archive-owned media; verify normal cache purge leaves it intact | Dedicated account archive path authored; actual MediaBox cache-clear integration test passed at `387177fd`; physical-device verification pending |
-| Edit/deletion timestamps and migration | Old edit data stores entity creation time; modern schema unavailable | Distinguish observed deletion time from server edit time, idempotent schema versions and rollback recovery | Schema 1–4 library tests pass on macOS; application hooks still require integration verification |
+| Edit/deletion timestamps and migration | Old edit data stores entity creation time; modern schema unavailable | Distinguish observed deletion time from server edit time, idempotent schema versions and rollback recovery | Schema 1–4 tests and 56 local application-integration cases passed at `387177fd`; live/server/device verification pending |
 | Configurable disappearing-media retention | Reference advertises retention; API terms forbid defeating expiry | Keep TTL/view-once/Secret Chat capture excluded; no security-control bypass | Not implemented; policy-limited |
 | Case sensitivity, selected-text and spam rules | Old AyuFilter regex flags and find(); current docs rule creation | Literal predicates with fixed-locale case matching; no generic spam classifier | Case-sensitive/insensitive literals and editable message excerpt authored; regex and classifier absent; native verification pending |
 | Native dark/light, smooth animations, settings search | Upstream native iOS supports appearance; Android redesign and Desktop search reference | Reuse themes and native components; settings registry, VoiceOver/Dynamic Type, frame-recorded UI tests | Native themed archive settings authored; recorded UI frames and settings search absent |
 | Client-side Premium cosmetics | October local folder colors/tags; docs distinguish server limits | Local appearance metadata only, never alter entitlement checks | Not implemented |
 | Photos/video/documents/voice archive | Android saved attachment path; Desktop archive currently text-only | Protected archive-owned bytes plus typed metadata and missing/partial states; no guaranteed redownload after deletion | Not implemented |
 | Encrypted database and Keychain keys | Historical Android Room and Desktop SQLite do not establish encryption | Independent SQLCipher, per-account random keys, Keychain this-device-only, Data Protection and backup exclusion | SQLCipher tests pass on macOS; Keychain mocked; device checks pending |
-| Import/export and optional sync | October import/export options; E2E format/protocol unverified | Authenticated versioned encrypted files; sync only after protocol review and explicit user endpoint choice | Not implemented; sync protocol not cleared |
+| Import/export and optional sync | October import/export options; E2E format/protocol unverified | Authenticated versioned encrypted files; sync only after protocol review and explicit user endpoint choice | Not implemented; [legacy protocol review](fork/AYUSYNC-REVIEW.md) found no E2E archive format and unavailable backend source |
 | No telemetry / no archive upload | Both upstreams contain telemetry; Android sync exists | Separate reviewed telemetry-removal diff and request-canary tests, no archive networking capability | Not satisfied; upstream telemetry remains unresolved |
 | iPhone 15 Pro performance | No relevant iOS measurements available | Measure cold start, scroll frames, RSS, DB p95, disk pressure and battery with fixed datasets | Not measured |
 
@@ -108,7 +108,7 @@ TelegramCore and TextFormat iOS simulator targets in
 This covers that revision's 32 archive integration cases. The later suite has
 56 cases, including local deletion/edit acknowledgements, rich-content gaps,
 MediaBox cache clearing and byte preservation of incompatible preferences;
-those additions require their own passing run. Full-app/UI execution remains
+all 56 passed at `387177fd` in the revision-specific evidence above. Full-app/UI execution remains
 unverified. Existing incompatible settings are read-only, never silently
 replaced with older defaults.
 
@@ -156,7 +156,7 @@ commit, test counts, benchmark samples and downloadable artifact identity.
 | Working iOS baseline | Not demonstrated | GitHub fork and Actions are accessible; hosted compilation and iOS tests still must pass |
 | Installable independently signed IPA | Not produced | Unsigned mode is separate; signing, all entitlements and device installation still need verification |
 | GPL review | Obligations identified; incomplete release clearance | [license audit](fork/LICENSE-AND-SUPPLY-CHAIN.md); full dependency/source bundle required |
-| Standalone archive module | 54 macOS tests and iOS module compilation pass | Exact head `1b7dfc3b`, run 41811248751; later application changes require a fresh result |
+| Standalone archive module | 54 macOS tests and iOS module compilation pass | Archive head `387177fd`, run 41813622350; inherited changes are re-tested on later feature heads |
 | Security verification | Source review plus storage boundary tests | [risk register](SECURITY_ASSESSMENT.md); no runtime privacy attestation |
 
 Update each feature row with a commit and concrete test evidence when implemented.

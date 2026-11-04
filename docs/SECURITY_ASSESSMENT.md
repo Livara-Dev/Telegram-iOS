@@ -2,6 +2,20 @@
 
 Date: 2026-11-04. This is a source-based threat assessment and a list of acceptance requirements, **not a finding that the app is secure**. The reviewed snapshots are Telegram-iOS `279f89e4d4f63f17227bf877dc3d8990f22ecd58` and AyuGram4A `7013145676d36d82ee13c02a89f72097b7490dcd`. The companion architecture and license audits contain source references. No successful full iOS application build, signed-device test, penetration test, cryptographic review or network privacy verification is established by this document.
 
+## Additional source review at `f295948a`
+
+The [expanded telemetry inventory](fork/TELEMETRY-REVIEW.md) identifies additional
+active channel-reading metrics and music-listening reports, independent of
+AppCenter and the generic app-log queue. It also distinguishes automatic call
+and soft-auth-reset diagnostics from local crash storage and user-triggered
+exports. No telemetry-removal implementation or runtime non-disclosure test is
+claimed by that inventory. Disabling one analytics SDK is insufficient.
+
+The [AyuSync protocol review](fork/AYUSYNC-REVIEW.md) found readable JSON in the
+available historical Android transport, no active archive replication or E2E
+key lifecycle, and unavailable backend source. The Desktop namespace with the
+same name is a forwarding helper. No sync client or archive upload was added.
+
 ## Assets and trust boundaries
 
 Protect Telegram authorization/session material; message text, metadata and media; archive/history records; archive encryption and recovery keys; sync credentials; filter rules; signing keys and CI secrets. Retained versions and deleted messages are especially sensitive because another party may reasonably expect them to have disappeared.
