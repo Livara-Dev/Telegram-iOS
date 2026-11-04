@@ -19,6 +19,7 @@ import sys
 import tempfile
 
 from unsigned_rules import prepare_unsigned_rules
+from ipa_inspect import inspect_ipa, InvalidIPA
 
 ROOT = Path(__file__).resolve().parents[2]
 TEST_TARGET = "//submodules/TextFormat:TextFormatTests"
@@ -368,7 +369,7 @@ def retain_integration_test_summary(test_results):
         target.write(json.dumps(summary, indent=2) + "\n")
 
 
-def publish_artifact(source, destination, mode, bundle_id, build_number, test_results=None):
+def publish_artifact(source, destination, mode, bundle_id, build_number, test_results=None, binary_report=None):
     if destination.exists():
         raise FileExistsError("Artifact destination already exists")
     hasher = hashlib.sha256()
@@ -385,6 +386,7 @@ def publish_artifact(source, destination, mode, bundle_id, build_number, test_re
         "runtime_verified": False, "signature_verified": False,
         "integration_qualification": "not_evaluated_by_this_job" if mode == "unsigned-device" else "see_tests",
         "signing": "disabled" if mode == "unsigned-device" else "not_verified",
+        "main_executable": binary_report,
     }
     destination.parent.mkdir(parents=True, exist_ok=True)
     # Upload globs never see this hidden staging directory or a partial package.
@@ -487,10 +489,14 @@ def build(mode, env, build_number, integration_tests=False, tests_only=False):
                 # The test invocation may repoint bazel-bin at a different configuration.
                 captured_ipa = temporary / "Telegram.ipa"
                 shutil.copyfile(ROOT / "bazel-bin/Telegram/Telegram.ipa", captured_ipa)
+                try:
+                    binary_report = inspect_ipa(captured_ipa, mode, config["bundle_id"])
+                except InvalidIPA as error:
+                    raise InvalidSetup(str(error)) from error
                 if mode == "simulator" and not integration_tests:
                     run_tests((TEST_TARGET,))
                 publish_artifact(captured_ipa, destination, mode, config["bundle_id"], build_number,
-                                 test_results if mode == "simulator" else None)
+                                 test_results if mode == "simulator" else None, binary_report=binary_report)
         finally:
             # Measure while build products and diagnostics still exist. Cleanup
             # would otherwise hide pressure at the point of a packaging failure.

@@ -68,7 +68,9 @@ layout. A successful run of one branch does not validate another branch.
 4. Compare the IPA to its SHA-256 checksum in Windows PowerShell:
    `Get-FileHash .\Telegram.ipa -Algorithm SHA256`, from the extracted
    `fork-baseline-unsigned-device` directory. Compare with its `SHA256SUMS` and
-   manifest. Select the **device** output; a simulator IPA cannot run on an iPhone,
+   manifest. Before publication, the workflow checks the bundle ID, declared SDK
+   and ARM64 Mach-O platform of the main executable. This is not signature or
+   runtime verification. Select the **device** output; a simulator IPA cannot run on an iPhone,
    even if both report arm64. Build logs have their own `SHA256SUMS` under
    `fork-evidence`.
 5. For local signing, obtain Sideloadly only from https://sideloadly.io/ and follow

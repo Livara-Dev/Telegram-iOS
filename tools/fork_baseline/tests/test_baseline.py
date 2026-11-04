@@ -244,6 +244,23 @@ class PrivacyAndArtifactsTests(unittest.TestCase):
         overlay = patch.object(baseline, "prepare_unsigned_rules", return_value={"fixture": "reviewed"})
         overlay.start()
         self.addCleanup(overlay.stop)
+        inspection = patch.object(baseline, "inspect_ipa", return_value={"test_fixture": True})
+        inspection.start()
+        self.addCleanup(inspection.stop)
+
+    def test_rejected_ipa_is_not_published_after_successful_compilation(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "versions.json").write_text('{}')
+            source = root / "bazel-bin/Telegram/Telegram.ipa"
+            source.parent.mkdir(parents=True)
+            def fake_command(args, env, secrets):
+                source.write_bytes(b"wrong-platform fixture")
+            with patch.object(baseline, "ROOT", root), patch.object(baseline, "preflight", return_value=Path('/bazel')), patch.object(baseline, "run_redacted", side_effect=fake_command), patch.object(baseline.subprocess, "run"), patch.object(baseline, "inspect_ipa", side_effect=baseline.InvalidIPA("Wrong platform")), patch.object(baseline, "publish_artifact") as publish:
+                with self.assertRaisesRegex(baseline.InvalidSetup, "Wrong platform"):
+                    baseline.build("unsigned-device", fixture(), 1)
+                publish.assert_not_called()
+            self.assertFalse((root / "build/fork-baseline-unsigned-device").exists())
 
     def test_storage_diagnostics_precede_cleanup_and_suites_reuse_output_root(self):
         with tempfile.TemporaryDirectory() as directory:
