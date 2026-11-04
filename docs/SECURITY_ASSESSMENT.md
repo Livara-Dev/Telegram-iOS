@@ -246,3 +246,10 @@ item. It performs no download and writes no plaintext media temporary file.
 This code and its new native tests await execution; cache removal before the
 file is opened, incomplete downloads, physical termination/disk pressure and
 real Keychain protection remain unverified. Do not claim lossless retention.
+
+The global-delete handoff defers eager cache unlink only after successful
+creation of an eligible durable outbox entry. This does not create a plaintext
+archive or change timed/protected-content handling. It leaves the existing cache
+file under Telegram's normal cleanup policy until the asynchronous reader runs.
+A simultaneous cache purge can still win; proactive capture remains pending.
+New real-replay regressions are awaiting native execution.

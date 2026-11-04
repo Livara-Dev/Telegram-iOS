@@ -546,8 +546,8 @@ public final class LocalArchiveCoordinator {
                             mimeType: item.mimeType ?? "application/octet-stream", data: data, generation: operation.generation) { [weak self] result in
             self?.queue.justDispatch { [weak self] in
                 guard let self, self.isCurrent(epoch) else { return }
-                guard case .success = result else { self.failed(.unavailable, epoch: epoch); return }
-                self.copyCachedMedia(storage: storage, operation: operation, slot: slot + 1, epoch: epoch, missing: missing, completion: completion)
+                guard case let .success(retained) = result else { self.failed(.unavailable, epoch: epoch); return }
+                self.copyCachedMedia(storage: storage, operation: operation, slot: slot + 1, epoch: epoch, missing: missing || !retained, completion: completion)
             }
         }
     }

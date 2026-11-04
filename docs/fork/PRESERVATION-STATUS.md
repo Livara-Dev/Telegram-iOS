@@ -22,7 +22,11 @@ Only archive DB/WAL files persist, under the existing Keychain key and Data
 Protection policy. No networking or third-party uploads were added.
 
 The durable Postbox outbox is acknowledged after the event and eligible media
-writes complete. Repeated media writes must match existing bytes, and generation
+writes complete. Global server deletions defer eager removal of only those cache
+resources referenced by successfully queued, eligible captures. Disabled,
+excluded, timed, or failed-to-queue captures retain normal Telegram removal.
+This deferral is not a persistent cache pin; ordinary cleanup can still remove
+a source before the worker opens it. Repeated media writes must match existing bytes, and generation
 checks reject writes after purge. Transient locked-file/I/O failures keep work
 pending. Missing, incomplete or oversized files remain explicitly unavailable.
 
@@ -48,3 +52,10 @@ video, voice, animation and documents; encrypted store reopening, real MediaBox
 cache removal, quota eviction, account separation, and the media-commit/outbox-
 acknowledgement recovery window. Actual app termination and physical iPhone
 installation are not established by these fixtures.
+
+The follow-up handoff regression cases call the real `replayFinalState` global
+deletion and edit handlers, drain MediaBox's removal queue, then read retained
+bytes after explicitly clearing the cache. These tests are newly authored and
+await native execution; they must not be presented as passing. A retention
+eviction during media insertion is counted as an unavailable capture rather
+than reported as preserved.

@@ -158,10 +158,15 @@ private func recordCaptureGap(_ settings: inout LocalArchiveSettings) {
 }
 
 /// Must be called inside the same transaction, before the canonical deletion.
-/// Only already-received eligible content is copied; media files are not retained.
-func captureDeletedLocalArchiveMessages(transaction: Transaction, accountPeerId: PeerId, ids: [MessageId], observedAt: Int64 = Int64(Date().timeIntervalSince1970)) {
+/// Returns resources referenced by successfully queued captures. Deletion handlers
+/// must defer their eager cache unlink for these resources so the asynchronous
+/// archive worker can copy them. They remain subject to normal cache cleanup;
+/// this is not an archive copy or a guarantee against a simultaneous user purge.
+@discardableResult
+func captureDeletedLocalArchiveMessages(transaction: Transaction, accountPeerId: PeerId, ids: [MessageId], observedAt: Int64 = Int64(Date().timeIntervalSince1970)) -> Set<MediaResourceId> {
     var settings = localArchiveSettings(transaction: transaction)
-    guard settings.enabled, !settings.pendingPurge, settings.generation >= 0, !ids.isEmpty else { return }
+    guard settings.enabled, !settings.pendingPurge, settings.generation >= 0, !ids.isEmpty else { return [] }
+    var deferredResources = Set<MediaResourceId>()
     var budget = LocalArchiveOutboxBudget(transaction: transaction, accountPeerId: accountPeerId)
     let previousDropped = settings.droppedCaptures
     var seen = Set<MessageId>()
@@ -181,11 +186,18 @@ func captureDeletedLocalArchiveMessages(transaction: Transaction, accountPeerId:
         let inserted = budget.insert(operation, transaction: transaction, accountPeerId: accountPeerId)
         if !inserted {
             recordCaptureGap(&settings)
+        } else {
+            for item in localArchiveDecodedMediaMetadata(entities) ?? [] {
+                for key in [item.resourceKey].compactMap({ $0 }) + (item.alternativeResourceKeys ?? []) {
+                    deferredResources.insert(MediaResourceId(key))
+                }
+            }
         }
     }
     if settings.droppedCaptures != previousDropped {
         setLocalArchiveSettings(transaction: transaction, settings: settings)
     }
+    return deferredResources
 }
 
 /// Must be called from the updateMessage closure before replacing the old value.

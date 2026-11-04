@@ -331,6 +331,32 @@ final class LocalArchiveCoordinatorTests: XCTestCase {
         XCTAssertEqual(settings.maxPayloadBytes, 1024 * 1024 * 1024)
     }
 
+    func testMediaQuotaEvictionReportsGapWithoutResurrectingEvent() throws {
+        _ = try self.localArchiveValue(self.fixture.postbox.transaction { transaction in
+            var settings = localArchiveSettings(transaction: transaction)
+            settings.maxPayloadBytes = 1024 * 1024
+            setLocalArchiveSettings(transaction: transaction, settings: settings)
+        })
+        let bytes = Data(repeating: 0x58, count: 1024 * 1024)
+        let resource = CloudDocumentMediaResource(datacenterId: 1, fileId: 9400, accessHash: 0, size: Int64(bytes.count), fileReference: nil, fileName: nil)
+        self.fixture.postbox.mediaBox.storeResourceData(resource.id, data: bytes, synchronous: true)
+        let file = TelegramMediaFile(fileId: MediaId(namespace: Namespaces.Media.CloudFile, id: 9400), partialReference: nil, resource: resource, previewRepresentations: [], videoThumbnails: [], immediateThumbnailData: nil, mimeType: "application/pdf", size: Int64(bytes.count), attributes: [], alternativeRepresentations: [])
+        _ = try self.queueDeletion(94, media: [file])
+        let instance = self.start()
+        try self.awaitStatus(.ready, in: instance)
+        XCTAssertTrue(try self.pending().isEmpty)
+        let coordinator = try XCTUnwrap(instance.coordinator)
+        XCTAssertTrue(try self.localArchiveValue(coordinator.deletedMessages()).records.isEmpty)
+        let settings = try self.localArchiveValue(coordinator.settings)
+        XCTAssertEqual(settings.droppedCaptures, 1)
+        try self.stop(instance)
+        try self.fixture.reopen()
+        let recovered = self.start()
+        try self.awaitStatus(.ready, in: recovered)
+        XCTAssertTrue(try self.localArchiveValue(try XCTUnwrap(recovered.coordinator).deletedMessages()).records.isEmpty)
+        XCTAssertEqual(try self.localArchiveValue(try XCTUnwrap(recovered.coordinator).settings).droppedCaptures, 1)
+    }
+
     func testTruncatedCompletedFileIsNotArchivedAsCompleteMedia() throws {
         let resource = CloudDocumentMediaResource(datacenterId: 1, fileId: 9300, accessHash: 0, size: 12, fileReference: nil, fileName: nil)
         self.fixture.postbox.mediaBox.storeResourceData(resource.id, data: Data([1, 2]), synchronous: true)

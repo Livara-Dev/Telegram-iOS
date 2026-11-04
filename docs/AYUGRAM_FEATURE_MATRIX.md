@@ -184,3 +184,9 @@ proof of encrypted media retention; its `AyuSync` forwarding namespace is not an
 end-to-end encrypted archive synchronization service. Desktop is GPLv3-or-later
 with an OpenSSL exception, so copying its code would require a distinct license
 compatibility decision. This checkpoint copies no Desktop implementation.
+
+Archive follow-up: global-delete replay now defers eager cache removal for
+successfully queued eligible media, and media retention eviction is reported
+as unavailable. Real replay tests cover global deletion and a media replacement
+followed by deletion; native execution is pending. This does not extend support
+to timed/view-once media or guarantee capture before a simultaneous cache purge.
