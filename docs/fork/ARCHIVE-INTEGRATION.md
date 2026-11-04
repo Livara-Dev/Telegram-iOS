@@ -96,9 +96,12 @@ test targets, publishes `archive-integration-tests-<commit>` before the long
 application build, then builds the full simulator app and an unsigned device build. It
 publishes bounded redacted test logs, compiler logs, provenance and SHA-256
 checksums. Its independent concurrency group never cancels a healthy running
-build. The older baseline run is left untouched. Private credential-bearing
-Bazel state is cleaned between invocations; the full app can therefore recompile
-core dependencies. This cost avoids persisting a secret-bearing build cache.
+build. Tests run in an independent job for every revision; only full application
+jobs are serialized, so a prior long build does not delay current test evidence.
+The older baseline run is left untouched. Both jobs use fresh runners and
+private credential-bearing Bazel state is cleaned between invocations. Setup
+and dependency compilation can repeat. This cost avoids persisting a
+secret-bearing build cache.
 
 New TelegramCore tests use the actual on-disk encrypted Postbox and SQLCipher
 store. They cover helper capture plus canonical mutation, serialization/reopen,
