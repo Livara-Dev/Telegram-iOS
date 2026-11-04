@@ -84,11 +84,11 @@ public final class ArchiveStore {
     }
 
     /// Commit all eligible events atomically. An event-key collision with different content rolls back the batch.
-    public func record(_ captures: [ArchiveCapture], policy: ArchiveCapturePolicy,
+    public func record(_ captures: [ArchiveCapture], generation: Int64, policy: ArchiveCapturePolicy,
                        completion: @escaping (Result<ArchiveWriteResult, ArchiveError>) -> Void) {
         submit(completion) {
             let now = self.clock()
-            guard now >= 0, captures.count <= 256 else { throw ArchiveError.invalidInput }
+            guard now >= 0, generation >= 0, captures.count <= 256 else { throw ArchiveError.invalidInput }
             var bytes: Int64 = 0
             for capture in captures {
                 try self.validate(capture.event, now: now)
@@ -96,6 +96,8 @@ public final class ArchiveStore {
             }
             guard bytes <= 8 * 1024 * 1024 else { throw ArchiveError.invalidInput }
             return try self.transaction {
+                let current = try self.captureGeneration()
+                guard generation == current else { throw ArchiveError.generationMismatch(expected: current, received: generation) }
                 var inserted = 0, duplicates = 0, excluded = 0
                 for capture in captures {
                     let event = capture.event
@@ -160,9 +162,28 @@ public final class ArchiveStore {
         }
     }
 
-    /// Removes this account's events. Does not delete Telegram cache/session data or the account's key.
-    public func purge(completion: @escaping (Result<Void, ArchiveError>) -> Void) {
-        submit(completion) { try self.transaction { try self.execute("DELETE FROM events") } }
+    /// A coordinator must stamp this generation at capture time and preserve it through outbox retries.
+    public func currentGeneration(completion: @escaping (Result<Int64, ArchiveError>) -> Void) {
+        submit(completion) { try self.captureGeneration() }
+    }
+
+    /// Advances exactly once. A same-generation retry never erases records accepted after that purge.
+    /// Does not delete Telegram cache/session data or the account's key.
+    public func purge(advancingToGeneration target: Int64, completion: @escaping (Result<ArchivePurgeResult, ArchiveError>) -> Void) {
+        submit(completion) {
+            guard target >= 0 else { throw ArchiveError.invalidInput }
+            return try self.transaction {
+                let current = try self.captureGeneration()
+                if target == current { return ArchivePurgeResult(generation: current, didPurge: false) }
+                guard current < Int64.max else { throw ArchiveError.invalidInput }
+                let next = current + 1
+                guard target == next else { throw ArchiveError.generationMismatch(expected: next, received: target) }
+                try self.execute("DELETE FROM events")
+                try self.execute("UPDATE archive_meta SET capture_generation=? WHERE id=1", [.integer(target)])
+                guard sqlite3_changes(self.handle) == 1 else { throw ArchiveError.unavailable(SQLITE_CORRUPT) }
+                return ArchivePurgeResult(generation: target, didPurge: true)
+            }
+        }
     }
 
     private func openDatabase(key: Data) throws {
@@ -183,11 +204,11 @@ public final class ArchiveStore {
         guard !cipher.isEmpty, try scalar("PRAGMA cipher_plaintext_header_size") == 0 else { throw ArchiveError.invalidKey }
         _ = try scalar("SELECT COUNT(*) FROM sqlite_master") // Authenticate existing pages before mutation.
         let version = try scalar("PRAGMA user_version")
-        guard (0...2).contains(version) else { throw ArchiveError.unsupportedSchema(Int(version)) }
+        guard (0...3).contains(version) else { throw ArchiveError.unsupportedSchema(Int(version)) }
         try transaction {
             // Another connection may have migrated while this one waited for the writer lock.
             let lockedVersion = try scalar("PRAGMA user_version")
-            guard (0...2).contains(lockedVersion) else { throw ArchiveError.unsupportedSchema(Int(lockedVersion)) }
+            guard (0...3).contains(lockedVersion) else { throw ArchiveError.unsupportedSchema(Int(lockedVersion)) }
             if lockedVersion == 0 {
                 guard try scalar("SELECT COUNT(*) FROM sqlite_master WHERE name NOT LIKE 'sqlite_%'") == 0 else {
                     throw ArchiveError.unsupportedSchema(0)
@@ -198,7 +219,9 @@ public final class ArchiveStore {
                 guard try scalar("SELECT account_id FROM archive_meta WHERE id=1") == accountId else { throw ArchiveError.accountMismatch }
             }
             if lockedVersion < 2 { try migrateUsageToVersion2() }
+            if lockedVersion < 3 { try migrateGenerationToVersion3() }
             _ = try currentUsage()
+            _ = try captureGeneration()
         }
         try execute("PRAGMA journal_mode=WAL")
         try execute("PRAGMA synchronous=FULL")
@@ -268,6 +291,24 @@ public final class ArchiveStore {
         guard sqlite3_column_type(prepared, 0) == SQLITE_INTEGER, sqlite3_column_type(prepared, 1) == SQLITE_INTEGER,
               records >= 0, bytes >= 0 else { throw ArchiveError.unavailable(SQLITE_CORRUPT) }
         return ArchiveUsage(records: records, logicalPayloadBytes: bytes)
+    }
+
+    private func migrateGenerationToVersion3() throws {
+        try execute("""
+            ALTER TABLE archive_meta ADD COLUMN capture_generation INTEGER NOT NULL DEFAULT 0
+            CHECK(typeof(capture_generation)='integer' AND capture_generation>=0)
+            """)
+        try execute("PRAGMA user_version=3")
+    }
+
+    private func captureGeneration() throws -> Int64 {
+        let prepared = try statement("SELECT capture_generation FROM archive_meta WHERE id=1", [])
+        defer { sqlite3_finalize(prepared) }
+        let code = sqlite3_step(prepared)
+        guard code == SQLITE_ROW else { throw ArchiveError.unavailable(code == SQLITE_DONE ? SQLITE_CORRUPT : code) }
+        let value = sqlite3_column_int64(prepared, 0)
+        guard sqlite3_column_type(prepared, 0) == SQLITE_INTEGER, value >= 0 else { throw ArchiveError.unavailable(SQLITE_CORRUPT) }
+        return value
     }
 
     private func submit<T>(_ completion: @escaping (Result<T, ArchiveError>) -> Void, operation: @escaping () throws -> T) {

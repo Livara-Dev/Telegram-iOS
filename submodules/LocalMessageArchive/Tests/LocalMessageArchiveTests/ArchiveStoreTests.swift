@@ -57,7 +57,16 @@ final class ArchiveStoreTests: XCTestCase {
         ArchiveCapture(event: event, context: context)
     }
     private func write(_ store: ArchiveStore, _ events: [ArchiveEvent]) throws -> ArchiveWriteResult {
-        try awaitResult { store.record(events.map { capture($0) }, policy: enabled, completion: $0) }
+        try write(store, events, generation: 0)
+    }
+    private func write(_ store: ArchiveStore, _ events: [ArchiveEvent], generation: Int64) throws -> ArchiveWriteResult {
+        try awaitResult { store.record(events.map { capture($0) }, generation: generation, policy: enabled, completion: $0) }
+    }
+    private func generation(_ store: ArchiveStore) throws -> Int64 {
+        try awaitResult { store.currentGeneration(completion: $0) }
+    }
+    private func purge(_ store: ArchiveStore, to target: Int64) throws -> ArchivePurgeResult {
+        try awaitResult { store.purge(advancingToGeneration: target, completion: $0) }
     }
     private func records(_ store: ArchiveStore, peer: Int64? = nil) throws -> [ArchivedRecord] {
         try awaitResult { store.deletedMessages(peerId: peer, completion: $0) }
@@ -163,7 +172,7 @@ final class ArchiveStoreTests: XCTestCase {
     func testPolicyDefaultsAndSensitiveContentAreExcluded() throws {
         let store = try open()
         let defaultResult: ArchiveWriteResult = try awaitResult {
-            store.record([capture(event("disabled"))], policy: ArchiveCapturePolicy(), completion: $0)
+            store.record([capture(event("disabled"))], generation: 0, policy: ArchiveCapturePolicy(), completion: $0)
         }
         XCTAssertEqual(defaultResult.excluded, 1)
         let contexts = [ArchiveCaptureContext(), ArchiveCaptureContext(ordinaryCloudMessage: true, secretChat: true),
@@ -171,12 +180,12 @@ final class ArchiveStoreTests: XCTestCase {
                         ArchiveCaptureContext(ordinaryCloudMessage: true, viewOnce: true),
                         ArchiveCaptureContext(ordinaryCloudMessage: true, botConversation: true)]
         let result: ArchiveWriteResult = try awaitResult {
-            store.record(contexts.enumerated().map { capture(event("excluded-\($0.offset)"), $0.element) }, policy: enabled, completion: $0)
+            store.record(contexts.enumerated().map { capture(event("excluded-\($0.offset)"), $0.element) }, generation: 0, policy: enabled, completion: $0)
         }
         XCTAssertEqual(result.excluded, 5)
         let excluded = ArchiveCapturePolicy(enabled: true, excludedPeers: [10], excludedSenders: [20])
         let peerSender: ArchiveWriteResult = try awaitResult {
-            store.record([capture(event("peer", peer: 10)), capture(event("sender", author: 20))], policy: excluded, completion: $0)
+            store.record([capture(event("peer", peer: 10)), capture(event("sender", author: 20))], generation: 0, policy: excluded, completion: $0)
         }
         XCTAssertEqual(peerSender.excluded, 2)
         XCTAssertEqual(try usage(store).records, 0)
@@ -208,7 +217,7 @@ final class ArchiveStoreTests: XCTestCase {
             store.setRetention(ArchiveRetentionPolicy(maxAgeSeconds: 20, maxPayloadBytes: 10000), completion: $0)
         }
         XCTAssertEqual(removed, 1)
-        let _: Void = try awaitResult { store.purge(completion: $0) }
+        _ = try purge(store, to: 1)
         XCTAssertEqual(try usage(store).records, 0)
     }
 
@@ -252,9 +261,9 @@ final class ArchiveStoreTests: XCTestCase {
 
     func testFutureSchemaIsRejectedWithoutMigration() throws {
         let store = try open(); close(store)
-        try rawDatabase(store.databaseURL, statements: ["PRAGMA user_version=3"])
+        try rawDatabase(store.databaseURL, statements: ["PRAGMA user_version=4"])
         let before = try Data(contentsOf: store.databaseURL)
-        assertError(.unsupportedSchema(3)) { try open() }
+        assertError(.unsupportedSchema(4)) { try open() }
         XCTAssertEqual(try Data(contentsOf: store.databaseURL), before)
     }
 
@@ -305,7 +314,7 @@ final class ArchiveStoreTests: XCTestCase {
         XCTAssertEqual(timeline.map(\.event), expected)
         XCTAssertEqual(timeline.map(\.sequence), [7, 9])
         XCTAssertEqual(try usage(store), ArchiveUsage(records: 2, logicalPayloadBytes: 167))
-        XCTAssertEqual(try rawInteger(url, query: "PRAGMA user_version"), 2)
+        XCTAssertEqual(try rawInteger(url, query: "PRAGMA user_version"), 3)
         _ = try write(store, [event("after-migration")])
         XCTAssertEqual(try usage(store).records, 3)
         close(store)
@@ -374,9 +383,9 @@ final class ArchiveStoreTests: XCTestCase {
         assertError(.eventConflict) { try write(second, [event("rolled-back", text: "large payload"), event("first", text: "conflict")]) }
         XCTAssertEqual(try usage(first), baseline)
         XCTAssertEqual(try usage(second), baseline)
-        let _: Void = try awaitResult { first.purge(completion: $0) }
+        _ = try purge(first, to: 1)
         XCTAssertEqual(try usage(second), ArchiveUsage(records: 0, logicalPayloadBytes: 0))
-        _ = try write(second, [event("after-purge")])
+        _ = try write(second, [event("after-purge")], generation: 1)
         XCTAssertEqual(try usage(first).records, 1)
     }
 
@@ -395,6 +404,152 @@ final class ArchiveStoreTests: XCTestCase {
         XCTAssertEqual(removed, 583)
         XCTAssertEqual(try usage(store), ArchiveUsage(records: 17, logicalPayloadBytes: 17 * 69))
         XCTAssertEqual(try records(store).map(\.event.eventKey), (583..<600).reversed().map { String(format: "s%03d", $0) })
+    }
+
+    private func legacyV2Database() throws -> URL {
+        let url = try legacyV1Database()
+        try rawDatabase(url, statements: [
+            """
+            CREATE TABLE archive_usage(id INTEGER PRIMARY KEY CHECK(id=1),
+            record_count INTEGER NOT NULL CHECK(typeof(record_count)='integer' AND record_count>=0),
+            payload_bytes INTEGER NOT NULL CHECK(typeof(payload_bytes)='integer' AND payload_bytes>=0))
+            """,
+            "INSERT INTO archive_usage SELECT 1,COUNT(*),COALESCE(SUM(payload_bytes),0) FROM events",
+            """
+            CREATE TRIGGER archive_events_validate_insert BEFORE INSERT ON events
+            WHEN typeof(NEW.payload_bytes)!='integer' OR NEW.payload_bytes<0
+            OR NEW.payload_bytes!=64+length(CAST(NEW.text AS BLOB))+length(NEW.entities)+length(CAST(NEW.event_key AS BLOB))
+            BEGIN SELECT RAISE(ABORT,'Invalid archive payload size'); END
+            """,
+            """
+            CREATE TRIGGER archive_events_insert_usage AFTER INSERT ON events BEGIN
+            UPDATE archive_usage SET record_count=record_count+1,payload_bytes=payload_bytes+NEW.payload_bytes WHERE id=1; END
+            """,
+            """
+            CREATE TRIGGER archive_events_delete_usage AFTER DELETE ON events BEGIN
+            UPDATE archive_usage SET record_count=record_count-1,payload_bytes=payload_bytes-OLD.payload_bytes WHERE id=1; END
+            """,
+            "CREATE TRIGGER archive_events_immutable BEFORE UPDATE ON events BEGIN SELECT RAISE(ABORT,'Archive events are immutable'); END",
+            "PRAGMA user_version=2"
+        ])
+        return url
+    }
+
+    func testVersionTwoMigrationPreservesHistoryCountersAndInitializesGeneration() throws {
+        let url = try legacyV2Database()
+        let store = try open()
+        XCTAssertEqual(try generation(store), 0)
+        XCTAssertEqual(try usage(store), ArchiveUsage(records: 2, logicalPayloadBytes: 167))
+        XCTAssertEqual(try rawInteger(url, query: "PRAGMA user_version"), 3)
+        XCTAssertEqual(try records(store).first?.event.eventKey, "legacy-delete")
+        _ = try write(store, [event("generation-zero")], generation: 0)
+        close(store)
+        let reopened = try open()
+        XCTAssertEqual(try generation(reopened), 0)
+        XCTAssertEqual(try usage(reopened).records, 3)
+    }
+
+    func testRecordRejectsStaleFutureAndNegativeGenerationWithoutMutation() throws {
+        let store = try open()
+        assertError(.generationMismatch(expected: 0, received: 1)) { try write(store, [event("future")], generation: 1) }
+        assertError(.invalidInput) { try write(store, [event("negative")], generation: -1) }
+        _ = try write(store, [event("old")], generation: 0)
+        _ = try purge(store, to: 1)
+        assertError(.generationMismatch(expected: 1, received: 0)) { try write(store, [event("stale")], generation: 0) }
+        assertError(.generationMismatch(expected: 1, received: 2)) { try write(store, [event("future")], generation: 2) }
+        XCTAssertEqual(try usage(store).records, 0)
+        _ = try write(store, [event("current")], generation: 1)
+        XCTAssertEqual(try records(store).map(\.event.eventKey), ["current"])
+    }
+
+    func testSameGenerationPurgeRetryPreservesNewWritesAndRejectsGaps() throws {
+        let store = try open()
+        _ = try write(store, [event("initial")])
+        XCTAssertEqual(try purge(store, to: 0), ArchivePurgeResult(generation: 0, didPurge: false))
+        XCTAssertEqual(try usage(store).records, 1)
+        XCTAssertEqual(try purge(store, to: 1), ArchivePurgeResult(generation: 1, didPurge: true))
+        _ = try write(store, [event("after-purge")], generation: 1)
+        XCTAssertEqual(try purge(store, to: 1), ArchivePurgeResult(generation: 1, didPurge: false))
+        assertError(.generationMismatch(expected: 2, received: 0)) { try purge(store, to: 0) }
+        assertError(.generationMismatch(expected: 2, received: 3)) { try purge(store, to: 3) }
+        assertError(.invalidInput) { try purge(store, to: -1) }
+        XCTAssertEqual(try generation(store), 1)
+        XCTAssertEqual(try records(store).map(\.event.eventKey), ["after-purge"])
+    }
+
+    func testGenerationPersistsAcrossReopenAndAlreadyOpenHandlesAndAccounts() throws {
+        let first = try open(), second = try open(), other = try open(account: 2)
+        _ = try write(first, [event("first")])
+        _ = try write(other, [event("other", account: 2)])
+        _ = try purge(second, to: 1)
+        XCTAssertEqual(try generation(first), 1)
+        assertError(.generationMismatch(expected: 1, received: 0)) { try write(first, [event("pending-stale")], generation: 0) }
+        _ = try write(first, [event("accepted")], generation: 1)
+        XCTAssertEqual(try generation(other), 0)
+        XCTAssertEqual(try usage(other).records, 1)
+        close(first); close(second)
+        let reopened = try open()
+        XCTAssertEqual(try generation(reopened), 1)
+        XCTAssertEqual(try records(reopened).map(\.event.eventKey), ["accepted"])
+        XCTAssertFalse(try purge(reopened, to: 1).didPurge)
+        XCTAssertEqual(try usage(reopened).records, 1)
+    }
+
+    func testPurgeFailureRollsBackDeletedRowsCountersAndGeneration() throws {
+        let store = try open()
+        _ = try write(store, [event("one"), event("two")])
+        let before = try usage(store)
+        try rawDatabase(store.databaseURL, statements: [
+            """
+            CREATE TRIGGER test_generation_fault BEFORE UPDATE OF capture_generation ON archive_meta
+            BEGIN SELECT RAISE(ABORT,'Injected generation update failure'); END
+            """
+        ])
+        XCTAssertThrowsError(try purge(store, to: 1))
+        XCTAssertEqual(try generation(store), 0)
+        XCTAssertEqual(try usage(store), before)
+        XCTAssertEqual(try records(store).map(\.event.eventKey), ["two", "one"])
+        try rawDatabase(store.databaseURL, statements: ["DROP TRIGGER test_generation_fault"])
+        XCTAssertTrue(try purge(store, to: 1).didPurge)
+        XCTAssertEqual(try usage(store).records, 0)
+        XCTAssertEqual(try generation(store), 1)
+    }
+
+    func testGenerationExhaustionFailsClosedWithoutIntegerOverflow() throws {
+        let first = try open(); close(first)
+        try rawDatabase(first.databaseURL, statements: ["UPDATE archive_meta SET capture_generation=\(Int64.max - 1)"])
+        let store = try open()
+        _ = try write(store, [event("before-max")], generation: Int64.max - 1)
+        XCTAssertTrue(try purge(store, to: Int64.max).didPurge)
+        _ = try write(store, [event("at-max")], generation: Int64.max)
+        XCTAssertFalse(try purge(store, to: Int64.max).didPurge)
+        assertError(.invalidInput) { try purge(store, to: Int64.max - 1) }
+        XCTAssertEqual(try generation(store), Int64.max)
+        XCTAssertEqual(try records(store).map(\.event.eventKey), ["at-max"])
+    }
+
+    func testQueuedWriterPurgeBoundaryRejectsOldCaptureAndAcceptsNewCapture() throws {
+        let store = try open()
+        let done = expectation(description: "queued generation boundary")
+        done.expectedFulfillmentCount = 4
+        store.record([capture(event("before"))], generation: 0, policy: enabled) { result in
+            XCTAssertEqual(try? result.get().inserted, 1); done.fulfill()
+        }
+        store.purge(advancingToGeneration: 1) { result in
+            XCTAssertEqual(try? result.get(), ArchivePurgeResult(generation: 1, didPurge: true)); done.fulfill()
+        }
+        store.record([capture(event("old-pending"))], generation: 0, policy: enabled) { result in
+            if case let .failure(error) = result { XCTAssertEqual(error, .generationMismatch(expected: 1, received: 0)) }
+            else { XCTFail("Old capture crossed the purge boundary") }
+            done.fulfill()
+        }
+        store.record([capture(event("after"))], generation: 1, policy: enabled) { result in
+            XCTAssertEqual(try? result.get().inserted, 1); done.fulfill()
+        }
+        wait(for: [done], timeout: 10)
+        XCTAssertEqual(try generation(store), 1)
+        XCTAssertEqual(try records(store).map(\.event.eventKey), ["after"])
+        XCTAssertEqual(try usage(store).records, 1)
     }
 
     func testUnknownUnversionedDatabaseIsNotAdopted() throws {

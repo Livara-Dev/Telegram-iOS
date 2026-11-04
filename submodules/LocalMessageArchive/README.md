@@ -3,9 +3,11 @@
 This native Swift module stores supplied text and entity metadata in a separate
 SQLCipher database. It is **not connected to Telegram update processing**. It does
 not yet archive real incoming messages, preserve media, modify search, show UI,
-export/import records, or synchronize anything. Commit `86fcf189` passed 31 native macOS tests (20 storage, 11 mocked Keychain)
-and iOS simulator compilation in [run 41794635275](https://github.com/Livara-Dev/Telegram-iOS/actions/runs/41794635275). This does not establish iOS runtime or Telegram integration behavior.
-The schema-2 counter/migration increment below is pending its own hosted test run.
+export/import records, or synchronize anything. Schema-2 commit `9bfc4c87` passed
+39 native macOS tests (28 storage, 11 mocked Keychain) and iOS simulator compilation
+in [run 41795912590](https://github.com/Livara-Dev/Telegram-iOS/actions/runs/41795912590).
+This does not establish iOS runtime or Telegram integration behavior. The schema-3
+generation/purge increment below is pending its own hosted test run.
 
 ## Storage and security contract
 
@@ -28,8 +30,8 @@ The schema-2 counter/migration increment below is pending its own hosted test ru
   symlinks and orphan sidecars are rejected. A canonical parent path accommodates
   system aliases; SQLite also opens with `SQLITE_OPEN_NOFOLLOW`.
 - No network API, telemetry, authentication material, debug payload logging or
-  new dependency is introduced. Errors contain fixed cases or numeric SQLite /
-  Keychain status codes. Swift `Data`/String copies and an open SQLCipher handle
+  new dependency is introduced. Errors contain fixed cases, numeric SQLite /
+  Keychain status codes, or capture-generation numbers. Swift `Data`/String copies and an open SQLCipher handle
   can hold plaintext/key material in memory: no zeroization or immediate device
   lock memory-erasure guarantee is made. Device lock/backup behavior still needs
   iOS integration and device tests.
@@ -42,11 +44,11 @@ successful `record` completion before treating a snapshot as durable. The future
 Postbox adapter needs a durable capture/outbox and deletion barrier; independent
 databases do not offer a shared transaction. No hook is installed by this draft.
 
-Schema version 2 preserves the version-1 event layout: a unique event key,
+Schema version 3 preserves the version-1 event layout: a unique event key,
 account/peer/namespace/message identity, previous text/entity metadata, event kind,
 local observation time, optional server edit time, and monotonically increasing
 local sequence. Timeline pages use capture sequence, not an assumed server order.
-It adds one database-resident usage row with record and logical-payload counters.
+Version 2 added a database-resident usage row with record and logical-payload counters.
 INSERT/DELETE triggers maintain counters in the same transaction as event writes.
 Events are immutable: a trigger rejects UPDATE, including payload-size updates.
 The API uses ordinary INSERT/DELETE only; direct external SQL, REPLACE and disabled
@@ -57,6 +59,8 @@ Only empty version-0 databases can initialize. Version 1 migrates under an
 IMMEDIATE transaction, validating account identity and stored payload sizes,
 initializing counters from a single snapshot, installing triggers and setting
 version 2 atomically. Negative/non-integer/inconsistent legacy sizes are rejected.
+Version 3 adds a nonnegative integer capture generation to the account metadata,
+initially zero. All required migrations and version updates share the transaction.
 Opening rechecks the version after acquiring the write lock. Unknown populated
 version-0 or future schemas fail without schema mutation. The counter table rejects
 negative values and integer overflow converted by SQLite to REAL.
@@ -69,9 +73,22 @@ exclusions are supported. No messages can be recovered before capture.
 
 An identical event retry is a no-op while that event exists. Reusing its key with
 different data fails and rolls back the whole batch. There are no replay tombstones
-after retention/purge yet: the future adapter must add replay/purge coordination
-before integration. A replay with the same original expired time is immediately
-pruned; a caller that invents a new time can reintroduce deleted data.
+for retention within a generation. A replay with the same original expired time
+is immediately pruned; a caller that invents a new time can reintroduce evicted data.
+
+`record` requires an explicit generation and checks it against the persisted value
+inside the same write transaction as capture. Stale and future generations are
+rejected. `currentGeneration` exposes the current token. `purge(advancingToGeneration:)`
+accepts exactly the next generation, clearing events and advancing metadata
+atomically. Retrying the current generation is a no-op, preserving records captured
+after the completed purge. Older targets, skipped generations and counter exhaustion
+fail without deletion. Generations survive reopen and are isolated by account.
+
+This is only a storage-side purge barrier. A future durable Postbox coordinator
+must stamp each capture/outbox item with its generation **when captured**, preserve
+that immutable value on retries, and serialize purge intent with capture. Reading
+the latest generation while draining old items would defeat the barrier. No such
+coordinator is implemented; full application purge safety is not claimed.
 
 SQL input is bound. Limits are 256 events / 8 MiB per batch, 256 KiB UTF-8 text,
 64 KiB entities, 128 UTF-8 bytes per event key, and 200 records per result page.
@@ -101,8 +118,8 @@ total work or disk allocation. Other writers can encounter SQLite busy errors.
 
 The test suite records monotonic async single-append timings after 10,000 synthetic
 snapshots, including XCTest expectation/wait overhead. It has no latency threshold.
-See [measurement evidence](../../docs/fork/PERFORMANCE.md); the version-2 change
-needs its own measurement before any comparison. Memory, battery, physical disk
+See [measurement evidence](../../docs/fork/PERFORMANCE.md) for schema-1/schema-2
+hosted runs; schema-3 timing is pending. Memory, battery, physical disk
 behavior and iPhone 15 Pro performance remain unmeasured.
 
 ## Validation
@@ -127,5 +144,9 @@ migration rollback/retry, invalid legacy rows, immutable events, counters across
 two live connections, and expiry/quota deletion crossing chunk boundaries. The
 two-connection test alternates operations; simultaneous migration races are not
 claimed as tested.
+Added schema-3 tests use a genuine encrypted version-2 fixture and exercise stale/
+future generation rejection, same-generation purge retry, reopening/two handles,
+account isolation, fault rollback after event deletion, integer exhaustion, and
+a queued writer/purge boundary. They do not exercise a Telegram/Postbox outbox.
 Real Keychain accessibility, interruption/storage exhaustion, Telegram deletion
 ordering, media and foreground/background behavior remain integration work.

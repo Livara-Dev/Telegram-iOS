@@ -88,7 +88,7 @@ It includes bounded queries, exclusions, transactional batches, age/logical-payl
 retention and fail-closed schema/key handling. The Keychain tests inject Security
 responses; they do not establish actual entitlement or locked-device behavior.
 No media bytes, export/import, settings, search UI or synchronization are present.
-A durable Postbox handoff and purge/replay barrier remain integration prerequisites.
+A durable Postbox handoff and coordinated purge/replay protocol remain integration prerequisites.
 
 The separate archive workflow runs native host XCTest against the real vendored
 SQLCipher implementation without Telegram secrets. The first execution, [run
@@ -106,6 +106,11 @@ measured 0.340 ms mean append latency versus 29.648 ms in the earlier hosted run
 these are separate host measurements, not iPhone results. See
 [performance observations](fork/PERFORMANCE.md) and
 [revision-specific evidence](fork/evidence/archive-tests-9bfc4c87.json).
+
+The schema-3 draft adds the local half of that purge protocol: required capture
+generations, transactional generation advances and idempotent purge retries.
+Seven new tests are awaiting execution. This does not implement the Postbox
+coordinator, and it must not be described as application-level purge safety yet.
 
 ## Delivery status
 

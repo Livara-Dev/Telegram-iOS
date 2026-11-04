@@ -16,6 +16,7 @@ public enum ArchiveError: Error, Equatable {
     case closed
     case protectionUnavailable
     case eventConflict
+    case generationMismatch(expected: Int64, received: Int64)
 }
 
 public struct ArchiveMessageID: Equatable {
@@ -117,4 +118,10 @@ public struct ArchiveWriteResult: Equatable {
 public struct ArchiveUsage: Equatable {
     public let records: Int64
     public let logicalPayloadBytes: Int64
+}
+
+public struct ArchivePurgeResult: Equatable {
+    public let generation: Int64
+    /// False for an acknowledged retry of the current generation; newer records remain intact.
+    public let didPurge: Bool
 }

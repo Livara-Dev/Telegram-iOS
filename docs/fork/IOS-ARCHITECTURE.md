@@ -143,7 +143,8 @@ Purge also needs a persistent protocol, not just `ArchiveStore.purge()`: pause t
 account drain, persist a new capture generation/pending-purge marker, atomically
 advance the archive's accepted generation and delete prior records, then retire
 old outbox entries and resume. The archive must reject in-flight old-generation
-writes across restart. Current draft storage has no such barrier. Bound outbox
+writes across restart. The schema-3 library draft now adds a local generation
+barrier, pending its own test run; the Postbox coordinator is still absent. Bound outbox
 bytes and report capture gaps when storage is unavailable; never silently claim
 lossless capture while allowing unbounded backlog. Existing operation-log removal
 uses `secure: false` (`PeerOperationLogTable.swift:195`), so it is not forensic
