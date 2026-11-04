@@ -104,6 +104,17 @@ not a cryptographic-erasure implementation. The native views intentionally have
 no send/forward/export action. No archive network endpoint is added. Existing
 upstream telemetry is still unresolved.
 
+## Ghost activity draft: verification pending
+
+The separate Ghost activity draft adds only application-level decisions before
+existing `messages.setTyping` / `setEncryptedTyping` dispatch. Its disabled
+default, account-specific persisted policy and read-only incompatible-settings
+behavior have authored real-Postbox tests; execution is pending. The existing
+Network and encryption implementations are unchanged. Calls, emoji interactions
+and explicit live-draft stop remain outside suppression. Requests already sent,
+other clients and server-derived activity remain observable. Read/story receipts
+and presence are not suppressed. See [the precise boundary](fork/GHOST-ACTIVITY.md).
+
 ## Earlier standalone archive evidence (before integration)
 
 The feature branch introduces `LocalMessageArchive` without altering Telegram's

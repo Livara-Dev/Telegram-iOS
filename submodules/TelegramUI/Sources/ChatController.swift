@@ -6411,6 +6411,53 @@ public final class ChatControllerImpl: TelegramBaseController, ChatController, G
                 default:
                     items = .single([])
                 }
+
+                // Observe this account's persisted policy; never infer it from a
+                // global toggle or from another chat/account's presentation state.
+                let itemsWithGhost = combineLatest(items, context.account.localGhost.settings)
+                |> deliverOnMainQueue
+                |> map { [weak self] items, ghostState -> [ContextMenuItem] in
+                    var items = items
+                    items.append(.separator)
+                    var detail = "Activity indicators only"
+                    switch ghostState {
+                    case let .available(settings):
+                        var active: [String] = []
+                        if settings.enabled {
+                            if settings.suppressTyping { active.append("typing") }
+                            if settings.suppressStickerSelection { active.append("stickers") }
+                            if settings.suppressRecording { active.append("recording") }
+                            if settings.suppressUploads { active.append("uploads") }
+                            if settings.suppressGamePlay { active.append("games") }
+                            detail = active.isEmpty ? "On · no indicators selected" : "Suppression: " + active.joined(separator: ", ")
+                        } else {
+                            detail = "Off · activity indicators only"
+                        }
+                        items.append(.action(ContextMenuActionItem(text: settings.enabled ? "Turn Off Ghost Activity" : "Turn On Ghost Activity", textLayout: .secondLineWithValue("All chats in this account"), icon: { _ in nil }, action: { [weak self] _, complete in
+                            complete(.dismissWithoutContent)
+                            let _ = (context.account.localGhost.setEnabled(!settings.enabled)
+                            |> deliverOnMainQueue).startStandalone(next: { [weak self] success in
+                                guard let self else { return }
+                                let text: String
+                                if !success {
+                                    text = "The privacy setting could not be saved. Existing settings have been kept."
+                                } else if settings.enabled {
+                                    text = "Ghost activity disabled for this account."
+                                } else {
+                                    text = "Ghost activity enabled for this account. Read receipts, story views and online status are unchanged."
+                                }
+                                self.present(UndoOverlayController(presentationData: self.presentationData, content: .info(title: nil, text: text, timeout: nil, customUndoText: nil), action: { _ in false }), in: .current)
+                            })
+                        })))
+                    case .unsupported:
+                        detail = "Settings unavailable · activity restricted"
+                    }
+                    items.append(.action(ContextMenuActionItem(text: "Ghost Mode Settings", textLayout: .secondLineWithValue(detail), icon: { _ in nil }, action: { [weak self] _, complete in
+                        complete(.dismissWithoutContent)
+                        self?.push(localGhostSettingsController(context: context))
+                    })))
+                    return items
+                }
                 
                 strongSelf.chatDisplayNode.messageTransitionNode.dismissMessageReactionContexts()
                 
@@ -6426,7 +6473,7 @@ public final class ChatControllerImpl: TelegramBaseController, ChatController, G
                     source = .reference(ChatControllerContextReferenceContentSource(controller: strongSelf, sourceView: node.view, insets: .zero))
                 }
                 
-                let contextController = makeContextController(presentationData: strongSelf.presentationData, source: source, items: items |> map { ContextController.Items(content: .list($0)) }, gesture: gesture)
+                let contextController = makeContextController(presentationData: strongSelf.presentationData, source: source, items: itemsWithGhost |> map { ContextController.Items(content: .list($0)) }, gesture: gesture)
                 contextController.dismissed = { [weak self] in
                     self?.canReadHistory.set(true)
                 }

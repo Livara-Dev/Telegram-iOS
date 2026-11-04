@@ -15,6 +15,9 @@ artifact contains test evidence only. Private build state is cleaned between
 phases, so some dependencies may compile again.
 Match the run's commit to the latest PR head. The separate **Archive engine
 draft tests** workflow publishes library test evidence only, never an IPA.
+The separate `feature/ghost-activity-draft` branch runs the same workflows,
+including its added activity-worker tests. A passing archive-branch run is not
+evidence for the Ghost branch; use the exact commit of the artifact being tested.
 
 1. Open the authorized fork `Livara-Dev/Telegram-iOS`. In Settings →
    Secrets and variables → Actions, set repository secrets `TELEGRAM_API_ID` and
@@ -57,6 +60,7 @@ fully independently signed build, but this has not been demonstrated here.
 
 No jailbreak, MDM enrollment or disabling iOS security is part of the procedure.
 The unchanged baseline still contains upstream telemetry. PR #2 adds experimental
-archive integration, but application verification is pending; filtering and
-Ghost Mode remain unimplemented. Do not use sensitive accounts
+archive integration, but application verification is pending. The Ghost draft
+adds unverified activity controls only; full Ghost Mode and filtering remain
+unfinished. Do not use sensitive accounts
 for validation until the documented privacy/security gates pass.

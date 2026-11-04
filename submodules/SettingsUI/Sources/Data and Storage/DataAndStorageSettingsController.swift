@@ -22,6 +22,7 @@ public enum AutomaticSaveIncomingPeerType {
 
 private final class DataAndStorageControllerArguments {
     let openLocalArchive: () -> Void
+    let openLocalGhost: () -> Void
     let openStorageUsage: () -> Void
     let openNetworkUsage: () -> Void
     let openProxy: () -> Void
@@ -38,6 +39,7 @@ private final class DataAndStorageControllerArguments {
 
     init(
         openLocalArchive: @escaping () -> Void,
+        openLocalGhost: @escaping () -> Void,
         openStorageUsage: @escaping () -> Void,
         openNetworkUsage: @escaping () -> Void,
         openProxy: @escaping () -> Void,
@@ -53,6 +55,7 @@ private final class DataAndStorageControllerArguments {
         toggleSensitiveContent: @escaping (Bool) -> Void
     ) {
         self.openLocalArchive = openLocalArchive
+        self.openLocalGhost = openLocalGhost
         self.openStorageUsage = openStorageUsage
         self.openNetworkUsage = openNetworkUsage
         self.openProxy = openProxy
@@ -131,6 +134,7 @@ private enum DataAndStorageEntry: ItemListNodeEntry {
     case connectionProxy(PresentationTheme, String, String)
     case localArchiveHeader
     case localArchive
+    case localGhost
     
     var section: ItemListSectionId {
         switch self {
@@ -150,7 +154,7 @@ private enum DataAndStorageEntry: ItemListNodeEntry {
                 return DataAndStorageSection.sensitiveContent.rawValue
             case .connectionHeader, .connectionProxy:
                 return DataAndStorageSection.connection.rawValue
-            case .localArchiveHeader, .localArchive:
+            case .localArchiveHeader, .localArchive, .localGhost:
                 return DataAndStorageSection.localArchive.rawValue
         }
     }
@@ -207,11 +211,19 @@ private enum DataAndStorageEntry: ItemListNodeEntry {
                 return 40
             case .localArchive:
                 return 41
+            case .localGhost:
+                return 42
         }
     }
     
     static func ==(lhs: DataAndStorageEntry, rhs: DataAndStorageEntry) -> Bool {
         switch lhs {
+            case .localGhost:
+                if case .localGhost = rhs {
+                    return true
+                } else {
+                    return false
+                }
             case .localArchiveHeader:
                 if case .localArchiveHeader = rhs {
                     return true
@@ -376,6 +388,8 @@ private enum DataAndStorageEntry: ItemListNodeEntry {
                 return ItemListSectionHeaderItem(presentationData: presentationData, text: "AYUGRAM", sectionId: self.section)
             case .localArchive:
                 return ItemListDisclosureItem(presentationData: presentationData, systemStyle: .glass, title: "Local Message Archive", label: "Experimental", sectionId: self.section, style: .blocks, action: arguments.openLocalArchive)
+            case .localGhost:
+                return ItemListDisclosureItem(presentationData: presentationData, systemStyle: .glass, title: "Ghost Mode", label: "Activity indicators", sectionId: self.section, style: .blocks, action: arguments.openLocalGhost)
             case let .storageUsage(_, text, value):
                 return ItemListDisclosureItem(presentationData: presentationData, systemStyle: .glass, icon: PresentationResourcesSettings.storageUsage, title: text, label: value, sectionId: self.section, style: .blocks, action: {
                     arguments.openStorageUsage()
@@ -691,6 +705,7 @@ private func dataAndStorageControllerEntries(context: AccountContext, state: Dat
     entries.append(.connectionProxy(presentationData.theme, presentationData.strings.SocksProxySetup_Title, proxyValue))
     entries.append(.localArchiveHeader)
     entries.append(.localArchive)
+    entries.append(.localGhost)
         
     return entries
 }
@@ -827,6 +842,8 @@ public func dataAndStorageController(context: AccountContext, focusOnItemTag: Da
     
     let arguments = DataAndStorageControllerArguments(openLocalArchive: {
         pushControllerImpl?(localArchiveSettingsController(context: context))
+    }, openLocalGhost: {
+        pushControllerImpl?(localGhostSettingsController(context: context))
     }, openStorageUsage: {
         pushControllerImpl?(StorageUsageScreen(context: context, makeStorageUsageExceptionsScreen: { category in
             return storageUsageExceptionsScreen(context: context, category: category)

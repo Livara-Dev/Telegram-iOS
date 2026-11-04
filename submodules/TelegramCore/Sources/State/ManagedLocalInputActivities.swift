@@ -26,6 +26,15 @@ struct PeerInputActivityRecord: Equatable {
     let updateId: Int32
 }
 
+/// Typed dispatch boundary shared by the production network sender and integration
+/// tests. It contains no replacement transport, authentication or fabricated response.
+enum LocalInputActivityRequest {
+    case cloud(flags: Int32, peer: Api.InputPeer, topMessageId: Int32?, action: Api.SendMessageAction)
+    case secret(peer: Api.InputEncryptedChat, typing: Api.Bool)
+}
+
+typealias LocalInputActivityRequestSender = (LocalInputActivityRequest) -> Signal<Void, NoError>
+
 private final class ManagedLocalTypingActivitiesContext {
     private var disposables: [PeerActivitySpace: (PeerInputActivityRecord, MetaDisposable)] = [:]
     
@@ -76,12 +85,42 @@ private final class ManagedLocalTypingActivitiesContext {
 }
 
 func managedLocalTypingActivities(activities: Signal<[PeerActivitySpace: [(PeerId, PeerInputActivityRecord)]], NoError>, postbox: Postbox, network: Network, accountPeerId: PeerId) -> Signal<Void, NoError> {
-    return Signal { subscriber in
-        let context = Atomic(value: ManagedLocalTypingActivitiesContext())
-        let disposable = activities.start(next: { activities in
-            let (start, dispose) = context.with { context in
-                return context.update(activities: activities)
+    return managedLocalTypingActivities(activities: activities, postbox: postbox, accountPeerId: accountPeerId, sendRequest: { request in
+        let signal: Signal<Api.Bool, MTRpcError>
+        switch request {
+        case let .cloud(flags, peer, topMessageId, action):
+            signal = network.request(Api.functions.messages.setTyping(flags: flags, peer: peer, topMsgId: topMessageId, action: action))
+        case let .secret(peer, typing):
+            signal = network.request(Api.functions.messages.setEncryptedTyping(peer: peer, typing: typing))
+        }
+        return signal
+        |> `catch` { _ -> Signal<Api.Bool, NoError> in
+            return .single(.boolFalse)
+        }
+        |> mapToSignal { _ -> Signal<Void, NoError> in
+            return .complete()
+        }
+    })
+}
+
+func managedLocalTypingActivities(activities: Signal<[PeerActivitySpace: [(PeerId, PeerInputActivityRecord)]], NoError>, postbox: Postbox, accountPeerId: PeerId, queue: Queue = Queue(), sendRequest: @escaping LocalInputActivityRequestSender) -> Signal<Void, NoError> {
+    return Signal { _ in
+        let context = ManagedLocalTypingActivitiesContext()
+        var stopped = false
+        // Activities and preferences originate on different queues. Serialize the
+        // entire update/dispose/start sequence, not just the context dictionary.
+        let disposable = (combineLatest(activities, localGhostSettingsSignal(postbox: postbox))
+        |> deliverOn(queue)).start(next: { activities, settings in
+            guard !stopped else { return }
+            var permitted: [PeerActivitySpace: [(PeerId, PeerInputActivityRecord)]] = [:]
+            for (space, records) in activities {
+                // Preserve upstream priority: suppressing the selected first record
+                // must not promote another peer/activity in the same space.
+                if let first = records.first, localGhostAllowsActivity(first.1.activity, settings: settings) {
+                    permitted[space] = records
+                }
             }
+            let (start, dispose) = context.update(activities: permitted)
             
             for disposable in dispose {
                 disposable.dispose()
@@ -95,13 +134,14 @@ func managedLocalTypingActivities(activities: Signal<[PeerActivitySpace: [(PeerI
                 default:
                     break
                 }
-                disposable.set(requestActivity(postbox: postbox, network: network, accountPeerId: accountPeerId, peerId: peerId.peerId, threadId: threadId, activity: activity?.activity).start())
+                disposable.set(requestLocalInputActivity(postbox: postbox, accountPeerId: accountPeerId, peerId: peerId.peerId, threadId: threadId, activity: activity?.activity, sendRequest: sendRequest).start())
             }
         })
         return ActionDisposable {
             disposable.dispose()
             
-            context.with { context -> Void in
+            queue.async {
+                stopped = true
                 context.dispose()
             }
         }
@@ -141,11 +181,16 @@ private func actionFromActivity(_ activity: PeerInputActivity?) -> Api.SendMessa
     }
 }
 
-private func requestActivity(postbox: Postbox, network: Network, accountPeerId: PeerId, peerId: PeerId, threadId: Int64?, activity: PeerInputActivity?) -> Signal<Void, NoError> {
-    return postbox.transaction { transaction -> Signal<Void, NoError> in
+func requestLocalInputActivity(postbox: Postbox, accountPeerId: PeerId, peerId: PeerId, threadId: Int64?, activity: PeerInputActivity?, sendRequest: @escaping LocalInputActivityRequestSender) -> Signal<Void, NoError> {
+    return postbox.transaction { transaction -> LocalInputActivityRequest? in
+        // Recheck the stored policy after queueing: a stale activity snapshot must
+        // not bypass a preference change committed before this transaction runs.
+        guard localGhostAllowsActivity(activity, settings: localGhostSettings(transaction: transaction)) else {
+            return nil
+        }
         if let peer = transaction.getPeer(peerId) {
             if peerId == accountPeerId {
-                return .complete()
+                return nil
             }
             if let channel = peer as? TelegramChannel, case .broadcast = channel.info {
                 if let activity = activity {
@@ -153,7 +198,7 @@ private func requestActivity(postbox: Postbox, network: Network, accountPeerId: 
                     case .speakingInGroupCall:
                         break
                     default:
-                        return .complete()
+                        return nil
                     }
                 }
             }
@@ -161,17 +206,17 @@ private func requestActivity(postbox: Postbox, network: Network, accountPeerId: 
                 if let presence = transaction.getPeerPresence(peerId: peerId) as? TelegramUserPresence {
                     switch presence.status {
                     case .none, .lastWeek, .lastMonth:
-                        return .complete()
+                        return nil
                     case .recently:
                         break
                     case let .present(statusTimestamp):
                         let timestamp = Int32(CFAbsoluteTimeGetCurrent() + NSTimeIntervalSince1970)
                         if statusTimestamp < timestamp - 30 {
-                            return .complete()
+                            return nil
                         }
                     }
                 } else {
-                    return .complete()
+                    return nil
                 }
             }
             
@@ -181,27 +226,23 @@ private func requestActivity(postbox: Postbox, network: Network, accountPeerId: 
                 if topMessageId != nil {
                     flags |= 1 << 0
                 }
-                return network.request(Api.functions.messages.setTyping(flags: flags, peer: inputPeer, topMsgId: topMessageId, action: actionFromActivity(activity)))
-                |> `catch` { _ -> Signal<Api.Bool, NoError> in
-                    return .single(.boolFalse)
-                }
-                |> mapToSignal { _ -> Signal<Void, NoError> in
-                    return .complete()
-                }
+                return .cloud(flags: flags, peer: inputPeer, topMessageId: topMessageId, action: actionFromActivity(activity))
             } else if let peer = peer as? TelegramSecretChat, activity == .typingText {
                 let _ = PeerId(peer.id.toInt64())
-                return network.request(Api.functions.messages.setEncryptedTyping(peer: .inputEncryptedChat(.init(chatId: Int32(peer.id.id._internalGetInt64Value()), accessHash: peer.accessHash)), typing: .boolTrue))
-                |> `catch` { _ -> Signal<Api.Bool, NoError> in
-                    return .single(.boolFalse)
-                }
-                |> mapToSignal { _ -> Signal<Void, NoError> in
-                    return .complete()
-                }
+                return .secret(peer: .inputEncryptedChat(.init(chatId: Int32(peer.id.id._internalGetInt64Value()), accessHash: peer.accessHash)), typing: .boolTrue)
             } else {
-                return .complete()
+                return nil
             }
         } else {
+            return nil
+        }
+    }
+    |> mapToSignal { request -> Signal<Void, NoError> in
+        guard let request else {
             return .complete()
         }
-    } |> switchToLatest
+        // Disposing cancels in-flight work where possible, but cannot retract a
+        // request already transmitted before the user enabled suppression.
+        return sendRequest(request)
+    }
 }

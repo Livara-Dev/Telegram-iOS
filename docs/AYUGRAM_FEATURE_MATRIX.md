@@ -3,6 +3,8 @@
 Updated 2026-11-04. **No requested feature is verified in the running application yet.**
 The existing fork now includes experimental default-off TelegramCore archive hooks,
 an account worker and native archive screens, in addition to the tested storage library.
+The separate Ghost activity draft adds per-account activity controls and native
+settings; its 15 worker/dispatch tests still require a native CI result.
 See [integration scope and verification gates](fork/ARCHIVE-INTEGRATION.md). Portable tooling tests do not
 prove iOS app behavior. Phase A is being exercised through the hosted workflow
 on `Livara-Dev/Telegram-iOS`, with the owner's API credentials read from Secrets.
@@ -29,7 +31,7 @@ technical claim of impossibility. All entries require actual integration tests.
 | Suppress story views | `shared/ghost.md:15`; reactions/replies may mark a story viewed server-side. Not in the 2023 source audit. | Separate story policy from chat read policy. Test ordinary opening, next story, retry, background, reaction and reply; never claim invisible interaction. | Not implemented; API-policy conflict |
 | Warn before opening stories | `shared/ghost.md:61`; cancellation must leave story unopened. | Gate story viewer startup before receipt work is queued; explicit cancellation test. | Not implemented |
 | Suppress online status | `shared/ghost.md:21`; sending can still expose online presence. Historical request hook rewrites updateStatus offline. | Gate application-level presence operations, preserving transport/auth; document server inference and other-session limits. | Not implemented; API-policy conflict |
-| Suppress typing, sticker choice, upload, recording indicators | `shared/ghost.md:27` lists typing/sticker/game; old Android drops both ordinary/encrypted typing constructors. | Cover all `SendMessageAction`-equivalent variants and secret-chat paths explicitly. Recording/upload enumeration is an iOS coverage obligation even when the docs do not enumerate it. | Not implemented; API-policy conflict |
+| Suppress typing, sticker choice, upload, recording indicators | `shared/ghost.md:27` lists typing/sticker/game; old Android drops both ordinary/encrypted typing constructors. | Per-account typed activity suppression before existing cloud/secret typing dispatch; preserve calls, emoji interactions and explicit draft stop. Already sent requests cannot be recalled. | Activity worker, native controls and 15 dispatch tests authored; native execution pending; API-policy conflict |
 | Automatic offline | `shared/ghost.md:36` warns of online/offline oscillation with another active client. | Per-account policy and bounded scheduling; test no loop/flood, account switch, foreground transition and other-session effects. Cannot retroactively erase a visible online interval. | Not implemented; API-policy conflict |
 | Read on interaction | `shared/ghost.md:44`; historical Android has mark-read-after-send plus explicit mark-read helpers. Docs do not define every interaction. | Specify exact actions (e.g. successful send/manual mark read); scoped one-shot permission, no global race-prone allow flag. Test failures and unrelated chats/accounts. | Not implemented |
 | Scheduled sending for ghost use | `shared/ghost.md:48` describes 12-second text delay, dynamic media delay and network fragility. | Use existing Telegram scheduling capability, explicitly showing the delay. Respect unsupported destinations/media, cancellation and failures. No guarantee against server presence inference. | Not implemented; API-policy conflict |
@@ -60,7 +62,7 @@ technical claim of impossibility. All entries require actual integration tests.
 
 | Feature | Android/reference evidence | Proposed iOS equivalent and limitations | iOS status |
 | --- | --- | --- | --- |
-| Quick Ghost toggle and active-protection indication | Historical aggregate ghost setting; Desktop toggle; see reference audit | Per-account effective policy, chat toolbar control, individual capability labels; no perfect-invisibility badge | Not implemented |
+| Quick Ghost toggle and active-protection indication | Historical aggregate ghost setting; Desktop toggle; see reference audit | Per-account effective policy, chat toolbar control, individual capability labels; no perfect-invisibility badge | Activity-only toggle/status in avatar menu and native settings authored; full-app/UI verification pending |
 | Account-specific settings and archive isolation | Android stores user ID with archive rows; global caches require caution | Separate encrypted DB/key per account; account-scoped local settings and query APIs | DB isolation and mocked Keychain tests pass; account settings/worker authored, integration tests pending |
 | Sender, group, channel and bot exclusions | Historical bot gate and October save-exception release note; exact modern precedence unavailable | Persist explicit scope/precedence; test sender-vs-chat conflicts and transitions | Capture policy and account persistence authored; dedicated exclusion picker absent |
 | Cache-clear independence | Docs describe Room storage and saved files separate from usual history | Independent protected archive directory with archive-owned media; verify normal cache purge leaves it intact | Dedicated account archive path authored; actual cache-clear test pending |
@@ -151,6 +153,20 @@ commit, test counts, benchmark samples and downloadable artifact identity.
 
 Update each feature row with a commit and concrete test evidence when implemented.
 Do not promote an entry to working because a model test or compiler succeeds.
+
+## Ghost activity draft
+
+`feature/ghost-activity-draft` is based on the archive work and limits its first
+increment to typing, sticker selection, recording, uploads and game activity.
+It uses per-account Postbox settings, a disabled master switch by default, a
+serialized activity worker and a fresh persisted-policy check before dispatch.
+Unknown settings remain read-only and block only the covered activity categories.
+The 15 authored tests exercise real preferences and the actual worker/resolver
+with a typed request recorder; they do not contact Telegram servers. Native
+settings and an account-wide chat-menu toggle expose which categories are
+configured. Message/story receipts, online presence, automatic offline and
+read-on-interaction remain unimplemented. See [scope, reference evidence and
+verification limits](fork/GHOST-ACTIVITY.md). No full Ghost Mode claim is made.
 
 Desktop inspection confirms typed request suppression, per-chat/global filters
 and temporary reveal. Its current persistent archive is text-only SQLite, not
