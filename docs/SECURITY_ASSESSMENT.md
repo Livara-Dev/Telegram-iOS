@@ -1,6 +1,6 @@
 # Preliminary security assessment
 
-Date: 2026-11-04. This is a source-based threat assessment and a list of acceptance requirements, **not a finding that the app is secure**. The reviewed snapshots are Telegram-iOS `279f89e4d4f63f17227bf877dc3d8990f22ecd58` and AyuGram4A `7013145676d36d82ee13c02a89f72097b7490dcd`. The companion architecture and license audits contain source references. No successful iOS build, signed-device test, penetration test, cryptographic review or network privacy verification is established by this document.
+Date: 2026-11-04. This is a source-based threat assessment and a list of acceptance requirements, **not a finding that the app is secure**. The reviewed snapshots are Telegram-iOS `279f89e4d4f63f17227bf877dc3d8990f22ecd58` and AyuGram4A `7013145676d36d82ee13c02a89f72097b7490dcd`. The companion architecture and license audits contain source references. No successful full iOS application build, signed-device test, penetration test, cryptographic review or network privacy verification is established by this document.
 
 ## Assets and trust boundaries
 
@@ -92,3 +92,12 @@ checks include encryption/header configuration, wrong-key rejection, account
 isolation, transaction rollback, retention and unsafe paths. This is useful
 storage-boundary evidence, not a cryptographic audit or proof of live capture,
 iOS file protection, actual Keychain policy enforcement or no-telemetry behavior.
+
+
+Schema-2 commit `9bfc4c87` subsequently passed 39 native macOS tests and iOS
+simulator compilation. Additional checks cover atomic v1 migration and rollback,
+invalid legacy sizes/account identities, immutable-event triggers, consistent
+counters across two live connections, and bounded retention boundaries. The
+connection test uses sequential operations; simultaneous writer/migration races
+and real I/O failures are not established by these results. Evidence is in
+[fork/evidence/archive-tests-9bfc4c87.json](fork/evidence/archive-tests-9bfc4c87.json).

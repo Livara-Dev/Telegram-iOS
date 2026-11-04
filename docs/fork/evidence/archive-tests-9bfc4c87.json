@@ -1,0 +1,60 @@
+{
+  "schema": 1,
+  "source_commit": "9bfc4c87a20160eaf725e6b8e2164e1086257e0b",
+  "run_id": 41795912590,
+  "job_id": 126459854729,
+  "platform": "GitHub xcode-27 hosted macOS runner",
+  "tests": {
+    "storage_including_benchmark": 28,
+    "keychain_mocked": 11,
+    "total": 39,
+    "failures": 0
+  },
+  "ios_simulator_compilation": "passed",
+  "artifact": {
+    "id": 13304894197,
+    "name": "archive-draft-9bfc4c87a20160eaf725e6b8e2164e1086257e0b",
+    "size_in_bytes": 21658,
+    "url": "https://api.github.com/repos/Livara-Dev/Telegram-iOS/actions/artifacts/13304894197",
+    "archive_download_url": "https://api.github.com/repos/Livara-Dev/Telegram-iOS/actions/artifacts/13304894197/zip",
+    "expired": false,
+    "created_at": "2026-11-04T07:59:23Z",
+    "expires_at": "2026-11-11T07:59:22Z",
+    "updated_at": "2026-11-04T07:59:23Z",
+    "digest": "sha256:0e73989c61d9bfee2dcf1b71939b3e2a9dd2d1fade50e5644654b20f7d6a1abd",
+    "workflow_run": {
+      "id": 41795912590,
+      "repository_id": 1445292587,
+      "head_repository_id": 1445292587,
+      "head_branch": "feature/archive-engine-draft",
+      "head_sha": "9bfc4c87a20160eaf725e6b8e2164e1086257e0b"
+    }
+  },
+  "metrics": {
+    "benchmark": "archive_single_append",
+    "iphone_performance_claim": false,
+    "latency_threshold": "none",
+    "mean_ms": 0.3403418,
+    "measurement": "monotonic async API roundtrip including XCTest expectation/wait overhead",
+    "samples_ms": [
+      0.344791,
+      0.365542,
+      0.392959,
+      0.324084,
+      0.325667,
+      0.326458,
+      0.30975,
+      0.325292,
+      0.36075,
+      0.328125
+    ],
+    "synthetic_seed_records": 10000,
+    "warmup_appends": 1
+  },
+  "limitations": [
+    "Separate hosted runs; not a controlled device comparison",
+    "No iPhone performance or iOS runtime tests",
+    "No simultaneous migration/writer-contention test",
+    "Purge generations and live capture not implemented at this revision"
+  ]
+}

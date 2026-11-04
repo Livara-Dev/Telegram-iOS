@@ -17,11 +17,28 @@ with samples ranging from **18.813 to 52.306 ms**.
 
 The initial retention path scans the history with COUNT/SUM/window aggregation
 for every batch. Transactional database counters and bounded oldest-first
-removal are implemented in the schema-2 draft; no improvement is established until the same
-benchmark and functional/migration tests run on the changed code.
+removal replace that path in schema 2; the measured result follows below.
 
 [Raw measurements and artifact identity](evidence/archive-benchmark-before.json)
 retain the exact samples and limitations. [Downloadable logs](https://github.com/Livara-Dev/Telegram-iOS/actions/runs/41795234429/artifacts/13304637808)
 expire on 2026-11-11. A different hosted run can have different scheduling and I/O
 load; this small sample must not be extrapolated to a phone or used as a latency
 guarantee.
+
+
+## Schema-2 result
+
+Commit `9bfc4c87` passed 39 native tests and iOS simulator compilation in
+[run 41795912590](https://github.com/Livara-Dev/Telegram-iOS/actions/runs/41795912590).
+The unchanged workload measured a mean of **0.340 ms**, with ten samples ranging
+from **0.310 to 0.393 ms**. Migration, rollback, two-live-connection counter
+consistency and partial/multiple-chunk retention tests also passed.
+
+This supports an improvement for this synthetic append workload. The runs used
+separate hosted machines, so the comparison is not a controlled phone benchmark
+or a general speedup guarantee. Large atomic purges, initial migrations, physical
+disk consumption and simultaneous writer contention still require measurement.
+
+[Exact samples and artifact metadata](evidence/archive-tests-9bfc4c87.json) and
+[downloadable logs](https://github.com/Livara-Dev/Telegram-iOS/actions/runs/41795912590/artifacts/13304894197)
+record the result. The logs expire on 2026-11-11.
