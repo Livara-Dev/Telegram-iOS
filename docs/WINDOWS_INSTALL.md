@@ -5,19 +5,36 @@ evidence exists, including passing iOS simulator integration suites, but those
 ZIP files do not contain an installable application. These instructions describe
 how to obtain and test a device build after the application workflow succeeds.
 
-For PR #2's application integration, use **Archive application integration
-(hosted macOS)** on `feature/archive-engine-draft`. Pushes run this workflow
-automatically. Its artifact is `archive-integration-<commit>`, and it runs the
-Postbox/archive/TelegramCore/TextFormat iOS suites before compiling the full app.
-Its separate `archive-integration-tests-<commit>` artifact appears after the
-test phase, even while application compilation is still running. This early
-artifact contains test evidence only. Private build state is cleaned between
-phases, so some dependencies may compile again.
-Match the run's commit to the latest PR head. The separate **Archive engine
-draft tests** workflow publishes library test evidence only, never an IPA.
-The separate `feature/ghost-activity-draft` branch runs the same workflows,
-including its added activity-worker tests. A passing archive-branch run is not
-evidence for the Ghost branch; use the exact commit of the artifact being tested.
+Use **Archive application integration (hosted macOS)** for the archive,
+Ghost activity and literal-filter branches. Pushes run it automatically;
+`ci/parallel-device-build` also runs it to verify the build-job split. The
+`integration-tests` job must pass for the exact commit before application jobs
+become eligible to start. The `application-build` simulator job and the
+`unsigned-device-build` job then run independently, subject to runner capacity.
+Each has its own 360-minute limit and branch-specific queue. A slow simulator
+build no longer consumes the device build's time budget or prevents it starting.
+The device job uses Xcode's device SDK and does not download a simulator runtime.
+
+The existing simulator concurrency group is retained with
+`cancel-in-progress: false`; the new device queue also preserves running jobs.
+Publishing this workflow change does not alter jobs already in progress. GitHub
+can replace an older *pending* job when a newer commit enters the same queue, so
+always inspect the commit of the job that actually ran. No private Bazel state
+or credentials are shared between jobs; some compilation repeats on fresh hosts.
+
+| Result | Downloadable artifact | What it establishes |
+| --- | --- | --- |
+| iOS integration tests | `archive-integration-tests-<commit>` | Test logs and checksums, not an app package. Available before full application compilation finishes. |
+| Simulator application compilation | `archive-integration-<commit>` | On success, `fork-baseline-simulator/Telegram.ipa` and its manifest/checksum. This package is for the simulator and cannot run on a physical iPhone. |
+| Unsigned device compilation | `archive-unsigned-device-<commit>` | On success, `fork-baseline-unsigned-device/Telegram.ipa` and its manifest/checksum. It still requires independent signing before installation. |
+| Windows signing and physical installation | Produced locally by your chosen signing tool | A different, signed package. Installation, entitlements and runtime behavior must be verified separately on the iPhone. |
+
+Match every artifact's commit to the intended PR head. Failed application jobs
+can still upload diagnostics without a package; a downloadable ZIP alone does
+not establish build success. The separate **Archive engine draft tests** workflow
+publishes library test evidence only. Earlier **Fork baseline (hosted macOS)**
+runs retain their `fork-baseline-<commit>` artifact name and their original job
+layout. A successful run of one branch does not validate another branch.
 
 1. Open the authorized fork `Livara-Dev/Telegram-iOS`. In Settings →
    Secrets and variables → Actions, set repository secrets `TELEGRAM_API_ID` and
@@ -25,20 +42,26 @@ evidence for the Ghost branch; use the exact commit of the artifact being tested
    https://my.telegram.org/apps. The workflow uses `org.livara.ayugram`, as requested;
    its availability has not been verified in Apple's developer portal. Use your
    own `APPLE_TEAM_ID` for signed builds. Never copy Telegram's identity.
-2. Open Actions → **Fork baseline (hosted macOS)** and select the latest automatic
-   push run for the baseline branch, or the integration workflow described above
-   for PR #2. Manual **Run workflow** is available after the workflow exists on
-   the repository's default branch. The workflow
-   uses GitHub's `xcode-27` hosted Apple Silicon image, verifies Xcode 27.1/macOS 27,
-   verifies the pinned Bazel download, attempts the missing iOS 26.5 test-runtime
-   installation, builds the full simulator app and runs the explicit iOS test
-   target. The optional next step builds an **unsigned device** IPA.
-3. Download `fork-baseline-<commit>` from the successful workflow run. Inspect
-   its logs and manifest. Failed jobs may upload diagnostics only; the presence
-   of a downloadable ZIP is not proof of a successful application build.
+2. Open Actions → **Archive application integration (hosted macOS)** and select
+   the latest push run for the intended branch/commit. Manual **Run workflow**
+   becomes available after the workflow exists on the default branch. Its
+   `unsigned_device` option controls the independent device job; pushes enable
+   that job automatically. All jobs use GitHub's `xcode-27` hosted Apple Silicon
+   image, verify Xcode 27.1/macOS 27 and the pinned Bazel download. Test and
+   simulator jobs install the required iOS 26.5 runtime; the device job does not.
+3. After `unsigned-device-build` succeeds, download
+   `archive-unsigned-device-<commit>`. Open its
+   `fork-baseline-unsigned-device/manifest.json`; confirm `source_commit` and
+   `mode: unsigned-device`. `signing: disabled` and unverified signature/runtime
+   fields are expected at this stage. The device manifest does not claim that
+   tests ran in the device job: inspect the same run's successful
+   `integration-tests` job and its separate evidence artifact.
 4. Compare the IPA to its SHA-256 checksum in Windows PowerShell:
-   `Get-FileHash .\Telegram.ipa -Algorithm SHA256`. Select the **device** output;
-   a simulator IPA cannot run on an iPhone, even if both say arm64.
+   `Get-FileHash .\Telegram.ipa -Algorithm SHA256`, from the extracted
+   `fork-baseline-unsigned-device` directory. Compare with its `SHA256SUMS` and
+   manifest. Select the **device** output; a simulator IPA cannot run on an iPhone,
+   even if both report arm64. Build logs have their own `SHA256SUMS` under
+   `fork-evidence`.
 5. For local signing, obtain Sideloadly only from https://sideloadly.io/ and follow
    its current Windows requirements for Apple device drivers/iTunes/iCloud.
    Connect and trust the iPhone via USB, select the device IPA, and sign with your
@@ -59,8 +82,8 @@ identity with correctly provisioned identifiers is the most direct route to a
 fully independently signed build, but this has not been demonstrated here.
 
 No jailbreak, MDM enrollment or disabling iOS security is part of the procedure.
-The unchanged baseline still contains upstream telemetry. PR #2 adds experimental
-archive integration, but application verification is pending. The Ghost draft
-adds unverified activity controls only; full Ghost Mode and filtering remain
-unfinished. Do not use sensitive accounts
-for validation until the documented privacy/security gates pass.
+The baseline still contains upstream telemetry. Archive, activity-suppression
+and literal-filter tests are not evidence of complete application behavior or
+physical-device installation. Full Ghost Mode and advanced filtering remain
+unfinished. Do not use sensitive accounts for validation until the documented
+privacy/security gates pass.
