@@ -215,6 +215,14 @@ not establish that the UI or projection has passed. The next run executes the
 new host first so setup failures are visible sooner; all other regressions remain
 required before the application build.
 
+At filter revision `f295948a`, the projection host and Swift test module compiled,
+but hosted simulator startup exhausted Bazel's 300-second timeout before any
+XCTest case began. The synthetic one-case error in Bazel XML is a harness result,
+not an executed projection test. [Verified evidence](fork/evidence/filter-integration-f295948a.json)
+records zero actual cases; other suites were not run by the former fail-fast
+wrapper. The bounded runner allowance and tests-only evidence continuation do
+not turn failures into success or bypass the full-application gate.
+
 ## Story-view receipt draft
 
 The [story-only increment](fork/GHOST-STORY-VIEWS.md) adds a separate default-off

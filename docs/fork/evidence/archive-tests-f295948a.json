@@ -1,0 +1,47 @@
+{
+  "run": 41819900556,
+  "head": "f295948ad9ba8fb1cb668dc0b645c486d1f2ec74",
+  "artifact_id": 13318960940,
+  "zip_sha256": "749e3d532d5291523a0bc7ba95ae1c050f055985999f14d320ed5fb6e492f7eb",
+  "entries": [
+    {
+      "name": "SHA256SUMS",
+      "bytes": 238
+    },
+    {
+      "name": "host.txt",
+      "bytes": 238
+    },
+    {
+      "name": "ios-compile.log",
+      "bytes": 113182
+    },
+    {
+      "name": "swift-test.log",
+      "bytes": 130651
+    }
+  ],
+  "signals": {
+    "host.txt": [],
+    "ios-compile.log": [],
+    "swift-test.log": [
+      "\t Executed 43 tests, with 0 failures (0 unexpected) in 1.297 (1.305) seconds",
+      "\t Executed 11 tests, with 0 failures (0 unexpected) in 0.003 (0.005) seconds",
+      "\t Executed 54 tests, with 0 failures (0 unexpected) in 1.300 (1.310) seconds",
+      "\t Executed 54 tests, with 0 failures (0 unexpected) in 1.300 (1.323) seconds"
+    ]
+  },
+  "verified_inner_hashes": [
+    "host.txt",
+    "ios-compile.log",
+    "swift-test.log"
+  ],
+  "ios_compile_tail": [
+    " 15915 | # define MIN(A,B) ((A)<(B)?(A):(B))\u001b[0m",
+    "       | \u001b[0;1;32m         ^",
+    "\u001b[0m189 warnings generated.",
+    "[88\u2009/\u200990] LocalMessageArchive",
+    "Build complete! (7.47 sec)"
+  ],
+  "scope": "Archive library only:54 macOS cases and iOS module compilation; not story/filter behavior or full application"
+}
