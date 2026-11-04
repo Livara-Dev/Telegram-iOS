@@ -1,9 +1,17 @@
 # Windows build download and iPhone installation
 
-No full-application build or device IPA has succeeded yet. Downloadable test
-evidence exists, including passing iOS simulator integration suites, but those
-ZIP files do not contain an installable application. These instructions describe
-how to obtain and test a device build after the application workflow succeeds.
+An unsigned ARM64 device build succeeded for commit
+`9a040579b79b2a055c3d83e2d1e703af8362c07d` in
+[run 41896517472](https://github.com/Livara-Dev/Telegram-iOS/actions/runs/41896517472).
+Download the [device artifact](https://github.com/Livara-Dev/Telegram-iOS/actions/runs/41896517472/artifacts/13361534875)
+and extract `fork-baseline-unsigned-device/Telegram.ipa`. The IPA SHA-256 is
+`192ad471031a6d274cc9740448ea54c0f58501c3dc3007e2c47f132341e92e69`.
+The artifact ZIP has a different checksum. The package's checksums, bundle ID
+and ARM64 iPhoneOS platform were independently checked; it contains no embedded
+provisioning profiles or code signatures. It has not been installed or run on a
+physical iPhone. Native integration qualification is separate from this successful
+device compilation; consult that run's `integration-tests` result before use.
+GitHub retains this artifact until November 11, 2026, unless removed earlier.
 
 Use **Archive application integration (hosted macOS)** on the single
 `ci/verify-latest` verification branch. Feature/PR commits no longer start three
@@ -84,8 +92,10 @@ identity with correctly provisioned identifiers is the most direct route to a
 fully independently signed build, but this has not been demonstrated here.
 
 No jailbreak, MDM enrollment or disabling iOS security is part of the procedure.
-The baseline still contains upstream telemetry. Archive, activity-suppression
-and literal-filter tests are not evidence of complete application behavior or
-physical-device installation. Full Ghost Mode and advanced filtering remain
-unfinished. Do not use sensitive accounts for validation until the documented
-privacy/security gates pass.
+Reviewed automatic telemetry collectors and upload sinks have been disabled;
+see [the containment scope and remaining review](fork/TELEMETRY-CONTAINMENT.md).
+This is not proof of zero telemetry or external connections. Archive,
+activity-suppression and literal-filter tests are not evidence of complete
+application behavior or physical-device installation. Full Ghost Mode and
+advanced filtering remain unfinished. Do not use sensitive accounts for
+validation until the documented privacy/security gates pass.

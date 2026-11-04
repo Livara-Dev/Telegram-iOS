@@ -1,0 +1,83 @@
+{
+  "manifest": {
+    "source_commit": "9a040579b79b2a055c3d83e2d1e703af8362c07d",
+    "mode": "unsigned-device",
+    "bundle_id": "org.livara.ayugram",
+    "build_number": 1,
+    "sha256": "192ad471031a6d274cc9740448ea54c0f58501c3dc3007e2c47f132341e92e69",
+    "toolchain": {
+      "app": "13.1.2",
+      "xcode": "27.1",
+      "deploy_xcode": "27.1",
+      "bazel": "9.2.0:dd466352a3e4d3581b8898740ee1ff208866ccbe25f8d367c5dcb950219587e6",
+      "macos": "27"
+    },
+    "tests": {
+      "//submodules/TextFormat:TextFormatTests": "not_run"
+    },
+    "runtime_verified": false,
+    "signature_verified": false,
+    "integration_qualification": "not_evaluated_by_this_job",
+    "signing": "disabled",
+    "main_executable": {
+      "cpu": "arm64",
+      "mach_o_platform": 2,
+      "supported_platform": "iPhoneOS",
+      "bundle_id_verified": true,
+      "signature_verified": false,
+      "runtime_verified": false
+    }
+  },
+  "independent_inspection": {
+    "cpu": "arm64",
+    "mach_o_platform": 2,
+    "supported_platform": "iPhoneOS",
+    "bundle_id_verified": true,
+    "signature_verified": false,
+    "runtime_verified": false
+  },
+  "artifact_id": 13361534875,
+  "outer_sha256": "4a1ed0829db06bf26e8ba194d0f0d5a90e88e4b2a8124e548573e851f3cb9dfa",
+  "inner_checksums_verified": true,
+  "physical_device_verified": false,
+  "packaged_executables": [
+    {
+      "bundle_id": "org.livara.ayugram",
+      "arm64_mach_o_platform": 2
+    },
+    {
+      "bundle_id": "org.livara.ayugram.BroadcastUpload",
+      "arm64_mach_o_platform": 2
+    },
+    {
+      "bundle_id": "org.livara.ayugram.SiriIntents",
+      "arm64_mach_o_platform": 2
+    },
+    {
+      "bundle_id": "org.livara.ayugram.NotificationContent",
+      "arm64_mach_o_platform": 2
+    },
+    {
+      "bundle_id": "org.livara.ayugram.NotificationService",
+      "arm64_mach_o_platform": 2
+    },
+    {
+      "bundle_id": "org.livara.ayugram.Share",
+      "arm64_mach_o_platform": 2
+    },
+    {
+      "bundle_id": "org.livara.ayugram.Widget",
+      "arm64_mach_o_platform": 2
+    }
+  ],
+  "embedded_provisioning_profiles": 0,
+  "code_signature_paths": 0,
+  "run_id": 41896517472,
+  "job_id": 126807370947,
+  "job_result": "success",
+  "artifact_url": "https://github.com/Livara-Dev/Telegram-iOS/actions/runs/41896517472/artifacts/13361534875",
+  "ipa_bytes": 75674590,
+  "portable_checks_passed": 143,
+  "integration_tests": "separate job; not implied by device build",
+  "telemetry_note": "Optional NetworkStatsContext propagated without restoring collectors; source and telemetry guards passed."
+}
