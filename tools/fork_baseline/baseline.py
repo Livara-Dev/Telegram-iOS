@@ -20,6 +20,21 @@ import tempfile
 
 ROOT = Path(__file__).resolve().parents[2]
 TEST_TARGET = "//submodules/TextFormat:TextFormatTests"
+# Fixed labels and evidence paths: no user-provided target or path is accepted.
+TEST_TARGET_PATHS = {
+    TEST_TARGET: ("textformat", ("submodules", "TextFormat", "TextFormatTests")),
+    "//submodules/Postbox:PostboxTests": ("postbox", ("submodules", "Postbox", "PostboxTests")),
+    "//submodules/LocalMessageArchive:LocalMessageArchiveTests": (
+        "local-message-archive", ("submodules", "LocalMessageArchive", "LocalMessageArchiveTests")),
+    "//submodules/TelegramCore:TelegramCoreTests": (
+        "telegram-core", ("submodules", "TelegramCore", "TelegramCoreTests")),
+}
+INTEGRATION_TEST_TARGETS = (
+    "//submodules/Postbox:PostboxTests",
+    "//submodules/LocalMessageArchive:LocalMessageArchiveTests",
+    "//submodules/TelegramCore:TelegramCoreTests",
+    TEST_TARGET,
+)
 TEST_EVIDENCE_LIMIT = 2 * 1024 * 1024
 
 
@@ -103,7 +118,7 @@ def preflight(env, simulator=False):
     if simulator:
         devices = json.loads(output(["xcrun", "simctl", "list", "devices", "available", "--json"]))["devices"]
         if not any("iOS-26-5" in runtime and any(d["name"] == "iPhone 17" for d in entries) for runtime, entries in devices.items()):
-            raise InvalidSetup("TextFormatTestRunner requires an available iPhone 17 simulator on iOS 26.5")
+            raise InvalidSetup("The explicit iOS test runners require an available iPhone 17 simulator on iOS 26.5")
     return bazel
 
 
@@ -158,14 +173,17 @@ def run_redacted(args, env, secrets):
             raise InvalidSetup("Upstream build/test failed; no successful baseline is recorded")
 
 
-def retain_test_evidence(bazel_root, secrets, outcome):
+def retain_test_evidence(bazel_root, secrets, outcome, test_target=TEST_TARGET):
     """Copy only this target's bounded, redacted text outputs before Bazel cleanup."""
-    destination = ROOT / "build/fork-evidence/textformat"
+    if test_target not in TEST_TARGET_PATHS:
+        raise InvalidSetup("Test evidence target is not allowlisted")
+    evidence_name, source_components = TEST_TARGET_PATHS[test_target]
+    destination = ROOT / "build/fork-evidence" / evidence_name
     for directory in (ROOT / "build", destination.parent, destination):
         if directory.is_symlink():
             raise InvalidSetup("Test evidence destination must not contain symlinks")
     destination.mkdir(parents=True, exist_ok=False)
-    summary = {"target": TEST_TARGET, "invocation": outcome, "files": {}}
+    summary = {"target": test_target, "invocation": outcome, "files": {}}
     source_fd = None
     try:
         # bazel-testlogs itself is an expected convenience symlink. Its resolved
@@ -174,7 +192,7 @@ def retain_test_evidence(bazel_root, secrets, outcome):
         if not source_root.is_relative_to(Path(bazel_root).resolve(strict=True)):
             raise InvalidSetup("Test log root escaped the private Bazel directory")
         source_fd = os.open(source_root, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
-        for component in ("submodules", "TextFormat", "TextFormatTests"):
+        for component in source_components:
             child_fd = os.open(component, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=source_fd)
             os.close(source_fd)
             source_fd = child_fd
@@ -211,7 +229,7 @@ def retain_test_evidence(bazel_root, secrets, outcome):
     (destination / "collection.json").write_text(json.dumps(summary, indent=2) + "\n")
 
 
-def publish_artifact(source, destination, mode, bundle_id, build_number):
+def publish_artifact(source, destination, mode, bundle_id, build_number, test_results=None):
     if destination.exists():
         raise FileExistsError("Artifact destination already exists")
     hasher = hashlib.sha256()
@@ -223,7 +241,8 @@ def publish_artifact(source, destination, mode, bundle_id, build_number):
         "source_commit": output(["git", "rev-parse", "HEAD"]),
         "mode": mode, "bundle_id": bundle_id, "build_number": build_number,
         "sha256": digest, "toolchain": json.loads((ROOT / "versions.json").read_text()),
-        "tests": {TEST_TARGET: "passed" if mode == "simulator" else "not_run"},
+        "tests": (dict(test_results) if test_results is not None else
+                  {TEST_TARGET: "passed" if mode == "simulator" else "not_run"}),
         "runtime_verified": False, "signature_verified": False,
         "signing": "disabled" if mode == "unsigned-device" else "not_verified",
     }
@@ -237,7 +256,9 @@ def publish_artifact(source, destination, mode, bundle_id, build_number):
         staging.rename(destination)
 
 
-def build(mode, env, build_number):
+def build(mode, env, build_number, integration_tests=False):
+    if integration_tests and mode != "simulator":
+        raise InvalidSetup("Integration tests require simulator mode")
     config = configuration(env, unsigned=mode != "device")
     bazel = preflight(env, simulator=mode == "simulator")
     destination = ROOT / "build" / ("fork-baseline-" + mode)
@@ -264,22 +285,35 @@ def build(mode, env, build_number):
         signing_arguments = ["--codesigningInformationPath=" + str(signing)] if signing else ["--xcodeManagedCodesigning"]
         base = ["--configurationPath=" + str(configuration_path)] + signing_arguments
         secret_values = (config["api_hash"], config["api_id"])
+        test_results = {}
+
+        def run_tests(targets):
+            for target in targets:
+                test_outcome = "failed"
+                try:
+                    run_redacted(common + ["test"] + base + ["--target=" + target], child_env, secret_values)
+                    test_outcome = "passed"
+                    test_results[target] = test_outcome
+                finally:
+                    try:
+                        retain_test_evidence(temporary / "bazel-root", secret_values, test_outcome, target)
+                    except (OSError, InvalidSetup):
+                        print("Test evidence could not be retained; console output remains available.", flush=True)
+
         try:
+            # Run the real iOS integration suites first to surface errors before
+            # the much larger full-application build. This is not a substitute
+            # for that build; no package is published until both have succeeded.
+            if integration_tests:
+                run_tests(INTEGRATION_TEST_TARGETS)
             run_redacted(common + ["build"] + base + ["--buildNumber=" + str(build_number), "--configuration=" + ("debug_sim_arm64" if mode == "simulator" else "release_arm64"), "--lock"], child_env, secret_values)
             # The test invocation may repoint bazel-bin at a different configuration.
             captured_ipa = temporary / "Telegram.ipa"
             shutil.copyfile(ROOT / "bazel-bin/Telegram/Telegram.ipa", captured_ipa)
-            if mode == "simulator":
-                test_outcome = "failed"
-                try:
-                    run_redacted(common + ["test"] + base + ["--target=" + TEST_TARGET], child_env, secret_values)
-                    test_outcome = "passed"
-                finally:
-                    try:
-                        retain_test_evidence(temporary / "bazel-root", secret_values, test_outcome)
-                    except (OSError, InvalidSetup):
-                        print("Test evidence could not be retained; console output remains available.", flush=True)
-            publish_artifact(captured_ipa, destination, mode, config["bundle_id"], build_number)
+            if mode == "simulator" and not integration_tests:
+                run_tests((TEST_TARGET,))
+            publish_artifact(captured_ipa, destination, mode, config["bundle_id"], build_number,
+                             test_results if mode == "simulator" else None)
         finally:
             try:
                 subprocess.run([str(bazel), "--nosystem_rc", "--nohome_rc", "--noworkspace_rc", "--output_user_root=" + str(temporary / "bazel-root"), "shutdown"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=60, check=False)
@@ -297,15 +331,19 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("mode", choices=("preflight", "simulator", "unsigned-device", "device"))
     parser.add_argument("--build-number", type=int, default=1)
+    parser.add_argument("--integration-tests", action="store_true",
+                        help="Run the fixed Postbox/archive/TelegramCore/TextFormat iOS suites before the full simulator build")
     args = parser.parse_args()
     try:
         if args.build_number <= 0:
             raise InvalidSetup("Build number must be positive")
+        if args.integration_tests and args.mode != "simulator":
+            raise InvalidSetup("Integration tests require simulator mode")
         if args.mode == "preflight":
             preflight(os.environ)
             print("Host, Bazel integrity and recursive checkout preflight passed; no iOS build has run.")
         else:
-            build(args.mode, os.environ, args.build_number)
+            build(args.mode, os.environ, args.build_number, integration_tests=args.integration_tests)
     except (InvalidSetup, OSError, subprocess.SubprocessError) as exc:
         print("Baseline blocked: " + str(exc), file=sys.stderr)
         return 1

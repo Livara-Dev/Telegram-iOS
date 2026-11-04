@@ -38,7 +38,7 @@ jobs:
           subprocess.run(['git', 'checkout', '--detach', sha], check=True)
           PY
 
-      - name: Verify pinned toolchain and unchanged application core
+      - name: Verify pinned toolchain and reviewed source scope
         run: |
           set -euo pipefail
           sudo xcode-select -s /Applications/Xcode_27.1.app/Contents/Developer

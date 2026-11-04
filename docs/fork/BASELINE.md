@@ -39,6 +39,24 @@ iOS test step is still running. No completed app build or IPA is recorded. The
 separate archive branch has passing native library tests; those do not establish
 this application baseline.
 
+## Archive integration continuation
+
+At 2026-11-04 09:39 UTC, baseline run `41792955476` still reports its simulator
+build/test step in progress; the job-log download returns GitHub's BlobNotFound
+response while the job is active. No compiler failure or stall is established,
+so this job has not been canceled or restarted. No successful application build
+or IPA is recorded. The prior exact PR head `663d6ab5` passed all 46 library
+tests and iOS module compilation in run `41797053561`.
+
+The new archive integration workflow is independent of that baseline run. It
+uses the same pinned macOS/Xcode/Bazel and owner API Secrets, runs explicit
+Postbox/archive/TelegramCore/TextFormat suites, builds the full simulator app,
+then attempts an unsigned device package. Healthy builds are not canceled by
+later pushes. See [integration scope](ARCHIVE-INTEGRATION.md) for what these
+tests can and cannot establish. The local Linux checks for this increment pass:
+35 build-tooling tests, 26 source-guard tests and 44 upstream build-tool tests,
+plus the Postbox-import guard and whitespace checks. These are not Swift tests.
+
 ## Current result
 
 The current checkpoint is **not a working iOS baseline**. The local executor is

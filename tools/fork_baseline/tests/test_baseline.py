@@ -115,6 +115,57 @@ class PreflightTests(unittest.TestCase):
 
 
 class PrivacyAndArtifactsTests(unittest.TestCase):
+    def test_integration_suites_precede_full_build_and_manifest_records_actual_targets(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "versions.json").write_text('{}')
+            source = root / "bazel-bin/Telegram/Telegram.ipa"
+            source.parent.mkdir(parents=True)
+            invoked = []
+            def fake_command(args, env, secrets):
+                self.assertNotIn("TELEGRAM_API_ID", env)
+                self.assertNotIn("TELEGRAM_API_HASH", env)
+                if "test" in args:
+                    invoked.append(next(arg.split("=", 1)[1] for arg in args if arg.startswith("--target=")))
+                else:
+                    invoked.append("full-build")
+                    source.write_bytes(b"integration IPA")
+            with patch.object(baseline, "ROOT", root), patch.object(baseline, "preflight", return_value=Path('/bazel')), patch.object(baseline, "run_redacted", side_effect=fake_command), patch.object(baseline.subprocess, "run"), patch.object(baseline, "output", return_value="a" * 40), patch.object(baseline, "retain_test_evidence") as collect:
+                with contextlib.redirect_stdout(io.StringIO()):
+                    baseline.build("simulator", fixture(), 1, integration_tests=True)
+            self.assertEqual(invoked, list(baseline.INTEGRATION_TEST_TARGETS) + ["full-build"])
+            self.assertEqual([call.args[2:] for call in collect.call_args_list],
+                             [("passed", target) for target in baseline.INTEGRATION_TEST_TARGETS])
+            manifest = json.loads((root / "build/fork-baseline-simulator/manifest.json").read_text())
+            self.assertEqual(manifest["tests"], dict.fromkeys(baseline.INTEGRATION_TEST_TARGETS, "passed"))
+            self.assertEqual(manifest["source_commit"], "a" * 40)
+            self.assertFalse(manifest["runtime_verified"])
+            self.assertFalse(manifest["signature_verified"])
+
+    def test_failed_integration_suite_retains_failure_and_stops_before_full_build(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            invoked = []
+            failed_target = baseline.INTEGRATION_TEST_TARGETS[1]
+            def fake_command(args, env, secrets):
+                target = next(arg.split("=", 1)[1] for arg in args if arg.startswith("--target="))
+                invoked.append(target)
+                if target == failed_target:
+                    raise baseline.InvalidSetup("integration failure")
+            with patch.object(baseline, "ROOT", root), patch.object(baseline, "preflight", return_value=Path('/bazel')), patch.object(baseline, "run_redacted", side_effect=fake_command), patch.object(baseline.subprocess, "run"), patch.object(baseline, "retain_test_evidence") as collect:
+                with self.assertRaisesRegex(baseline.InvalidSetup, "integration failure"):
+                    baseline.build("simulator", fixture(), 1, integration_tests=True)
+            self.assertEqual(invoked, list(baseline.INTEGRATION_TEST_TARGETS[:2]))
+            self.assertEqual(collect.call_args.args[2:], ("failed", failed_target))
+            self.assertFalse((root / "build/fork-baseline-simulator").exists())
+
+    def test_integration_option_rejects_device_mode_before_preflight(self):
+        for mode in ("device", "unsigned-device"):
+            with self.subTest(mode=mode), patch.object(baseline, "preflight") as preflight:
+                with self.assertRaisesRegex(baseline.InvalidSetup, "require simulator"):
+                    baseline.build(mode, {}, 1, integration_tests=True)
+                preflight.assert_not_called()
+
     def test_shutdown_errors_preserve_build_outcome_and_cleanup(self):
         for failed in (False, True):
             for error_type in ("timeout", "oserror"):
@@ -277,6 +328,25 @@ class TestEvidenceTests(unittest.TestCase):
         self.assertEqual((self.destination / "test.xml").read_text(), '<system-out>[REDACTED]</system-out>')
         self.assertEqual((self.destination / "test.log").read_text(), 'API [REDACTED]')
         self.assertEqual({p.name for p in self.destination.iterdir()}, {"test.xml", "test.log", "collection.json"})
+
+    def test_integration_evidence_kept_separate_for_each_allowlisted_target(self):
+        secret = fixture()["TELEGRAM_API_HASH"]
+        for target in baseline.INTEGRATION_TEST_TARGETS:
+            evidence_name, components = baseline.TEST_TARGET_PATHS[target]
+            logs = self.bazel_root / "output/testlogs"
+            logs = logs.joinpath(*components)
+            logs.mkdir(parents=True, exist_ok=True)
+            (logs / "test.log").write_text(target + " " + secret)
+            baseline.retain_test_evidence(self.bazel_root, [secret], "passed", target)
+            destination = self.root / "build/fork-evidence" / evidence_name
+            self.assertEqual((destination / "test.log").read_text(), target + " [REDACTED]")
+            self.assertEqual(json.loads((destination / "collection.json").read_text())["target"], target)
+
+    def test_unknown_test_target_rejected_without_creating_output(self):
+        for target in ("../../secrets", "//submodules/Other:OtherTests", "--test_arg=unsafe"):
+            with self.subTest(target=target), self.assertRaisesRegex(baseline.InvalidSetup, "not allowlisted"):
+                baseline.retain_test_evidence(self.bazel_root, [], "passed", target)
+        self.assertFalse((self.root / "build").exists())
 
     def test_oversized_file_omitted_without_truncated_xml(self):
         (self.logs / "test.xml").write_bytes(b"x" * 65)

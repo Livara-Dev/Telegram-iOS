@@ -3,6 +3,13 @@
 No successful iOS artifact exists from this workspace yet. These instructions
 describe how to obtain and test one after GitHub Actions succeeds.
 
+For PR #2's application integration, use **Archive application integration
+(hosted macOS)** on `feature/archive-engine-draft`. Pushes run this workflow
+automatically. Its artifact is `archive-integration-<commit>`, and it runs the
+Postbox/archive/TelegramCore/TextFormat iOS suites before compiling the full app.
+Match the run's commit to the latest PR head. The separate **Archive engine
+draft tests** workflow publishes library test evidence only, never an IPA.
+
 1. Open the authorized fork `Livara-Dev/Telegram-iOS`. In Settings →
    Secrets and variables → Actions, set repository secrets `TELEGRAM_API_ID` and
    `TELEGRAM_API_HASH` from your own application registered at
@@ -40,6 +47,7 @@ identity with correctly provisioned identifiers is the most direct route to a
 fully independently signed build, but this has not been demonstrated here.
 
 No jailbreak, MDM enrollment or disabling iOS security is part of the procedure.
-The unchanged baseline still contains upstream telemetry and does not include
-the requested archive, filtering or Ghost Mode. Do not use sensitive accounts
+The unchanged baseline still contains upstream telemetry. PR #2 adds experimental
+archive integration, but application verification is pending; filtering and
+Ghost Mode remain unimplemented. Do not use sensitive accounts
 for validation until the documented privacy/security gates pass.

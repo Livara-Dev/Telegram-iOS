@@ -61,7 +61,31 @@ A Sideloadly re-sign changes the artifact; record its identity/hash separately w
 The present evidence is source inspection and the official API/license pages captured by the license audit. Future releases need passing, named test results tied to a revision; a successful full build; device tests of the installed signing variant; reviewed dependency/source/license manifests; and runtime disclosure/retention checks using synthetic accounts and canary content. Report failed, skipped and unavailable checks separately. Until then every feature and control above remains unverified.
 
 
-## Standalone archive draft (not integrated)
+## Experimental application integration: verification pending
+
+The new TelegramCore outbox, account worker and native archive screens are
+described in [ARCHIVE-INTEGRATION.md](fork/ARCHIVE-INTEGRATION.md). They are
+default off. Schema 4 introduces a durable ordered replay receipt that survives
+retention; its new tests and the real Postbox integration tests must pass on the
+new revision before they count as evidence. Earlier library results do not
+validate these changes.
+
+The transient outbox is protected by Postbox's existing encryption/key policy,
+not the archive's independent Keychain key or complete file protection. The
+worker does not change Postbox commit-error handling. Release-mode disk-full
+durability, abrupt termination, actual device lock behavior, notification
+extensions and every deletion path remain unverified. An in-flight write can
+finish after a settings change; purge uses a separate generation barrier.
+
+The archive directory sits outside the media cache but inside the account's
+root. Upstream account cleanup removes that directory on account removal;
+actual cache-clear and logout/upgrade device tests remain outstanding. Orphaned
+Keychain entries may remain: the adapter has no key-deletion API, and this is
+not a cryptographic-erasure implementation. The native views intentionally have
+no send/forward/export action. No archive network endpoint is added. Existing
+upstream telemetry is still unresolved.
+
+## Earlier standalone archive evidence (before integration)
 
 The feature branch introduces `LocalMessageArchive` without altering Telegram's
 application core. It uses only vendored SQLCipher, Foundation and Security, has no
