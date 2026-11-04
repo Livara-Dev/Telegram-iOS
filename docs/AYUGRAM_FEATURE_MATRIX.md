@@ -8,11 +8,20 @@ increment adds an encrypted attachment index, paginated account/chat-scoped
 browsing, type filters and message-history navigation. **The gallery, schema-7
 streaming and AVFoundation playback changes still await native CI.**
 
+The integration candidate additionally includes channel minimum-available range
+capture and the reviewed telemetry-containment branch. Both require current
+native qualification. Ordinary feature pushes no longer launch hosted builds;
+[one verification queue](fork/CI-QUEUE.md) tests each submitted source batch.
+
 Verified revisions must be kept separate from this source:
 
 - `92f6d752`: 1,060 iOS XCTest cases passed, including 74 archive integration
   cases. These exercised actual local message-processing paths with a generated
   JPEG and synthetic bytes for other media types, cache removal and reopening.
+- `115f83bf`: 533 TelegramCore and 270 TextFormat iOS cases passed, including
+  streaming a 20 MiB document through real Postbox/cache cleanup. The archive
+  test module failed Swift type inference (now corrected); the overall run failed.
+  [Evidence](fork/evidence/archive-streaming-115f83bf.json).
 - `9190be8c`: 64 archive, 532 TelegramCore and 270 TextFormat iOS cases passed.
   The Postbox runner timed out and the UI-hosted projection suite executed zero
   cases; the overall integration job failed. See
@@ -96,7 +105,7 @@ technical claim of impossibility. All entries require actual integration tests.
 | Photos/video/documents/voice archive | Android saved attachment path; Desktop archive currently text-only | Independent encrypted BLOBs and pending outbox, bounded cached files; no guaranteed redownload after deletion | [Source implemented](fork/PRESERVATION-STATUS.md): completed cached bytes, schema-7 streaming up to 512 MiB/file; earlier small-file integration passed at `92f6d752`, streaming and app validation pending |
 | Encrypted database and Keychain keys | Historical Android Room and Desktop SQLite do not establish encryption | Independent SQLCipher, per-account random keys, Keychain this-device-only, Data Protection and backup exclusion | 59 SQLCipher/Keychain tests pass on macOS and iOS simulator at `aba9fae9`; Keychain mocked; actual device checks pending |
 | Import/export and optional sync | October import/export options; E2E format/protocol unverified | Authenticated versioned encrypted files; sync only after protocol review and explicit user endpoint choice | Not implemented; [legacy protocol review](fork/AYUSYNC-REVIEW.md) found no E2E archive format and unavailable backend source |
-| No telemetry / no archive upload | Both upstreams contain telemetry; Android sync exists | Separate reviewed telemetry-removal diff and request-canary tests, no archive networking capability | Not satisfied; [expanded inventory](fork/TELEMETRY-REVIEW.md) includes app/call logs, channel-reading metrics and music-listening reports |
+| No telemetry / no archive upload | Both upstreams contain telemetry; Android sync exists | Separate reviewed telemetry-removal diff and request-canary tests, no archive networking capability | Reviewed source containment is integrated into the candidate; [native tests and runtime connection audit remain pending](fork/TELEMETRY-CONTAINMENT.md) |
 | iPhone 15 Pro performance | No relevant iOS measurements available | Measure cold start, scroll frames, RSS, DB p95, disk pressure and battery with fixed datasets | Not measured |
 
 ## Storage library and experimental integration
@@ -130,8 +139,9 @@ replaced with older defaults.
 Ordinary flat text, message entities and bounded cloud-media descriptors/bytes are the current capture format. Structured
 rich messages keep their content outside the flat text field and are unsupported:
 eligible deletion/change events increment the missed-capture count instead of
-storing a misleading empty record. Range/history-clear, history validation,
-group-removal and extension mutation paths remain uncovered. This is not a
+storing a misleading empty record. Minimum-available channel range capture is now authored with real replay tests;
+other history-clear, history-validation, group-removal and extension mutation
+paths remain uncovered. This is not a
 complete or lossless message-history engine.
 
 The separate archive workflow runs native host XCTest against the real vendored

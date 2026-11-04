@@ -48,6 +48,7 @@ jobs:
           assert subprocess.check_output(['xcodebuild', '-version'], text=True).splitlines()[0] == 'Xcode ' + pins['xcode']
           PY
           python3 tools/fork_audit/check.py
+          python3 tools/fork_audit/telemetry.py
           python3 -m unittest discover -s tools/fork_audit/tests
 
       - name: Test standalone encrypted archive draft

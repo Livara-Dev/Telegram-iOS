@@ -56,6 +56,7 @@ jobs:
           Path('build/archive-compatibility-evidence/host.json').write_text(json.dumps(evidence, indent=2) + '\n')
           PY
           python3 tools/fork_audit/check.py
+          python3 tools/fork_audit/telemetry.py
           python3 -m unittest discover -s tools/fork_audit/tests
 
       - name: Run encrypted storage and AVFoundation tests

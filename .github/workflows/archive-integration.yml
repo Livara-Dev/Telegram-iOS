@@ -73,7 +73,8 @@ jobs:
           { python3 -m unittest discover -s tools/fork_baseline/tests -v &&
             python3 -m unittest discover -s tools/fork_audit/tests -v &&
             python3 -m unittest discover -s build-system/Make/tests &&
-            python3 tools/fork_audit/check.py; } 2>&1 | tee build/fork-evidence/portable-tests.log
+            python3 tools/fork_audit/check.py &&
+            python3 tools/fork_audit/telemetry.py; } 2>&1 | tee build/fork-evidence/portable-tests.log
 
       - name: Validate required API Secrets without exposing their values
         env:
@@ -196,7 +197,8 @@ jobs:
           { python3 -m unittest discover -s tools/fork_baseline/tests -v &&
             python3 -m unittest discover -s tools/fork_audit/tests -v &&
             python3 -m unittest discover -s build-system/Make/tests &&
-            python3 tools/fork_audit/check.py; } 2>&1 | tee build/fork-evidence/portable-tests.log
+            python3 tools/fork_audit/check.py &&
+            python3 tools/fork_audit/telemetry.py; } 2>&1 | tee build/fork-evidence/portable-tests.log
 
       - name: Validate required API Secrets without exposing their values
         env:
@@ -318,7 +320,8 @@ jobs:
           { python3 -m unittest discover -s tools/fork_baseline/tests -v &&
             python3 -m unittest discover -s tools/fork_audit/tests -v &&
             python3 -m unittest discover -s build-system/Make/tests &&
-            python3 tools/fork_audit/check.py; } 2>&1 | tee build/fork-evidence/portable-tests.log
+            python3 tools/fork_audit/check.py &&
+            python3 tools/fork_audit/telemetry.py; } 2>&1 | tee build/fork-evidence/portable-tests.log
 
       - name: Validate required API Secrets without exposing their values
         env:
