@@ -1,8 +1,6 @@
 name: Fork baseline (hosted macOS)
 
 on:
-  push:
-    branches: [main, master, fork/00-feasibility-baseline]
   workflow_dispatch:
     inputs:
       unsigned_device:
@@ -14,8 +12,8 @@ permissions:
   contents: read
 
 concurrency:
-  group: fork-baseline-${{ github.ref }}
-  cancel-in-progress: true
+  group: ayugram-legacy-baseline
+  cancel-in-progress: false
 
 jobs:
   baseline:

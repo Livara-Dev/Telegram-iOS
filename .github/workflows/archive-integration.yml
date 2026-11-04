@@ -2,24 +2,27 @@ name: Archive application integration (hosted macOS)
 
 on:
   push:
-    branches: [feature/archive-engine-draft, feature/ghost-activity-draft, feature/message-filter-draft, feature/ghost-story-draft, feature/archive-media-capture, feature/archive-gallery, ci/parallel-device-build]
+    branches: [ci/verify-latest]
   workflow_dispatch:
     inputs:
       unsigned_device:
-        description: Compile an unsigned device IPA in parallel after integration tests pass
+        description: Compile an unsigned device IPA alongside exact-commit integration tests
         type: boolean
         default: true
 
 permissions:
   contents: read
 
-# Tests and both application builds have separate queues. One heavy integration
-# job per branch preserves running tests without exhausting all macOS runners.
+# One qualification run at a time across every branch. GitHub keeps the active
+# run and replaces only its pending successor when a newer batch is submitted.
+# Development branches do not start macOS jobs; advance ci/verify-latest once
+# the next reviewed batch is ready. Existing runs retain their original policy.
+concurrency:
+  group: ayugram-qualification
+  cancel-in-progress: false
+
 jobs:
   integration-tests:
-    concurrency:
-      group: archive-integration-tests-${{ github.ref }}
-      cancel-in-progress: false
     # macos-latest does not satisfy versions.json. This preview image does;
     # prepare_host.py additionally verifies the actual OS/Xcode versions.
     runs-on: xcode-27
@@ -143,11 +146,6 @@ jobs:
     # Compilation must not wait for an unrelated simulator to boot. Passing
     # same-commit integration tests remains a separate release requirement.
     if: github.event_name == 'push' || inputs.unsigned_device
-    concurrency:
-      # Device compilation has its own queue; it never cancels or waits for
-      # the simulator application job running for the same branch.
-      group: archive-unsigned-device-${{ github.ref }}
-      cancel-in-progress: false
     # macos-latest does not satisfy versions.json. This preview image does;
     # prepare_host.py additionally verifies the actual OS/Xcode versions.
     runs-on: xcode-27
@@ -270,11 +268,6 @@ jobs:
 
   application-build:
     needs: integration-tests
-    concurrency:
-      # Reuse the previous workflow group while moving serialization to this
-      # job only, so an already-running full build is allowed to finish.
-      group: archive-integration-${{ github.ref }}
-      cancel-in-progress: false
     # macos-latest does not satisfy versions.json. This preview image does;
     # prepare_host.py additionally verifies the actual OS/Xcode versions.
     runs-on: xcode-27

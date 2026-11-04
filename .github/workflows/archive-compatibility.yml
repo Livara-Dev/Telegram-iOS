@@ -1,15 +1,13 @@
 name: Archive native compatibility tests
 
 on:
-  push:
-    branches: [feature/archive-media-capture, feature/privacy-telemetry-off, feature/archive-gallery]
   workflow_dispatch:
 
 permissions:
   contents: read
 
 concurrency:
-  group: archive-compatibility-${{ github.ref }}
+  group: ayugram-archive-compatibility
   cancel-in-progress: false
 
 jobs:

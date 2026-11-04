@@ -5,28 +5,19 @@ evidence exists, including passing iOS simulator integration suites, but those
 ZIP files do not contain an installable application. These instructions describe
 how to obtain and test a device build after the application workflow succeeds.
 
-Use **Archive application integration (hosted macOS)** for the archive,
-Ghost activity, story-view privacy and literal-filter branches. Pushes run it automatically;
-`ci/parallel-device-build` also runs it to verify the build-job split. The
-`integration-tests` job must pass for the exact commit before the simulator
-`application-build` starts. The `unsigned-device-build` job compiles independently
-of simulator startup, subject to runner capacity. Its output is unverified until
-the same commit's integration tests pass; inspect both jobs before installation.
-Tests and each app build have separate 360-minute limits and branch-specific queues. A slow simulator
-build no longer consumes the device build's time budget or prevents it starting.
-The device job uses Xcode's device SDK and does not download a simulator runtime.
-An explicitly unsigned build applies a hash-verified, temporary rules_apple
-compatibility patch to omit provisioning-profile embedding; normal signed
-builds do not use it. No fake profiles or signing keys are supplied. The build
-evidence includes the patch's source revision and hashes in unsigned-rules.json.
+Use **Archive application integration (hosted macOS)** on the single
+`ci/verify-latest` verification branch. Feature/PR commits no longer start three
+redundant macOS workflows. Advance that branch once a source batch is ready;
+one global qualification queue preserves its active run and retains only the
+latest pending successor. Existing submitted jobs keep their original settings.
+See [queue policy and observed capacity failure](fork/CI-QUEUE.md).
 
-The existing simulator concurrency group is retained with
-`cancel-in-progress: false`; the new device queue also preserves running jobs.
-Publishing this workflow change does not alter jobs already in progress. GitHub
-can replace an older *pending* job when a newer commit enters the same queue, so
-always inspect the commit of the job that actually ran. Checkout fetches the exact source and audit-baseline trees without full root history;
-submodule pins remain unchanged. No private Bazel state
-or credentials are shared between jobs; some compilation repeats on fresh hosts.
+The integration and unsigned-device jobs use the same commit and may execute
+alongside each other. `application-build` requires successful integration tests.
+The device build has no simulator dependency; its output still needs same-commit
+qualification. Manual standalone workflows are diagnostics, not automatic
+second builds. A temporary, hash-verified unsigned rules overlay omits profile
+embedding for the unsigned build only. No signing credentials are synthesized.
 
 | Result | Downloadable artifact | What it establishes |
 | --- | --- | --- |
@@ -49,7 +40,7 @@ layout. A successful run of one branch does not validate another branch.
    its availability has not been verified in Apple's developer portal. Use your
    own `APPLE_TEAM_ID` for signed builds. Never copy Telegram's identity.
 2. Open Actions → **Archive application integration (hosted macOS)** and select
-   the latest push run for the intended branch/commit. Manual **Run workflow**
+   the latest verification run for the intended commit. Manual **Run workflow**
    becomes available after the workflow exists on the default branch. Its
    `unsigned_device` option controls the independent device job; pushes enable
    that job automatically. All jobs use GitHub's `xcode-27` hosted Apple Silicon
