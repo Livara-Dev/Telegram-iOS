@@ -6126,7 +6126,18 @@ public final class ChatControllerImpl: TelegramBaseController, ChatController, G
                             f(.dismissWithoutContent)
                             self?.interfaceInteraction?.beginMessageSearch(.everything, "")
                         })))
-                                                
+                        if peer.id.namespace == Namespaces.Peer.CloudUser || peer.id.namespace == Namespaces.Peer.CloudGroup || peer.id.namespace == Namespaces.Peer.CloudChannel {
+                            items.append(.action(ContextMenuActionItem(text: "View Deleted Messages", icon: { theme in
+                                return generateTintedImage(image: UIImage(bundleImageName: "Chat/Context Menu/Search"), color: theme.actionSheet.primaryTextColor)
+                            }, action: { [weak self] _, f in
+                                f(.dismissWithoutContent)
+                                guard let self else {
+                                    return
+                                }
+                                self.push(localArchiveChatController(context: self.context, peerId: peer.id))
+                            })))
+                        }
+
                         return items
                     }
                 case let .replyThread(message):
