@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
-// Native archive draft, 2026-11-04. Not connected to Telegram update processing.
+// Native archive storage, 2026-11-04. Application integration is experimental.
 import Foundation
 
 public protocol ArchiveKeyProvider {
@@ -34,7 +34,7 @@ public struct ArchiveContent: Equatable {
     public let text: String
     public let authorId: Int64?
     public let sentAt: Int64
-    /// Opaque, versioned entity metadata supplied by the future Telegram adapter; never session material.
+    /// Opaque, versioned entity metadata supplied by the Telegram adapter; never session material.
     public let entities: Data
     public init(text: String, authorId: Int64? = nil, sentAt: Int64, entities: Data = Data()) {
         self.text = text; self.authorId = authorId; self.sentAt = sentAt; self.entities = entities

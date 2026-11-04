@@ -101,7 +101,8 @@ jobs:
           xcodebuild -downloadPlatform iOS -buildVersion 26.5 -architectureVariant arm64 2>&1 | tee build/fork-evidence/runtime.log
           python3 tools/fork_baseline/prepare_host.py --simulator
 
-      - name: Run real iOS integration suites and build the full simulator app
+      - name: Run real iOS integration suites
+        id: integration_tests
         env:
           TELEGRAM_API_ID: ${{ secrets.TELEGRAM_API_ID }}
           TELEGRAM_API_HASH: ${{ secrets.TELEGRAM_API_HASH }}
@@ -110,10 +111,49 @@ jobs:
         run: |
           set -euo pipefail
           umask 077
-          python3 tools/fork_baseline/baseline.py simulator --integration-tests 2>&1 | tee build/fork-evidence/simulator.log
+          python3 tools/fork_baseline/baseline.py simulator --integration-tests --tests-only 2>&1 | tee build/fork-evidence/integration-tests.log
+
+      - name: Hash early integration test evidence
+        if: always() && steps.integration_tests.outcome != 'skipped'
+        run: |
+          python3 - <<'PY'
+          import hashlib
+          from pathlib import Path
+          evidence = Path('build/fork-evidence')
+          evidence.mkdir(parents=True, exist_ok=True)
+          files = sorted(p for p in evidence.rglob('*') if p.is_file() and p.name != 'SHA256SUMS')
+          (evidence / 'SHA256SUMS').write_text(''.join(
+              hashlib.sha256(p.read_bytes()).hexdigest() + '  ' + str(p.relative_to(evidence)) + '\n'
+              for p in files))
+          PY
+
+      - name: Publish integration test evidence before the full app build
+        if: always() && steps.integration_tests.outcome != 'skipped'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: archive-integration-tests-${{ github.sha }}
+          path: ${{ github.workspace }}/fork-source/build/fork-evidence/
+          if-no-files-found: warn
+          retention-days: 7
+          include-hidden-files: false
+
+      # Each wrapper invocation destroys its private, credential-bearing Bazel
+      # state. The full app may recompile core dependencies; that cost keeps
+      # early test evidence available without retaining secret-bearing caches.
+      - name: Build the full simulator app and run its smoke test
+        if: success() && steps.integration_tests.outcome == 'success'
+        env:
+          TELEGRAM_API_ID: ${{ secrets.TELEGRAM_API_ID }}
+          TELEGRAM_API_HASH: ${{ secrets.TELEGRAM_API_HASH }}
+          IOS_BUNDLE_ID: org.livara.ayugram
+          APPLE_TEAM_ID: ${{ vars.APPLE_TEAM_ID }}
+        run: |
+          set -euo pipefail
+          umask 077
+          python3 tools/fork_baseline/baseline.py simulator 2>&1 | tee build/fork-evidence/simulator.log
 
       - name: Compile unsigned device package
-        if: github.event_name == 'push' || inputs.unsigned_device
+        if: success() && (github.event_name == 'push' || inputs.unsigned_device)
         env:
           TELEGRAM_API_ID: ${{ secrets.TELEGRAM_API_ID }}
           TELEGRAM_API_HASH: ${{ secrets.TELEGRAM_API_HASH }}

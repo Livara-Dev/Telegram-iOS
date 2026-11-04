@@ -92,15 +92,22 @@ The archive has no new network or diagnostic producer.
 
 The new `archive-integration.yml` builds the exact pushed revision on `xcode-27`.
 It runs explicit Postbox, LocalMessageArchive, TelegramCore and TextFormat iOS
-test targets, then the full simulator app, then an unsigned device build. It
+test targets, publishes `archive-integration-tests-<commit>` before the long
+application build, then builds the full simulator app and an unsigned device build. It
 publishes bounded redacted test logs, compiler logs, provenance and SHA-256
 checksums. Its independent concurrency group never cancels a healthy running
-build. The older baseline run is left untouched.
+build. The older baseline run is left untouched. Private credential-bearing
+Bazel state is cleaned between invocations; the full app can therefore recompile
+core dependencies. This cost avoids persisting a secret-bearing build cache.
 
 New TelegramCore tests use the actual on-disk encrypted Postbox and SQLCipher
 store. They cover helper capture plus canonical mutation, serialization/reopen,
 queue bounds/exclusions, failure without acknowledgement, simulated interruption
 after archive commit, account isolation, retention, purge and an injected lock
-gate. They do not exercise Telegram servers, full update replay, actual process
-kill, real Keychain lock enforcement, native UI frames or physical installation.
+gate. Seven additional tests call the real `replayFinalState` function with
+verification enabled: explicit/global deletion, edit merging, same-batch
+receive/edit/delete, disabled capture and stale-state rejection. One connects
+replay through the coordinator to real SQLCipher and the read facade. They do
+not exercise Telegram servers, actual process kill, real Keychain lock
+enforcement, native UI frames or physical installation.
 Until the workflow passes, these are **authored tests, not passing evidence**.

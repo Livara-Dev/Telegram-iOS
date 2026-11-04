@@ -173,12 +173,12 @@ def run_redacted(args, env, secrets):
             raise InvalidSetup("Upstream build/test failed; no successful baseline is recorded")
 
 
-def retain_test_evidence(bazel_root, secrets, outcome, test_target=TEST_TARGET):
+def retain_test_evidence(bazel_root, secrets, outcome, test_target=TEST_TARGET, prebuild=False):
     """Copy only this target's bounded, redacted text outputs before Bazel cleanup."""
     if test_target not in TEST_TARGET_PATHS:
         raise InvalidSetup("Test evidence target is not allowlisted")
     evidence_name, source_components = TEST_TARGET_PATHS[test_target]
-    destination = ROOT / "build/fork-evidence" / evidence_name
+    destination = ROOT / "build/fork-evidence" / (("prebuild-" if prebuild else "") + evidence_name)
     for directory in (ROOT / "build", destination.parent, destination):
         if directory.is_symlink():
             raise InvalidSetup("Test evidence destination must not contain symlinks")
@@ -229,6 +229,24 @@ def retain_test_evidence(bazel_root, secrets, outcome, test_target=TEST_TARGET):
     (destination / "collection.json").write_text(json.dumps(summary, indent=2) + "\n")
 
 
+def retain_integration_test_summary(test_results):
+    destination = ROOT / "build/fork-evidence"
+    for directory in (ROOT / "build", destination):
+        if directory.is_symlink():
+            raise InvalidSetup("Test evidence destination must not contain symlinks")
+    destination.mkdir(parents=True, exist_ok=True)
+    summary = {
+        "source_commit": output(["git", "rev-parse", "HEAD"]),
+        "toolchain": json.loads((ROOT / "versions.json").read_text()),
+        "tests": {target: test_results.get(target, "not_run") for target in INTEGRATION_TEST_TARGETS},
+        "tests_only": True,
+        "full_application_built": False,
+        "physical_device_verified": False,
+    }
+    with (destination / "integration-tests.json").open("x", encoding="utf-8") as target:
+        target.write(json.dumps(summary, indent=2) + "\n")
+
+
 def publish_artifact(source, destination, mode, bundle_id, build_number, test_results=None):
     if destination.exists():
         raise FileExistsError("Artifact destination already exists")
@@ -256,9 +274,11 @@ def publish_artifact(source, destination, mode, bundle_id, build_number, test_re
         staging.rename(destination)
 
 
-def build(mode, env, build_number, integration_tests=False):
+def build(mode, env, build_number, integration_tests=False, tests_only=False):
     if integration_tests and mode != "simulator":
         raise InvalidSetup("Integration tests require simulator mode")
+    if tests_only and not (integration_tests and mode == "simulator"):
+        raise InvalidSetup("Tests-only requires simulator mode with integration tests")
     config = configuration(env, unsigned=mode != "device")
     bazel = preflight(env, simulator=mode == "simulator")
     destination = ROOT / "build" / ("fork-baseline-" + mode)
@@ -293,10 +313,13 @@ def build(mode, env, build_number, integration_tests=False):
                 try:
                     run_redacted(common + ["test"] + base + ["--target=" + target], child_env, secret_values)
                     test_outcome = "passed"
-                    test_results[target] = test_outcome
                 finally:
+                    test_results[target] = test_outcome
                     try:
-                        retain_test_evidence(temporary / "bazel-root", secret_values, test_outcome, target)
+                        if tests_only:
+                            retain_test_evidence(temporary / "bazel-root", secret_values, test_outcome, target, prebuild=True)
+                        else:
+                            retain_test_evidence(temporary / "bazel-root", secret_values, test_outcome, target)
                     except (OSError, InvalidSetup):
                         print("Test evidence could not be retained; console output remains available.", flush=True)
 
@@ -305,15 +328,20 @@ def build(mode, env, build_number, integration_tests=False):
             # the much larger full-application build. This is not a substitute
             # for that build; no package is published until both have succeeded.
             if integration_tests:
-                run_tests(INTEGRATION_TEST_TARGETS)
-            run_redacted(common + ["build"] + base + ["--buildNumber=" + str(build_number), "--configuration=" + ("debug_sim_arm64" if mode == "simulator" else "release_arm64"), "--lock"], child_env, secret_values)
-            # The test invocation may repoint bazel-bin at a different configuration.
-            captured_ipa = temporary / "Telegram.ipa"
-            shutil.copyfile(ROOT / "bazel-bin/Telegram/Telegram.ipa", captured_ipa)
-            if mode == "simulator" and not integration_tests:
-                run_tests((TEST_TARGET,))
-            publish_artifact(captured_ipa, destination, mode, config["bundle_id"], build_number,
-                             test_results if mode == "simulator" else None)
+                try:
+                    run_tests(INTEGRATION_TEST_TARGETS)
+                finally:
+                    if tests_only:
+                        retain_integration_test_summary(test_results)
+            if not tests_only:
+                run_redacted(common + ["build"] + base + ["--buildNumber=" + str(build_number), "--configuration=" + ("debug_sim_arm64" if mode == "simulator" else "release_arm64"), "--lock"], child_env, secret_values)
+                # The test invocation may repoint bazel-bin at a different configuration.
+                captured_ipa = temporary / "Telegram.ipa"
+                shutil.copyfile(ROOT / "bazel-bin/Telegram/Telegram.ipa", captured_ipa)
+                if mode == "simulator" and not integration_tests:
+                    run_tests((TEST_TARGET,))
+                publish_artifact(captured_ipa, destination, mode, config["bundle_id"], build_number,
+                                 test_results if mode == "simulator" else None)
         finally:
             try:
                 subprocess.run([str(bazel), "--nosystem_rc", "--nohome_rc", "--noworkspace_rc", "--output_user_root=" + str(temporary / "bazel-root"), "shutdown"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=60, check=False)
@@ -321,7 +349,10 @@ def build(mode, env, build_number, integration_tests=False):
                 # Cleanup must not replace the build/test outcome. Exceptions may
                 # contain command arguments, paths or output; never relay them.
                 print("Warning: Bazel shutdown did not complete; temporary build data cleanup will still run.", flush=True)
-    print(f"Upstream {mode} build completed. IPA requires independent signature/runtime verification.")
+    if tests_only:
+        print("Explicit iOS integration test targets passed. No full application build or IPA was produced.")
+    else:
+        print(f"Upstream {mode} build completed. IPA requires independent signature/runtime verification.")
 
 
 def main():
@@ -333,17 +364,21 @@ def main():
     parser.add_argument("--build-number", type=int, default=1)
     parser.add_argument("--integration-tests", action="store_true",
                         help="Run the fixed Postbox/archive/TelegramCore/TextFormat iOS suites before the full simulator build")
+    parser.add_argument("--tests-only", action="store_true",
+                        help="With simulator --integration-tests, retain test evidence without building or publishing an app")
     args = parser.parse_args()
     try:
         if args.build_number <= 0:
             raise InvalidSetup("Build number must be positive")
         if args.integration_tests and args.mode != "simulator":
             raise InvalidSetup("Integration tests require simulator mode")
+        if args.tests_only and not (args.integration_tests and args.mode == "simulator"):
+            raise InvalidSetup("Tests-only requires simulator mode with integration tests")
         if args.mode == "preflight":
             preflight(os.environ)
             print("Host, Bazel integrity and recursive checkout preflight passed; no iOS build has run.")
         else:
-            build(args.mode, os.environ, args.build_number, integration_tests=args.integration_tests)
+            build(args.mode, os.environ, args.build_number, integration_tests=args.integration_tests, tests_only=args.tests_only)
     except (InvalidSetup, OSError, subprocess.SubprocessError) as exc:
         print("Baseline blocked: " + str(exc), file=sys.stderr)
         return 1

@@ -1,9 +1,12 @@
-# LocalMessageArchive — unintegrated draft
+# LocalMessageArchive — experimental integration
 
 This native Swift module stores supplied text and entity metadata in a separate
-SQLCipher database. It is **not connected to Telegram update processing**. It does
-not yet archive real incoming messages, preserve media, modify search, show UI,
-export/import records, or synchronize anything. Schema-3 commit `c326364b` passed
+SQLCipher database. TelegramCore now has default-off capture hooks and an account
+worker, with native SettingsUI browsing. That integration is **not yet verified
+in the running application**. It does not preserve media, modify search,
+export/import records, or synchronize anything. See the
+[integration scope and limitations](../../docs/fork/ARCHIVE-INTEGRATION.md).
+Schema-3 commit `c326364b` passed
 46 native macOS tests (35 storage including the benchmark, 11 mocked Keychain)
 and iOS simulator compilation in [run 41796701379](https://github.com/Livara-Dev/Telegram-iOS/actions/runs/41796701379).
 This does not establish iOS runtime or Telegram integration behavior.

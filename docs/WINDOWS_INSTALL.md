@@ -7,6 +7,10 @@ For PR #2's application integration, use **Archive application integration
 (hosted macOS)** on `feature/archive-engine-draft`. Pushes run this workflow
 automatically. Its artifact is `archive-integration-<commit>`, and it runs the
 Postbox/archive/TelegramCore/TextFormat iOS suites before compiling the full app.
+Its separate `archive-integration-tests-<commit>` artifact appears after the
+test phase, even while application compilation is still running. This early
+artifact contains test evidence only. Private build state is cleaned between
+phases, so some dependencies may compile again.
 Match the run's commit to the latest PR head. The separate **Archive engine
 draft tests** workflow publishes library test evidence only, never an IPA.
 
@@ -16,7 +20,10 @@ draft tests** workflow publishes library test evidence only, never an IPA.
    https://my.telegram.org/apps. The workflow uses `org.livara.ayugram`, as requested;
    its availability has not been verified in Apple's developer portal. Use your
    own `APPLE_TEAM_ID` for signed builds. Never copy Telegram's identity.
-2. Open Actions → **Fork baseline (hosted macOS)** → Run workflow. The workflow
+2. Open Actions → **Fork baseline (hosted macOS)** and select the latest automatic
+   push run for the baseline branch, or the integration workflow described above
+   for PR #2. Manual **Run workflow** is available after the workflow exists on
+   the repository's default branch. The workflow
    uses GitHub's `xcode-27` hosted Apple Silicon image, verifies Xcode 27.1/macOS 27,
    verifies the pinned Bazel download, attempts the missing iOS 26.5 test-runtime
    installation, builds the full simulator app and runs the explicit iOS test
