@@ -1248,6 +1248,11 @@ public class Account {
     public private(set) var stateManager: AccountStateManager!
     /// Local-only archive handoff. Supplementary processes never open the archive.
     public private(set) var localArchive: LocalArchiveCoordinator?
+
+    /// Preferences belong to this account's Postbox; the facade has no shared state.
+    public var localGhost: LocalGhostContext {
+        return LocalGhostContext(postbox: self.postbox)
+    }
     private(set) var contactSyncManager: ContactSyncManager!
     public private(set) var callSessionManager: CallSessionManager!
     

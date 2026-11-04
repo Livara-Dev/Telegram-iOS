@@ -15,6 +15,7 @@ MANIFESTS = ("versions.json", ".gitmodules", "MODULE.bazel", "MODULE.bazel.lock"
 ADDED_PREFIXES = (
     "docs/fork/", "tools/fork_audit/", "tools/fork_baseline/", "submodules/LocalMessageArchive/",
     "submodules/TelegramCore/Sources/LocalArchive/", "submodules/TelegramCore/Tests/LocalArchive",
+    "submodules/TelegramCore/Sources/LocalPrivacy/", "submodules/TelegramCore/Tests/LocalGhost",
 )
 ADDED_FILES = {
     ".github/workflows/archive-integration.yml",
@@ -22,6 +23,7 @@ ADDED_FILES = {
     ".github/workflows/fork-baseline.yml", "COPYING",
     "docs/AYUGRAM_FEATURE_MATRIX.md", "docs/WINDOWS_INSTALL.md", "docs/SECURITY_ASSESSMENT.md",
     "submodules/SettingsUI/Sources/LocalArchiveSettingsController.swift",
+    "submodules/SettingsUI/Sources/LocalGhostSettingsController.swift",
 }
 # Explicit integration seams only. Everything else in the upstream tree, including
 # MTProto, authentication methods, cryptography, Postbox, dependency manifests and
@@ -33,6 +35,7 @@ REVIEWED_MODIFICATIONS = {
     "submodules/TelegramCore/Sources/Account/Account.swift": "account-owned archive lifecycle",
     "submodules/TelegramCore/Sources/Account/AccountManager.swift": "register archive outbox decoder",
     "submodules/TelegramCore/Sources/State/AccountStateManagementUtils.swift": "capture before server delete/edit",
+    "submodules/TelegramCore/Sources/State/ManagedLocalInputActivities.swift": "per-account activity suppression before existing request dispatch",
     "submodules/TelegramCore/Sources/TelegramEngine/Messages/DeleteMessagesInteractively.swift": "capture before user-initiated message deletion",
     "submodules/TelegramCore/Sources/PendingMessages/RequestEditMessage.swift": "capture before acknowledged own-edit replacement",
     "submodules/TelegramCore/Sources/SyncCore/SyncCore_Namespaces.swift": "reserve archive operation tag",
