@@ -114,3 +114,20 @@ replay through the coordinator to real SQLCipher and the read facade. They do
 not exercise Telegram servers, actual process kill, real Keychain lock
 enforcement, native UI frames or physical installation.
 Until the workflow passes, these are **authored tests, not passing evidence**.
+
+## First runtime failures and corrections
+
+At `b6d6e634`, [run 41809250180](https://github.com/Livara-Dev/Telegram-iOS/actions/runs/41809250180)
+passed the real Postbox and LocalMessageArchive iOS test targets and compiled
+TelegramCore. Its Core test process then found two failures. The first archive
+test trapped because `LocalArchiveSettings.schemaVersion` used Swift `Int`,
+which Postbox's adapted encoder deliberately rejects. The field now uses
+`Int32`, with explicit fixed-width preference serialization and a byte-level
+PreferencesEntry/Postbox reopen regression. The Postbox codec itself is unchanged.
+
+The upstream rich-quote round-trip fixture also expected derived display text
+while constructing a quote with the storage initializer and an empty display
+string. It now uses the existing production rich-quote initializer. The original
+assertions remain, with added pre/post serialization entity checks. No quote
+production behavior was changed to make the test pass. Both corrections require
+a new native CI result; the failed run is not a successful integration claim.

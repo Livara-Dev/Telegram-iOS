@@ -29,6 +29,7 @@ ADDED_FILES = {
 # every change within these files; reviewers must inspect their Git diffs.
 REVIEWED_MODIFICATIONS = {
     "submodules/TelegramCore/BUILD": "link the local archive and its integration tests",
+    "submodules/TelegramCore/Tests/EngineMessageReplyQuoteTests.swift": "repair stale rich-quote fixture to use the production rich initializer",
     "submodules/TelegramCore/Sources/Account/Account.swift": "account-owned archive lifecycle",
     "submodules/TelegramCore/Sources/Account/AccountManager.swift": "register archive outbox decoder",
     "submodules/TelegramCore/Sources/State/AccountStateManagementUtils.swift": "capture before server delete/edit",

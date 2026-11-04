@@ -6,11 +6,20 @@ import TelegramApi
 final class EngineMessageReplyQuoteTests: XCTestCase {
     func testRichQuoteCodableRoundTrip() throws {
         let richText: [RichText] = [.bold(.plain("Hello 😀")), .formula(latex: "x^2"), .textCustomEmoji(fileId: 123, alt: "👍")]
-        let quote = EngineMessageReplyQuote(text: "", offset: nil, entities: [], media: nil, richText: richText)
+        // Use the same initializer as received/selected rich quotes: the storage
+        // initializer accepts an already-derived flat form and does not create one.
+        let quote = EngineMessageReplyQuote(richText: richText, offset: nil, media: nil)
+        let expectedEntities = [
+            MessageTextEntity(range: 0 ..< 8, type: .Bold),
+            MessageTextEntity(range: 13 ..< 15, type: .CustomEmoji(stickerPack: nil, fileId: 123))
+        ]
+        XCTAssertEqual(quote.text, "Hello 😀\nx^2\n👍")
+        XCTAssertEqual(quote.entities, expectedEntities)
         let decoded = try JSONDecoder().decode(EngineMessageReplyQuote.self, from: JSONEncoder().encode(quote))
         XCTAssertEqual(decoded, quote)
         XCTAssertEqual(decoded.richText, richText)
         XCTAssertEqual(decoded.text, "Hello 😀\nx^2\n👍")
+        XCTAssertEqual(decoded.entities, expectedEntities)
     }
 
     func testLegacyQuoteStillDecodes() throws {
