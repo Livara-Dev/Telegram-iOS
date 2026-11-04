@@ -138,8 +138,8 @@ not exercise Telegram servers, actual process kill, real Keychain lock
 enforcement, native UI frames or physical installation.
 Until the workflow passes, these are **authored tests, not passing evidence**.
 
-The follow-up suite contains 52 archive integration tests: 25 capture/policy,
-14 local-mutation/replay, five acknowledged-edit merge and eight coordinator
+The follow-up suite contains 56 archive integration tests: 25 capture/policy,
+14 local-mutation/replay, five acknowledged-edit merge and 12 coordinator
 tests. Added regressions cover user deletion followed by duplicate server replay,
 acknowledged own edits, group expansion, rich-content gaps and unknown-author
 exclusions. The cache-removal test uses the actual `MediaBox.removeCachedResources`
@@ -147,6 +147,12 @@ endpoint with the production directory layout, verifies that cached bytes were
 removed, then reopens both databases and checks archived/canonical records. It
 does not test the Settings UI's cache-selection flow. These additional tests
 also require a fresh native result; they do not inherit the earlier commit's result.
+
+Missing preferences initialize ordinary editable defaults. An existing malformed,
+unsupported-version or invalid-value preference entry is disabled and read-only.
+All public mutations preserve its exact bytes; the worker leaves queued captures
+untouched and the UI explains the compatibility problem. Four regressions check
+every public mutator, reopen persistence and the distinct missing-entry case.
 
 ## First runtime failures and corrections
 
@@ -162,5 +168,14 @@ The upstream rich-quote round-trip fixture also expected derived display text
 while constructing a quote with the storage initializer and an empty display
 string. It now uses the existing production rich-quote initializer. The original
 assertions remain, with added pre/post serialization entity checks. No quote
-production behavior was changed to make the test pass. Both corrections require
-a new native CI result; the failed run is not a successful integration claim.
+production behavior was changed to make the test pass.
+
+The corrected `1b7dfc3b` revision passed the Postbox, LocalMessageArchive,
+TelegramCore and TextFormat iOS simulator suites in
+[run 41811248732](https://github.com/Livara-Dev/Telegram-iOS/actions/runs/41811248732).
+Its [early test artifact](https://github.com/Livara-Dev/Telegram-iOS/actions/runs/41811248732/artifacts/13313456332)
+has SHA-256 `d1e857543be089346b266fcd0c92c493519451d8f2e941a13859b1129acf1cb3`.
+That result covers the earlier 32-test archive integration, not the later
+local-action, rich-content, cache-removal and compatibility regressions described
+above. Full application compilation, device packaging and physical installation
+remain separate gates.

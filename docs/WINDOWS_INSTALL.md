@@ -1,7 +1,9 @@
 # Windows build download and iPhone installation
 
-No successful iOS artifact exists from this workspace yet. These instructions
-describe how to obtain and test one after GitHub Actions succeeds.
+No full-application build or device IPA has succeeded yet. Downloadable test
+evidence exists, including passing iOS simulator integration suites, but those
+ZIP files do not contain an installable application. These instructions describe
+how to obtain and test a device build after the application workflow succeeds.
 
 For PR #2's application integration, use **Archive application integration
 (hosted macOS)** on `feature/archive-engine-draft`. Pushes run this workflow

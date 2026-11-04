@@ -7,6 +7,9 @@ public let localArchiveSettingsKey = ValueBoxKey("ayugram.archive1")
 
 /// Experimental, local-only preferences. Enabling this does not enable media capture.
 public struct LocalArchiveSettings: Codable, Equatable {
+    // Local read state, deliberately absent from CodingKeys. A placeholder for
+    // unreadable preferences must never become an editable default configuration.
+    private var sourceIsSupported = true
     // Postbox's adapted Codable format supports fixed-width integers; encoding an
     // Int deliberately asserts. Int32 also preserves the existing version-1 wire type.
     let schemaVersion: Int32
@@ -19,6 +22,21 @@ public struct LocalArchiveSettings: Codable, Equatable {
     public internal(set) var generation: Int64
     public internal(set) var pendingPurge: Bool
     public internal(set) var droppedCaptures: Int64
+
+    /// False means an existing preference entry cannot be interpreted safely.
+    /// Keep its original bytes until a compatible version can migrate it.
+    public var isSupported: Bool {
+        return self.sourceIsSupported && self.schemaVersion == 1
+            && self.generation >= 0 && self.droppedCaptures >= 0
+            && self.maxAgeSeconds > 0 && self.maxPayloadBytes > 0
+            && self.maxPayloadBytes <= 1024 * 1024 * 1024
+    }
+
+    fileprivate static var unsupported: LocalArchiveSettings {
+        var result = LocalArchiveSettings()
+        result.sourceIsSupported = false
+        return result
+    }
 
     public init(enabled: Bool = false, excludeBots: Bool = true,
                 excludedPeerIds: Set<Int64> = [], excludedSenderIds: Set<Int64> = [],
@@ -77,12 +95,12 @@ func localArchiveSettings(transaction: Transaction) -> LocalArchiveSettings {
 }
 
 func localArchiveSettings(entry: PreferencesEntry?) -> LocalArchiveSettings {
-    // Unknown/malformed settings fail closed. The archive generation check then prevents
-    // an old/default generation from silently overwriting a newer database state.
-    guard let settings = entry?.get(LocalArchiveSettings.self),
-          settings.schemaVersion == 1, settings.generation >= 0, settings.droppedCaptures >= 0,
-          settings.maxAgeSeconds > 0, settings.maxPayloadBytes > 0,
-          settings.maxPayloadBytes <= 1024 * 1024 * 1024 else { return LocalArchiveSettings() }
+    // Absence is editable. Existing unknown/malformed preferences are disabled
+    // and read-only: silently replacing them could lose exclusions or a purge epoch.
+    guard let entry else { return LocalArchiveSettings() }
+    guard let settings = entry.get(LocalArchiveSettings.self), settings.isSupported else {
+        return .unsupported
+    }
     return settings
 }
 

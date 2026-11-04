@@ -86,6 +86,15 @@ range/history clearing and structured rich-content preservation remain gaps.
 Unsupported rich content is reported through the missed-capture counter, not an
 empty successful snapshot. Sender exclusions fail closed if author identity
 is unavailable. No broad hook was added to expiry or cache-maintenance deletion.
+Existing incompatible or malformed archive preferences are also read-only: the
+worker stops and public mutations preserve their bytes instead of replacing
+future exclusions or purge generations with defaults. This guard has four new
+real-Postbox regressions awaiting native execution.
+
+The earlier `1b7dfc3b` revision passed all four iOS simulator integration targets
+in [run 41811248732](https://github.com/Livara-Dev/Telegram-iOS/actions/runs/41811248732).
+This is evidence for that revision's local pipeline tests, not live Telegram
+server behavior, later changes, device protection or full application operation.
 
 The archive directory sits outside the media cache but inside the account's
 root. Upstream account cleanup removes that directory on account removal;

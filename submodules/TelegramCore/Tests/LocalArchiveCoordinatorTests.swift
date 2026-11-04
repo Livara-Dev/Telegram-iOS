@@ -13,6 +13,10 @@ private struct LocalArchiveIntegrationKey: ArchiveKeyProvider {
     }
 }
 
+private struct LocalArchiveMalformedPreference: Codable {
+    let unrelatedField: Int32
+}
+
 /// Keeps all SQLCipher behavior real. Only the delivery of one write result is
 /// intercepted to reproduce the archive-commit / Postbox-acknowledgement crash window.
 private final class LocalArchiveInterceptingStorage: LocalArchiveStorage {
@@ -164,6 +168,108 @@ final class LocalArchiveCoordinatorTests: XCTestCase {
         return try self.localArchiveValue(self.fixture.postbox.transaction {
             localArchivePendingCaptures(transaction: $0, accountPeerId: accountPeerId)
         })
+    }
+
+    private func assertUnsupportedPreferencesRemainUnchanged(_ entry: PreferencesEntry) throws {
+        // An earlier version may have left valid queued work. Unsupported preferences
+        // must block draining it as well as prevent edits to the original entry.
+        let _ = try self.queueDeletion(text: "Keep queued while preferences are unsupported")
+        let eventKey = try XCTUnwrap(self.pending().first?.operation?.eventKey)
+        let _ = try self.localArchiveValue(self.fixture.postbox.transaction { transaction in
+            transaction.setPreferencesEntry(key: localArchiveSettingsKey, value: entry)
+        })
+        try self.fixture.reopen()
+        let instance = self.start()
+        do {
+            let coordinator = try XCTUnwrap(instance.coordinator)
+            let settings = try self.localArchiveValue(coordinator.settings)
+            XCTAssertFalse(settings.isSupported)
+            XCTAssertFalse(settings.enabled)
+            try self.awaitStatus(.unavailable, in: instance)
+            XCTAssertNil(instance.storage.with { $0 })
+
+            let mutations: [() -> Signal<Bool, NoError>] = [
+                { coordinator.setEnabled(true) },
+                { coordinator.setEnabled(false) },
+                { coordinator.setRetention(maxAgeSeconds: 7 * 86400, maxPayloadBytes: 4 * 1024 * 1024) },
+                { coordinator.setExcludeBots(false) },
+                { coordinator.setPeerExcluded(peerId: 71, excluded: true) },
+                { coordinator.setPeerExcluded(peerId: 71, excluded: false) },
+                { coordinator.setSenderExcluded(senderId: 72, excluded: true) },
+                { coordinator.setSenderExcluded(senderId: 72, excluded: false) },
+                { coordinator.requestPurge() }
+            ]
+            for mutate in mutations {
+                XCTAssertFalse(try self.localArchiveValue(mutate()))
+                let actual = try self.localArchiveValue(self.fixture.postbox.transaction { transaction in
+                    transaction.getPreferencesEntry(key: localArchiveSettingsKey)
+                })
+                XCTAssertEqual(try XCTUnwrap(actual).data, entry.data)
+                XCTAssertEqual(try self.pending().first?.operation?.eventKey, eventKey)
+            }
+        }
+        try self.stop(instance)
+        try self.fixture.reopen()
+        let reopened = try self.localArchiveValue(self.fixture.postbox.transaction { transaction in
+            transaction.getPreferencesEntry(key: localArchiveSettingsKey)
+        })
+        XCTAssertEqual(try XCTUnwrap(reopened).data, entry.data)
+        XCTAssertFalse(localArchiveSettings(entry: reopened).isSupported)
+    }
+
+    func testFuturePreferencesAreReadOnlyAndPreservedAcrossAllMutations() throws {
+        var configured = LocalArchiveSettings(enabled: true, excludeBots: false,
+            excludedPeerIds: [71, 73], excludedSenderIds: [72, 74])
+        configured.generation = 23
+        configured.droppedCaptures = 19
+        let encoded = try JSONEncoder().encode(configured)
+        var object = try XCTUnwrap(JSONSerialization.jsonObject(with: encoded) as? [String: Any])
+        object["schemaVersion"] = 99
+        let future = try JSONDecoder().decode(LocalArchiveSettings.self, from: JSONSerialization.data(withJSONObject: object))
+        XCTAssertFalse(future.isSupported)
+        try self.assertUnsupportedPreferencesRemainUnchanged(try XCTUnwrap(PreferencesEntry(future)))
+    }
+
+    func testMalformedPreferencesAreReadOnlyAndPreservedAcrossAllMutations() throws {
+        let entry = try XCTUnwrap(PreferencesEntry(LocalArchiveMalformedPreference(unrelatedField: 12)))
+        XCTAssertNil(entry.get(LocalArchiveSettings.self))
+        try self.assertUnsupportedPreferencesRemainUnchanged(entry)
+    }
+
+    func testInvalidPreferenceValuesAreReadOnlyAndPreservedAcrossAllMutations() throws {
+        var invalid = LocalArchiveSettings(enabled: true, excludedPeerIds: [71], excludedSenderIds: [72])
+        invalid.generation = 23
+        invalid.maxPayloadBytes = 0
+        try self.assertUnsupportedPreferencesRemainUnchanged(try XCTUnwrap(PreferencesEntry(invalid)))
+    }
+
+    func testAbsentPreferencesRemainEditableWithoutResettingConfiguredFields() throws {
+        let _ = try self.localArchiveValue(self.fixture.postbox.transaction { transaction in
+            transaction.setPreferencesEntry(key: localArchiveSettingsKey, value: nil)
+        })
+        let instance = self.start(protectedData: .single(false))
+        let coordinator = try XCTUnwrap(instance.coordinator)
+        let initial = try self.localArchiveValue(coordinator.settings)
+        XCTAssertTrue(initial.isSupported)
+        XCTAssertFalse(initial.enabled)
+        XCTAssertTrue(try self.localArchiveValue(coordinator.setExcludeBots(false)))
+        XCTAssertTrue(try self.localArchiveValue(coordinator.setPeerExcluded(peerId: 71, excluded: true)))
+        XCTAssertTrue(try self.localArchiveValue(coordinator.setSenderExcluded(senderId: 72, excluded: true)))
+        XCTAssertTrue(try self.localArchiveValue(coordinator.setRetention(maxAgeSeconds: 7 * 86400, maxPayloadBytes: 4 * 1024 * 1024)))
+        XCTAssertTrue(try self.localArchiveValue(coordinator.setEnabled(true)))
+        XCTAssertTrue(try self.localArchiveValue(coordinator.requestPurge()))
+        let configured = try self.localArchiveValue(self.fixture.postbox.transaction { localArchiveSettings(transaction: $0) })
+        XCTAssertTrue(configured.isSupported)
+        XCTAssertTrue(configured.enabled)
+        XCTAssertFalse(configured.excludeBots)
+        XCTAssertEqual(configured.excludedPeerIds, [71])
+        XCTAssertEqual(configured.excludedSenderIds, [72])
+        XCTAssertEqual(configured.maxAgeSeconds, 7 * 86400)
+        XCTAssertEqual(configured.maxPayloadBytes, 4 * 1024 * 1024)
+        XCTAssertEqual(configured.generation, 1)
+        XCTAssertTrue(configured.pendingPurge)
+        XCTAssertEqual(configured.droppedCaptures, 0)
+        XCTAssertNil(instance.storage.with { $0 })
     }
 
     func testCommittedDeletionDrainsIntoRealEncryptedArchiveAndReadsThroughFacade() throws {

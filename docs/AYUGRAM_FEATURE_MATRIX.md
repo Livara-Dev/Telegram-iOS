@@ -92,6 +92,16 @@ No media bytes, export/import, search UI or synchronization are present.
 The new Postbox handoff, coordinated purge/replay and native settings are experimental
 and require their own integration evidence.
 
+The earlier `1b7dfc3b` integration passed the real Postbox, LocalMessageArchive,
+TelegramCore and TextFormat iOS simulator targets in
+[run 41811248732](https://github.com/Livara-Dev/Telegram-iOS/actions/runs/41811248732).
+This covers that revision's 32 archive integration cases. The later suite has
+56 cases, including local deletion/edit acknowledgements, rich-content gaps,
+MediaBox cache clearing and byte preservation of incompatible preferences;
+those additions require their own passing run. Full-app/UI execution remains
+unverified. Existing incompatible settings are read-only, never silently
+replaced with older defaults.
+
 Ordinary flat text and message entities are the current capture format. Structured
 rich messages keep their content outside the flat text field and are unsupported:
 eligible deletion/change events increment the missed-capture count instead of

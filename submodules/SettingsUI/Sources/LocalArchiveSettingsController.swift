@@ -169,11 +169,12 @@ func localArchiveSettingsController(context: AccountContext, peerId: Int64? = ni
     let signal = combineLatest(queue: .mainQueue(), context.sharedContext.presentationData, settings, status, actionState.get())
     |> map { presentationData, settings, status, actionState -> (ItemListControllerState, (ItemListNodeState, Any)) in
         currentSettings = settings
-        let canChange = archive != nil && !actionState.0 && !settings.pendingPurge
+        let canChange = archive != nil && settings.isSupported && !actionState.0 && !settings.pendingPurge
+        let statusText = settings.isSupported ? localArchiveStatusText(status) : "This version cannot read the saved archive settings. They have been kept unchanged. Use a compatible app version to manage the archive."
         var entries: [LocalArchiveRow] = [
             LocalArchiveRow(stableId: .fixed(0), order: 0, section: 0, content: .heading("EXPERIMENTAL · THIS ACCOUNT")),
             LocalArchiveRow(stableId: .fixed(1), order: 1, section: 0, content: .toggle("Preserve deleted text and edits", settings.enabled, canChange)),
-            LocalArchiveRow(stableId: .fixed(2), order: 2, section: 0, content: .text(localArchiveStatusText(status))),
+            LocalArchiveRow(stableId: .fixed(2), order: 2, section: 0, content: .text(statusText)),
             LocalArchiveRow(stableId: .fixed(3), order: 3, section: 1, content: .action("View Deleted Messages", "Local text and earlier versions", settings.enabled && localArchiveCanRead(status))),
             LocalArchiveRow(stableId: .fixed(4), order: 4, section: 1, content: .text("Stored on this device in a separate encrypted archive. Clearing Telegram’s cache does not clear this archive. Nothing here is uploaded or sent to other chats.")),
             LocalArchiveRow(stableId: .fixed(11), order: 5, section: 2, content: .heading("RETENTION AND EXCLUSIONS")),
@@ -183,7 +184,7 @@ func localArchiveSettingsController(context: AccountContext, peerId: Int64? = ni
             LocalArchiveRow(stableId: .fixed(12), order: 9, section: 2, content: .text("Oldest records are removed as archive activity runs. The storage limit counts text and metadata; database files can use more disk space. Lowering either limit may permanently remove records.")),
             LocalArchiveRow(stableId: .fixed(13), order: 10, section: 3, content: .action("Clear This Account’s Archive", "Permanent local deletion", canChange)),
             LocalArchiveRow(stableId: .fixed(5), order: 11, section: 4, content: .heading("CURRENT LIMITS")),
-            LocalArchiveRow(stableId: .fixed(6), order: 12, section: 4, content: .text("This preview captures supported deletion and edit updates for messages already received while capture is enabled. It cannot recover earlier deletions and does not cover every deletion path. Media files, secret chats and disappearing messages are excluded. Storage failures or a locked device can leave gaps."))
+            LocalArchiveRow(stableId: .fixed(6), order: 12, section: 4, content: .text("This preview captures supported deletion and edit updates for messages already received while capture is enabled. It cannot recover earlier deletions and does not cover every deletion path. Media files, structured rich messages, secret chats and disappearing messages are excluded. Storage failures or a locked device can leave gaps."))
         ]
         if actionState.1 {
             entries.append(LocalArchiveRow(stableId: .fixed(7), order: 13, section: 4, content: .text("The setting could not be changed. Unlock the device and try again.")))

@@ -152,7 +152,7 @@ public final class LocalArchiveCoordinator {
     public func setEnabled(_ enabled: Bool) -> Signal<Bool, NoError> {
         return self.postbox.transaction { transaction in
             var settings = localArchiveSettings(transaction: transaction)
-            guard !settings.pendingPurge else { return false }
+            guard settings.isSupported, !settings.pendingPurge else { return false }
             settings.enabled = enabled
             setLocalArchiveSettings(transaction: transaction, settings: settings)
             return true
@@ -167,7 +167,7 @@ public final class LocalArchiveCoordinator {
         }
         return self.postbox.transaction { transaction in
             var settings = localArchiveSettings(transaction: transaction)
-            guard !settings.pendingPurge else { return false }
+            guard settings.isSupported, !settings.pendingPurge else { return false }
             settings.maxAgeSeconds = maxAgeSeconds
             settings.maxPayloadBytes = maxPayloadBytes
             setLocalArchiveSettings(transaction: transaction, settings: settings)
@@ -178,7 +178,7 @@ public final class LocalArchiveCoordinator {
     public func setExcludeBots(_ excluded: Bool) -> Signal<Bool, NoError> {
         return self.postbox.transaction { transaction in
             var settings = localArchiveSettings(transaction: transaction)
-            guard !settings.pendingPurge else { return false }
+            guard settings.isSupported, !settings.pendingPurge else { return false }
             settings.excludeBots = excluded
             setLocalArchiveSettings(transaction: transaction, settings: settings)
             return true
@@ -188,7 +188,7 @@ public final class LocalArchiveCoordinator {
     public func setPeerExcluded(peerId: Int64, excluded: Bool) -> Signal<Bool, NoError> {
         return self.postbox.transaction { transaction in
             var settings = localArchiveSettings(transaction: transaction)
-            guard !settings.pendingPurge else { return false }
+            guard settings.isSupported, !settings.pendingPurge else { return false }
             if excluded {
                 guard settings.excludedPeerIds.count < 4096 || settings.excludedPeerIds.contains(peerId) else { return false }
                 settings.excludedPeerIds.insert(peerId)
@@ -203,7 +203,7 @@ public final class LocalArchiveCoordinator {
     public func setSenderExcluded(senderId: Int64, excluded: Bool) -> Signal<Bool, NoError> {
         return self.postbox.transaction { transaction in
             var settings = localArchiveSettings(transaction: transaction)
-            guard !settings.pendingPurge else { return false }
+            guard settings.isSupported, !settings.pendingPurge else { return false }
             if excluded {
                 guard settings.excludedSenderIds.count < 4096 || settings.excludedSenderIds.contains(senderId) else { return false }
                 settings.excludedSenderIds.insert(senderId)
@@ -220,6 +220,7 @@ public final class LocalArchiveCoordinator {
     public func requestPurge() -> Signal<Bool, NoError> {
         return self.postbox.transaction { transaction in
             var settings = localArchiveSettings(transaction: transaction)
+            guard settings.isSupported else { return false }
             if settings.pendingPurge { return true }
             guard settings.generation < Int64.max else { return false }
             settings.generation += 1
@@ -341,6 +342,12 @@ public final class LocalArchiveCoordinator {
         } |> deliverOn(self.queue)).start(next: { [weak self] settings, pending in
             guard let self, self.isCurrent(epoch) else { return }
             self.activeSettings = settings
+            guard settings.isSupported else {
+                self.invalidateWork()
+                self.needsDrain = false
+                self.statusValue.set(.unavailable)
+                return
+            }
             guard settings.enabled || settings.pendingPurge else {
                 self.invalidateWork()
                 self.needsDrain = false
@@ -457,7 +464,7 @@ public final class LocalArchiveCoordinator {
                 }
                 self.transactionDisposable.set((self.postbox.transaction { [accountPeerId = self.accountPeerId] transaction in
                     var current = localArchiveSettings(transaction: transaction)
-                    guard current.pendingPurge, current.generation == settings.generation else { return }
+                    guard current.isSupported, current.pendingPurge, current.generation == settings.generation else { return }
                     // Captures are paused by the persistent pendingPurge marker.
                     // Removing this account's outbox cannot touch another account.
                     transaction.operationLogRemoveAllEntries(peerId: accountPeerId, tag: OperationLogTags.LocalArchiveCapture)
