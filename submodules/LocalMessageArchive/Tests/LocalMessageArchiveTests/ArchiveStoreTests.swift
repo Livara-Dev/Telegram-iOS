@@ -49,6 +49,36 @@ final class ArchiveStoreTests: XCTestCase {
         XCTAssertEqual(try records(reopened).map(\.event.eventKey), ["old-record"])
     }
 
+    func testDeleteSnapshotRemovesMediaAndIndexesWithoutOutboxResurrection() throws {
+        let store = try open()
+        let deleted = event("delete-one", text: "uniquely searchable content")
+        _ = try writeOutbox(store, deleted, index: 4, generation: 0)
+        _ = try writeOutbox(store, event("keep-one"), index: 5, generation: 0)
+        XCTAssertTrue(try awaitResult { store.recordMedia(eventKey: "delete-one", slot: 0, kind: "photo", mimeType: "image/jpeg", data: Data([1, 2, 3]), generation: 0, completion: $0) })
+        let isolated = try open(account: 2, keys: Keys(0x74))
+        _ = try write(isolated, [event("delete-one", account: 2)])
+        XCTAssertTrue(try awaitResult { store.deleteSnapshot(eventKey: "delete-one", generation: 0, completion: $0) })
+        XCTAssertTrue(try awaitResult { store.deleteSnapshot(eventKey: "delete-one", generation: 0, completion: $0) })
+        XCTAssertNil(try awaitResult { store.mediaInfo(eventKey: "delete-one", slot: 0, completion: $0) })
+        XCTAssertTrue(try awaitResult { store.mediaItems(completion: $0) }.isEmpty)
+        XCTAssertTrue(try awaitResult { store.searchMessages(query: "uniquely", completion: $0) }.isEmpty)
+        _ = try writeOutbox(store, deleted, index: 4, generation: 0)
+        XCTAssertFalse(try awaitResult { store.recordMedia(eventKey: "delete-one", slot: 0, kind: "photo", mimeType: "image/jpeg", data: Data([1, 2, 3]), generation: 0, completion: $0) })
+        close(store)
+        XCTAssertEqual(try records(open()).map(\.event.eventKey), ["keep-one"])
+        XCTAssertEqual(try records(isolated).map(\.event.eventKey), ["delete-one"])
+    }
+
+    func testDeleteSnapshotRejectsStaleGenerationWithoutChangingData() throws {
+        let store = try open()
+        _ = try purge(store, to: 1)
+        _ = try write(store, [event("keep-current")], generation: 1)
+        assertError(.generationMismatch(expected: 1, received: 0)) {
+            try awaitResult { store.deleteSnapshot(eventKey: "keep-current", generation: 0, completion: $0) }
+        }
+        XCTAssertEqual(try records(store).map(\.event.eventKey), ["keep-current"])
+    }
+
     func testMediaBytesSurviveReopenAndAreRemovedWithEvent() throws {
         let store = try open()
         _ = try write(store, [event("media")])

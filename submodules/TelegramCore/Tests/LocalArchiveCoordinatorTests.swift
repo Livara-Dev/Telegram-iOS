@@ -79,6 +79,9 @@ private final class LocalArchiveInterceptingStorage: LocalArchiveStorage {
     func media(eventKey: String, slot: Int, completion: @escaping (Result<ArchivedMedia?, ArchiveError>) -> Void) {
         self.store.media(eventKey: eventKey, slot: slot, completion: completion)
     }
+    func deleteSnapshot(eventKey: String, generation: Int64, completion: @escaping (Result<Bool, ArchiveError>) -> Void) {
+        self.store.deleteSnapshot(eventKey: eventKey, generation: generation, completion: completion)
+    }
     func currentGeneration(completion: @escaping (Result<Int64, ArchiveError>) -> Void) {
         self.store.currentGeneration(completion: completion)
     }
@@ -823,6 +826,29 @@ final class LocalArchiveCoordinatorTests: XCTestCase {
         let lockedGallery = try self.localArchiveValue(try XCTUnwrap(instance.coordinator).mediaItems())
         XCTAssertTrue(lockedGallery.unavailable)
         XCTAssertTrue(lockedGallery.items.isEmpty)
+    }
+
+    func testDeleteSnapshotPersistsAndRejectsLockedAccountMutation() throws {
+        _ = try self.queueDeletion(88, text: "discard this saved version")
+        _ = try self.queueDeletion(89, text: "keep this saved version")
+        let protectedData = ValuePromise<Bool>(true, ignoreRepeated: true)
+        let instance = self.start(protectedData: protectedData.get())
+        try self.awaitStatus(.ready, in: instance)
+        let coordinator = try XCTUnwrap(instance.coordinator)
+        let page = try self.localArchiveValue(coordinator.deletedMessages())
+        let record = try XCTUnwrap(page.records.first(where: { $0.messageId == 88 }))
+        protectedData.set(false)
+        try self.awaitStatus(.locked, in: instance)
+        XCTAssertFalse(try self.localArchiveValue(coordinator.deleteSnapshot(eventKey: record.eventKey)))
+        protectedData.set(true)
+        try self.awaitStatus(.ready, in: instance)
+        XCTAssertTrue(try self.localArchiveValue(coordinator.deleteSnapshot(eventKey: record.eventKey)))
+        try self.stop(instance)
+        let recovered = self.start()
+        try self.awaitStatus(.ready, in: recovered)
+        let retained = try self.localArchiveValue(try XCTUnwrap(recovered.coordinator).deletedMessages())
+        XCTAssertEqual(retained.records.map { $0.messageId }, [89])
+        XCTAssertTrue(try self.pending().isEmpty)
     }
 
     func testPendingPurgeSurvivesRestartAndRetiresUnacknowledgedGeneration() throws {

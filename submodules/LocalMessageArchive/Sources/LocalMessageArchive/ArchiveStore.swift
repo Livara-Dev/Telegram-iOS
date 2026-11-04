@@ -267,6 +267,23 @@ public final class ArchiveStore {
         }
     }
 
+    /// Deletes one local snapshot and its indexed media. Keep the outbox receipt
+    /// so a retry after the archive-commit/ack gap cannot resurrect this version.
+    public func deleteSnapshot(eventKey: String, generation: Int64,
+                               completion: @escaping (Result<Bool, ArchiveError>) -> Void) {
+        submit(completion) {
+            try Self.validateMediaLookup(eventKey, 0)
+            guard generation >= 0 else { throw ArchiveError.invalidInput }
+            return try self.transaction {
+                let current = try self.captureGeneration()
+                guard generation == current else { throw ArchiveError.generationMismatch(expected: current, received: generation) }
+                try self.execute("DELETE FROM events WHERE event_key=?", [.text(eventKey)])
+                // Missing is an acknowledged retry of a local deletion.
+                return true
+            }
+        }
+    }
+
     /// A coordinator must stamp this generation at capture time and preserve it through outbox retries.
     public func currentGeneration(completion: @escaping (Result<Int64, ArchiveError>) -> Void) {
         submit(completion) { try self.captureGeneration() }

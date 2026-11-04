@@ -22,6 +22,7 @@ private enum LocalArchiveRowId: Hashable {
     case record(Int64)
     case recordHeading(Int64)
     case media(Int64, Int)
+    case deleteSnapshot(Int64)
 }
 
 private struct LocalArchiveRow: ItemListNodeEntry {
@@ -441,6 +442,7 @@ private final class LocalArchiveBrowserModel {
 private func localArchiveMessagesController(context: AccountContext, archive: LocalArchiveCoordinator, peerId: Int64?, message: LocalArchiveMessageReference?) -> ViewController {
     let model = LocalArchiveBrowserModel(context: context, archive: archive, peerId: peerId, message: message)
     let mediaDisposable = MetaDisposable()
+    let mutationDisposable = MetaDisposable()
     var presentController: ((ViewController) -> Void)?
     let formatter = DateFormatter()
     formatter.dateStyle = .medium
@@ -480,6 +482,24 @@ private func localArchiveMessagesController(context: AccountContext, archive: Lo
                     presentController?(textAlertController(context: context, title: "Preview unavailable", text: "This attachment is missing or cannot be previewed as an image.", actions: [TextAlertAction(type: .defaultAction, title: data.strings.Common_OK, action: {})]))
                 }
             }))
+        case let .deleteSnapshot(sequence):
+            guard let record = model.state.records.first(where: { $0.sequence == sequence }) else { return }
+            let presentation = context.sharedContext.currentPresentationData.with { $0 }
+            let sheet = ActionSheetController(presentationData: presentation)
+            sheet.setItemGroups([
+                ActionSheetItemGroup(items: [
+                    ActionSheetTextItem(title: "Delete this saved version and its retained attachments from this account's local archive? Other versions and the Telegram conversation are kept."),
+                    ActionSheetButtonItem(title: "Delete Saved Version", color: .destructive, action: { [weak sheet] in
+                        sheet?.dismissAnimated()
+                        mutationDisposable.set((archive.deleteSnapshot(eventKey: record.eventKey) |> deliverOnMainQueue).start(next: { success in
+                            if success { model.refresh() }
+                            else { presentController?(textAlertController(context: context, title: "Deletion unavailable", text: "Unlock the archive and try again.", actions: [TextAlertAction(type: .defaultAction, title: presentation.strings.Common_OK, action: {})])) }
+                        }))
+                    })
+                ]),
+                ActionSheetItemGroup(items: [ActionSheetButtonItem(title: presentation.strings.Common_Cancel, color: .accent, action: { [weak sheet] in sheet?.dismissAnimated() })])
+            ])
+            presentController?(sheet)
         case let .record(sequence):
             if message == nil, let record = model.state.records.first(where: { $0.sequence == sequence }) {
                 pushController?(localArchiveMessagesController(context: context, archive: archive, peerId: record.peerId, message: LocalArchiveMessageReference(record)))
@@ -553,6 +573,7 @@ private func localArchiveMessagesController(context: AccountContext, archive: Lo
                             entries.append(LocalArchiveRow(stableId: .media(record.sequence, slot), order: 7 + index * 20 + slot, section: Int32(1 + index), content: .action("Play archived \(kind == "voice" ? "voice message" : "video") \(slot + 1)", "Supported iOS formats", true)))
                         }
                     }
+                    entries.append(LocalArchiveRow(stableId: .deleteSnapshot(record.sequence), order: 18 + index * 20, section: Int32(1 + index), content: .action("Delete Saved Version", "This version and its attachments", true)))
                 }
             }
         }
@@ -564,6 +585,7 @@ private func localArchiveMessagesController(context: AccountContext, archive: Lo
     |> afterDisposed {
         model.dispose()
         mediaDisposable.dispose()
+        mutationDisposable.dispose()
     }
     let controller = ItemListController(context: context, state: signal)
     presentController = { [weak controller] next in controller?.present(next, in: .window(.root)) }
@@ -900,6 +922,13 @@ private final class LocalArchiveGalleryController: ViewController, UICollectionV
     deinit {
         self.requests.dispose(); self.preview.dispose(); self.subscriptions.dispose()
         for observer in self.observers { NotificationCenter.default.removeObserver(observer) }
+    }
+
+    override func viewWillAppear(_ animated: Bool) {
+        super.viewWillAppear(animated)
+        // A version can be deleted in its history screen while this grid is
+        // underneath it. Re-query before showing cached thumbnails again.
+        self.load()
     }
 
     override func loadDisplayNode() {

@@ -97,6 +97,7 @@ protocol LocalArchiveStorage: AnyObject {
     func mediaRange(eventKey: String, slot: Int, offset: Int64, count: Int, completion: @escaping (Result<Data?, ArchiveError>) -> Void)
     func containsMedia(eventKey: String, slot: Int, completion: @escaping (Result<Bool, ArchiveError>) -> Void)
     func media(eventKey: String, slot: Int, completion: @escaping (Result<ArchivedMedia?, ArchiveError>) -> Void)
+    func deleteSnapshot(eventKey: String, generation: Int64, completion: @escaping (Result<Bool, ArchiveError>) -> Void)
     func currentGeneration(completion: @escaping (Result<Int64, ArchiveError>) -> Void)
     func purge(advancingToGeneration: Int64, completion: @escaping (Result<ArchivePurgeResult, ArchiveError>) -> Void)
     func setRetention(_ policy: ArchiveRetentionPolicy, completion: @escaping (Result<Int, ArchiveError>) -> Void)
@@ -276,6 +277,14 @@ public final class LocalArchiveCoordinator {
             setLocalArchiveSettings(transaction: transaction, settings: settings)
             return true
         }
+    }
+
+    public func deleteSnapshot(eventKey: String) -> Signal<Bool, NoError> {
+        let operation: Signal<Bool?, NoError> = self.readValue { [weak self] storage, completion in
+            guard let self else { completion(.failure(.closed)); return }
+            storage.deleteSnapshot(eventKey: eventKey, generation: self.activeSettings.generation, completion: completion)
+        }
+        return operation |> map { $0 ?? false }
     }
 
     public func deletedMessages(peerId: Int64? = nil, beforeSequence: Int64? = nil, limit: Int = 100) -> Signal<LocalArchivePage, NoError> {

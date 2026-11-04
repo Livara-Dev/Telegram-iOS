@@ -195,3 +195,21 @@ These cases are not yet natively executed. The 256-item/8-MiB pending outbox
 budget remains: an overflowing range records missed captures and still applies
 Telegram's deletion. No claim of lossless bulk-history preservation is made.
 Other history clearing and group-removal paths are still under review.
+
+
+## Individual saved-version deletion
+
+The candidate now supports a confirmed Delete Saved Version action in message
+history. It removes that snapshot, linked attachments and search/gallery entries
+in one encrypted transaction, scoped to the current account and purge generation.
+Other versions are retained. The outbox receipt is deliberately kept so an
+acknowledgement retry cannot recreate the deleted snapshot; a later media-copy
+retry cannot recreate an attachment without its parent snapshot either.
+
+New storage and real coordinator cases cover idempotent deletion, media/index
+cleanup, account isolation, stale generations, acknowledgement replay, restart
+and locked-account rejection. They await native execution. This is logical
+archive deletion, not a promise of forensic erasure from flash storage. The
+existing full-account purge remains available. Gallery pages refresh when
+returning from version history so deleted thumbnails are not presented as
+current retained attachments.
