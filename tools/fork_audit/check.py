@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Audit-stage integrity/secret regression guard; not a runtime security proof."""
+"""Pinned-source and reviewed-feature scope guard; not a runtime security proof."""
 import argparse
 import ast
 import hashlib
@@ -12,10 +12,33 @@ from pathlib import Path
 BASELINE = "279f89e4d4f63f17227bf877dc3d8990f22ecd58"
 REFERENCE = "7013145676d36d82ee13c02a89f72097b7490dcd"
 MANIFESTS = ("versions.json", ".gitmodules", "MODULE.bazel", "MODULE.bazel.lock", ".bazelrc")
-ADDED_PREFIXES = ("docs/fork/", "tools/fork_audit/", "tools/fork_baseline/")
+ADDED_PREFIXES = (
+    "docs/fork/", "tools/fork_audit/", "tools/fork_baseline/", "submodules/LocalMessageArchive/",
+    "submodules/TelegramCore/Sources/LocalArchive/", "submodules/TelegramCore/Tests/LocalArchive",
+)
 ADDED_FILES = {
+    ".github/workflows/archive-integration.yml",
+    ".github/workflows/archive-tests.yml",
     ".github/workflows/fork-baseline.yml", "COPYING",
     "docs/AYUGRAM_FEATURE_MATRIX.md", "docs/WINDOWS_INSTALL.md", "docs/SECURITY_ASSESSMENT.md",
+    "submodules/SettingsUI/Sources/LocalArchiveSettingsController.swift",
+}
+# Explicit integration seams only. Everything else in the upstream tree, including
+# MTProto, authentication methods, cryptography, Postbox, dependency manifests and
+# gitlinks, stays pinned. An allowlist is a scope tripwire, not a semantic audit of
+# every change within these files; reviewers must inspect their Git diffs.
+REVIEWED_MODIFICATIONS = {
+    "submodules/TelegramCore/BUILD": "link the local archive and its integration tests",
+    "submodules/TelegramCore/Tests/EngineMessageReplyQuoteTests.swift": "repair stale rich-quote fixture to use the production rich initializer",
+    "submodules/TelegramCore/Sources/Account/Account.swift": "account-owned archive lifecycle",
+    "submodules/TelegramCore/Sources/Account/AccountManager.swift": "register archive outbox decoder",
+    "submodules/TelegramCore/Sources/State/AccountStateManagementUtils.swift": "capture before server delete/edit",
+    "submodules/TelegramCore/Sources/TelegramEngine/Messages/DeleteMessagesInteractively.swift": "capture before user-initiated message deletion",
+    "submodules/TelegramCore/Sources/PendingMessages/RequestEditMessage.swift": "capture before acknowledged own-edit replacement",
+    "submodules/TelegramCore/Sources/SyncCore/SyncCore_Namespaces.swift": "reserve archive operation tag",
+    "submodules/SettingsUI/Sources/Data and Storage/DataAndStorageSettingsController.swift": "native archive settings entry",
+    "submodules/TelegramUI/Sources/ChatController.swift": "open this conversation's deleted-message archive",
+    "submodules/TelegramUI/Sources/Chat/ChatControllerOpenMessageContextMenu.swift": "open this message's saved versions",
 }
 SECRET_SUFFIXES = {".p12", ".pfx", ".mobileprovision", ".key", ".pem", ".cer", ".keystore"}
 PRIVATE_KEY = re.compile(rb"-----BEGIN (?:[A-Z0-9 ]+ )?PRIVATE KEY-----")
@@ -117,7 +140,7 @@ def check(root, revision=BASELINE, verify_manifest=True):
     for path in changed_paths(root, revision):
         if path in entries:
             removed_legacy_workflow = path == ".github/workflows/build.yml" and not (root / path).exists()
-            if path != ".gitignore" and not removed_legacy_workflow:
+            if path != ".gitignore" and not removed_legacy_workflow and path not in REVIEWED_MODIFICATIONS:
                 failures.append(f"Upstream source differs from baseline: {path}")
         elif not allowed_addition(path):
             failures.append(f"Addition outside audit/build scope: {path}")
@@ -126,13 +149,12 @@ def check(root, revision=BASELINE, verify_manifest=True):
             if record and record.split(b" ", 1)[0] not in {b"100644", b"100755"} and path not in entries:
                 failures.append(f"Staged addition must be a regular file: {path}")
         # A safe worktree must not hide a secret already staged or committed.
-        if path not in entries:
-            for source in (f":{path}", f"HEAD:{path}"):
-                try:
-                    data = git(root, "show", source)
-                except subprocess.CalledProcessError:
-                    continue
-                failures.extend(inspect_data(root, path, data))
+        for source in (f":{path}", f"HEAD:{path}"):
+            try:
+                data = git(root, "show", source)
+            except subprocess.CalledProcessError:
+                continue
+            failures.extend(inspect_data(root, path, data))
     if verify_manifest:
         manifest_path = root / "docs/fork/provenance.json"
         try:
@@ -156,7 +178,7 @@ def main():
     if failures:
         print("\n".join(failures), file=sys.stderr)
         return 1
-    print("PASS: audit-stage source integrity and added-file checks; no runtime security claim.")
+    print("PASS: pinned-source, reviewed-feature scope and credential checks; no runtime security claim.")
     return 0
 
 

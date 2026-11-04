@@ -21,6 +21,7 @@ public enum AutomaticSaveIncomingPeerType {
 }
 
 private final class DataAndStorageControllerArguments {
+    let openLocalArchive: () -> Void
     let openStorageUsage: () -> Void
     let openNetworkUsage: () -> Void
     let openProxy: () -> Void
@@ -36,6 +37,7 @@ private final class DataAndStorageControllerArguments {
     let toggleSensitiveContent: (Bool) -> Void
 
     init(
+        openLocalArchive: @escaping () -> Void,
         openStorageUsage: @escaping () -> Void,
         openNetworkUsage: @escaping () -> Void,
         openProxy: @escaping () -> Void,
@@ -50,6 +52,7 @@ private final class DataAndStorageControllerArguments {
         openIntents: @escaping () -> Void,
         toggleSensitiveContent: @escaping (Bool) -> Void
     ) {
+        self.openLocalArchive = openLocalArchive
         self.openStorageUsage = openStorageUsage
         self.openNetworkUsage = openNetworkUsage
         self.openProxy = openProxy
@@ -75,6 +78,7 @@ private enum DataAndStorageSection: Int32 {
     case other
     case connection
     case sensitiveContent
+    case localArchive
 }
 
 public enum DataAndStorageEntryTag: ItemListItemTag, Equatable {
@@ -125,6 +129,8 @@ private enum DataAndStorageEntry: ItemListNodeEntry {
     
     case connectionHeader(PresentationTheme, String)
     case connectionProxy(PresentationTheme, String, String)
+    case localArchiveHeader
+    case localArchive
     
     var section: ItemListSectionId {
         switch self {
@@ -144,6 +150,8 @@ private enum DataAndStorageEntry: ItemListNodeEntry {
                 return DataAndStorageSection.sensitiveContent.rawValue
             case .connectionHeader, .connectionProxy:
                 return DataAndStorageSection.connection.rawValue
+            case .localArchiveHeader, .localArchive:
+                return DataAndStorageSection.localArchive.rawValue
         }
     }
     
@@ -195,11 +203,27 @@ private enum DataAndStorageEntry: ItemListNodeEntry {
                 return 38
             case .connectionProxy:
                 return 39
+            case .localArchiveHeader:
+                return 40
+            case .localArchive:
+                return 41
         }
     }
     
     static func ==(lhs: DataAndStorageEntry, rhs: DataAndStorageEntry) -> Bool {
         switch lhs {
+            case .localArchiveHeader:
+                if case .localArchiveHeader = rhs {
+                    return true
+                } else {
+                    return false
+                }
+            case .localArchive:
+                if case .localArchive = rhs {
+                    return true
+                } else {
+                    return false
+                }
             case let .storageUsage(lhsTheme, lhsText, lhsValue):
                 if case let .storageUsage(rhsTheme, rhsText, rhsValue) = rhs, lhsTheme === rhsTheme, lhsText == rhsText, lhsValue == rhsValue {
                     return true
@@ -348,6 +372,10 @@ private enum DataAndStorageEntry: ItemListNodeEntry {
     func item(presentationData: ItemListPresentationData, arguments: Any) -> ListViewItem {
         let arguments = arguments as! DataAndStorageControllerArguments
         switch self {
+            case .localArchiveHeader:
+                return ItemListSectionHeaderItem(presentationData: presentationData, text: "AYUGRAM", sectionId: self.section)
+            case .localArchive:
+                return ItemListDisclosureItem(presentationData: presentationData, systemStyle: .glass, title: "Local Message Archive", label: "Experimental", sectionId: self.section, style: .blocks, action: arguments.openLocalArchive)
             case let .storageUsage(_, text, value):
                 return ItemListDisclosureItem(presentationData: presentationData, systemStyle: .glass, icon: PresentationResourcesSettings.storageUsage, title: text, label: value, sectionId: self.section, style: .blocks, action: {
                     arguments.openStorageUsage()
@@ -661,6 +689,8 @@ private func dataAndStorageControllerEntries(context: AccountContext, state: Dat
     }
     entries.append(.connectionHeader(presentationData.theme, presentationData.strings.ChatSettings_ConnectionType_Title.uppercased()))
     entries.append(.connectionProxy(presentationData.theme, presentationData.strings.SocksProxySetup_Title, proxyValue))
+    entries.append(.localArchiveHeader)
+    entries.append(.localArchive)
         
     return entries
 }
@@ -795,7 +825,9 @@ public func dataAndStorageController(context: AccountContext, focusOnItemTag: Da
         return DataAndStorageData(automaticMediaDownloadSettings: automaticMediaDownloadSettings, autodownloadSettings: autodownloadSettings, generatedMediaStoreSettings: generatedMediaStoreSettings, mediaInputSettings: mediaInputSettings, voiceCallSettings: voiceCallSettings, proxySettings: proxySettings)
     })
     
-    let arguments = DataAndStorageControllerArguments(openStorageUsage: {
+    let arguments = DataAndStorageControllerArguments(openLocalArchive: {
+        pushControllerImpl?(localArchiveSettingsController(context: context))
+    }, openStorageUsage: {
         pushControllerImpl?(StorageUsageScreen(context: context, makeStorageUsageExceptionsScreen: { category in
             return storageUsageExceptionsScreen(context: context, category: category)
         }))

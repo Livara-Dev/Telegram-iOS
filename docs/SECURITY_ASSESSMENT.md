@@ -1,6 +1,6 @@
 # Preliminary security assessment
 
-Date: 2026-11-04. This is a source-based threat assessment and a list of acceptance requirements, **not a finding that the app is secure**. The reviewed snapshots are Telegram-iOS `279f89e4d4f63f17227bf877dc3d8990f22ecd58` and AyuGram4A `7013145676d36d82ee13c02a89f72097b7490dcd`. The companion architecture and license audits contain source references. No successful iOS build, signed-device test, penetration test, cryptographic review or network privacy verification is established by this document.
+Date: 2026-11-04. This is a source-based threat assessment and a list of acceptance requirements, **not a finding that the app is secure**. The reviewed snapshots are Telegram-iOS `279f89e4d4f63f17227bf877dc3d8990f22ecd58` and AyuGram4A `7013145676d36d82ee13c02a89f72097b7490dcd`. The companion architecture and license audits contain source references. No successful full iOS application build, signed-device test, penetration test, cryptographic review or network privacy verification is established by this document.
 
 ## Assets and trust boundaries
 
@@ -50,7 +50,7 @@ Use an archive-specific export schema rather than uploading a live database plus
 
 ## Hosted macOS build and Windows installation
 
-GitHub-hosted macOS can be a build target only when its installed Xcode/SDK versions satisfy the pinned repository. This source pins Xcode 27.1 and macOS 27; hosted availability has not been established by this assessment. Windows/Sideloadly can be an installation path, not an Xcode compilation substitute.
+GitHub-hosted macOS can be a build target only when its installed Xcode/SDK versions satisfy the pinned repository. This source pins Xcode 27.1 and macOS 27; hosted run 41792257376 verified both on the `xcode-27` image. Full compilation and device behavior remain unverified. Windows/Sideloadly can be an installation path, not an Xcode compilation substitute.
 
 Keep unsigned build/testing and optional signing as distinct CI jobs/artifacts with explicit status. Secrets belong in the selected repository/environment, with protected signing access and no untrusted pull-request code allowed to consume them. The build must not download arbitrary “latest” signing tools or binary patches. Record source revision, dependency pins, toolchain versions and IPA hash; provide matching GPL corresponding source without secrets. Clean ephemeral signing keychains and generated configuration and restrict artifact retention/access. Telegram API identifiers embedded in a mobile binary are extractable; hiding them from logs does not make them a client authentication secret.
 
@@ -59,3 +59,98 @@ A Sideloadly re-sign changes the artifact; record its identity/hash separately w
 ## Evidence required to close this assessment
 
 The present evidence is source inspection and the official API/license pages captured by the license audit. Future releases need passing, named test results tied to a revision; a successful full build; device tests of the installed signing variant; reviewed dependency/source/license manifests; and runtime disclosure/retention checks using synthetic accounts and canary content. Report failed, skipped and unavailable checks separately. Until then every feature and control above remains unverified.
+
+
+## Experimental application integration: verification pending
+
+The new TelegramCore outbox, account worker and native archive screens are
+described in [ARCHIVE-INTEGRATION.md](fork/ARCHIVE-INTEGRATION.md). They are
+default off. Schema 4 introduces a durable ordered replay receipt that survives
+retention. Commit `1b7dfc3b` passed 54 macOS tests (43 storage, 11 mocked Keychain)
+and iOS module compilation; see [exact evidence](fork/evidence/archive-tests-1b7dfc3b.json).
+The application hooks and real Postbox integration tests require their own
+revision-specific results. Standalone library results do not validate them.
+
+The transient outbox is protected by Postbox's existing encryption/key policy,
+not the archive's independent Keychain key or complete file protection. The
+worker does not change Postbox commit-error handling. Release-mode disk-full
+durability, abrupt termination, actual device lock behavior, notification
+extensions and every deletion path remain unverified. An in-flight write can
+finish after a settings change; purge uses a separate generation barrier.
+
+The capture review found that user-initiated deletion and acknowledged edits
+can consume prior content before server replay. Narrow hooks now cover those
+paths; tests check duplicate replay and preservation of existing canonical
+operations. They still need native CI verification. History revalidation,
+range/history clearing and structured rich-content preservation remain gaps.
+Unsupported rich content is reported through the missed-capture counter, not an
+empty successful snapshot. Sender exclusions fail closed if author identity
+is unavailable. No broad hook was added to expiry or cache-maintenance deletion.
+Existing incompatible or malformed archive preferences are also read-only: the
+worker stops and public mutations preserve their bytes instead of replacing
+future exclusions or purge generations with defaults. This guard has four new
+real-Postbox regressions awaiting native execution.
+
+The earlier `1b7dfc3b` revision passed all four iOS simulator integration targets
+in [run 41811248732](https://github.com/Livara-Dev/Telegram-iOS/actions/runs/41811248732).
+This is evidence for that revision's local pipeline tests, not live Telegram
+server behavior, later changes, device protection or full application operation.
+
+The archive directory sits outside the media cache but inside the account's
+root. Upstream account cleanup removes that directory on account removal;
+actual cache-clear and logout/upgrade device tests remain outstanding. Orphaned
+Keychain entries may remain: the adapter has no key-deletion API, and this is
+not a cryptographic-erasure implementation. The native views intentionally have
+no send/forward/export action. No archive network endpoint is added. Existing
+upstream telemetry is still unresolved.
+
+## Earlier standalone archive evidence (before integration)
+
+The feature branch introduces `LocalMessageArchive` without altering Telegram's
+application core. It uses only vendored SQLCipher, Foundation and Security, has no
+networking or logging capability, and does not receive live messages yet. Its
+Keychain adapter rejects missing existing-archive keys, inaccessible items,
+malformed keys and weaker-than-requested protection. Security calls are mocked in
+unit tests; real Keychain/entitlement and locked-device behavior need device tests.
+
+Postbox sets a process-global SQLCipher plaintext-header default of 32 bytes.
+The independent archive must explicitly select a fully encrypted header after
+key initialization, and its tests must exercise coexistence with that default.
+No process-global SQLCipher setting may be changed by the archive module.
+
+This draft does not close the risks above. A Postbox outbox, purge/replay barrier,
+protected archive-owned media, physical disk quota, corruption/disk-full recovery,
+real device protection tests and measured performance remain necessary before
+archive integration can be described as reliable. An already-open SQLCipher
+connection can retain keys/pages in memory after device lock; Keychain access
+control and file protection do not themselves close that connection. App lifecycle
+integration must gate archive access and close/reopen safely on protected-data
+transitions. Retaining a supplied snapshot in
+a native unit test is not evidence of preserving a live deletion event.
+
+
+Commit `86fcf189` passed 20 native macOS database tests and 11 mocked Keychain
+tests in hosted run 41794635275; the iOS simulator module also compiled. Database
+checks include encryption/header configuration, wrong-key rejection, account
+isolation, transaction rollback, retention and unsafe paths. This is useful
+storage-boundary evidence, not a cryptographic audit or proof of live capture,
+iOS file protection, actual Keychain policy enforcement or no-telemetry behavior.
+
+
+Schema-2 commit `9bfc4c87` subsequently passed 39 native macOS tests and iOS
+simulator compilation. Additional checks cover atomic v1 migration and rollback,
+invalid legacy sizes/account identities, immutable-event triggers, consistent
+counters across two live connections, and bounded retention boundaries. The
+connection test uses sequential operations; simultaneous writer/migration races
+and real I/O failures are not established by these results. Evidence is in
+[fork/evidence/archive-tests-9bfc4c87.json](fork/evidence/archive-tests-9bfc4c87.json).
+
+
+Schema-3 commit `c326364b` passed 46 native macOS tests and iOS simulator
+compilation. Its storage-side generation barrier rejects stale/future batches,
+advances purge generations atomically, and makes same-generation retries preserve
+newer records. Tests cover migration, reopening, sequential live handles, a FIFO
+writer/purge boundary and an injected SQL failure after deletion. These are not
+process-termination, disk-full or live Postbox handoff tests; the application-level
+purge/capture protocol remains unimplemented. The 11 Keychain tests still use
+injected Security responses. See [exact evidence](fork/evidence/archive-tests-c326364b.json).

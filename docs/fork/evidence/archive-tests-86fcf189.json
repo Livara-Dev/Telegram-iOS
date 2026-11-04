@@ -1,0 +1,44 @@
+{
+  "schema": 1,
+  "date_utc": "2026-11-04",
+  "repository": "Livara-Dev/Telegram-iOS",
+  "source_commit": "86fcf189f295d6b746e1bc1e9b89f45a61694884",
+  "run_id": 41794635275,
+  "job_id": 126455718699,
+  "conclusion": "success",
+  "runner": "xcode-27",
+  "xcode_pin": "27.1",
+  "tests": {
+    "platform": "macOS",
+    "storage": 20,
+    "keychain_mocked": 11,
+    "total": 31,
+    "failures": 0
+  },
+  "ios_simulator": {
+    "triple": "arm64-apple-ios15.0-simulator",
+    "target": "LocalMessageArchive",
+    "compilation": "passed",
+    "runtime_tests": "not_run"
+  },
+  "artifact": {
+    "id": 13305355481,
+    "sha256": "b52206078d3a2a413034f9443cbb859f49c4a231b729bbe53637c75fef78a2a2",
+    "expires_at": "2026-11-11T07:48:38Z"
+  },
+  "limitations": [
+    "No Telegram update processing or UI integration",
+    "Keychain tests inject Security responses",
+    "No iOS device Data Protection or lock-state validation",
+    "No physical-disk quota, media retention or performance benchmark"
+  ],
+  "log_excerpt": [
+    "2026-11-04T07:48:19.3701700Z Build complete! (26.84 sec)",
+    "2026-11-04T07:48:21.2661300Z \t Executed 20 tests, with 0 failures (0 unexpected) in 0.360 (0.365) seconds",
+    "2026-11-04T07:48:21.2688820Z \t Executed 11 tests, with 0 failures (0 unexpected) in 0.004 (0.005) seconds",
+    "2026-11-04T07:48:21.2691340Z \t Executed 31 tests, with 0 failures (0 unexpected) in 0.363 (0.370) seconds",
+    "2026-11-04T07:48:21.2693260Z Test Suite 'All tests' passed at 2026-11-04 07:48:21.092.",
+    "2026-11-04T07:48:21.2694670Z \t Executed 31 tests, with 0 failures (0 unexpected) in 0.363 (0.376) seconds",
+    "2026-11-04T07:48:37.9718030Z Build complete! (7.45 sec)"
+  ]
+}

@@ -1,0 +1,61 @@
+{
+  "schema": 1,
+  "source_commit": "c326364ba08b12132849b0ca1fdb01a5beb8f15a",
+  "run_id": 41796701379,
+  "job_id": 126462384814,
+  "platform": "GitHub xcode-27 hosted macOS runner",
+  "tests": {
+    "storage_including_benchmark": 35,
+    "keychain_mocked": 11,
+    "total": 46,
+    "failures": 0
+  },
+  "ios_simulator_compilation": "passed",
+  "artifact": {
+    "id": 13304679554,
+    "name": "archive-draft-c326364ba08b12132849b0ca1fdb01a5beb8f15a",
+    "size_in_bytes": 21909,
+    "url": "https://api.github.com/repos/Livara-Dev/Telegram-iOS/actions/artifacts/13304679554",
+    "archive_download_url": "https://api.github.com/repos/Livara-Dev/Telegram-iOS/actions/artifacts/13304679554/zip",
+    "expired": false,
+    "created_at": "2026-11-04T08:06:12Z",
+    "expires_at": "2026-11-11T08:06:10Z",
+    "updated_at": "2026-11-04T08:06:12Z",
+    "digest": "sha256:b803f4f377390b25fbe96c07b173041434c955bf3a08ecde57b3bee4eabaf4ac",
+    "workflow_run": {
+      "id": 41796701379,
+      "repository_id": 1445292587,
+      "head_repository_id": 1445292587,
+      "head_branch": "feature/archive-engine-draft",
+      "head_sha": "c326364ba08b12132849b0ca1fdb01a5beb8f15a"
+    }
+  },
+  "metrics": {
+    "benchmark": "archive_single_append",
+    "iphone_performance_claim": false,
+    "latency_threshold": "none",
+    "mean_ms": 0.3937376,
+    "measurement": "monotonic async API roundtrip including XCTest expectation/wait overhead",
+    "samples_ms": [
+      0.456916,
+      0.456209,
+      0.4635,
+      0.370792,
+      0.366959,
+      0.355667,
+      0.36175,
+      0.350708,
+      0.404042,
+      0.350833
+    ],
+    "synthetic_seed_records": 10000,
+    "warmup_appends": 1
+  },
+  "limitations": [
+    "No Telegram/Postbox capture integration",
+    "No signed IPA or installed-device validation",
+    "Keychain policy tests use injected Security responses",
+    "FIFO queue and sequential multi-handle tests are not simultaneous process/crash tests",
+    "No media, physical storage quota, UI, ghost mode or filters"
+  ]
+}

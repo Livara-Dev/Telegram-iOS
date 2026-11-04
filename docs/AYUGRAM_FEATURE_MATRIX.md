@@ -1,8 +1,9 @@
 # AyuGram for iOS feature matrix
 
-Updated 2026-11-04. **No requested feature is implemented or runtime-tested yet.**
-The existing project is the official Telegram-iOS checkout plus the audited
-baseline tooling. Its source remains unchanged. Portable tooling tests do not
+Updated 2026-11-04. **No requested feature is verified in the running application yet.**
+The existing fork now includes experimental default-off TelegramCore archive hooks,
+an account worker and native archive screens, in addition to the tested storage library.
+See [integration scope and verification gates](fork/ARCHIVE-INTEGRATION.md). Portable tooling tests do not
 prove iOS app behavior. Phase A is being exercised through the hosted workflow
 on `Livara-Dev/Telegram-iOS`, with the owner's API credentials read from Secrets.
 
@@ -32,16 +33,16 @@ technical claim of impossibility. All entries require actual integration tests.
 | Automatic offline | `shared/ghost.md:36` warns of online/offline oscillation with another active client. | Per-account policy and bounded scheduling; test no loop/flood, account switch, foreground transition and other-session effects. Cannot retroactively erase a visible online interval. | Not implemented; API-policy conflict |
 | Read on interaction | `shared/ghost.md:44`; historical Android has mark-read-after-send plus explicit mark-read helpers. Docs do not define every interaction. | Specify exact actions (e.g. successful send/manual mark read); scoped one-shot permission, no global race-prone allow flag. Test failures and unrelated chats/accounts. | Not implemented |
 | Scheduled sending for ghost use | `shared/ghost.md:48` describes 12-second text delay, dynamic media delay and network fragility. | Use existing Telegram scheduling capability, explicitly showing the delay. Respect unsupported destinations/media, cancellation and failures. No guarantee against server presence inference. | Not implemented; API-policy conflict |
-| Independent deleted-message archive | `android/saving.md:10` describes separate Room storage; old source exposes snapshot/deletion hooks. | Store locally seen snapshots in a separately managed encrypted native store; canonical deletion still proceeds. Cannot recover unseen or already absent data. | Not implemented |
-| Edited-message timeline | Old Android records prior content before overwrite; `AyuMessageHistory` displays revisions. | Preserve original/current distinction, order, deduplication, same-timestamp edits, account namespace and rollback atomicity. | Not implemented |
+| Independent deleted-message archive | `android/saving.md:10` describes separate Room storage; old source exposes snapshot/deletion hooks. | Store locally seen snapshots in a separately managed encrypted native store; canonical deletion still proceeds. Cannot recover unseen or already absent data. | 54 storage/Keychain tests pass on macOS; server-replay and user-initiated deletion hooks authored; application verification pending |
+| Edited-message timeline | Old Android records prior content before overwrite; `AyuMessageHistory` displays revisions. | Preserve original/current distinction, order, deduplication, same-timestamp edits, account namespace and rollback atomicity. | Server-replay and own-edit acknowledgement capture plus native timeline authored; application verification pending |
 | Saved media | `android/saving.md:17`, `:56` describes auto-download or copying already downloaded files; October post 61 adds profile display. | First version should only retain already available files unless explicit later download policy is approved. Protect filenames/content; test reference counting, eviction, partial downloads and size limits. No promised retrieval after server deletion. | Not implemented |
-| Per-chat exceptions and bot controls | October post 61 claims exceptions; `android/saving.md:60` describes disabling bot capture; old config has bot gate. | Define precedence: disabled feature, excluded chat, bot policy, then media/retention policy. Account-specific persistent rules. | Not implemented |
-| Size/age limits and cleanup | Requested addition; January 2026 post 49 documents historical excessive storage/cleanup fixes. | Bounded archive, media quota and deterministic retention; test crash/restart, shared attachment deletion, disk-full and logout purge. | Not implemented |
-| Searchable deleted-only view | `android/saving.md:23`. | Dedicated archive query API; test paging, localization, escaped search input, account isolation and deleted-only results. | Not implemented |
+| Per-chat exceptions and bot controls | October post 61 claims exceptions; `android/saving.md:60` describes disabling bot capture; old config has bot gate. | Define precedence: disabled feature, excluded chat, bot policy, then media/retention policy. Account-specific persistent rules. | Persistent account policy and bot toggle authored; scope-picker UI outstanding |
+| Size/age limits and cleanup | Requested addition; January 2026 post 49 documents historical excessive storage/cleanup fixes. | Bounded archive, media quota and deterministic retention; test crash/restart, shared attachment deletion, disk-full and logout purge. | Age/logical-payload retention plus native presets authored; media/disk quota absent |
+| Searchable deleted-only view | `android/saving.md:23`. | Dedicated archive query API; test paging, localization, escaped search input, account isolation and deleted-only results. | Native paginated deleted view authored; search absent; runtime verification pending |
 | Deleted results in normal chat search | October post 61. | Distinguish local archived results from Telegram results and prohibit upload of archive content/query index. Test deduplication and navigation to absent canonical message. | Not implemented |
 | Deleted media in chat profile | October post 61. | Clearly marked local-only media collection; no false reference to server availability. | Not implemented |
 | Inline deleted/edited markers and timeline integration | Historical Android customizable marks; docs acknowledge deleted messages can disappear between loaded batches (`android/saving.md:25`). | Merge with stable keys and deterministic pagination; preserve archive-only view as complete index. Test gap boundaries and all-deleted spans. | Not implemented |
-| Archive dashboard | Requested addition; not established in inspected docs or October notes. | Local counts, bytes, retention policy, purge progress and encryption status; no fabricated completeness metric. | Not implemented |
+| Archive dashboard | Requested addition; not established in inspected docs or October notes. | Local counts, bytes, retention policy, purge progress and encryption status; no fabricated completeness metric. | Partial controls/status/purge authored; physical usage dashboard absent |
 | Encrypted export/import | Docs mention DB import/export deep links (`android/various.md:28`), October adds options, **neither establishes encryption**. | New authenticated versioned format, reviewed password KDF/key handling, resource limits, corruption/tamper tests, dry-run preview and account mapping. Reject unsafe paths/zip bombs and accidental plaintext exports. | Not implemented |
 | Global/per-chat regex rules | `android/filters/index.md:31`, `:41`, `:53`: shared rules, chat rules and shared-rule exclusions; Java regex. | Native rules need explicit grammar/compatibility, compiled-rule validation, bounded cost and content/rule-version cache keys. No automatic Java regex equivalence promise. | Not implemented |
 | Hide blocked-user messages and activity | `android/filters/index.md:18` additionally names reactions, typing and member list. | Separate message presentation from membership truth. Cover reactions, notification previews, mentions, search and activity; do not alter server membership or moderation records. | Not implemented |
@@ -60,32 +61,93 @@ technical claim of impossibility. All entries require actual integration tests.
 | Feature | Android/reference evidence | Proposed iOS equivalent and limitations | iOS status |
 | --- | --- | --- | --- |
 | Quick Ghost toggle and active-protection indication | Historical aggregate ghost setting; Desktop toggle; see reference audit | Per-account effective policy, chat toolbar control, individual capability labels; no perfect-invisibility badge | Not implemented |
-| Account-specific settings and archive isolation | Android stores user ID with archive rows; global caches require caution | Separate encrypted DB/key per account; account-scoped local settings and query APIs | Not implemented |
-| Sender, group, channel and bot exclusions | Historical bot gate and October save-exception release note; exact modern precedence unavailable | Persist explicit scope/precedence; test sender-vs-chat conflicts and transitions | Not implemented |
-| Cache-clear independence | Docs describe Room storage and saved files separate from usual history | Independent protected archive directory with archive-owned media; verify normal cache purge leaves it intact | Not implemented |
-| Edit/deletion timestamps and migration | Old edit data stores entity creation time; modern schema unavailable | Distinguish observed deletion time from server edit time, idempotent schema versions and rollback recovery | Not implemented |
+| Account-specific settings and archive isolation | Android stores user ID with archive rows; global caches require caution | Separate encrypted DB/key per account; account-scoped local settings and query APIs | DB isolation and mocked Keychain tests pass; account settings/worker authored, integration tests pending |
+| Sender, group, channel and bot exclusions | Historical bot gate and October save-exception release note; exact modern precedence unavailable | Persist explicit scope/precedence; test sender-vs-chat conflicts and transitions | Capture policy and account persistence authored; dedicated exclusion picker absent |
+| Cache-clear independence | Docs describe Room storage and saved files separate from usual history | Independent protected archive directory with archive-owned media; verify normal cache purge leaves it intact | Dedicated account archive path authored; actual cache-clear test pending |
+| Edit/deletion timestamps and migration | Old edit data stores entity creation time; modern schema unavailable | Distinguish observed deletion time from server edit time, idempotent schema versions and rollback recovery | Schema 1–4 library tests pass on macOS; application hooks still require integration verification |
 | Configurable disappearing-media retention | Reference advertises retention; API terms forbid defeating expiry | Keep TTL/view-once/Secret Chat capture excluded; no security-control bypass | Not implemented; policy-limited |
 | Case sensitivity, selected-text and spam rules | Old AyuFilter regex flags and find(); current docs rule creation | Typed/literal predicates, explicit case behavior, opt-in bounded regex; no accuracy claim for generic spam detection | Not implemented |
-| Native dark/light, smooth animations, settings search | Upstream native iOS supports appearance; Android redesign and Desktop search reference | Reuse themes and native components; settings registry, VoiceOver/Dynamic Type, frame-recorded UI tests | Upstream appearance only; fork settings not implemented |
+| Native dark/light, smooth animations, settings search | Upstream native iOS supports appearance; Android redesign and Desktop search reference | Reuse themes and native components; settings registry, VoiceOver/Dynamic Type, frame-recorded UI tests | Native themed archive settings authored; recorded UI frames and settings search absent |
 | Client-side Premium cosmetics | October local folder colors/tags; docs distinguish server limits | Local appearance metadata only, never alter entitlement checks | Not implemented |
 | Photos/video/documents/voice archive | Android saved attachment path; Desktop archive currently text-only | Protected archive-owned bytes plus typed metadata and missing/partial states; no guaranteed redownload after deletion | Not implemented |
-| Encrypted database and Keychain keys | Historical Android Room and Desktop SQLite do not establish encryption | Independent SQLCipher, per-account random keys, Keychain this-device-only, Data Protection and backup exclusion | Not implemented |
+| Encrypted database and Keychain keys | Historical Android Room and Desktop SQLite do not establish encryption | Independent SQLCipher, per-account random keys, Keychain this-device-only, Data Protection and backup exclusion | SQLCipher tests pass on macOS; Keychain mocked; device checks pending |
 | Import/export and optional sync | October import/export options; E2E format/protocol unverified | Authenticated versioned encrypted files; sync only after protocol review and explicit user endpoint choice | Not implemented; sync protocol not cleared |
-| No telemetry / no archive upload | Both upstreams contain telemetry; Android sync exists | Separate reviewed telemetry-removal diff and request-canary tests, no archive networking capability | Not satisfied by unchanged upstream |
+| No telemetry / no archive upload | Both upstreams contain telemetry; Android sync exists | Separate reviewed telemetry-removal diff and request-canary tests, no archive networking capability | Not satisfied; upstream telemetry remains unresolved |
 | iPhone 15 Pro performance | No relevant iOS measurements available | Measure cold start, scroll frames, RSS, DB p95, disk pressure and battery with fixed datasets | Not measured |
+
+## Storage library and experimental integration
+
+`submodules/LocalMessageArchive` is a native Swift module using the existing
+vendored SQLCipher library and Security.framework. Its integration now uses TelegramCore hooks and an account worker. Postbox,
+authentication and networking implementations remain unchanged. Capture is disabled
+by default; application verification is pending. An API unit test is
+not proof of automatic capture, safe cache clearing or on-device key protection.
+
+The draft stores supplied text/entity snapshots with observed deletion/edit time,
+server edit time, account/peer/message identity and caller-provided replay keys.
+It includes bounded queries, exclusions, transactional batches, age/logical-payload
+retention and fail-closed schema/key handling. The Keychain tests inject Security
+responses; they do not establish actual entitlement or locked-device behavior.
+No media bytes, export/import, search UI or synchronization are present.
+The new Postbox handoff, coordinated purge/replay and native settings are experimental
+and require their own integration evidence.
+
+The earlier `1b7dfc3b` integration passed the real Postbox, LocalMessageArchive,
+TelegramCore and TextFormat iOS simulator targets in
+[run 41811248732](https://github.com/Livara-Dev/Telegram-iOS/actions/runs/41811248732).
+This covers that revision's 32 archive integration cases. The later suite has
+56 cases, including local deletion/edit acknowledgements, rich-content gaps,
+MediaBox cache clearing and byte preservation of incompatible preferences;
+those additions require their own passing run. Full-app/UI execution remains
+unverified. Existing incompatible settings are read-only, never silently
+replaced with older defaults.
+
+Ordinary flat text and message entities are the current capture format. Structured
+rich messages keep their content outside the flat text field and are unsupported:
+eligible deletion/change events increment the missed-capture count instead of
+storing a misleading empty record. Range/history-clear, history validation,
+group-removal and extension mutation paths remain uncovered. This is not a
+complete or lossless message-history engine.
+
+The separate archive workflow runs native host XCTest against the real vendored
+SQLCipher implementation without Telegram secrets. The first execution, [run
+41794260200](https://github.com/Livara-Dev/Telegram-iOS/actions/runs/41794260200),
+compiled successfully but failed 17 storage tests at database open. Eleven mocked
+Keychain tests and two unsafe-path tests passed. The physical-path fix in `86fcf189` passes [run 41794635275](https://github.com/Livara-Dev/Telegram-iOS/actions/runs/41794635275): **31 native tests** (20 database, 11 mocked Keychain) with zero failures. The module's iOS simulator variant also compiles. These are not iOS runtime or Telegram integration tests. [Machine-readable evidence](fork/evidence/archive-tests-86fcf189.json) records the exact commit, results and artifact digest. Device Data Protection, crash recovery across the
+two stores, physical storage quota and iPhone performance remain unverified.
+
+The schema-2 library increment adds usage counters, bounded indexed
+retention cleanup and a transactional v1-to-v2 migration. Commit `9bfc4c87` passed 39 native macOS tests and iOS simulator compilation in
+[run 41795912590](https://github.com/Livara-Dev/Telegram-iOS/actions/runs/41795912590).
+Seven added tests cover migration, rollback and counter consistency across two
+live connections with sequential operations. The same 10,000-record benchmark
+measured 0.340 ms mean append latency versus 29.648 ms in the earlier hosted run;
+these are separate host measurements, not iPhone results. See
+[performance observations](fork/PERFORMANCE.md) and
+[revision-specific evidence](fork/evidence/archive-tests-9bfc4c87.json).
+
+The schema-3 draft adds the local half of that purge protocol: required capture
+generations, transactional generation advances and idempotent purge retries.
+Commit `c326364b` passed 46 native macOS tests and iOS simulator compilation in
+[run 41796701379](https://github.com/Livara-Dev/Telegram-iOS/actions/runs/41796701379).
+The new tests cover the local generation boundary, rollback, retry and migration.
+Those earlier results do not cover the newly authored Postbox coordinator or prove
+application-level purge safety. [Exact evidence](fork/evidence/archive-tests-c326364b.json) records the
+commit, test counts, benchmark samples and downloadable artifact identity.
 
 ## Delivery status
 
 | Deliverable | Status | Evidence / next gate |
 | --- | --- | --- |
-| Existing source retained | Complete for audit checkpoint | Source guard checks immutable upstream tree and dependency manifest; no auth/crypto/network source edits |
+| Existing source retained | Preserved with explicit feature changes | Source guard pins dependencies and all upstream files except named capture/lifecycle/UI seams; allowlisted diffs require review |
 | Android/Desktop/October feature audit | Source/document review | Reference docs distinguish inspected code from release claims and missing proprietary source |
 | Hosted macOS workflow | Published; baseline not passed | `xcode-27` runner starts after workflow-context fix; see execution record for results |
 | Portable tooling tests | Executed locally | Final counts and commands in [baseline evidence](fork/BASELINE.md) |
 | Working iOS baseline | Not demonstrated | GitHub fork and Actions are accessible; hosted compilation and iOS tests still must pass |
 | Installable independently signed IPA | Not produced | Unsigned mode is separate; signing, all entitlements and device installation still need verification |
 | GPL review | Obligations identified; incomplete release clearance | [license audit](fork/LICENSE-AND-SUPPLY-CHAIN.md); full dependency/source bundle required |
-| Security verification | Source findings only | [risk register](SECURITY_ASSESSMENT.md); no runtime privacy attestation |
+| Standalone archive module | 54 macOS tests and iOS module compilation pass | Exact head `1b7dfc3b`, run 41811248751; later application changes require a fresh result |
+| Security verification | Source review plus storage boundary tests | [risk register](SECURITY_ASSESSMENT.md); no runtime privacy attestation |
 
 Update each feature row with a commit and concrete test evidence when implemented.
 Do not promote an entry to working because a model test or compiler succeeds.

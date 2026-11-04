@@ -1,7 +1,20 @@
 # Windows build download and iPhone installation
 
-No successful iOS artifact exists from this workspace yet. These instructions
-describe how to obtain and test one after GitHub Actions succeeds.
+No full-application build or device IPA has succeeded yet. Downloadable test
+evidence exists, including passing iOS simulator integration suites, but those
+ZIP files do not contain an installable application. These instructions describe
+how to obtain and test a device build after the application workflow succeeds.
+
+For PR #2's application integration, use **Archive application integration
+(hosted macOS)** on `feature/archive-engine-draft`. Pushes run this workflow
+automatically. Its artifact is `archive-integration-<commit>`, and it runs the
+Postbox/archive/TelegramCore/TextFormat iOS suites before compiling the full app.
+Its separate `archive-integration-tests-<commit>` artifact appears after the
+test phase, even while application compilation is still running. This early
+artifact contains test evidence only. Private build state is cleaned between
+phases, so some dependencies may compile again.
+Match the run's commit to the latest PR head. The separate **Archive engine
+draft tests** workflow publishes library test evidence only, never an IPA.
 
 1. Open the authorized fork `Livara-Dev/Telegram-iOS`. In Settings →
    Secrets and variables → Actions, set repository secrets `TELEGRAM_API_ID` and
@@ -9,7 +22,10 @@ describe how to obtain and test one after GitHub Actions succeeds.
    https://my.telegram.org/apps. The workflow uses `org.livara.ayugram`, as requested;
    its availability has not been verified in Apple's developer portal. Use your
    own `APPLE_TEAM_ID` for signed builds. Never copy Telegram's identity.
-2. Open Actions → **Fork baseline (hosted macOS)** → Run workflow. The workflow
+2. Open Actions → **Fork baseline (hosted macOS)** and select the latest automatic
+   push run for the baseline branch, or the integration workflow described above
+   for PR #2. Manual **Run workflow** is available after the workflow exists on
+   the repository's default branch. The workflow
    uses GitHub's `xcode-27` hosted Apple Silicon image, verifies Xcode 27.1/macOS 27,
    verifies the pinned Bazel download, attempts the missing iOS 26.5 test-runtime
    installation, builds the full simulator app and runs the explicit iOS test
@@ -40,6 +56,7 @@ identity with correctly provisioned identifiers is the most direct route to a
 fully independently signed build, but this has not been demonstrated here.
 
 No jailbreak, MDM enrollment or disabling iOS security is part of the procedure.
-The unchanged baseline still contains upstream telemetry and does not include
-the requested archive, filtering or Ghost Mode. Do not use sensitive accounts
+The unchanged baseline still contains upstream telemetry. PR #2 adds experimental
+archive integration, but application verification is pending; filtering and
+Ghost Mode remain unimplemented. Do not use sensitive accounts
 for validation until the documented privacy/security gates pass.

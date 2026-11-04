@@ -41,6 +41,13 @@ class SourceGuardTests(unittest.TestCase):
     def assertFailure(self, expected):
         self.assertTrue(any(expected in item for item in self.failures()), self.failures())
 
+    def add_upstream_fixture(self, path):
+        self.write(path, "// upstream fixture\n")
+        self.git("add", path)
+        self.git("commit", "-qm", "upstream fixture")
+        self.base = self.git("rev-parse", "HEAD").decode().strip()
+        self.write("docs/fork/provenance.json", json.dumps(guard.provenance(self.root, self.base)))
+
     def test_clean_baseline_and_audit_addition_pass(self):
         self.write("docs/fork/AUDIT.md", "Source reviewed; runtime checks pending.\n")
         self.assertEqual([], self.failures())
@@ -78,6 +85,38 @@ class SourceGuardTests(unittest.TestCase):
     def test_new_application_file_rejected(self):
         self.write("submodules/TelegramCore/NewNetwork.swift", "// replacement\n")
         self.assertFailure("Addition outside audit/build scope")
+
+    def test_archive_additions_stay_within_named_feature_scope(self):
+        for path in ("submodules/TelegramCore/Sources/LocalArchive/Capture.swift",
+                     "submodules/TelegramCore/Tests/LocalArchiveCaptureTests.swift",
+                     "submodules/SettingsUI/Sources/LocalArchiveSettingsController.swift",
+                     ".github/workflows/archive-integration.yml"):
+            self.write(path, "// feature fixture\n")
+        self.assertEqual([], self.failures())
+
+    def test_exact_reviewed_seam_can_change_but_neighbor_cannot(self):
+        path = "submodules/TelegramCore/Sources/Account/Account.swift"
+        self.add_upstream_fixture(path)
+        self.write(path, "// account lifecycle integration fixture\n")
+        self.assertEqual([], self.failures())
+        self.write("submodules/TelegramCore/Sources/Account/Authentication.swift", "// unreviewed\n")
+        self.assertFailure("Addition outside audit/build scope")
+
+    def test_staged_secret_in_existing_reviewed_seam_is_detected(self):
+        path = "submodules/TelegramCore/Sources/Account/Account.swift"
+        self.add_upstream_fixture(path)
+        self.write(path, 'let api_hash = "' + "1234567890abcdef" * 2 + '"\n')
+        self.git("add", path)
+        self.write(path, "// safe working copy\n")
+        self.assertFailure("Literal credential")
+
+    def test_feature_allowlist_does_not_unpin_dependencies_or_crypto(self):
+        for path in ("MODULE.bazel", "submodules/MtProtoKit/Sources/MTEncryption.m",
+                     "submodules/Postbox/Sources/SqliteValueBox.swift"):
+            self.add_upstream_fixture(path)
+            self.write(path, "// forbidden change\n")
+            self.assertFailure("Upstream source differs")
+            self.write(path, "// upstream fixture\n")
 
     def test_signing_file_rejected(self):
         self.write("docs/fork/signing.p12", "fixture")

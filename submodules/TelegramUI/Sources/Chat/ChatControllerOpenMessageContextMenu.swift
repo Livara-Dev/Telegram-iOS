@@ -18,6 +18,7 @@ import TopMessageReactions
 import TelegramNotices
 import PresentationDataUtils
 import ChatPresentationInterfaceState
+import SettingsUI
 
 extension ChatControllerImpl {
     func openMessageContextMenu(message: EngineMessage, selectAll: Bool, node: ASDisplayNode, frame: CGRect, anyRecognizer: UIGestureRecognizer?, location: CGPoint?) -> Void {
@@ -67,6 +68,21 @@ extension ChatControllerImpl {
                 case let .list(itemList):
                     if itemList.isEmpty {
                         return
+                    }
+                    if message.id.namespace == Namespaces.Message.Cloud,
+                       message.id.peerId.namespace != Namespaces.Peer.SecretChat,
+                       self.context.account.localArchive != nil {
+                        var itemList = itemList
+                        itemList.append(.action(ContextMenuActionItem(text: "View Captured Versions", icon: { theme in
+                            return generateTintedImage(image: UIImage(bundleImageName: "Chat/Context Menu/Search"), color: theme.actionSheet.primaryTextColor)
+                        }, action: { [weak self] _, complete in
+                            complete(.dismissWithoutContent)
+                            guard let self else {
+                                return
+                            }
+                            self.push(localArchiveMessageHistoryController(context: self.context, messageId: message.id))
+                        })))
+                        actions.content = .list(itemList)
                     }
                 case .custom, .twoLists:
                     break

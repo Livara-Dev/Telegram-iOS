@@ -12,6 +12,7 @@ swift_library(
         "-warnings-as-errors",
     ],
     deps = [
+        "//submodules/LocalMessageArchive:LocalMessageArchive",
         "//submodules/TelegramApi:TelegramApi",
         "//submodules/MtProtoKit:MtProtoKit",
         "//submodules/MediaPreuploadRegistry:MediaPreuploadRegistry",
@@ -44,6 +45,8 @@ swift_library(
     ]),
     deps = [
         ":TelegramCore",
+        "//submodules/EncryptionProvider:EncryptionProvider",
+        "//submodules/LocalMessageArchive:LocalMessageArchive",
         "//submodules/SSignalKit/SwiftSignalKit:SwiftSignalKit",
         "//submodules/TelegramApi:TelegramApi",
         "//submodules/MtProtoKit:MtProtoKit",

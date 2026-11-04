@@ -92,3 +92,79 @@ Required incremental acceptance includes:
 6. Security gates: secret scan limited to changed files without printing secret values; pinned dependency/checksum inventory; no new network/import capability in archive module; archive-content canary absent from request bodies, logs and build artifacts; telemetry forced on by hostile server config still emits nothing; source/export manifest; verify independent signing identity and all nested code signatures.
 
 Build pin at this revision: app 13.1.2, Xcode 27.1, macOS 27, Bazel 9.2.0 with SHA-256 `dd466352a3e4d3581b8898740ee1ff208866ccbe25f8d367c5dcb950219587e6` (`versions.json`). A macOS machine, the matching Apple toolchain/runtime, own bundle/team identifiers, own Telegram API credentials and signing material remain necessary. No IPA or successful baseline build is asserted by this document.
+
+## Historical handoff design (implementation now under integration testing)
+
+The following records the pre-implementation review. The experimental coordinator,
+transactional outbox and server/local capture seams now exist; current coverage,
+tests and remaining gaps are tracked in [ARCHIVE-INTEGRATION.md](ARCHIVE-INTEGRATION.md).
+It must not be read as evidence that the application integration has passed.
+
+Inspected against the same pinned source on 2026-11-04. This is an implementation
+handoff, **not a validated integration design or a claim of reliable capture**.
+
+The smallest candidate can reuse Postbox's existing operation log rather than
+adding a Postbox table or importing the archive module into Postbox:
+
+- `Postbox/Sources/Postbox.swift:1966–1968` registers operation-log metadata,
+  merged index and content tables as 29–31. Public transaction APIs at `:805–850`
+  append, enumerate, update and remove entries. A dedicated TelegramCore
+  `PostboxCoding` payload and unused operation tag could use those tables without
+  a Postbox schema upgrade. Existing tags occupy 0–27 in
+  `TelegramCore/Sources/SyncCore/SyncCore_Namespaces.swift:234–263`; reserve and
+  collision-check a fork tag explicitly. Register its decoder in
+  `Account/AccountManager.swift` alongside the operation types at `:150–229`.
+  Version the payload and fail closed on unknown versions; do not serialize an
+  entire `Message`/attribute collection containing unrelated state.
+- Capture eligible, already-present text/entity snapshots before
+  `State/AccountStateManagementUtils.swift:4624` global-ID deletion (`Transaction.
+  messageIdsForGlobalIds` resolves IDs first), `:4633` explicit deletion, and
+  inside the `previousMessage` closure at `:4672` before returning the merged edit.
+  Append the snapshot and canonical mutation in the **same** Postbox transaction.
+  Preserve a stable event UUID, original observation time and per-account purge
+  generation in the payload. Compare actual content so reaction/counter changes
+  do not create fake edit versions. Keep secret/TTL/view-once content excluded.
+  This limited hook set does not cover range deletion at `:4643`, history
+  validation, local removals, account removal or every expiry path.
+- Use `Postbox.mergedOperationLogView` only as a wakeup. Its initial value emits
+  inside `transactionSignal` (`Postbox.swift:4152`), and later view updates occur
+  in `beforeCommit` (`:2778`), **before** `valueBox.commit` (`:3311`). Hop to a
+  separate serial account coordinator, re-read a bounded set through a fresh
+  `postbox.transaction`, and use that transaction's emitted result (`:3375`) to
+  start asynchronous archive I/O. Never write the archive directly from a view
+  callback or transaction closure. Keep the entry queued until archive success;
+  then acknowledge that exact event in another Postbox transaction. Restart after
+  archive commit but before acknowledgement must replay the same event key.
+
+There is an unresolved durability caveat: `SqliteValueBox.swift:681` calls
+`checkTransactionResult` (`:26`), which logs and asserts on commit failure. The
+stronger global error mode is documented for the notification extension, not the
+main app. A normal transaction signal is therefore **not established as a durable
+commit acknowledgement under release-build disk-full/I/O failure**. Do not enable
+that global mode in the main app as a shortcut. Commit-failure behavior needs a
+scoped review and fault-injection tests before a reliability claim.
+
+Purge also needs a persistent protocol, not just `ArchiveStore.purge()`: pause the
+account drain, persist a new capture generation/pending-purge marker, atomically
+advance the archive's accepted generation and delete prior records, then retire
+old outbox entries and resume. The archive must reject in-flight old-generation
+writes across restart. The schema-3 library draft now adds a local generation
+barrier verified by native library tests at `c326364b`; the Postbox coordinator
+and application-level purge tests are still absent. Bound outbox
+bytes and report capture gaps when storage is unavailable; never silently claim
+lossless capture while allowing unbounded backlog. Existing operation-log removal
+uses `secure: false` (`PeerOperationLogTable.swift:195`), so it is not forensic
+payload erasure. Account-root backup exclusion is attempted at
+`AccountManager.swift:287`, but its failure is only logged; this does not prove
+outbox backup/protection guarantees or make it use the archive's independent key.
+
+Minimum tests should combine the real transaction/view APIs with an injected
+archive sink: no consumption of pre-commit view data, close/reopen persistence,
+archive failure without acknowledgement, replay after success-before-ack, purge
+with an in-flight event, exclusions, and unchanged canonical deletion/edit results.
+`Postbox/Tests/PostboxFixture.swift` is an in-memory starting point, so add a
+persistent fixture for reopen/crash tests; it cannot prove crash durability as-is.
+Explicit targets already exist at `//submodules/Postbox:PostboxTests` and
+`//submodules/TelegramCore:TelegramCoreTests` (both iPhone 17/iOS 26.5). Actual
+commit-failure/crash tests, media ownership and coverage of all removal paths
+remain required before connecting the draft to production message processing.

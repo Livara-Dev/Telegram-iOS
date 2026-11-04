@@ -1,0 +1,280 @@
+name: Archive application integration (hosted macOS)
+
+on:
+  push:
+    branches: [feature/archive-engine-draft]
+  workflow_dispatch:
+    inputs:
+      unsigned_device:
+        description: Also compile an unsigned device IPA after simulator tests pass
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+
+# Test jobs are deliberately independent across revisions. Long application
+# builds must not prevent a newer PR commit from reaching the iOS test runners.
+jobs:
+  integration-tests:
+    # macos-latest does not satisfy versions.json. This preview image does;
+    # prepare_host.py additionally verifies the actual OS/Xcode versions.
+    runs-on: xcode-27
+    timeout-minutes: 360
+    defaults:
+      run:
+        shell: bash
+        working-directory: ./fork-source
+    steps:
+      # Checkout uses git directly, with the token scoped only to the fetch step.
+      - name: Check out the exact requested revision
+        working-directory: ${{ github.workspace }}
+        env:
+          CHECKOUT_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import base64, os, pathlib, re, subprocess
+          destination = pathlib.Path(os.environ['GITHUB_WORKSPACE']) / 'fork-source'
+          destination.mkdir(mode=0o700)  # Requires a fresh, disposable runner.
+          sha = os.environ['GITHUB_SHA']
+          repo = os.environ['GITHUB_REPOSITORY']
+          if not re.fullmatch(r'[0-9a-f]{40}', sha) or not re.fullmatch(r'[\w.-]+/[\w.-]+', repo):
+              raise SystemExit('Invalid checkout coordinates')
+          def run(args, env=None):
+              subprocess.run(args, cwd=destination, env=env, check=True)
+          run(['git', 'init', '-q'])
+          run(['git', 'remote', 'add', 'origin', 'https://github.com/' + repo + '.git'])
+          auth_env = os.environ.copy()
+          token = auth_env.pop('CHECKOUT_TOKEN')
+          auth_env.update(GIT_CONFIG_COUNT='1', GIT_CONFIG_KEY_0='http.https://github.com/.extraheader',
+                          GIT_CONFIG_VALUE_0='AUTHORIZATION: basic ' + base64.b64encode(('x-access-token:' + token).encode()).decode())
+          run(['git', 'fetch', '--no-tags', 'origin', sha], auth_env)
+          run(['git', 'checkout', '--detach', sha])
+          # Relative upstream submodule URLs otherwise resolve under Livara-Dev.
+          run(['git', 'submodule', 'init'])
+          run(['git', 'config', 'submodule.submodules/rlottie/rlottie.url', 'https://github.com/TelegramMessenger/rlottie.git'])
+          run(['git', 'config', 'submodule.submodules/TgVoipWebrtc/tgcalls.url', 'https://github.com/TelegramMessenger/tgcalls.git'])
+          run(['git', 'submodule', 'update', '--init', '--recursive', '--depth', '1', '--jobs', '8'])
+          (destination / 'build/fork-evidence').mkdir(parents=True)
+          PY
+
+      - name: Run portable tooling tests and source guard
+        run: |
+          set -euo pipefail
+          { python3 -m unittest discover -s tools/fork_baseline/tests -v &&
+            python3 -m unittest discover -s tools/fork_audit/tests -v &&
+            python3 -m unittest discover -s build-system/Make/tests &&
+            python3 tools/fork_audit/check.py; } 2>&1 | tee build/fork-evidence/portable-tests.log
+
+      - name: Validate required API Secrets without exposing their values
+        env:
+          TELEGRAM_API_ID: ${{ secrets.TELEGRAM_API_ID }}
+          TELEGRAM_API_HASH: ${{ secrets.TELEGRAM_API_HASH }}
+          IOS_BUNDLE_ID: org.livara.ayugram
+        run: |
+          python3 - <<'PY'
+          import os, sys
+          sys.path.insert(0, 'tools/fork_baseline')
+          from baseline import configuration, InvalidSetup
+          try:
+              configuration(os.environ, unsigned=True)
+          except InvalidSetup as error:
+              print('::error::' + str(error))
+              sys.exit(1)
+          print('API configuration validated; values omitted.')
+          PY
+
+      - name: Select pinned Apple toolchain and prepare verified build tools
+        run: |
+          set -euo pipefail
+          mkdir -p build/fork-evidence
+          sudo xcode-select -s /Applications/Xcode_27.1.app/Contents/Developer
+          python3 tools/fork_baseline/prepare_host.py 2>&1 | tee build/fork-evidence/host.log
+
+      - name: Install the upstream test runtime
+        run: |
+          set -euo pipefail
+          xcodebuild -downloadPlatform iOS -buildVersion 26.5 -architectureVariant arm64 2>&1 | tee build/fork-evidence/runtime.log
+          python3 tools/fork_baseline/prepare_host.py --simulator
+
+      - name: Run real iOS integration suites
+        id: integration_tests
+        env:
+          TELEGRAM_API_ID: ${{ secrets.TELEGRAM_API_ID }}
+          TELEGRAM_API_HASH: ${{ secrets.TELEGRAM_API_HASH }}
+          IOS_BUNDLE_ID: org.livara.ayugram
+          APPLE_TEAM_ID: ${{ vars.APPLE_TEAM_ID }}
+        run: |
+          set -euo pipefail
+          umask 077
+          python3 tools/fork_baseline/baseline.py simulator --integration-tests --tests-only 2>&1 | tee build/fork-evidence/integration-tests.log
+
+      - name: Hash early integration test evidence
+        if: always()
+        run: |
+          python3 - <<'PY'
+          import hashlib
+          from pathlib import Path
+          evidence = Path('build/fork-evidence')
+          evidence.mkdir(parents=True, exist_ok=True)
+          files = sorted(p for p in evidence.rglob('*') if p.is_file() and p.name != 'SHA256SUMS')
+          (evidence / 'SHA256SUMS').write_text(''.join(
+              hashlib.sha256(p.read_bytes()).hexdigest() + '  ' + str(p.relative_to(evidence)) + '\n'
+              for p in files))
+          PY
+
+      - name: Publish integration test evidence before the full app build
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: archive-integration-tests-${{ github.sha }}
+          path: ${{ github.workspace }}/fork-source/build/fork-evidence/
+          if-no-files-found: warn
+          retention-days: 7
+          include-hidden-files: false
+
+  application-build:
+    needs: integration-tests
+    concurrency:
+      # Reuse the previous workflow group while moving serialization to this
+      # job only, so an already-running full build is allowed to finish.
+      group: archive-integration-${{ github.ref }}
+      cancel-in-progress: false
+    # macos-latest does not satisfy versions.json. This preview image does;
+    # prepare_host.py additionally verifies the actual OS/Xcode versions.
+    runs-on: xcode-27
+    timeout-minutes: 360
+    defaults:
+      run:
+        shell: bash
+        working-directory: ./fork-source
+    steps:
+      # Checkout uses git directly, with the token scoped only to the fetch step.
+      - name: Check out the exact requested revision
+        working-directory: ${{ github.workspace }}
+        env:
+          CHECKOUT_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import base64, os, pathlib, re, subprocess
+          destination = pathlib.Path(os.environ['GITHUB_WORKSPACE']) / 'fork-source'
+          destination.mkdir(mode=0o700)  # Requires a fresh, disposable runner.
+          sha = os.environ['GITHUB_SHA']
+          repo = os.environ['GITHUB_REPOSITORY']
+          if not re.fullmatch(r'[0-9a-f]{40}', sha) or not re.fullmatch(r'[\w.-]+/[\w.-]+', repo):
+              raise SystemExit('Invalid checkout coordinates')
+          def run(args, env=None):
+              subprocess.run(args, cwd=destination, env=env, check=True)
+          run(['git', 'init', '-q'])
+          run(['git', 'remote', 'add', 'origin', 'https://github.com/' + repo + '.git'])
+          auth_env = os.environ.copy()
+          token = auth_env.pop('CHECKOUT_TOKEN')
+          auth_env.update(GIT_CONFIG_COUNT='1', GIT_CONFIG_KEY_0='http.https://github.com/.extraheader',
+                          GIT_CONFIG_VALUE_0='AUTHORIZATION: basic ' + base64.b64encode(('x-access-token:' + token).encode()).decode())
+          run(['git', 'fetch', '--no-tags', 'origin', sha], auth_env)
+          run(['git', 'checkout', '--detach', sha])
+          # Relative upstream submodule URLs otherwise resolve under Livara-Dev.
+          run(['git', 'submodule', 'init'])
+          run(['git', 'config', 'submodule.submodules/rlottie/rlottie.url', 'https://github.com/TelegramMessenger/rlottie.git'])
+          run(['git', 'config', 'submodule.submodules/TgVoipWebrtc/tgcalls.url', 'https://github.com/TelegramMessenger/tgcalls.git'])
+          run(['git', 'submodule', 'update', '--init', '--recursive', '--depth', '1', '--jobs', '8'])
+          (destination / 'build/fork-evidence').mkdir(parents=True)
+          PY
+
+      - name: Run portable tooling tests and source guard
+        run: |
+          set -euo pipefail
+          { python3 -m unittest discover -s tools/fork_baseline/tests -v &&
+            python3 -m unittest discover -s tools/fork_audit/tests -v &&
+            python3 -m unittest discover -s build-system/Make/tests &&
+            python3 tools/fork_audit/check.py; } 2>&1 | tee build/fork-evidence/portable-tests.log
+
+      - name: Validate required API Secrets without exposing their values
+        env:
+          TELEGRAM_API_ID: ${{ secrets.TELEGRAM_API_ID }}
+          TELEGRAM_API_HASH: ${{ secrets.TELEGRAM_API_HASH }}
+          IOS_BUNDLE_ID: org.livara.ayugram
+        run: |
+          python3 - <<'PY'
+          import os, sys
+          sys.path.insert(0, 'tools/fork_baseline')
+          from baseline import configuration, InvalidSetup
+          try:
+              configuration(os.environ, unsigned=True)
+          except InvalidSetup as error:
+              print('::error::' + str(error))
+              sys.exit(1)
+          print('API configuration validated; values omitted.')
+          PY
+
+      - name: Select pinned Apple toolchain and prepare verified build tools
+        run: |
+          set -euo pipefail
+          mkdir -p build/fork-evidence
+          sudo xcode-select -s /Applications/Xcode_27.1.app/Contents/Developer
+          python3 tools/fork_baseline/prepare_host.py 2>&1 | tee build/fork-evidence/host.log
+
+      - name: Install the upstream test runtime
+        run: |
+          set -euo pipefail
+          xcodebuild -downloadPlatform iOS -buildVersion 26.5 -architectureVariant arm64 2>&1 | tee build/fork-evidence/runtime.log
+          python3 tools/fork_baseline/prepare_host.py --simulator
+
+      # This job checks out the same requested SHA on a fresh hosted runner.
+      # Setup/runtime downloads and core compilation may repeat; no private
+      # Bazel state or credential-bearing cache is shared between the jobs.
+      - name: Build the full simulator app and run its smoke test
+        env:
+          TELEGRAM_API_ID: ${{ secrets.TELEGRAM_API_ID }}
+          TELEGRAM_API_HASH: ${{ secrets.TELEGRAM_API_HASH }}
+          IOS_BUNDLE_ID: org.livara.ayugram
+          APPLE_TEAM_ID: ${{ vars.APPLE_TEAM_ID }}
+        run: |
+          set -euo pipefail
+          umask 077
+          python3 tools/fork_baseline/baseline.py simulator 2>&1 | tee build/fork-evidence/simulator.log
+
+      - name: Compile unsigned device package
+        if: success() && (github.event_name == 'push' || inputs.unsigned_device)
+        env:
+          TELEGRAM_API_ID: ${{ secrets.TELEGRAM_API_ID }}
+          TELEGRAM_API_HASH: ${{ secrets.TELEGRAM_API_HASH }}
+          IOS_BUNDLE_ID: org.livara.ayugram
+          APPLE_TEAM_ID: ${{ vars.APPLE_TEAM_ID }}
+        run: |
+          set -euo pipefail
+          umask 077
+          python3 tools/fork_baseline/baseline.py unsigned-device 2>&1 | tee build/fork-evidence/unsigned-device.log
+
+      - name: Hash retained evidence
+        if: always()
+        run: |
+          python3 - <<'PY'
+          import hashlib
+          from pathlib import Path
+          evidence = Path('build/fork-evidence')
+          evidence.mkdir(parents=True, exist_ok=True)
+          files = sorted(p for p in evidence.rglob('*') if p.is_file() and p.name != 'SHA256SUMS')
+          (evidence / 'SHA256SUMS').write_text(''.join(
+              hashlib.sha256(p.read_bytes()).hexdigest() + '  ' + str(p.relative_to(evidence)) + '\n'
+              for p in files))
+          PY
+
+      - name: Publish build evidence and successful packages
+        if: always()
+        # Official actions/upload-artifact v4.6.2, tag SHA verified 2026-11-04.
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: archive-integration-${{ github.sha }}
+          path: |
+            ${{ github.workspace }}/fork-source/build/fork-evidence/
+            ${{ github.workspace }}/fork-source/build/fork-baseline-simulator/
+            ${{ github.workspace }}/fork-source/build/fork-baseline-unsigned-device/
+          if-no-files-found: warn
+          retention-days: 7
+          include-hidden-files: false
+
+      # No Apple signing keys are needed for this workflow. Packages are development
+      # integration artifacts, not a telemetry-free release or an installable signed IPA.

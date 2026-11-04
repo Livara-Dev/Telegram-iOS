@@ -260,6 +260,8 @@ public struct OperationLogTags {
     public static let SynchronizePeerStories = PeerOperationLogTag(value: 25)
     public static let SynchronizePinnedSavedChats = PeerOperationLogTag(value: 26)
     public static let SynchronizeMarkAllUnseenPollVotes = PeerOperationLogTag(value: 27)
+    // Fork-owned local-only outbox; deliberately outside the current upstream range.
+    public static let LocalArchiveCapture = PeerOperationLogTag(value: 240)
 }
 
 public struct LegacyPeerSummaryCounterTags: OptionSet, Sequence, Hashable {
