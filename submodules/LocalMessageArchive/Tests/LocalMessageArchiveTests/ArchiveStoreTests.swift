@@ -88,6 +88,60 @@ final class ArchiveStoreTests: XCTestCase {
         XCTAssertTrue(try records(store).isEmpty)
     }
 
+    func testEncryptedPhraseSearchIsLiteralScopedAndPaged() throws {
+        let store = try open()
+        _ = try write(store, [event("first", text: "Café meeting notes", peer: 10), event("second", text: "cafe meeting again", peer: 10, kind: .edited), event("other", text: "cafe meeting notes", peer: 20)])
+        let all = try awaitResult { store.searchMessages(query: "CAFÉ meeting", completion: $0) }
+        XCTAssertEqual(all.map(\.event.eventKey), ["other", "second", "first"])
+        let scoped = try awaitResult { store.searchMessages(query: "cafe meeting", peerId: 10, kind: .deleted, completion: $0) }
+        XCTAssertEqual(scoped.map(\.event.eventKey), ["first"])
+        let page = try awaitResult { store.searchMessages(query: "cafe", limit: 1, completion: $0) }
+        let cursor = try XCTUnwrap(page.first?.sequence)
+        let next = try awaitResult { store.searchMessages(query: "cafe", beforeSequence: cursor, limit: 1, completion: $0) }
+        XCTAssertEqual(next.map(\.event.eventKey), ["second"])
+        XCTAssertTrue(try awaitResult { store.searchMessages(query: "cafe OR missing", completion: $0) }.isEmpty)
+        XCTAssertTrue(try awaitResult { store.searchMessages(query: "\" OR \"", completion: $0) }.isEmpty)
+        let other = try open(account: 2, keys: Keys(0x75))
+        XCTAssertTrue(try awaitResult { other.searchMessages(query: "cafe", completion: $0) }.isEmpty)
+        close(store)
+        let reopened = try open()
+        XCTAssertEqual(try awaitResult { reopened.searchMessages(query: "cafe", completion: $0) }.count, 3)
+        _ = try purge(reopened, to: 1)
+        XCTAssertTrue(try awaitResult { reopened.searchMessages(query: "cafe", completion: $0) }.isEmpty)
+    }
+
+    func testVersionFiveSearchMigrationIndexesExistingEvents() throws {
+        let store = try open()
+        _ = try write(store, [event("migrated", text: "historical archive text")])
+        let url = store.databaseURL
+        close(store)
+        try rawDatabase(url, statements: ["DROP TRIGGER archive_search_insert", "DROP TRIGGER archive_search_delete", "DROP TABLE events_search", "PRAGMA user_version=5"])
+        let reopened = try open()
+        XCTAssertEqual(try awaitResult { reopened.searchMessages(query: "historical archive", completion: $0) }.map(\.event.eventKey), ["migrated"])
+        XCTAssertEqual(try rawInteger(url, query: "PRAGMA user_version"), 6)
+    }
+
+    func testSearchMigrationFailureRollsBackEarlierSchemaChanges() throws {
+        let url = try legacyV1Database(extraStatements: ["CREATE TABLE events_search(unexpected INTEGER)"])
+        XCTAssertThrowsError(try open())
+        XCTAssertEqual(try rawInteger(url, query: "PRAGMA user_version"), 1)
+        XCTAssertEqual(try rawInteger(url, query: "SELECT COUNT(*) FROM events"), 2)
+        try rawDatabase(url, statements: ["DROP TABLE events_search"])
+        let recovered = try open()
+        XCTAssertEqual(try awaitResult { recovered.searchMessages(query: "original", completion: $0) }.count, 1)
+    }
+
+    func testSearchIndexTracksRetentionAndRejectsInvalidQueries() throws {
+        let store = try open(retention: ArchiveRetentionPolicy(maxPayloadBytes: 150))
+        _ = try write(store, [event("old", text: "removed search token", observed: 900)])
+        _ = try write(store, [event("new", text: "current token", observed: 950)])
+        XCTAssertTrue(try awaitResult { store.searchMessages(query: "removed", completion: $0) }.isEmpty)
+        XCTAssertEqual(try awaitResult { store.searchMessages(query: "current", completion: $0) }.count, 1)
+        for query in ["", "  ", String(repeating: "x", count: 513), "bad\0query"] {
+            assertError(.invalidInput) { try awaitResult { store.searchMessages(query: query, completion: $0) } }
+        }
+    }
+
     func testMediaCannotCrossAccountOrPurgeGeneration() throws {
         let first = try open()
         let second = try open(account: 2, keys: Keys(0x74))
@@ -348,9 +402,9 @@ final class ArchiveStoreTests: XCTestCase {
 
     func testFutureSchemaIsRejectedWithoutMigration() throws {
         let store = try open(); close(store)
-        try rawDatabase(store.databaseURL, statements: ["PRAGMA user_version=6"])
+        try rawDatabase(store.databaseURL, statements: ["PRAGMA user_version=7"])
         let before = try Data(contentsOf: store.databaseURL)
-        assertError(.unsupportedSchema(6)) { try open() }
+        assertError(.unsupportedSchema(7)) { try open() }
         XCTAssertEqual(try Data(contentsOf: store.databaseURL), before)
     }
 
@@ -401,7 +455,7 @@ final class ArchiveStoreTests: XCTestCase {
         XCTAssertEqual(timeline.map(\.event), expected)
         XCTAssertEqual(timeline.map(\.sequence), [7, 9])
         XCTAssertEqual(try usage(store), ArchiveUsage(records: 2, logicalPayloadBytes: 167))
-        XCTAssertEqual(try rawInteger(url, query: "PRAGMA user_version"), 5)
+        XCTAssertEqual(try rawInteger(url, query: "PRAGMA user_version"), 6)
         _ = try write(store, [event("after-migration")])
         XCTAssertEqual(try usage(store).records, 3)
         close(store)
@@ -527,7 +581,7 @@ final class ArchiveStoreTests: XCTestCase {
         let store = try open()
         XCTAssertEqual(try generation(store), 0)
         XCTAssertEqual(try usage(store), ArchiveUsage(records: 2, logicalPayloadBytes: 167))
-        XCTAssertEqual(try rawInteger(url, query: "PRAGMA user_version"), 5)
+        XCTAssertEqual(try rawInteger(url, query: "PRAGMA user_version"), 6)
         XCTAssertEqual(try records(store).first?.event.eventKey, "legacy-delete")
         _ = try write(store, [event("generation-zero")], generation: 0)
         close(store)
@@ -652,7 +706,7 @@ final class ArchiveStoreTests: XCTestCase {
         let url = try legacyV3Database(extraStatements: ["UPDATE archive_meta SET capture_generation=7"])
         let store = try open()
         XCTAssertEqual(try generation(store), 7)
-        XCTAssertEqual(try rawInteger(url, query: "PRAGMA user_version"), 5)
+        XCTAssertEqual(try rawInteger(url, query: "PRAGMA user_version"), 6)
         XCTAssertEqual(try rawInteger(url, query: "SELECT outbox_high_water FROM archive_meta"), -1)
         XCTAssertEqual(try usage(store), ArchiveUsage(records: 2, logicalPayloadBytes: 167))
         XCTAssertEqual(try writeOutbox(store, event("new-receipt"), index: 24, generation: 7).inserted, 1)
@@ -674,7 +728,7 @@ final class ArchiveStoreTests: XCTestCase {
         XCTAssertEqual(try rawInteger(url, query: "SELECT COUNT(*) FROM events"), 2)
         try rawDatabase(url, statements: ["ALTER TABLE archive_meta DROP COLUMN outbox_last_event_key"])
         XCTAssertEqual(try usage(open()).records, 2)
-        XCTAssertEqual(try rawInteger(url, query: "PRAGMA user_version"), 5)
+        XCTAssertEqual(try rawInteger(url, query: "PRAGMA user_version"), 6)
     }
 
     func testOutboxReplayAfterQuotaAndAgeRetentionDoesNotResurrectMessages() throws {

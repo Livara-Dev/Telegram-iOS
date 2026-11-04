@@ -53,7 +53,7 @@ technical claim of impossibility. All entries require actual integration tests.
 | Saved media | `android/saving.md:17`, `:56` describes auto-download or copying already downloaded files; October post 61 adds profile display. | First version should only retain already available files unless explicit later download policy is approved. Protect filenames/content; test reference counting, eviction, partial downloads and size limits. No promised retrieval after server deletion. | Bounded encrypted cached-byte storage and native image preview authored; storage tests passed, media capture/UI integration unverified |
 | Per-chat exceptions and bot controls | October post 61 claims exceptions; `android/saving.md:60` describes disabling bot capture; old config has bot gate. | Define precedence: disabled feature, excluded chat, bot policy, then media/retention policy. Account-specific persistent rules. | Persistent account policy and bot toggle authored; scope-picker UI outstanding |
 | Size/age limits and cleanup | Requested addition; January 2026 post 49 documents historical excessive storage/cleanup fixes. | Bounded archive, media quota and deterministic retention; test crash/restart, shared attachment deletion, disk-full and logout purge. | Transactional age and text/media-payload quota tested in storage module; presets through 1 GiB authored; quota measures logical payload, not physical disk allocation |
-| Searchable deleted-only view | `android/saving.md:23`. | Dedicated archive query API; test paging, localization, escaped search input, account isolation and deleted-only results. | Native paginated deleted view authored; search absent; runtime verification pending |
+| Searchable deleted-only view | `android/saving.md:23`. | Dedicated archive query API; test paging, localization, escaped search input, account isolation and deleted-only results. | Native paginated view and encrypted indexed word/phrase search authored; schema-6 search tests and UI verification pending |
 | Deleted results in normal chat search | October post 61. | Distinguish local archived results from Telegram results and prohibit upload of archive content/query index. Test deduplication and navigation to absent canonical message. | Not implemented |
 | Deleted media in chat profile | October post 61. | Clearly marked local-only media collection; no false reference to server availability. | Not implemented |
 | Inline deleted/edited markers and timeline integration | Historical Android customizable marks; docs acknowledge deleted messages can disappear between loaded batches (`android/saving.md:25`). | Merge with stable keys and deterministic pagination; preserve archive-only view as complete index. Test gap boundaries and all-deleted spans. | Not implemented |
@@ -104,8 +104,7 @@ bytes with observed deletion/edit time, server edit time, account/peer/message
 identity and replay keys. It includes bounded queries, exclusions, transactional
 batches, age/text/media-payload retention and fail-closed schema/key handling.
 The Keychain tests inject Security responses; they do not establish actual
-entitlement or locked-device behavior. Export/import, archive search UI and
-synchronization remain absent. Media copying runs on a utility queue after a
+entitlement or locked-device behavior. Export/import and synchronization remain absent; indexed archive search and its native field await validation. Media copying runs on a utility queue after a
 durable outbox record. Global deletion defers eager cache unlink only for
 successfully queued eligible resources; a concurrent cache purge can still win.
 The new media handoff and native preview require their own integration evidence.

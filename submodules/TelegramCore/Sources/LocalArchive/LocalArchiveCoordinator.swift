@@ -70,6 +70,7 @@ protocol LocalArchiveStorage: AnyObject {
                          completion: @escaping (Result<[ArchivedRecord], ArchiveError>) -> Void)
     func timeline(for message: ArchiveMessageID, beforeSequence: Int64?, limit: Int,
                   completion: @escaping (Result<[ArchivedRecord], ArchiveError>) -> Void)
+    func searchMessages(query: String, peerId: Int64?, kind: ArchiveEventKind?, beforeSequence: Int64?, limit: Int, completion: @escaping (Result<[ArchivedRecord], ArchiveError>) -> Void)
     func usage(completion: @escaping (Result<ArchiveUsage, ArchiveError>) -> Void)
 }
 
@@ -244,6 +245,14 @@ public final class LocalArchiveCoordinator {
     public func deletedMessages(peerId: Int64? = nil, beforeSequence: Int64? = nil, limit: Int = 100) -> Signal<LocalArchivePage, NoError> {
         return self.readPage { storage, completion in
             storage.deletedMessages(peerId: peerId, beforeSequence: beforeSequence, limit: limit, completion: completion)
+        }
+    }
+
+    public func searchMessages(query: String, peerId: Int64? = nil, deletedOnly: Bool = false,
+                               beforeSequence: Int64? = nil, limit: Int = 100) -> Signal<LocalArchivePage, NoError> {
+        return self.readPage { storage, completion in
+            storage.searchMessages(query: query, peerId: peerId, kind: deletedOnly ? .deleted : nil,
+                                   beforeSequence: beforeSequence, limit: limit, completion: completion)
         }
     }
 

@@ -86,6 +86,9 @@ private final class LocalArchiveInterceptingStorage: LocalArchiveStorage {
                   completion: @escaping (Result<[ArchivedRecord], ArchiveError>) -> Void) {
         self.store.timeline(for: message, beforeSequence: beforeSequence, limit: limit, completion: completion)
     }
+    func searchMessages(query: String, peerId: Int64?, kind: ArchiveEventKind?, beforeSequence: Int64?, limit: Int, completion: @escaping (Result<[ArchivedRecord], ArchiveError>) -> Void) {
+        self.store.searchMessages(query: query, peerId: peerId, kind: kind, beforeSequence: beforeSequence, limit: limit, completion: completion)
+    }
     func usage(completion: @escaping (Result<ArchiveUsage, ArchiveError>) -> Void) {
         self.store.usage(completion: completion)
     }
@@ -329,6 +332,15 @@ final class LocalArchiveCoordinatorTests: XCTestCase {
         let settings = try self.localArchiveValue(self.fixture.postbox.transaction { localArchiveSettings(transaction: $0) })
         XCTAssertEqual(settings.maxAgeSeconds, Int64.max)
         XCTAssertEqual(settings.maxPayloadBytes, 1024 * 1024 * 1024)
+    }
+
+    func testCommittedDeletionIsSearchableThroughAccountFacade() throws {
+        _ = try self.queueDeletion(text: "Local searchable evidence")
+        let instance = self.start()
+        try self.awaitStatus(.ready, in: instance)
+        let coordinator = try XCTUnwrap(instance.coordinator)
+        XCTAssertEqual(try self.localArchiveValue(coordinator.searchMessages(query: "searchable evidence")).records.count, 1)
+        XCTAssertTrue(try self.localArchiveValue(coordinator.searchMessages(query: "searchable", peerId: 999)).records.isEmpty)
     }
 
     func testMediaSignalCompletesAfterCoordinatorRelease() throws {

@@ -76,3 +76,13 @@ Direct media reads now apply configured age retention before returning bytes,
 even when the store has stayed open without writes or a list refresh. A
 clock-controlled storage test checks deletion of the expired parent and blob
 and their usage counters. This follow-up still awaits its native test run.
+
+Schema 6 adds an FTS5 word/phrase index inside the same encrypted database.
+The native archive browser can search deleted snapshots and earlier edit
+versions, globally or in the current chat. Queries are bounded, quoted as
+literals, and paginated; wildcard/regex/substring syntax is not offered. Search
+uses SQLite's unicode61 case/diacritic folding. Index updates and retention
+cleanup are transactional; temporary query storage is forced to memory. Index
+allocation adds physical disk overhead beyond the logical payload quota.
+Storage, migration, account-scope and facade tests are authored for this
+increment; native execution and recorded UI validation are pending.

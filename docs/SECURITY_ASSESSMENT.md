@@ -259,3 +259,14 @@ application/octet-stream fallback before the durable capture is created. This
 prevents an otherwise valid local attachment from repeatedly failing the sink's
 strict MIME validation and blocking the account outbox. A native coordinator
 regression is authored; it is not yet verified by CI.
+
+## Local archive search
+
+Schema 6 indexes only already-archived text in the account's SQLCipher database.
+No plaintext search database, network endpoint or telemetry is added. Queries
+are limited to 512 UTF-8 bytes, FTS phrase-quoted, and separately SQL-bound.
+Search prunes expired rows before reading; insert/delete triggers keep index
+changes in the same transaction as history changes. Temporary SQLite storage
+is forced to memory. The index consumes extra encrypted disk space, and the
+logical quota does not describe that physical overhead. Native tests and UI
+verification of this increment remain pending.

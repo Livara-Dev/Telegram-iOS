@@ -188,6 +188,29 @@ public final class ArchiveStore {
         }
     }
 
+    /// Literal word/phrase search. FTS syntax is quoted, never executed from user input.
+    /// The index and its content remain inside this account's encrypted database.
+    public func searchMessages(query: String, peerId: Int64? = nil, kind: ArchiveEventKind? = nil,
+                               beforeSequence: Int64? = nil, limit: Int = 100,
+                               completion: @escaping (Result<[ArchivedRecord], ArchiveError>) -> Void) {
+        submit(completion) {
+            try Self.validatePage(beforeSequence, limit)
+            let query = query.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !query.isEmpty, query.utf8.count <= 512, !query.contains("\0") else { throw ArchiveError.invalidInput }
+            let now = self.clock()
+            guard now >= 0 else { throw ArchiveError.invalidInput }
+            _ = try self.transaction { try self.prune(now: now, policy: self.retention) }
+            let phrase = "\"" + query.replacingOccurrences(of: "\"", with: "\"\"") + "\""
+            var clause = "WHERE account_id=? AND sequence<? AND sequence IN (SELECT rowid FROM events_search WHERE events_search MATCH ?)"
+            var values: [SQLValue] = [.integer(self.accountId), .integer(beforeSequence ?? Int64.max), .text(phrase)]
+            if let peerId { clause += " AND peer_id=?"; values.append(.integer(peerId)) }
+            if let kind { clause += " AND kind=?"; values.append(.integer(Int64(kind.rawValue))) }
+            clause += " ORDER BY sequence DESC LIMIT ?"
+            values.append(.integer(Int64(limit)))
+            return try self.read(clause, values)
+        }
+    }
+
     public func usage(completion: @escaping (Result<ArchiveUsage, ArchiveError>) -> Void) {
         submit(completion) { try self.currentUsage() }
     }
@@ -244,14 +267,16 @@ public final class ArchiveStore {
         let cipher = try textScalar("PRAGMA cipher_version")
         guard !cipher.isEmpty, try scalar("PRAGMA cipher_plaintext_header_size") == 0 else { throw ArchiveError.invalidKey }
         _ = try scalar("SELECT COUNT(*) FROM sqlite_master") // Authenticate existing pages before mutation.
+        try execute("PRAGMA temp_store=MEMORY")
+        guard try scalar("PRAGMA temp_store") == 2 else { throw ArchiveError.protectionUnavailable }
         try execute("PRAGMA foreign_keys=ON")
         guard try scalar("PRAGMA foreign_keys") == 1 else { throw ArchiveError.protectionUnavailable }
         let version = try scalar("PRAGMA user_version")
-        guard (0...5).contains(version) else { throw ArchiveError.unsupportedSchema(Int(version)) }
+        guard (0...6).contains(version) else { throw ArchiveError.unsupportedSchema(Int(version)) }
         try transaction {
             // Another connection may have migrated while this one waited for the writer lock.
             let lockedVersion = try scalar("PRAGMA user_version")
-            guard (0...5).contains(lockedVersion) else { throw ArchiveError.unsupportedSchema(Int(lockedVersion)) }
+            guard (0...6).contains(lockedVersion) else { throw ArchiveError.unsupportedSchema(Int(lockedVersion)) }
             if lockedVersion == 0 {
                 guard try scalar("SELECT COUNT(*) FROM sqlite_master WHERE name NOT LIKE 'sqlite_%'") == 0 else {
                     throw ArchiveError.unsupportedSchema(0)
@@ -265,6 +290,7 @@ public final class ArchiveStore {
             if lockedVersion < 3 { try migrateGenerationToVersion3() }
             if lockedVersion < 4 { try migrateOutboxReceiptToVersion4() }
             if lockedVersion < 5 { try migrateMediaToVersion5() }
+            if lockedVersion < 6 { try migrateSearchToVersion6() }
             _ = try currentUsage()
             _ = try captureGeneration()
             _ = try outboxReceipt()
@@ -391,6 +417,21 @@ public final class ArchiveStore {
         try execute("CREATE TRIGGER archive_event_media_delete AFTER DELETE ON events BEGIN DELETE FROM event_media WHERE event_key=OLD.event_key; END")
         try execute("CREATE TRIGGER archive_media_immutable BEFORE UPDATE ON event_media BEGIN SELECT RAISE(ABORT,'Archive media is immutable'); END")
         try execute("PRAGMA user_version=5")
+    }
+
+    private func migrateSearchToVersion6() throws {
+        // FTS5 is already enabled in both vendored SQLCipher build definitions.
+        try execute("CREATE VIRTUAL TABLE events_search USING fts5(text, content='events', content_rowid='sequence', tokenize='unicode61 remove_diacritics 2')")
+        try execute("""
+            CREATE TRIGGER archive_search_insert AFTER INSERT ON events BEGIN
+            INSERT INTO events_search(rowid,text) VALUES(NEW.sequence,NEW.text); END
+            """)
+        try execute("""
+            CREATE TRIGGER archive_search_delete AFTER DELETE ON events BEGIN
+            INSERT INTO events_search(events_search,rowid,text) VALUES('delete',OLD.sequence,OLD.text); END
+            """)
+        try execute("INSERT INTO events_search(events_search) VALUES('rebuild')")
+        try execute("PRAGMA user_version=6")
     }
 
     /// Bounded bytes copied from an already completed local file. No network or plaintext temporary file.

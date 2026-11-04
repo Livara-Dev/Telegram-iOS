@@ -27,6 +27,7 @@ private struct LocalArchiveRow: ItemListNodeEntry {
         case text(String)
         case toggle(String, Bool, Bool)
         case action(String, String, Bool)
+        case search(String)
     }
 
     let stableId: LocalArchiveRowId
@@ -49,6 +50,8 @@ private struct LocalArchiveRow: ItemListNodeEntry {
             return ItemListSwitchItem(presentationData: presentationData, systemStyle: .glass, title: title, value: value, enableInteractiveChanges: false, enabled: enabled, maximumNumberOfLines: 2, sectionId: self.section, style: .blocks, updated: { value in
                 arguments.setToggle(self.stableId, value)
             })
+        case let .search(text):
+            return ItemListSingleLineInputItem(presentationData: presentationData, systemStyle: .glass, title: NSAttributedString(), text: text, placeholder: "Search archived words or phrases", type: .regular(capitalization: false, autocorrection: false), returnKeyType: .search, clearType: .always, sectionId: self.section, textUpdated: { arguments.searchUpdated($0) }, action: {})
         case let .action(title, detail, enabled):
             return ItemListDisclosureItem(presentationData: presentationData, systemStyle: .glass, title: title, enabled: enabled, label: detail, labelStyle: .detailText, sectionId: self.section, style: .blocks, action: {
                 if enabled {
@@ -62,10 +65,12 @@ private struct LocalArchiveRow: ItemListNodeEntry {
 private final class LocalArchiveArguments {
     let setToggle: (LocalArchiveRowId, Bool) -> Void
     let action: (LocalArchiveRowId) -> Void
+    let searchUpdated: (String) -> Void
 
-    init(setToggle: @escaping (LocalArchiveRowId, Bool) -> Void = { _, _ in }, action: @escaping (LocalArchiveRowId) -> Void = { _ in }) {
+    init(setToggle: @escaping (LocalArchiveRowId, Bool) -> Void = { _, _ in }, searchUpdated: @escaping (String) -> Void = { _ in }, action: @escaping (LocalArchiveRowId) -> Void = { _ in }) {
         self.setToggle = setToggle
         self.action = action
+        self.searchUpdated = searchUpdated
     }
 }
 
@@ -254,6 +259,7 @@ private struct LocalArchiveMessageReference {
 }
 
 private struct LocalArchiveBrowserState {
+    var searchText = ""
     var records: [LocalArchivedMessage] = []
     var peerNames: [Int64: String] = [:]
     var loading = false
@@ -276,6 +282,9 @@ private final class LocalArchiveBrowserModel {
     private var readable = false
     private var cursor: Int64?
     private var previousCursors: [Int64?] = []
+    private var searchText = ""
+    private var searchGeneration = 0
+    private var disposed = false
     private(set) var state = LocalArchiveBrowserState()
     let statePromise = Promise<LocalArchiveBrowserState>(LocalArchiveBrowserState())
 
@@ -299,6 +308,8 @@ private final class LocalArchiveBrowserModel {
                 self.peersDisposable.set(nil)
                 self.cursor = nil
                 self.previousCursors.removeAll()
+                self.searchText = ""
+                self.searchGeneration += 1
                 self.state = LocalArchiveBrowserState()
                 self.statePromise.set(.single(self.state))
             }
@@ -310,9 +321,32 @@ private final class LocalArchiveBrowserModel {
     }
 
     func dispose() {
+        self.disposed = true
+        self.searchGeneration += 1
         self.requestDisposable.dispose()
         self.peersDisposable.dispose()
         self.statusDisposable.dispose()
+    }
+
+    func setSearchText(_ value: String) {
+        guard !self.disposed, self.message == nil, self.readable else { return }
+        var bounded = String(decoding: value.utf8.prefix(512), as: UTF8.self)
+        while bounded.utf8.count > 512 { bounded.removeLast() }
+        guard bounded != self.searchText else { return }
+        self.searchText = bounded
+        self.searchGeneration += 1
+        let generation = self.searchGeneration
+        self.requestId += 1
+        self.requestDisposable.set(nil)
+        self.peersDisposable.set(nil)
+        self.state.searchText = bounded
+        self.state.loading = true
+        self.state.records = []
+        self.statePromise.set(.single(self.state))
+        Queue.mainQueue().after(0.25) { [weak self] in
+            guard let self, !self.disposed, self.readable, self.searchGeneration == generation else { return }
+            self.refresh()
+        }
     }
 
     func refresh() {
@@ -339,19 +373,22 @@ private final class LocalArchiveBrowserModel {
     }
 
     private func load() {
-        guard self.readable else {
+        guard self.readable, !self.disposed else {
             return
         }
         self.requestId += 1
         let requestId = self.requestId
         self.peersDisposable.set(nil)
         self.state = LocalArchiveBrowserState()
+        self.state.searchText = self.searchText
         self.state.loading = true
         self.state.hasNewer = !self.previousCursors.isEmpty
         self.statePromise.set(.single(self.state))
         let query: Signal<LocalArchivePage, NoError>
         if let message = self.message {
             query = self.archive.timeline(peerId: message.peerId, namespace: message.namespace, messageId: message.messageId, beforeSequence: self.cursor, limit: 21)
+        } else if !self.searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            query = self.archive.searchMessages(query: self.searchText, peerId: self.peerId, beforeSequence: self.cursor, limit: 21)
         } else {
             query = self.archive.deletedMessages(peerId: self.peerId, beforeSequence: self.cursor, limit: 21)
         }
@@ -392,7 +429,7 @@ private func localArchiveMessagesController(context: AccountContext, archive: Lo
     formatter.dateStyle = .medium
     formatter.timeStyle = .short
     var pushController: ((ViewController) -> Void)?
-    let arguments = LocalArchiveArguments(action: { id in
+    let arguments = LocalArchiveArguments(searchUpdated: { model.setSearchText($0) }, action: { id in
         switch id {
         case .fixed(1):
             model.newer()
@@ -442,19 +479,24 @@ private func localArchiveMessagesController(context: AccountContext, archive: Lo
             information = "This page could not be loaded. Try Refresh after checking available storage."
         } else if state.records.isEmpty {
             information = "No captured messages on this page. Only text received and captured by this client can appear here."
+        } else if !state.searchText.isEmpty {
+            information = "Local word and phrase matches in deleted messages and earlier versions. Search is case-insensitive; no query or result is sent to Telegram."
         } else if message != nil {
             information = "Earlier versions in capture order, oldest first on this page. Times reflect this device’s observation; they may differ from the server’s event time."
         } else {
             information = "Most recently captured deletions first. Tap a message to see its captured versions."
         }
-        entries.append(LocalArchiveRow(stableId: .fixed(0), order: 0, section: 0, content: .text(information)))
+        if message == nil && ready {
+            entries.append(LocalArchiveRow(stableId: .fixed(4), order: 0, section: 0, content: .search(state.searchText)))
+        }
+        entries.append(LocalArchiveRow(stableId: .fixed(0), order: 1, section: 0, content: .text(information)))
         if ready && state.hasNewer {
-            entries.append(LocalArchiveRow(stableId: .fixed(1), order: 1, section: 0, content: .action("Newer records", "", !state.loading)))
+            entries.append(LocalArchiveRow(stableId: .fixed(1), order: 2, section: 0, content: .action("Newer records", "", !state.loading)))
         }
         if ready && state.hasOlder {
-            entries.append(LocalArchiveRow(stableId: .fixed(2), order: 2, section: 0, content: .action("Older records", "", !state.loading)))
+            entries.append(LocalArchiveRow(stableId: .fixed(2), order: 3, section: 0, content: .action("Older records", "", !state.loading)))
         }
-        entries.append(LocalArchiveRow(stableId: .fixed(3), order: 3, section: 0, content: .action("Archive Settings", "This account", true)))
+        entries.append(LocalArchiveRow(stableId: .fixed(3), order: 4, section: 0, content: .action("Archive Settings", "This account", true)))
         if ready {
             for (index, record) in state.records.enumerated() {
                 let date = formatter.string(from: Date(timeIntervalSince1970: TimeInterval(record.observedAt)))
@@ -462,14 +504,14 @@ private func localArchiveMessagesController(context: AccountContext, archive: Lo
                 let peerName = state.peerNames[record.peerId] ?? "Unavailable chat"
                 if message == nil {
                     let preview = record.text.isEmpty ? (record.storedMediaCount > 0 ? "[Archived attachment]" : (record.unavailableMediaCount > 0 ? "[Attachment file not archived]" : "[No text]")) : String(record.text.prefix(160))
-                    entries.append(LocalArchiveRow(stableId: .record(record.sequence), order: 4 + index, section: 1, content: .action(preview, "\(peerName) · \(date)", true)))
+                    entries.append(LocalArchiveRow(stableId: .record(record.sequence), order: 5 + index, section: 1, content: .action(preview, state.searchText.isEmpty ? "\(peerName) · \(date)" : "\(kind) · \(peerName) · \(date)", true)))
                 } else {
                     let sent = formatter.string(from: Date(timeIntervalSince1970: TimeInterval(record.sentAt)))
                     var detail = "\(kind) · \(date)\n\(peerName) · Originally sent \(sent)"
                     if let editAt = record.serverEditAt {
                         detail += "\nServer edit time: \(formatter.string(from: Date(timeIntervalSince1970: TimeInterval(editAt))))"
                     }
-                    entries.append(LocalArchiveRow(stableId: .recordHeading(record.sequence), order: 4 + index * 20, section: Int32(1 + index), content: .heading(detail)))
+                    entries.append(LocalArchiveRow(stableId: .recordHeading(record.sequence), order: 5 + index * 20, section: Int32(1 + index), content: .heading(detail)))
                     let boundedText = String(record.text.prefix(8001))
                     var text = boundedText.isEmpty ? "[No text]" : String(boundedText.prefix(8000))
                     if record.storedMediaCount > 0 {
@@ -481,16 +523,16 @@ private func localArchiveMessagesController(context: AccountContext, archive: Lo
                     if boundedText.count > 8000 {
                         text += "\n\n[Preview limited to 8,000 characters.]"
                     }
-                    entries.append(LocalArchiveRow(stableId: .record(record.sequence), order: 5 + index * 20, section: Int32(1 + index), content: .text(text)))
+                    entries.append(LocalArchiveRow(stableId: .record(record.sequence), order: 6 + index * 20, section: Int32(1 + index), content: .text(text)))
                     for (slot, kind) in record.mediaKinds.enumerated() where kind == "photo" || kind == "animation" {
-                        entries.append(LocalArchiveRow(stableId: .media(record.sequence, slot), order: 6 + index * 20 + slot, section: Int32(1 + index), content: .action("Preview archived image \(slot + 1)", "Local archive", true)))
+                        entries.append(LocalArchiveRow(stableId: .media(record.sequence, slot), order: 7 + index * 20 + slot, section: Int32(1 + index), content: .action("Preview archived image \(slot + 1)", "Local archive", true)))
                     }
                 }
             }
         }
         let data = ItemListPresentationData(presentationData)
         let refresh = ItemListNavigationButton(content: .text("Refresh"), style: .regular, enabled: ready && !state.loading, action: { model.refresh() })
-        let controller = ItemListControllerState(presentationData: data, title: .text(message == nil ? "Deleted Messages" : "Captured Versions"), leftNavigationButton: nil, rightNavigationButton: refresh, backNavigationButton: ItemListBackButton(title: presentationData.strings.Common_Back), animateChanges: false)
+        let controller = ItemListControllerState(presentationData: data, title: .text(message == nil ? (state.searchText.isEmpty ? "Deleted Messages" : "Archive Search") : "Captured Versions"), leftNavigationButton: nil, rightNavigationButton: refresh, backNavigationButton: ItemListBackButton(title: presentationData.strings.Common_Back), animateChanges: false)
         return (controller, (ItemListNodeState(presentationData: data, entries: entries, style: .blocks), arguments))
     }
     |> afterDisposed {
