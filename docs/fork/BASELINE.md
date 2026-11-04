@@ -1,5 +1,16 @@
 # Baseline execution record and runbook
 
+## GitHub continuation
+
+The user authorized the actual fork `Livara-Dev/Telegram-iOS`. Both prepared
+commits were published to `fork/00-feasibility-baseline` as `e94b5a8d` and
+`ee6fa54a`; remote trees match the verified local trees exactly. The first
+[Actions run](https://github.com/Livara-Dev/Telegram-iOS/actions/runs/41791930344)
+failed at workflow validation, before any runner started: `runner.temp` was not
+an allowed context in `jobs.baseline.defaults.run.working-directory`. The workflow
+now uses a relative checkout directory and checks API Secrets before the expensive
+toolchain/runtime setup. The earlier discovery record below is historical.
+
 ## Current result
 
 The current checkpoint is **not a working iOS baseline**. The local executor is

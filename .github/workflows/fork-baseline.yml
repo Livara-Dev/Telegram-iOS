@@ -26,7 +26,7 @@ jobs:
     defaults:
       run:
         shell: bash
-        working-directory: ${{ runner.temp }}/fork-source
+        working-directory: ./fork-source
     steps:
       # Checkout uses git directly, with the token scoped only to the fetch step.
       - name: Check out the exact requested revision
@@ -37,7 +37,7 @@ jobs:
           set -euo pipefail
           python3 - <<'PY'
           import base64, os, pathlib, re, subprocess
-          destination = pathlib.Path(os.environ['RUNNER_TEMP']) / 'fork-source'
+          destination = pathlib.Path(os.environ['GITHUB_WORKSPACE']) / 'fork-source'
           destination.mkdir(mode=0o700)  # Requires a fresh, disposable runner.
           sha = os.environ['GITHUB_SHA']
           repo = os.environ['GITHUB_REPOSITORY']
@@ -58,6 +58,33 @@ jobs:
           run(['git', 'config', 'submodule.submodules/rlottie/rlottie.url', 'https://github.com/TelegramMessenger/rlottie.git'])
           run(['git', 'config', 'submodule.submodules/TgVoipWebrtc/tgcalls.url', 'https://github.com/TelegramMessenger/tgcalls.git'])
           run(['git', 'submodule', 'update', '--init', '--recursive', '--depth', '1', '--jobs', '8'])
+          (destination / 'build/fork-evidence').mkdir(parents=True)
+          PY
+
+      - name: Run portable tooling tests and source guard
+        run: |
+          set -euo pipefail
+          { python3 -m unittest discover -s tools/fork_baseline/tests -v &&
+            python3 -m unittest discover -s tools/fork_audit/tests -v &&
+            python3 -m unittest discover -s build-system/Make/tests &&
+            python3 tools/fork_audit/check.py; } 2>&1 | tee build/fork-evidence/portable-tests.log
+
+      - name: Validate required API Secrets without exposing their values
+        env:
+          TELEGRAM_API_ID: ${{ secrets.TELEGRAM_API_ID }}
+          TELEGRAM_API_HASH: ${{ secrets.TELEGRAM_API_HASH }}
+          IOS_BUNDLE_ID: org.livara.ayugram
+        run: |
+          python3 - <<'PY'
+          import os, sys
+          sys.path.insert(0, 'tools/fork_baseline')
+          from baseline import configuration, InvalidSetup
+          try:
+              configuration(os.environ, unsigned=True)
+          except InvalidSetup as error:
+              print('::error::' + str(error))
+              sys.exit(1)
+          print('API configuration validated; values omitted.')
           PY
 
       - name: Select pinned Apple toolchain and prepare verified build tools
@@ -72,14 +99,6 @@ jobs:
           set -euo pipefail
           xcodebuild -downloadPlatform iOS -buildVersion 26.5 -architectureVariant arm64 2>&1 | tee build/fork-evidence/runtime.log
           python3 tools/fork_baseline/prepare_host.py --simulator
-
-      - name: Run portable tooling tests and source guard
-        run: |
-          set -euo pipefail
-          { python3 -m unittest discover -s tools/fork_baseline/tests -v &&
-            python3 -m unittest discover -s tools/fork_audit/tests -v &&
-            python3 -m unittest discover -s build-system/Make/tests &&
-            python3 tools/fork_audit/check.py; } 2>&1 | tee build/fork-evidence/portable-tests.log
 
       - name: Build simulator baseline and run the explicit iOS test target
         env:
@@ -125,9 +144,9 @@ jobs:
         with:
           name: fork-baseline-${{ github.sha }}
           path: |
-            ${{ runner.temp }}/fork-source/build/fork-evidence/
-            ${{ runner.temp }}/fork-source/build/fork-baseline-simulator/
-            ${{ runner.temp }}/fork-source/build/fork-baseline-unsigned-device/
+            ${{ github.workspace }}/fork-source/build/fork-evidence/
+            ${{ github.workspace }}/fork-source/build/fork-baseline-simulator/
+            ${{ github.workspace }}/fork-source/build/fork-baseline-unsigned-device/
           if-no-files-found: warn
           retention-days: 7
           include-hidden-files: false
