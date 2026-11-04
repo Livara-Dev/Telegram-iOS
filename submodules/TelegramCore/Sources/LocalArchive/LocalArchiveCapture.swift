@@ -157,47 +157,76 @@ private func recordCaptureGap(_ settings: inout LocalArchiveSettings) {
     }
 }
 
-/// Must be called inside the same transaction, before the canonical deletion.
-/// Returns resources referenced by successfully queued captures. Deletion handlers
-/// must defer their eager cache unlink for these resources so the asynchronous
-/// archive worker can copy them. They remain subject to normal cache cleanup;
-/// this is not an archive copy or a guarantee against a simultaneous user purge.
-@discardableResult
-func captureDeletedLocalArchiveMessages(transaction: Transaction, accountPeerId: PeerId, ids: [MessageId], observedAt: Int64 = Int64(Date().timeIntervalSince1970)) -> Set<MediaResourceId> {
-    var settings = localArchiveSettings(transaction: transaction)
-    guard settings.enabled, !settings.pendingPurge, settings.generation >= 0, !ids.isEmpty else { return [] }
-    var deferredResources = Set<MediaResourceId>()
-    var budget = LocalArchiveOutboxBudget(transaction: transaction, accountPeerId: accountPeerId)
-    let previousDropped = settings.droppedCaptures
-    var seen = Set<MessageId>()
-    for id in ids {
-        guard seen.insert(id).inserted, let message = transaction.getMessage(id),
-              let eligible = eligibleMessage(transaction: transaction, message: message, settings: settings) else { continue }
+/// One transaction-scoped collector for explicit and history-range deletions.
+/// Reuses the outbox budget without rescanning it for every removed message.
+final class LocalArchiveDeletionCapture {
+    private let transaction: Transaction
+    private let accountPeerId: PeerId
+    private let observedAt: Int64
+    private var settings: LocalArchiveSettings
+    private var budget: LocalArchiveOutboxBudget
+    private let previousDropped: Int64
+    private var deferredResources = Set<MediaResourceId>()
+    private var finished = false
+
+    init?(transaction: Transaction, accountPeerId: PeerId, observedAt: Int64 = Int64(Date().timeIntervalSince1970)) {
+        let settings = localArchiveSettings(transaction: transaction)
+        guard settings.enabled, !settings.pendingPurge, settings.generation >= 0 else { return nil }
+        self.transaction = transaction
+        self.accountPeerId = accountPeerId
+        self.observedAt = observedAt
+        self.settings = settings
+        self.previousDropped = settings.droppedCaptures
+        self.budget = LocalArchiveOutboxBudget(transaction: transaction, accountPeerId: accountPeerId)
+    }
+
+    func append(_ message: Message) {
+        guard !self.finished,
+              let eligible = eligibleMessage(transaction: self.transaction, message: message, settings: self.settings) else { return }
         guard case let .text(botConversation, entities) = eligible else {
-            recordCaptureGap(&settings)
-            continue
+            recordCaptureGap(&self.settings)
+            return
         }
         let operation = LocalArchiveCaptureOperation(
-            generation: settings.generation, messageId: message.id, kindRawValue: ArchiveEventKind.deleted.rawValue,
+            generation: self.settings.generation, messageId: message.id, kindRawValue: ArchiveEventKind.deleted.rawValue,
             text: message.text, entities: entities, authorId: message.author?.id.toInt64(),
-            sentAt: Int64(message.timestamp), observedAt: observedAt, serverEditAt: message.attributes.compactMap { ($0 as? EditedMessageAttribute).map { Int64($0.date) } }.first,
+            sentAt: Int64(message.timestamp), observedAt: self.observedAt, serverEditAt: message.attributes.compactMap { ($0 as? EditedMessageAttribute).map { Int64($0.date) } }.first,
             botConversation: botConversation
         )
-        let inserted = budget.insert(operation, transaction: transaction, accountPeerId: accountPeerId)
-        if !inserted {
-            recordCaptureGap(&settings)
+        if !self.budget.insert(operation, transaction: self.transaction, accountPeerId: self.accountPeerId) {
+            recordCaptureGap(&self.settings)
         } else {
             for item in localArchiveDecodedMediaMetadata(entities) ?? [] {
                 for key in [item.resourceKey].compactMap({ $0 }) + (item.alternativeResourceKeys ?? []) {
-                    deferredResources.insert(MediaResourceId(key))
+                    self.deferredResources.insert(MediaResourceId(key))
                 }
             }
         }
     }
-    if settings.droppedCaptures != previousDropped {
-        setLocalArchiveSettings(transaction: transaction, settings: settings)
+
+    /// Finish before leaving the same Postbox transaction. The caller can defer
+    /// eager cache unlink only for resources belonging to successful captures.
+    func finish() -> Set<MediaResourceId> {
+        if !self.finished {
+            self.finished = true
+            if self.settings.droppedCaptures != self.previousDropped {
+                setLocalArchiveSettings(transaction: self.transaction, settings: self.settings)
+            }
+        }
+        return self.deferredResources
     }
-    return deferredResources
+}
+
+/// Must run in the same transaction before canonical deletion. Deferred cache
+/// resources are still subject to normal cleanup, not a guarantee of saved bytes.
+@discardableResult
+func captureDeletedLocalArchiveMessages(transaction: Transaction, accountPeerId: PeerId, ids: [MessageId], observedAt: Int64 = Int64(Date().timeIntervalSince1970)) -> Set<MediaResourceId> {
+    guard !ids.isEmpty, let capture = LocalArchiveDeletionCapture(transaction: transaction, accountPeerId: accountPeerId, observedAt: observedAt) else { return [] }
+    var seen = Set<MessageId>()
+    for id in ids {
+        if seen.insert(id).inserted, let message = transaction.getMessage(id) { capture.append(message) }
+    }
+    return capture.finish()
 }
 
 /// Must be called from the updateMessage closure before replacing the old value.

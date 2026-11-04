@@ -4645,10 +4645,16 @@ func replayFinalState(
                 if let message = transaction.getMessage(id) {
                     updatePeerChatInclusionWithMinTimestamp(transaction: transaction, id: id.peerId, minTimestamp: message.timestamp, forceRootGroupIfNotExists: false)
                 }
+                let archiveCapture = LocalArchiveDeletionCapture(transaction: transaction, accountPeerId: accountPeerId)
+                let beforeRemoving: ((Message) -> Void)? = archiveCapture.map { capture in
+                    { message in capture.append(message) }
+                }
                 var resourceIds: [MediaResourceId] = []
-                transaction.deleteMessagesInRange(peerId: id.peerId, namespace: id.namespace, minId: 1, maxId: id.id, forEachMedia: { media in
+                transaction.deleteMessagesInRange(peerId: id.peerId, namespace: id.namespace, minId: 1, maxId: id.id, beforeRemoving: beforeRemoving, forEachMedia: { media in
                     addMessageMediaResourceIdsToRemove(media: media, resourceIds: &resourceIds)
                 })
+                let deferredArchiveResources = archiveCapture?.finish() ?? []
+                resourceIds.removeAll(where: { deferredArchiveResources.contains($0) })
                 if !resourceIds.isEmpty {
                     let _ = mediaBox.removeCachedResources(Array(Set(resourceIds)), force: true).start()
                 }

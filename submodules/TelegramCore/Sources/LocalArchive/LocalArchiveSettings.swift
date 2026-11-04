@@ -5,7 +5,7 @@ import Postbox
 // Longer than the upstream four-byte preference keys; scoped to each Postbox.
 public let localArchiveSettingsKey = ValueBoxKey("ayugram.archive1")
 
-/// Experimental, local-only preferences. Enabling this does not enable media capture.
+/// Experimental, account-local preferences for eligible message and cached-media capture.
 public struct LocalArchiveSettings: Codable, Equatable {
     // Local read state, deliberately absent from CodingKeys. A placeholder for
     // unreadable preferences must never become an editable default configuration.

@@ -125,8 +125,8 @@ final class LocalArchiveReplayTests: XCTestCase {
         })
     }
 
-    private func finalState(_ operations: [AccountStateMutationOperation]) throws -> AccountFinalState {
-        let peers: Set<PeerId> = [self.accountPeerId, self.chatPeerId]
+    private func finalState(_ operations: [AccountStateMutationOperation], including additionalPeers: Set<PeerId> = []) throws -> AccountFinalState {
+        let peers: Set<PeerId> = Set([self.accountPeerId, self.chatPeerId]).union(additionalPeers)
         return try self.localArchiveValue(self.fixture.postbox.transaction { transaction in
             var state = initialStateWithPeerIds(transaction, peerIds: peers, activeChannelIds: [],
                 referencedReplyMessageIds: ReferencedReplyMessageIds(), referencedGeneralMessageIds: [],
@@ -226,6 +226,85 @@ final class LocalArchiveReplayTests: XCTestCase {
             XCTAssertEqual(Set(records.map { $0.eventKey }), Set(expectedMedia.keys))
         }
         return page
+    }
+
+    private func installRangeTestChannel() throws -> PeerId {
+        let id = PeerId(namespace: Namespaces.Peer.CloudChannel, id: ._internalFromInt64Value(8200))
+        let channel = TelegramChannel(id: id, accessHash: .personal(456), title: "Archive range fixture", username: nil,
+            photo: [], creationDate: 0, version: 0, participationStatus: .member,
+            info: .broadcast(TelegramChannelBroadcastInfo(flags: [])), flags: [], restrictionInfo: nil,
+            adminRights: nil, bannedRights: nil, defaultBannedRights: nil, usernames: [], storiesHidden: nil,
+            nameColor: nil, backgroundEmojiId: nil, profileColor: nil, profileBackgroundEmojiId: nil,
+            emojiStatus: nil, approximateBoostLevel: nil, subscriptionUntilDate: nil, verificationIconFileId: nil,
+            sendPaidMessageStars: nil, linkedMonoforumId: nil)
+        _ = try self.localArchiveValue(self.fixture.postbox.transaction { transaction in
+            transaction.updatePeersInternal([channel], update: { _, peer in peer })
+        })
+        return id
+    }
+
+    func testChannelRangeRemovalPreservesCachedPhotoAcrossRestartAndCacheClear() throws {
+        let channel = try self.installRangeTestChannel()
+        let id = MessageId(peerId: channel, namespace: Namespaces.Message.Cloud, id: 10)
+        let later = MessageId(peerId: channel, namespace: Namespaces.Message.Cloud, id: 20)
+        let bytes = localArchiveTestPhotoData()
+        let resource = CloudPhotoSizeMediaResource(datacenterId: 1, photoId: 8200, accessHash: 0, sizeSpec: "x", size: Int64(bytes.count), fileReference: nil)
+        let photo = TelegramMediaImage(imageId: MediaId(namespace: Namespaces.Media.CloudImage, id: 8200), representations: [TelegramMediaImageRepresentation(dimensions: PixelDimensions(width: 16, height: 16), resource: resource, progressiveSizes: [], immediateThumbnailData: nil)], immediateThumbnailData: nil, reference: nil, partialReference: nil, flags: [])
+        self.fixture.postbox.mediaBox.storeResourceData(resource.id, data: bytes, synchronous: true)
+        try self.store([localArchiveTestMessage(id, text: "range photo", media: [photo]), localArchiveTestMessage(later, text: "outside range")])
+        let state = try self.finalState([.UpdateMinAvailableMessage(id)], including: [channel])
+        _ = try XCTUnwrap(self.replay(state))
+        self.fixture.postbox.mediaBox.dataQueue.sync {}
+        XCTAssertNil(try self.localArchiveValue(self.fixture.postbox.transaction { $0.getMessage(id) }))
+        XCTAssertNotNil(try self.localArchiveValue(self.fixture.postbox.transaction { $0.getMessage(later) }))
+        XCTAssertEqual(try localArchiveReadCompletedMedia(self.fixture.postbox.mediaBox.storePathsForId(resource.id).complete), bytes)
+        try self.fixture.reopen()
+        let captures = try self.pending()
+        XCTAssertEqual(captures.map { $0.messageId }, [id])
+        XCTAssertEqual(captures.first?.text, "range photo")
+        let key = try XCTUnwrap(captures.first?.eventKey)
+        let page = try self.drainIntoIndependentArchive(clearing: [resource.id], expectedMedia: [key: bytes])
+        XCTAssertEqual(page.records.first?.text, "range photo")
+    }
+
+    func testChannelRangeRemovalKeepsTimedMediaExclusionAndNormalCacheRemoval() throws {
+        let channel = try self.installRangeTestChannel()
+        let id = MessageId(peerId: channel, namespace: Namespaces.Message.Cloud, id: 10)
+        let resource = CloudDocumentMediaResource(datacenterId: 1, fileId: 8201, accessHash: 0, size: 3, fileReference: nil, fileName: nil)
+        let file = TelegramMediaFile(fileId: MediaId(namespace: Namespaces.Media.CloudFile, id: 8201), partialReference: nil, resource: resource, previewRepresentations: [], videoThumbnails: [], immediateThumbnailData: nil, mimeType: "video/mp4", size: 3, attributes: [])
+        self.fixture.postbox.mediaBox.storeResourceData(resource.id, data: Data([1, 2, 3]), synchronous: true)
+        try self.store([localArchiveTestMessage(id, attributes: [AutoremoveTimeoutMessageAttribute(timeout: 30, countdownBeginTime: nil)], media: [file])])
+        _ = try XCTUnwrap(self.replay(self.finalState([.UpdateMinAvailableMessage(id)], including: [channel])))
+        self.fixture.postbox.mediaBox.dataQueue.sync {}
+        XCTAssertTrue(try self.pending().isEmpty)
+        XCTAssertNil(try localArchiveReadCompletedMedia(self.fixture.postbox.mediaBox.storePathsForId(resource.id).complete))
+        XCTAssertNil(try self.localArchiveValue(self.fixture.postbox.transaction { $0.getMessage(id) }))
+    }
+
+    func testChannelRangeRemovalBoundsOutboxAndRecordsOverflowWithoutBlockingDeletion() throws {
+        let channel = try self.installRangeTestChannel()
+        let ids = (1...260).map { MessageId(peerId: channel, namespace: Namespaces.Message.Cloud, id: Int32($0)) }
+        try self.store(ids.map { localArchiveTestMessage($0, text: "range item") })
+        _ = try XCTUnwrap(self.replay(self.finalState([.UpdateMinAvailableMessage(try XCTUnwrap(ids.last))], including: [channel])))
+        XCTAssertEqual(try self.pending().count, 256)
+        let remaining = try self.localArchiveValue(self.fixture.postbox.transaction { transaction in ids.compactMap { transaction.getMessage($0) } })
+        XCTAssertTrue(remaining.isEmpty)
+        let settings = try self.localArchiveValue(self.fixture.postbox.transaction { localArchiveSettings(transaction: $0) })
+        XCTAssertEqual(settings.droppedCaptures, 4)
+    }
+
+    func testChannelRangeRemovalRespectsDisabledAndExcludedChatSettings() throws {
+        let channel = try self.installRangeTestChannel()
+        for excluded in [false, true] {
+            _ = try self.localArchiveValue(self.fixture.postbox.transaction { transaction in
+                setLocalArchiveSettings(transaction: transaction, settings: LocalArchiveSettings(enabled: excluded, excludedPeerIds: excluded ? [channel.toInt64()] : []))
+            })
+            let id = MessageId(peerId: channel, namespace: Namespaces.Message.Cloud, id: excluded ? 20 : 10)
+            try self.store([localArchiveTestMessage(id)])
+            _ = try XCTUnwrap(self.replay(self.finalState([.UpdateMinAvailableMessage(id)], including: [channel])))
+            XCTAssertTrue(try self.pending().isEmpty)
+            XCTAssertNil(try self.localArchiveValue(self.fixture.postbox.transaction { $0.getMessage(id) }))
+        }
     }
 
     func testGlobalDeleteDefersEagerMediaRemovalUntilArchiveCanCopy() throws {

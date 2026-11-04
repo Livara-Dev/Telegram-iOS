@@ -178,3 +178,20 @@ serial-read/cell-reuse cancellation cases against the actual thumbnail loader.
 It uses the installed iOS 27.0 runtime and joins the exact-commit integration
 suite. These checks do not render or verify the whole gallery screen; recorded
 light/dark, pagination, accessibility and lock/background frames remain required.
+
+
+## Channel minimum-available history updates
+
+The current candidate also handles `UpdateMinAvailableMessage`: Postbox supplies
+each available body before its range-removal operations discard it. The archive
+uses the same transaction-scoped outbox collector as explicit deletions, and
+only successfully queued media resources defer eager cache unlink. The regular
+range boundary, state progression and canonical removals remain in force.
+
+This closes one previously uncovered channel deletion path. New real replay
+cases cover the inclusive boundary, retained photo across restart/cache clear,
+timed-media exclusion, disabled/chat-excluded capture and outbox overflow.
+These cases are not yet natively executed. The 256-item/8-MiB pending outbox
+budget remains: an overflowing range records missed captures and still applies
+Telegram's deletion. No claim of lossless bulk-history preservation is made.
+Other history clearing and group-removal paths are still under review.
