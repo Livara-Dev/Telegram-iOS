@@ -4622,6 +4622,7 @@ func replayFinalState(
             case let .DeleteEphemeralMessages(peerId, ids):
                 deleteEphemeralMessages(transaction: transaction, peerId: peerId, ids: ids)
             case let .DeleteMessagesWithGlobalIds(ids):
+                captureDeletedLocalArchiveMessages(transaction: transaction, accountPeerId: accountPeerId, ids: transaction.messageIdsForGlobalIds(ids))
                 var resourceIds: [MediaResourceId] = []
                 transaction.deleteMessagesWithGlobalIds(ids, forEachMedia: { media in
                     addMessageMediaResourceIdsToRemove(media: media, resourceIds: &resourceIds)
@@ -4631,6 +4632,7 @@ func replayFinalState(
                 }
                 deletedMessageIds.append(contentsOf: ids.map { .global($0) })
             case let .DeleteMessages(ids):
+                captureDeletedLocalArchiveMessages(transaction: transaction, accountPeerId: accountPeerId, ids: ids)
                 _internal_deleteMessages(transaction: transaction, mediaBox: mediaBox, ids: ids, manualAddMessageThreadStatsDifference: { id, add, remove in
                     addMessageThreadStatsDifference(threadKey: id, remove: remove, addedMessagePeer: nil, addedMessageId: nil, isOutgoing: false)
                 })
@@ -4670,6 +4672,7 @@ func replayFinalState(
             case let .EditMessage(id, message):
                 var generatedEvent: (reactionAuthor: Peer, reaction: MessageReaction.Reaction, message: Message, timestamp: Int32)?
                 transaction.updateMessage(id, update: { previousMessage in
+                    captureEditedLocalArchiveMessage(transaction: transaction, accountPeerId: accountPeerId, previous: previousMessage, updated: message)
                     let peers: [PeerId:Peer] = previousMessage.peers.reduce([:], { current, value in
                         var current = current
                         current[value.0] = value.1

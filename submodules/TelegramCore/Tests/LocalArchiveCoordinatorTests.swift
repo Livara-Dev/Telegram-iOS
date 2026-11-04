@@ -1,0 +1,316 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
+import Foundation
+import XCTest
+import Postbox
+import SwiftSignalKit
+import LocalMessageArchive
+@testable import TelegramCore
+
+private struct LocalArchiveIntegrationKey: ArchiveKeyProvider {
+    func key(accountId: Int64, createIfMissing: Bool) throws -> Data {
+        // Distinct synthetic per-account keys. No production Keychain access in this fixture.
+        return Data(repeating: UInt8(truncatingIfNeeded: accountId), count: 32)
+    }
+}
+
+/// Keeps all SQLCipher behavior real. Only the delivery of one write result is
+/// intercepted to reproduce the archive-commit / Postbox-acknowledgement crash window.
+private final class LocalArchiveInterceptingStorage: LocalArchiveStorage {
+    enum WriteBehavior { case normal, fail, withholdAcknowledgement }
+    let store: ArchiveStore
+    let closed = ValuePromise<Bool>(false, ignoreRepeated: true)
+    private let behavior: WriteBehavior
+    private let didWrite: ((Result<ArchiveWriteResult, ArchiveError>) -> Void)?
+
+    init(store: ArchiveStore, behavior: WriteBehavior,
+         didWrite: ((Result<ArchiveWriteResult, ArchiveError>) -> Void)?) {
+        self.store = store
+        self.behavior = behavior
+        self.didWrite = didWrite
+    }
+
+    func recordFromOutbox(_ capture: ArchiveCapture, index: Int64, generation: Int64,
+                          policy: ArchiveCapturePolicy,
+                          completion: @escaping (Result<ArchiveWriteResult, ArchiveError>) -> Void) {
+        if case .fail = self.behavior {
+            let result: Result<ArchiveWriteResult, ArchiveError> = .failure(.unavailable(13))
+            self.didWrite?(result)
+            completion(result)
+            return
+        }
+        self.store.recordFromOutbox(capture, index: index, generation: generation, policy: policy) { result in
+            self.didWrite?(result)
+            if case .normal = self.behavior {
+                completion(result)
+            }
+        }
+    }
+
+    func currentGeneration(completion: @escaping (Result<Int64, ArchiveError>) -> Void) {
+        self.store.currentGeneration(completion: completion)
+    }
+    func purge(advancingToGeneration: Int64, completion: @escaping (Result<ArchivePurgeResult, ArchiveError>) -> Void) {
+        self.store.purge(advancingToGeneration: advancingToGeneration, completion: completion)
+    }
+    func setRetention(_ policy: ArchiveRetentionPolicy, completion: @escaping (Result<Int, ArchiveError>) -> Void) {
+        self.store.setRetention(policy, completion: completion)
+    }
+    func close(completion: @escaping () -> Void) {
+        self.store.close {
+            self.closed.set(true)
+            completion()
+        }
+    }
+    func deletedMessages(peerId: Int64?, beforeSequence: Int64?, limit: Int,
+                         completion: @escaping (Result<[ArchivedRecord], ArchiveError>) -> Void) {
+        self.store.deletedMessages(peerId: peerId, beforeSequence: beforeSequence, limit: limit, completion: completion)
+    }
+    func timeline(for message: ArchiveMessageID, beforeSequence: Int64?, limit: Int,
+                  completion: @escaping (Result<[ArchivedRecord], ArchiveError>) -> Void) {
+        self.store.timeline(for: message, beforeSequence: beforeSequence, limit: limit, completion: completion)
+    }
+    func usage(completion: @escaping (Result<ArchiveUsage, ArchiveError>) -> Void) {
+        self.store.usage(completion: completion)
+    }
+}
+
+final class LocalArchiveCoordinatorTests: XCTestCase {
+    private final class Running {
+        var coordinator: LocalArchiveCoordinator?
+        let storage = Atomic<LocalArchiveInterceptingStorage?>(value: nil)
+    }
+
+    private let accountPeerId = PeerId(namespace: Namespaces.Peer.CloudUser, id: PeerId.Id._internalFromInt64Value(1))
+    private let chatPeerId = PeerId(namespace: Namespaces.Peer.CloudUser, id: PeerId.Id._internalFromInt64Value(1001))
+    private var fixture: LocalArchivePostboxFixture!
+    private var archiveDirectory: URL!
+    private var running: [Running] = []
+
+    override func setUpWithError() throws {
+        self.fixture = try LocalArchivePostboxFixture(test: self, name: "archive-coordinator")
+        // Deliberately outside Postbox's db/media directories, as in the app integration.
+        self.archiveDirectory = FileManager.default.temporaryDirectory.appendingPathComponent("independent-archive-" + UUID().uuidString)
+        let peers = [localArchiveTestUser(self.accountPeerId), localArchiveTestUser(self.chatPeerId)]
+        let _ = try self.localArchiveValue(self.fixture.postbox.transaction { transaction in
+            transaction.updatePeersInternal(peers, update: { _, peer in peer })
+            setLocalArchiveSettings(transaction: transaction, settings: LocalArchiveSettings(enabled: true))
+        })
+    }
+
+    override func tearDownWithError() throws {
+        for instance in self.running {
+            try self.stop(instance)
+        }
+        self.running.removeAll()
+        try self.fixture?.destroy()
+        self.fixture = nil
+        if let archiveDirectory = self.archiveDirectory, FileManager.default.fileExists(atPath: archiveDirectory.path) {
+            try FileManager.default.removeItem(at: archiveDirectory)
+        }
+    }
+
+    private func start(postbox: Postbox? = nil, accountId: Int64 = 17,
+                       behavior: LocalArchiveInterceptingStorage.WriteBehavior = .normal,
+                       protectedData: Signal<Bool, NoError> = .single(true),
+                       didWrite: ((Result<ArchiveWriteResult, ArchiveError>) -> Void)? = nil) -> Running {
+        let instance = Running()
+        instance.coordinator = LocalArchiveCoordinator(postbox: postbox ?? self.fixture.postbox, accountPeerId: self.accountPeerId,
+            accountId: accountId, baseDirectory: self.archiveDirectory,
+            storageFactory: { directory, accountId, retention, callbackQueue, completion in
+                ArchiveStore.open(baseDirectory: directory, accountId: accountId,
+                    keyProvider: LocalArchiveIntegrationKey(), retention: retention,
+                    callbackQueue: callbackQueue, clock: { 1000 }) { result in
+                    switch result {
+                    case let .success(store):
+                        let intercepted = LocalArchiveInterceptingStorage(store: store, behavior: behavior, didWrite: didWrite)
+                        let _ = instance.storage.swap(intercepted)
+                        completion(.success(intercepted))
+                    case let .failure(error):
+                        completion(.failure(error))
+                    }
+                }
+            }, protectedData: protectedData)
+        self.running.append(instance)
+        return instance
+    }
+
+    private func stop(_ instance: Running) throws {
+        guard let coordinator = instance.coordinator else { return }
+        coordinator.dispose()
+        if let storage = instance.storage.with({ $0 }) {
+            let _ = try self.localArchiveValue(storage.closed.get() |> filter { $0 })
+        }
+        instance.coordinator = nil
+    }
+
+    private func awaitStatus(_ status: LocalArchiveStatus, in instance: Running) throws {
+        let coordinator = try XCTUnwrap(instance.coordinator)
+        XCTAssertEqual(try self.localArchiveValue(coordinator.status |> filter { $0 == status }), status)
+    }
+
+    private func queueDeletion(_ number: Int32 = 1, text: String = "preserved locally") throws -> MessageId {
+        let id = MessageId(peerId: self.chatPeerId, namespace: Namespaces.Message.Cloud, id: number)
+        let accountPeerId = self.accountPeerId
+        let _ = try self.localArchiveValue(self.fixture.postbox.transaction { transaction in
+            let _ = transaction.addMessages([localArchiveTestMessage(id, text: text)], location: .Random)
+            captureDeletedLocalArchiveMessages(transaction: transaction, accountPeerId: accountPeerId, ids: [id], observedAt: 200)
+            transaction.deleteMessages([id], forEachMedia: nil)
+        })
+        return id
+    }
+
+    private func pending() throws -> [LocalArchivePendingCapture] {
+        let accountPeerId = self.accountPeerId
+        return try self.localArchiveValue(self.fixture.postbox.transaction {
+            localArchivePendingCaptures(transaction: $0, accountPeerId: accountPeerId)
+        })
+    }
+
+    func testCommittedDeletionDrainsIntoRealEncryptedArchiveAndReadsThroughFacade() throws {
+        let id = try self.queueDeletion()
+        let instance = self.start()
+        try self.awaitStatus(.ready, in: instance)
+        XCTAssertTrue(try self.pending().isEmpty)
+        XCTAssertNil(try self.localArchiveValue(self.fixture.postbox.transaction { $0.getMessage(id) }))
+        let page = try self.localArchiveValue(try XCTUnwrap(instance.coordinator).deletedMessages(peerId: self.chatPeerId.toInt64()))
+        XCTAssertFalse(page.unavailable)
+        XCTAssertEqual(page.records.count, 1)
+        XCTAssertEqual(page.records.first?.text, "preserved locally")
+        XCTAssertEqual(page.records.first?.messageId, id.id)
+        XCTAssertEqual(page.records.first?.observedAt, 200)
+        XCTAssertTrue(page.records.first?.isDeleted ?? false)
+    }
+
+    func testWriteFailureKeepsOutboxUntilSuccessfulRestart() throws {
+        let _ = try self.queueDeletion()
+        let failing = self.start(behavior: .fail)
+        try self.awaitStatus(.unavailable, in: failing)
+        let eventKey = try XCTUnwrap(self.pending().first?.operation?.eventKey)
+        try self.stop(failing)
+        try self.fixture.reopen()
+        XCTAssertEqual(try self.pending().first?.operation?.eventKey, eventKey)
+
+        let recovered = self.start()
+        try self.awaitStatus(.ready, in: recovered)
+        XCTAssertTrue(try self.pending().isEmpty)
+        let page = try self.localArchiveValue(try XCTUnwrap(recovered.coordinator).deletedMessages())
+        XCTAssertEqual(page.records.count, 1)
+    }
+
+    func testRestartAfterArchiveCommitBeforeAcknowledgementDoesNotDuplicate() throws {
+        let _ = try self.queueDeletion()
+        let committed = expectation(description: "archive committed without acknowledgement")
+        let interrupted = self.start(behavior: .withholdAcknowledgement, didWrite: { result in
+            if case .failure = result { XCTFail("injected interruption must follow a successful real archive commit") }
+            committed.fulfill()
+        })
+        wait(for: [committed], timeout: 15)
+        let originalKey = try XCTUnwrap(self.pending().first?.operation?.eventKey)
+        let before = try self.localArchiveValue(try XCTUnwrap(interrupted.coordinator).deletedMessages())
+        XCTAssertEqual(before.records.count, 1)
+        try self.stop(interrupted)
+        try self.fixture.reopen()
+        XCTAssertEqual(try self.pending().first?.operation?.eventKey, originalKey)
+
+        let recovered = self.start()
+        try self.awaitStatus(.ready, in: recovered)
+        XCTAssertTrue(try self.pending().isEmpty)
+        let after = try self.localArchiveValue(try XCTUnwrap(recovered.coordinator).deletedMessages())
+        XCTAssertEqual(after.records.count, 1)
+        XCTAssertEqual(after.records.first?.sequence, before.records.first?.sequence)
+        XCTAssertEqual(after.records.first?.text, before.records.first?.text)
+    }
+
+    func testProtectedDataGateDefersOpeningAndPreventsLockedReads() throws {
+        let _ = try self.queueDeletion()
+        let protectedData = ValuePromise<Bool>(false, ignoreRepeated: true)
+        let instance = self.start(protectedData: protectedData.get())
+        try self.awaitStatus(.locked, in: instance)
+        XCTAssertNil(instance.storage.with { $0 })
+        XCTAssertEqual(try self.pending().count, 1)
+        protectedData.set(true)
+        try self.awaitStatus(.ready, in: instance)
+        XCTAssertTrue(try self.pending().isEmpty)
+        protectedData.set(false)
+        try self.awaitStatus(.locked, in: instance)
+        let lockedPage = try self.localArchiveValue(try XCTUnwrap(instance.coordinator).deletedMessages())
+        XCTAssertTrue(lockedPage.unavailable)
+        XCTAssertTrue(lockedPage.records.isEmpty)
+    }
+
+    func testPendingPurgeSurvivesRestartAndRetiresUnacknowledgedGeneration() throws {
+        let _ = try self.queueDeletion()
+        let committed = expectation(description: "old-generation capture committed")
+        let interrupted = self.start(behavior: .withholdAcknowledgement, didWrite: { result in
+            if case .failure = result { XCTFail("expected real archive commit") }
+            committed.fulfill()
+        })
+        wait(for: [committed], timeout: 15)
+        try self.stop(interrupted)
+        let _ = try self.localArchiveValue(self.fixture.postbox.transaction { transaction in
+            var settings = localArchiveSettings(transaction: transaction)
+            settings.generation = 1
+            settings.pendingPurge = true
+            setLocalArchiveSettings(transaction: transaction, settings: settings)
+        })
+        try self.fixture.reopen()
+        let recovered = self.start()
+        try self.awaitStatus(.ready, in: recovered)
+        XCTAssertTrue(try self.pending().isEmpty)
+        let page = try self.localArchiveValue(try XCTUnwrap(recovered.coordinator).deletedMessages())
+        XCTAssertFalse(page.unavailable)
+        XCTAssertTrue(page.records.isEmpty)
+        let settings = try self.localArchiveValue(self.fixture.postbox.transaction { localArchiveSettings(transaction: $0) })
+        XCTAssertEqual(settings.generation, 1)
+        XCTAssertFalse(settings.pendingPurge)
+    }
+
+    func testRetentionAcknowledgesExpiredCaptureWithoutReturningDeletedMessage() throws {
+        let _ = try self.localArchiveValue(self.fixture.postbox.transaction { transaction in
+            var settings = localArchiveSettings(transaction: transaction)
+            settings.maxAgeSeconds = 10
+            setLocalArchiveSettings(transaction: transaction, settings: settings)
+        })
+        let _ = try self.queueDeletion()
+        let instance = self.start()
+        try self.awaitStatus(.ready, in: instance)
+        XCTAssertTrue(try self.pending().isEmpty)
+        let page = try self.localArchiveValue(try XCTUnwrap(instance.coordinator).deletedMessages())
+        XCTAssertFalse(page.unavailable)
+        XCTAssertTrue(page.records.isEmpty)
+    }
+
+    func testTwoAccountsWithIdenticalMessageIdsHaveSeparateArchivesAndPurge() throws {
+        let other = try LocalArchivePostboxFixture(test: self, name: "archive-coordinator-other")
+        var second: Running?
+        defer {
+            if let second { try? self.stop(second) }
+            try? other.destroy()
+        }
+        let id = try self.queueDeletion(text: "first account")
+        let accountPeerId = self.accountPeerId
+        let peers = [localArchiveTestUser(self.accountPeerId), localArchiveTestUser(self.chatPeerId)]
+        let _ = try self.localArchiveValue(other.postbox.transaction { transaction in
+            transaction.updatePeersInternal(peers, update: { _, peer in peer })
+            setLocalArchiveSettings(transaction: transaction, settings: LocalArchiveSettings(enabled: true))
+            let _ = transaction.addMessages([localArchiveTestMessage(id, text: "second account")], location: .Random)
+            captureDeletedLocalArchiveMessages(transaction: transaction, accountPeerId: accountPeerId, ids: [id], observedAt: 200)
+            transaction.deleteMessages([id], forEachMedia: nil)
+        })
+        let first = self.start()
+        let otherRunning = self.start(postbox: other.postbox, accountId: 18)
+        second = otherRunning
+        try self.awaitStatus(.ready, in: first)
+        try self.awaitStatus(.ready, in: otherRunning)
+        let firstCoordinator = try XCTUnwrap(first.coordinator)
+        let otherCoordinator = try XCTUnwrap(otherRunning.coordinator)
+        XCTAssertEqual(try self.localArchiveValue(firstCoordinator.deletedMessages()).records.map { $0.text }, ["first account"])
+        XCTAssertEqual(try self.localArchiveValue(otherCoordinator.deletedMessages()).records.map { $0.text }, ["second account"])
+
+        XCTAssertTrue(try self.localArchiveValue(firstCoordinator.requestPurge()))
+        let _ = try self.localArchiveValue(firstCoordinator.settings |> filter { $0.generation == 1 && !$0.pendingPurge })
+        try self.awaitStatus(.ready, in: first)
+        XCTAssertTrue(try self.localArchiveValue(firstCoordinator.deletedMessages()).records.isEmpty)
+        XCTAssertEqual(try self.localArchiveValue(otherCoordinator.deletedMessages()).records.map { $0.text }, ["second account"])
+    }
+}

@@ -1246,6 +1246,8 @@ public class Account {
     
     private let accountManager: AccountManager<TelegramAccountManagerTypes>
     public private(set) var stateManager: AccountStateManager!
+    /// Local-only archive handoff. Supplementary processes never open the archive.
+    public private(set) var localArchive: LocalArchiveCoordinator?
     private(set) var contactSyncManager: ContactSyncManager!
     public private(set) var callSessionManager: CallSessionManager!
     
@@ -1403,6 +1405,7 @@ public class Account {
         self.network.loggedOut = { [weak self] in
             Logger.shared.log("Account", "network logged out")
             if let strongSelf = self {
+                strongSelf.localArchive?.dispose()
                 strongSelf._loggedOut.set(true)
                 strongSelf.callSessionManager.dropAll()
             }
@@ -1637,6 +1640,16 @@ public class Account {
         self.restartConfigurationUpdates()
         
         self.automaticCacheEvictionContext = AutomaticCacheEvictionContext(postbox: postbox, accountManager: accountManager)
+
+        if !supplementary {
+            self.localArchive = LocalArchiveCoordinator(
+                postbox: postbox,
+                accountPeerId: peerId,
+                accountId: id.int64,
+                baseDirectory: URL(fileURLWithPath: basePath, isDirectory: true)
+                    .appendingPathComponent("local-message-archive", isDirectory: true)
+            )
+        }
         
         /*#if DEBUG
         self.managedOperationsDisposable.add(debugFetchAllStickers(account: self).start(completed: {
@@ -1646,6 +1659,7 @@ public class Account {
     }
     
     deinit {
+        self.localArchive?.dispose()
         self.managedContactsDisposable.dispose()
         self.managedStickerPacksDisposable.dispose()
         self.managedServiceViewsDisposable.dispose()

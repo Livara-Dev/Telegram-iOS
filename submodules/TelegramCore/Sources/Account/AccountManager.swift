@@ -152,6 +152,7 @@ private var declaredEncodables: Void = {
     declareEncodable(SecretChatOutgoingOperation.self, f: { SecretChatOutgoingOperation(decoder: $0) })
     declareEncodable(SecretFileMediaResource.self, f: { SecretFileMediaResource(decoder: $0) })
     declareEncodable(CloudChatRemoveMessagesOperation.self, f: { CloudChatRemoveMessagesOperation(decoder: $0) })
+    declareEncodable(LocalArchiveCaptureOperation.self, f: { LocalArchiveCaptureOperation(decoder: $0) })
     declareEncodable(AutoremoveTimeoutMessageAttribute.self, f: { AutoremoveTimeoutMessageAttribute(decoder: $0) })
     declareEncodable(AutoclearTimeoutMessageAttribute.self, f: { AutoclearTimeoutMessageAttribute(decoder: $0) })
     declareEncodable(CloudChatRemoveChatOperation.self, f: { CloudChatRemoveChatOperation(decoder: $0) })
