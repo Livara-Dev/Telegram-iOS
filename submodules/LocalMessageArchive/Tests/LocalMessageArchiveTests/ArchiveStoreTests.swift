@@ -336,4 +336,39 @@ final class ArchiveStoreTests: XCTestCase {
         assertError(.invalidInput) { try open(keys: keys) }
         XCTAssertTrue(keys.createRequests.isEmpty)
     }
+
+    /// Hosted-macOS end-to-end append timing, including async completion/XCTest overhead.
+    /// This supplies a before-change measurement, not an iPhone latency or pass/fail target.
+    func testBenchmarkSingleAppendAfterTenThousandSnapshots() throws {
+        let store = try open()
+        let seedCount = 10_000
+        for start in stride(from: 0, to: seedCount, by: 256) {
+            let end = min(seedCount, start + 256)
+            let batch = (start..<end).map {
+                event("benchmark-seed-\($0)", text: "synthetic archive benchmark", message: Int32($0 + 1))
+            }
+            XCTAssertEqual(try write(store, batch).inserted, batch.count)
+        }
+        XCTAssertEqual(try usage(store).records, Int64(seedCount))
+        var samples: [Double] = []
+        for iteration in 0...10 {
+            let appended = event("benchmark-append-\(iteration)", text: "synthetic archive benchmark",
+                                 message: Int32(seedCount + iteration + 1))
+            let started = DispatchTime.now().uptimeNanoseconds
+            let result = try write(store, [appended])
+            let elapsed = DispatchTime.now().uptimeNanoseconds - started
+            XCTAssertEqual(result.inserted, 1)
+            if iteration > 0 { samples.append(Double(elapsed) / 1_000_000) }
+        }
+        XCTAssertEqual(try usage(store).records, Int64(seedCount + 11))
+        let report: [String: Any] = [
+            "benchmark": "archive_single_append", "synthetic_seed_records": seedCount,
+            "warmup_appends": 1, "samples_ms": samples,
+            "mean_ms": samples.reduce(0, +) / Double(samples.count),
+            "measurement": "monotonic async API roundtrip including XCTest expectation/wait overhead",
+            "latency_threshold": "none", "iphone_performance_claim": false
+        ]
+        let reportData = try JSONSerialization.data(withJSONObject: report, options: [.sortedKeys])
+        print(String(decoding: reportData, as: UTF8.self))
+    }
 }
