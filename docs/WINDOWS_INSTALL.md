@@ -10,7 +10,9 @@ The artifact ZIP has a different checksum. The package's checksums, bundle ID
 and ARM64 iPhoneOS platform were independently checked; it contains no embedded
 provisioning profiles or code signatures. It has not been installed or run on a
 physical iPhone. Native integration qualification is separate from this successful
-device compilation; consult that run's `integration-tests` result before use.
+device compilation. That job failed on an archive pagination assertion,
+encrypted-video decoding and projection-host startup; the package is not a
+qualified release. See [the native test result](fork/evidence/native-9a040579.json).
 GitHub retains this artifact until November 11, 2026, unless removed earlier.
 
 Use **Archive application integration (hosted macOS)** on the single

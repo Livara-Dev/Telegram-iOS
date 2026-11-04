@@ -39,8 +39,12 @@ collectors. It is a tripwire, not proof about every network path. Real Postbox
 tests cover both producer entry points, legacy batches larger than the former
 50-record upload batch, preserving other data, repeat cleanup/reopen and account
 isolation. The production recording decision has configuration/override matrix
-tests. These native tests have been authored but have not run on this branch.
-Portable tooling and source checks are the only validation completed locally.
+tests. At `9a040579`, all 3 `LocalTelemetryTests` and all 60
+`NetworkTelemetryTests` passed on the pinned iOS simulator. The full device
+application also compiled. The overall native job failed on a separate archive
+pagination assertion, encrypted-video decoding and projection-host startup;
+see [the exact result](evidence/native-9a040579.json). Portable tooling and source
+checks are the only validation completed on the local Linux workspace.
 
 Remaining review: user-directed debug-log sharing, legacy diagnostic prompts,
 local call-log retention, update endpoints, binary dependency inspection and

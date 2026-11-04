@@ -5,8 +5,10 @@ The current archive branch contains default-off TelegramCore/Postbox capture,
 a durable per-account outbox, independent encrypted media storage, indexed text
 search, streaming attachment reads and native archive screens. The gallery
 increment adds an encrypted attachment index, paginated account/chat-scoped
-browsing, type filters and message-history navigation. **The gallery, schema-7
-streaming and AVFoundation playback changes still await native CI.**
+browsing, type filters and message-history navigation. **The full unsigned device
+application compiled at `9a040579`; native qualification failed and the running
+application remains unverified.** Storage and settings tests passed; the encrypted
+video playback test still fails. See the exact result below.
 
 The integration candidate additionally includes channel minimum-available range
 capture and the reviewed telemetry-containment branch. Both require current
@@ -15,6 +17,15 @@ native qualification. Ordinary feature pushes no longer launch hosted builds;
 
 Verified revisions must be kept separate from this source:
 
+- `9a040579`: full unsigned ARM64 iPhoneOS application build succeeded with the
+  telemetry collectors still disabled. The native run passed 201 Postbox,
+  77 archive-storage, 270 TextFormat and 16 SettingsUI cases. TelegramCore passed
+  542/543 cases: the failing range-overflow fixture counts a 64-entry page as the
+  entire 256-entry outbox. Playback passed 4/5 cases; decoding returned AVFoundation
+  -11800/POSIX 1. The projection host started standalone but no XCTest cases ran.
+  These failures prevent release qualification. [Native evidence](fork/evidence/native-9a040579.json),
+  [device artifact evidence](fork/evidence/unsigned-device-9a040579.json) and
+  [Windows installation instructions](WINDOWS_INSTALL.md).
 - `92f6d752`: 1,060 iOS XCTest cases passed, including 74 archive integration
   cases. These exercised actual local message-processing paths with a generated
   JPEG and synthetic bytes for other media types, cache removal and reopening.
@@ -33,9 +44,9 @@ Verified revisions must be kept separate from this source:
   still need their own successful runs.
 
 These are local integration tests, not verified live Telegram delivery,
-physical-device protection or running-app UI. No full application build,
-installable signed IPA, device installation or iPhone performance result is
-claimed. Hosted workflows read the owner's API credentials from Secrets.
+physical-device protection or running-app UI. A full unsigned device application
+build is now verified; no installable signed IPA, device installation or iPhone
+performance result is claimed. Hosted workflows read the owner's API credentials from Secrets.
 [Integration scope](fork/ARCHIVE-INTEGRATION.md) and
 [preservation limits](fork/PRESERVATION-STATUS.md) remain release gates.
 

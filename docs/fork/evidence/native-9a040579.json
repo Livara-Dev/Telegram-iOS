@@ -1,0 +1,46 @@
+{
+  "source_commit": "9a040579b79b2a055c3d83e2d1e703af8362c07d",
+  "run_id": 41896517472,
+  "job_id": 126807371845,
+  "overall_result": "failure",
+  "artifact": {
+    "id": 13367905423,
+    "sha256": "613d5c3e6b14fe3f310158ea364ae15d45a95c7c80267d9648e2eb7dd0613337",
+    "outer_and_inner_checksums_verified": true
+  },
+  "suites": {
+    "Postbox": {
+      "executed": 201,
+      "failures": 0
+    },
+    "LocalMessageArchive": {
+      "executed": 77,
+      "failures": 0
+    },
+    "TelegramCore": {
+      "executed": 543,
+      "failures": 1,
+      "failure": "Range overflow fixture calls default 64-entry pending page but expects full 256-entry outbox. Production reader deliberately caps batches at 64."
+    },
+    "LocalArchivePlayback": {
+      "executed": 5,
+      "failures": 1,
+      "failure": "Encrypted movie decoding still returns AVFoundation -11800 with underlying POSIX 1. Opaque URL change did not resolve it."
+    },
+    "TextFormat": {
+      "executed": 270,
+      "failures": 0
+    },
+    "SettingsUI": {
+      "executed": 16,
+      "failures": 0
+    },
+    "ChatLocalTextFilterProjection": {
+      "executed": 0,
+      "failure": "XCTest host startup failed after bounded retries; no result bundle produced. Standalone host launch succeeds. Strict signature verification reports injected test-bundle resources; causal relationship not established."
+    }
+  },
+  "device_build": "passed separately at same source commit; see unsigned-device-9a040579.json",
+  "release_qualified": false,
+  "physical_device_verified": false
+}
