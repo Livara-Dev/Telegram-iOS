@@ -2,7 +2,7 @@ name: Archive native compatibility tests
 
 on:
   push:
-    branches: [feature/archive-media-capture, feature/privacy-telemetry-off]
+    branches: [feature/archive-media-capture, feature/privacy-telemetry-off, feature/archive-gallery]
   workflow_dispatch:
 
 permissions:

@@ -13,7 +13,8 @@ its native tests and running application have not yet been verified.
 | Timed, view-once, Secret Chat or copy-protected content | Excluded | No expiry/encryption/server-access bypass. |
 | Image viewing | Local bounded-resolution preview of retained images, without writing plaintext temporary files | Native UI/frames unverified. |
 | Video/voice playback | Native AVFoundation entry points implemented in source | Codec, UI and device tests pending; Ogg voice support is not established. |
-| Document viewing and complete media gallery | Not implemented | Stored bytes alone are not a complete gallery/player. |
+| Media gallery | Account/chat-scoped encrypted attachment index, 60-item pages, type filters, serial thumbnail reads, attachment opening and message-history navigation | Source authored; native and recorded UI validation pending. Video entries use icons; GIF image preview remains a still frame. |
+| Document viewing | Retained bytes and metadata only | No document viewer or plaintext export. |
 
 Schema 5 adds encrypted event-linked media rows. Deletes, retention and explicit
 archive purge remove their bytes and adjust quota accounting transactionally.
@@ -147,3 +148,27 @@ below the navigation bar; transport controls remain visible and tappable in both
 orientations; back closes playback; background/lock/purge clears decoded content
 and requires reopening. Image previews also clear on background/lock. No recorded
 simulator frames exist yet, so layout and animation quality are not verified.
+
+
+## Gallery increment awaiting native verification
+
+Schema 8 adds an encrypted index of retained attachment slots. Its rows are
+created in the same transaction as the attachment and removed on retention or
+purge; a transactional migration backfills existing bytes. Pages use a
+sequence/slot cursor and never load BLOB contents just to list media. The native
+screen opens from archive settings, optionally scoped to the current chat, and
+can navigate to a selected attachment's message history. Only completed stored
+attachments appear; missing downloads are not presented as available media.
+
+Thumbnail reads and ImageIO decoding are serialized on a utility queue. Each
+cell discards its result on reuse, and background/locked state clears displayed
+images and metadata. Images retain the 16 MiB preview limit and bounded pixel
+checks. No plaintext file or network request is introduced. Video, round video
+and voice use the existing pending-validation AVFoundation reader; documents
+show metadata. Large galleries retain one bounded page plus numeric cursors.
+
+New native tests cover paged slots, account/chat/type scoping, schema-7 migration
+and rollback, retention, conflicting writes, real Postbox gallery projection,
+and refusal of locked-account queries. These tests are authored, not yet
+reported as passed. Linux source/tooling checks cannot validate Swift UI or
+substitute for recorded simulator frames and device testing.

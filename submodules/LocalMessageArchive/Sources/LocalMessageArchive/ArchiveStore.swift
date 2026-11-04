@@ -211,6 +211,47 @@ public final class ArchiveStore {
         }
     }
 
+    public func mediaItems(peerId: Int64? = nil, kind: String? = nil,
+                           beforeSequence: Int64? = nil, beforeSlot: Int? = nil, limit: Int = 60,
+                           completion: @escaping (Result<[ArchivedMediaItem], ArchiveError>) -> Void) {
+        submit(completion) {
+            try Self.validatePage(beforeSequence, limit)
+            guard (beforeSequence == nil) == (beforeSlot == nil),
+                  beforeSlot.map({ (0..<10).contains($0) }) ?? true,
+                  kind.map({ !$0.isEmpty && $0.utf8.count <= 32 && !$0.contains("\0") }) ?? true else { throw ArchiveError.invalidInput }
+            let now = self.clock()
+            guard now >= 0 else { throw ArchiveError.invalidInput }
+            _ = try self.transaction { try self.prune(now: now, policy: self.retention) }
+            var sql = """
+                SELECT e.sequence,e.event_key,e.peer_id,e.namespace,e.message_id,e.kind,e.observed_at,substr(e.text,1,160),m.slot,m.kind,m.mime,length(m.payload)
+                FROM media_gallery g CROSS JOIN events e ON e.sequence=g.sequence CROSS JOIN event_media m ON m.event_key=g.event_key AND m.slot=g.slot
+                WHERE e.account_id=? AND (g.sequence,g.slot)<(?,?)
+                """
+            let cursor = beforeSequence ?? Int64.max
+            var values: [SQLValue] = [.integer(self.accountId), .integer(cursor), .integer(Int64(beforeSlot ?? 10))]
+            if let peerId { sql += " AND e.peer_id=?"; values.append(.integer(peerId)) }
+            if let kind { sql += " AND g.kind=?"; values.append(.text(kind)) }
+            sql += " ORDER BY g.sequence DESC,g.slot DESC LIMIT ?"
+            values.append(.integer(Int64(limit)))
+            let row = try self.statement(sql, values)
+            defer { sqlite3_finalize(row) }
+            var items: [ArchivedMediaItem] = []
+            var code = sqlite3_step(row)
+            while code == SQLITE_ROW {
+                guard let eventKind = ArchiveEventKind(rawValue: sqlite3_column_int(row, 5)) else { throw ArchiveError.invalidInput }
+                let slot = Int(sqlite3_column_int(row, 8)), size = sqlite3_column_int64(row, 11)
+                guard (0..<10).contains(slot), size >= 0, size <= 512 * 1024 * 1024 else { throw ArchiveError.invalidInput }
+                items.append(ArchivedMediaItem(sequence: sqlite3_column_int64(row, 0), eventKey: try self.text(row, 1),
+                    message: ArchiveMessageID(accountId: self.accountId, peerId: sqlite3_column_int64(row, 2), namespace: sqlite3_column_int(row, 3), messageId: sqlite3_column_int(row, 4)),
+                    eventKind: eventKind, observedAt: sqlite3_column_int64(row, 6), caption: try self.text(row, 7), slot: slot,
+                    kind: try self.text(row, 9), mimeType: try self.text(row, 10), byteCount: size))
+                code = sqlite3_step(row)
+            }
+            guard code == SQLITE_DONE else { throw ArchiveError.unavailable(code) }
+            return items
+        }
+    }
+
     public func usage(completion: @escaping (Result<ArchiveUsage, ArchiveError>) -> Void) {
         submit(completion) { try self.currentUsage() }
     }
@@ -272,11 +313,11 @@ public final class ArchiveStore {
         try execute("PRAGMA foreign_keys=ON")
         guard try scalar("PRAGMA foreign_keys") == 1 else { throw ArchiveError.protectionUnavailable }
         let version = try scalar("PRAGMA user_version")
-        guard (0...7).contains(version) else { throw ArchiveError.unsupportedSchema(Int(version)) }
+        guard (0...8).contains(version) else { throw ArchiveError.unsupportedSchema(Int(version)) }
         try transaction {
             // Another connection may have migrated while this one waited for the writer lock.
             let lockedVersion = try scalar("PRAGMA user_version")
-            guard (0...7).contains(lockedVersion) else { throw ArchiveError.unsupportedSchema(Int(lockedVersion)) }
+            guard (0...8).contains(lockedVersion) else { throw ArchiveError.unsupportedSchema(Int(lockedVersion)) }
             if lockedVersion == 0 {
                 guard try scalar("SELECT COUNT(*) FROM sqlite_master WHERE name NOT LIKE 'sqlite_%'") == 0 else {
                     throw ArchiveError.unsupportedSchema(0)
@@ -292,6 +333,7 @@ public final class ArchiveStore {
             if lockedVersion < 5 { try migrateMediaToVersion5() }
             if lockedVersion < 6 { try migrateSearchToVersion6() }
             if lockedVersion < 7 { try migrateMediaToVersion7() }
+            if lockedVersion < 8 { try migrateGalleryToVersion8() }
             _ = try currentUsage()
             _ = try captureGeneration()
             _ = try outboxReceipt()
@@ -439,6 +481,29 @@ public final class ArchiveStore {
         try execute("DROP TABLE event_media_v6")
         try installMediaTriggers()
         try execute("PRAGMA user_version=7")
+    }
+
+    private func migrateGalleryToVersion8() throws {
+        // An encrypted index of retained attachment slots supports newest-first
+        // browsing and type filtering without scanning text-only messages.
+        try execute("""
+            CREATE TABLE media_gallery(sequence INTEGER NOT NULL REFERENCES events(sequence) ON DELETE CASCADE,
+            slot INTEGER NOT NULL CHECK(slot>=0 AND slot<10),event_key TEXT NOT NULL,kind TEXT NOT NULL,
+            PRIMARY KEY(sequence,slot),UNIQUE(event_key,slot)) WITHOUT ROWID
+            """)
+        try execute("CREATE INDEX media_gallery_kind ON media_gallery(kind,sequence,slot)")
+        try execute("INSERT INTO media_gallery SELECT e.sequence,m.slot,e.event_key,m.kind FROM events e JOIN event_media m ON m.event_key=e.event_key")
+        try execute("""
+            CREATE TRIGGER archive_gallery_insert AFTER INSERT ON event_media BEGIN
+            INSERT INTO media_gallery SELECT sequence,NEW.slot,event_key,NEW.kind FROM events WHERE event_key=NEW.event_key;
+            END
+            """)
+        try execute("""
+            CREATE TRIGGER archive_gallery_delete AFTER DELETE ON event_media BEGIN
+            DELETE FROM media_gallery WHERE event_key=OLD.event_key AND slot=OLD.slot;
+            END
+            """)
+        try execute("PRAGMA user_version=8")
     }
 
     private func migrateSearchToVersion6() throws {

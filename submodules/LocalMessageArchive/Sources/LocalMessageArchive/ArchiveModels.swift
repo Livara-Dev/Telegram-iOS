@@ -143,3 +143,17 @@ public struct ArchivePurgeResult: Equatable {
     /// False for an acknowledged retry of the current generation; newer records remain intact.
     public let didPurge: Bool
 }
+
+/// A gallery row describes retained bytes, never a MediaBox placeholder.
+public struct ArchivedMediaItem: Equatable {
+    public let sequence: Int64
+    public let eventKey: String
+    public let message: ArchiveMessageID
+    public let eventKind: ArchiveEventKind
+    public let observedAt: Int64
+    public let caption: String
+    public let slot: Int
+    public let kind: String
+    public let mimeType: String
+    public let byteCount: Int64
+}

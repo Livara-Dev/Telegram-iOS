@@ -50,6 +50,33 @@ public struct LocalArchivedMessage {
     }
 }
 
+public struct LocalArchivedMediaItem {
+    public let sequence: Int64
+    public let eventKey: String
+    public let peerId: Int64
+    public let namespace: Int32
+    public let messageId: Int32
+    public let slot: Int
+    public let kind: String
+    public let mimeType: String
+    public let byteCount: Int64
+    public let caption: String
+    public let observedAt: Int64
+    public let isDeleted: Bool
+
+    init(_ item: ArchivedMediaItem) {
+        self.sequence = item.sequence; self.eventKey = item.eventKey
+        self.peerId = item.message.peerId; self.namespace = item.message.namespace; self.messageId = item.message.messageId
+        self.slot = item.slot; self.kind = item.kind; self.mimeType = item.mimeType; self.byteCount = item.byteCount
+        self.caption = item.caption; self.observedAt = item.observedAt; self.isDeleted = item.eventKind == .deleted
+    }
+}
+
+public struct LocalArchiveMediaPage {
+    public let items: [LocalArchivedMediaItem]
+    public let unavailable: Bool
+}
+
 public struct LocalArchiveUsage {
     public let snapshots: Int64
     public let payloadBytes: Int64
@@ -79,6 +106,7 @@ protocol LocalArchiveStorage: AnyObject {
     func timeline(for message: ArchiveMessageID, beforeSequence: Int64?, limit: Int,
                   completion: @escaping (Result<[ArchivedRecord], ArchiveError>) -> Void)
     func searchMessages(query: String, peerId: Int64?, kind: ArchiveEventKind?, beforeSequence: Int64?, limit: Int, completion: @escaping (Result<[ArchivedRecord], ArchiveError>) -> Void)
+    func mediaItems(peerId: Int64?, kind: String?, beforeSequence: Int64?, beforeSlot: Int?, limit: Int, completion: @escaping (Result<[ArchivedMediaItem], ArchiveError>) -> Void)
     func usage(completion: @escaping (Result<ArchiveUsage, ArchiveError>) -> Void)
 }
 
@@ -311,6 +339,17 @@ public final class LocalArchiveCoordinator {
         let id = ArchiveMessageID(accountId: self.accountId, peerId: peerId, namespace: namespace, messageId: messageId)
         return self.readPage { storage, completion in
             storage.timeline(for: id, beforeSequence: beforeSequence, limit: limit, completion: completion)
+        }
+    }
+
+    public func mediaItems(peerId: Int64? = nil, kind: String? = nil, beforeSequence: Int64? = nil,
+                           beforeSlot: Int? = nil, limit: Int = 60) -> Signal<LocalArchiveMediaPage, NoError> {
+        let value: Signal<[ArchivedMediaItem]?, NoError> = self.readValue { storage, completion in
+            storage.mediaItems(peerId: peerId, kind: kind, beforeSequence: beforeSequence, beforeSlot: beforeSlot, limit: limit, completion: completion)
+        }
+        return value |> map { records in
+            guard let records else { return LocalArchiveMediaPage(items: [], unavailable: true) }
+            return LocalArchiveMediaPage(items: records.map(LocalArchivedMediaItem.init), unavailable: false)
         }
     }
 
