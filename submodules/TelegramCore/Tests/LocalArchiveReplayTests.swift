@@ -169,7 +169,7 @@ final class LocalArchiveReplayTests: XCTestCase {
         })
     }
 
-    private func drainIntoIndependentArchive() throws -> LocalArchivePage {
+    private func drainIntoIndependentArchive(clearing resources: [MediaResourceId] = [], expectedMedia: [String: Data] = [:]) throws -> LocalArchivePage {
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent("archive-real-replay-sink-" + UUID().uuidString)
         let opened = Atomic<ArchiveStore?>(value: nil)
         let coordinator = LocalArchiveCoordinator(postbox: self.fixture.postbox, accountPeerId: self.accountPeerId,
@@ -198,7 +198,98 @@ final class LocalArchiveReplayTests: XCTestCase {
         let _ = try self.localArchiveValue(coordinator.status |> filter { $0 == .ready })
         let page = try self.localArchiveValue(coordinator.deletedMessages())
         XCTAssertTrue(try self.pending().isEmpty)
+        if !resources.isEmpty {
+            let removed = expectation(description: "clear Telegram cache after real deletion replay")
+            let removal = self.fixture.postbox.mediaBox.removeCachedResources(resources, force: true).start(completed: { removed.fulfill() })
+            wait(for: [removed], timeout: 15)
+            removal.dispose()
+            for resource in resources {
+                XCTAssertFalse(FileManager.default.fileExists(atPath: self.fixture.postbox.mediaBox.storePathsForId(resource).complete))
+            }
+        }
+        if !expectedMedia.isEmpty {
+            let store = try XCTUnwrap(opened.with { $0 })
+            var records: [LocalArchivedMessage] = []
+            for record in page.records {
+                let timeline = try self.localArchiveValue(coordinator.timeline(peerId: record.peerId, namespace: record.namespace, messageId: record.messageId))
+                records.append(contentsOf: timeline.records)
+            }
+            for record in records {
+                guard let bytes = expectedMedia[record.eventKey] else { continue }
+                XCTAssertEqual(record.storedMediaCount, 1)
+                let read = expectation(description: "read independent bytes after real deletion replay")
+                var value: Result<ArchivedMedia?, ArchiveError>?
+                store.media(eventKey: record.eventKey, slot: 0) { value = $0; read.fulfill() }
+                wait(for: [read], timeout: 15)
+                XCTAssertEqual(try XCTUnwrap(value).get()?.data, bytes)
+            }
+            XCTAssertEqual(Set(records.map { $0.eventKey }), Set(expectedMedia.keys))
+        }
         return page
+    }
+
+    func testGlobalDeleteDefersEagerMediaRemovalUntilArchiveCanCopy() throws {
+        let bytes = localArchiveTestPhotoData()
+        let resource = CloudPhotoSizeMediaResource(datacenterId: 1, photoId: 501, accessHash: 0, sizeSpec: "x", size: Int64(bytes.count), fileReference: nil)
+        let file = TelegramMediaImage(imageId: MediaId(namespace: Namespaces.Media.CloudImage, id: 501), representations: [TelegramMediaImageRepresentation(dimensions: PixelDimensions(width: 16, height: 16), resource: resource, progressiveSizes: [], immediateThumbnailData: nil)], immediateThumbnailData: nil, reference: nil, partialReference: nil, flags: [])
+        self.fixture.postbox.mediaBox.storeResourceData(resource.id, data: bytes, synchronous: true)
+        let id = self.id(501)
+        try self.store([localArchiveTestMessage(id, media: [file])])
+        _ = try XCTUnwrap(self.replay([.DeleteMessagesWithGlobalIds([id.id])]))
+        // Drain MediaBox's queue: this fails if replay already enqueued force-unlink.
+        self.fixture.postbox.mediaBox.dataQueue.sync {}
+        XCTAssertNil(try self.localArchiveValue(self.fixture.postbox.transaction { $0.getMessage(id) }))
+        XCTAssertEqual(try localArchiveReadCompletedMedia(self.fixture.postbox.mediaBox.storePathsForId(resource.id).complete), bytes)
+        let eventKey = try XCTUnwrap(self.pending().first?.eventKey)
+        let page = try self.drainIntoIndependentArchive(clearing: [resource.id], expectedMedia: [eventKey: bytes])
+        XCTAssertEqual(page.records.count, 1)
+    }
+
+    func testMediaReplacementThenGlobalDeletionRetainsBothVersionBytes() throws {
+        let firstBytes = Data([3, 5, 7])
+        let lastBytes = Data([9, 11, 13])
+        let resources = [601, 602].map { value in
+            CloudDocumentMediaResource(datacenterId: 1, fileId: Int64(value), accessHash: 0, size: 3, fileReference: nil, fileName: nil)
+        }
+        let files = resources.map { resource in
+            TelegramMediaFile(fileId: MediaId(namespace: Namespaces.Media.CloudFile, id: resource.fileId), partialReference: nil, resource: resource, previewRepresentations: [], videoThumbnails: [], immediateThumbnailData: nil, mimeType: "application/pdf", size: 3, attributes: [], alternativeRepresentations: [])
+        }
+        self.fixture.postbox.mediaBox.storeResourceData(resources[0].id, data: firstBytes, synchronous: true)
+        self.fixture.postbox.mediaBox.storeResourceData(resources[1].id, data: lastBytes, synchronous: true)
+        let id = self.id(601)
+        try self.store([localArchiveTestMessage(id, text: "original document", media: [files[0]])])
+        _ = try XCTUnwrap(self.replay([
+            .EditMessage(id, localArchiveTestMessage(id, text: "replacement document", attributes: [EditedMessageAttribute(date: 200, isHidden: false)], media: [files[1]])),
+            .DeleteMessagesWithGlobalIds([id.id])
+        ]))
+        self.fixture.postbox.mediaBox.dataQueue.sync {}
+        let events = try self.pending()
+        XCTAssertEqual(events.map { $0.kindRawValue }, [ArchiveEventKind.edited.rawValue, ArchiveEventKind.deleted.rawValue])
+        XCTAssertEqual(events.count, 2)
+        let firstKey = try XCTUnwrap(events.first?.eventKey)
+        let lastKey = try XCTUnwrap(events.last?.eventKey)
+        _ = try self.drainIntoIndependentArchive(clearing: resources.map { $0.id }, expectedMedia: [firstKey: firstBytes, lastKey: lastBytes])
+    }
+
+    func testGlobalDeleteStillRemovesExcludedAndExpiringMedia() throws {
+        for (offset, disabled) in [false, true].enumerated() {
+            let bytes = Data([1, 3, 5])
+            let resource = CloudDocumentMediaResource(datacenterId: 1, fileId: Int64(510 + offset), accessHash: 0, size: Int64(bytes.count), fileReference: nil, fileName: nil)
+            let file = TelegramMediaFile(fileId: MediaId(namespace: Namespaces.Media.CloudFile, id: Int64(510 + offset)), partialReference: nil, resource: resource, previewRepresentations: [], videoThumbnails: [], immediateThumbnailData: nil, mimeType: "video/mp4", size: Int64(bytes.count), attributes: [], alternativeRepresentations: [])
+            self.fixture.postbox.mediaBox.storeResourceData(resource.id, data: bytes, synchronous: true)
+            let id = self.id(Int32(510 + offset))
+            let attributes: [MessageAttribute] = disabled ? [] : [AutoremoveTimeoutMessageAttribute(timeout: 30, countdownBeginTime: nil)]
+            try self.store([localArchiveTestMessage(id, attributes: attributes, media: [file])])
+            if disabled {
+                _ = try self.localArchiveValue(self.fixture.postbox.transaction { transaction in
+                    setLocalArchiveSettings(transaction: transaction, settings: LocalArchiveSettings())
+                })
+            }
+            _ = try XCTUnwrap(self.replay([.DeleteMessagesWithGlobalIds([id.id])]))
+            self.fixture.postbox.mediaBox.dataQueue.sync {}
+            XCTAssertNil(try localArchiveReadCompletedMedia(self.fixture.postbox.mediaBox.storePathsForId(resource.id).complete))
+            XCTAssertTrue(try self.pending().isEmpty)
+        }
     }
 
     func testExplicitDeleteReplayCapturesBeforeRemovalAndPreservesStateProgress() throws {
@@ -428,6 +519,12 @@ final class LocalArchiveReplayTests: XCTestCase {
         XCTAssertEqual(try self.localArchiveValue(self.fixture.postbox.transaction { $0.getMessageGroup(first)?.count }), 2)
         try self.interactiveDelete([first], deleteAllInGroup: true)
         XCTAssertEqual(Set(try self.pending().map { $0.messageId }), Set([first, second]))
+        for operation in try self.pending() {
+            let metadata = try XCTUnwrap(localArchiveDecodedMediaMetadata(operation.entities))
+            XCTAssertEqual(metadata.map(\.kind), [.photo])
+            XCTAssertEqual(metadata.map(\.id), [Int64(operation.messageId.id)])
+            XCTAssertFalse(try XCTUnwrap(metadata.first).bytesPreserved)
+        }
         XCTAssertNil(try self.localArchiveValue(self.fixture.postbox.transaction { $0.getMessage(first) }))
         XCTAssertNil(try self.localArchiveValue(self.fixture.postbox.transaction { $0.getMessage(second) }))
         let outgoing = try self.outgoingDeletes()
@@ -458,5 +555,37 @@ final class LocalArchiveReplayTests: XCTestCase {
         let stored = try XCTUnwrap(self.localArchiveValue(self.fixture.postbox.transaction { $0.getMessage(id) }))
         XCTAssertEqual(stored.text, "sent replacement")
         XCTAssertFalse(stored.flags.contains(.Incoming))
+    }
+
+    func testStoryPrivacyPreservesIncomingServerReadReplayWithoutOutgoingEcho() throws {
+        let peerId = self.chatPeerId
+        let _ = try self.localArchiveValue(self.fixture.postbox.transaction { transaction in
+            transaction.setPeerStoryState(peerId: peerId, state: Stories.PeerState(maxReadId: 3).postboxRepresentation)
+        })
+        XCTAssertTrue(try self.localArchiveValue(LocalStoryPrivacyContext(postbox: self.fixture.postbox).setSuppressed(true)))
+        let policy = try self.localArchiveValue(LocalStoryPrivacyContext(postbox: self.fixture.postbox).settings)
+        for serverMax in [Int32(12), 8] {
+            let result = try XCTUnwrap(self.replay([.UpdateReadStories(peerId: peerId, maxId: serverMax)]))
+            XCTAssertEqual(result.storyUpdates.count, 1)
+            let update = try XCTUnwrap(result.storyUpdates.first)
+            guard case let .read(updatedPeer, updatedMax) = update else {
+                return XCTFail("expected the genuine server read update")
+            }
+            XCTAssertEqual(updatedPeer, peerId)
+            XCTAssertEqual(updatedMax, serverMax)
+        }
+        try self.fixture.reopen()
+        let persisted = try self.localArchiveValue(self.fixture.postbox.transaction { transaction -> (Int32?, Int) in
+            var outgoingCount = 0
+            transaction.operationLogEnumerateEntries(peerId: peerId, tag: OperationLogTags.SynchronizeViewStories) { _ in
+                outgoingCount += 1
+                return true
+            }
+            return (transaction.getPeerStoryState(peerId: peerId)?.entry.get(Stories.PeerState.self)?.maxReadId, outgoingCount)
+        })
+        XCTAssertEqual(persisted.0, 12)
+        XCTAssertEqual(persisted.1, 0)
+        XCTAssertEqual(try self.localArchiveValue(LocalStoryPrivacyContext(postbox: self.fixture.postbox).settings), policy)
+        XCTAssertTrue(try self.pending().isEmpty)
     }
 }

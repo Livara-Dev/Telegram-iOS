@@ -18,6 +18,10 @@ import subprocess
 import sys
 import tempfile
 
+from unsigned_rules import prepare_unsigned_rules
+from ipa_inspect import inspect_ipa, InvalidIPA
+from simulator_probe import capture as capture_projection_launch
+
 ROOT = Path(__file__).resolve().parents[2]
 TEST_TARGET = "//submodules/TextFormat:TextFormatTests"
 # Fixed labels and evidence paths: no user-provided target or path is accepted.
@@ -26,6 +30,8 @@ TEST_TARGET_PATHS = {
     "//submodules/Postbox:PostboxTests": ("postbox", ("submodules", "Postbox", "PostboxTests")),
     "//submodules/LocalMessageArchive:LocalMessageArchiveTests": (
         "local-message-archive", ("submodules", "LocalMessageArchive", "LocalMessageArchiveTests")),
+    "//submodules/LocalMessageArchive:LocalArchivePlaybackTests": (
+        "local-archive-playback", ("submodules", "LocalMessageArchive", "LocalArchivePlaybackTests")),
     "//submodules/TelegramCore:TelegramCoreTests": (
         "telegram-core", ("submodules", "TelegramCore", "TelegramCoreTests")),
     "//submodules/TelegramUI/Components/Chat/ChatHistoryEntry:ChatLocalTextFilterProjectionTests": (
@@ -38,6 +44,7 @@ INTEGRATION_TEST_TARGETS = (
     "//submodules/Postbox:PostboxTests",
     "//submodules/LocalMessageArchive:LocalMessageArchiveTests",
     "//submodules/TelegramCore:TelegramCoreTests",
+    "//submodules/LocalMessageArchive:LocalArchivePlaybackTests",
     TEST_TARGET,
     "//submodules/TelegramUI/Components/Chat/ChatHistoryEntry:ChatLocalTextFilterProjectionTests",
 )
@@ -123,12 +130,14 @@ def preflight(env, simulator=False):
     output(["git", "submodule", "foreach", "--quiet", "--recursive", "git diff --quiet && git diff --cached --quiet"])
     if simulator:
         devices = json.loads(output(["xcrun", "simctl", "list", "devices", "available", "--json"]))["devices"]
-        if not any("iOS-26-5" in runtime and any(d["name"] == "iPhone 17" for d in entries) for runtime, entries in devices.items()):
-            raise InvalidSetup("The explicit iOS test runners require an available iPhone 17 simulator on iOS 26.5")
+        if not any("iOS-27-0" in runtime and any(d["name"] == "iPhone 17" for d in entries) for runtime, entries in devices.items()):
+            raise InvalidSetup("The explicit iOS test runners require an available iPhone 17 simulator on iOS 27.0")
     return bazel
 
 
-def proxy_arguments(bazel, root, mode, arguments):
+def proxy_arguments(bazel, root, mode, arguments, rules_override=None):
+    if rules_override is not None and mode != "unsigned-device":
+        raise InvalidSetup("Unsigned rules overlay is forbidden for signed or simulator builds")
     # Bazel's --version fast path must be the sole argument. Prepending startup
     # flags makes the upstream get_bazel_version probe fail before any build.
     if arguments == ["--version"]:
@@ -154,10 +163,17 @@ def proxy_arguments(bazel, root, mode, arguments):
             # suites. A second, disposable disk cache retains redundant artifacts
             # on the same hosted runner and is never reused by a later job.
             command.extend(["--lockfile_mode=error", "--disk_cache=", "--remote_cache=", "--remote_executor=", "--bes_backend=", "--noremote_accept_cached", "--noremote_upload_local_results"])
+            if argument == "test" and mode == "simulator":
+                # Use the pinned rules_apple simulator creator. It waits for
+                # simctl bootstatus and reuses the private runner's simulator,
+                # rather than cold-booting a new device for every test target.
+                command.extend(["--test_env=REUSE_GLOBAL_SIMULATOR=1", "--test_env=SIMULATOR_REUSE_SIMULATOR=1"])
             if mode in ("simulator", "unsigned-device"):
                 command.append("--//Telegram:disableProvisioningProfiles=true")
             if mode == "unsigned-device":
                 command.append("--features=disable_legacy_signing")
+                if rules_override is not None:
+                    command.extend(["--override_module=rules_apple=" + str(rules_override), "--features=ayugram.unsigned_device"])
     return command
 
 
@@ -210,6 +226,74 @@ def run_redacted(args, env, secrets):
             print(line, end="", flush=True)
         if process.wait():
             raise InvalidSetup("Upstream build/test failed; no successful baseline is recorded")
+
+
+def retain_bundle_diagnostics(bazel_root, secrets):
+    """Read-only diagnostics for the exact private build's two known bundles.
+
+    Do not copy bundle contents, signing material, generated configuration, or
+    process environment. Diagnostic failure must never mask the build failure.
+    """
+    destination = ROOT / "build/fork-evidence"
+    try:
+        for directory in (ROOT / "build", destination):
+            if directory.is_symlink():
+                return
+        destination.mkdir(parents=True, exist_ok=True)
+        report = {"read_only": True, "signature_or_installation_verified": False, "bundles": {}}
+        try:
+            private_root = Path(bazel_root).resolve(strict=True)
+            app = (ROOT / "bazel-bin/Telegram/Telegram_archive-root/Payload/Telegram.app").resolve(strict=True)
+            if not app.is_relative_to(private_root) or not app.is_dir():
+                return
+        except (OSError, RuntimeError):
+            return
+        for name, bundle, executable in (
+            ("application", app, "Telegram"),
+            ("ui_framework", app / "Frameworks/TelegramUIFramework.framework", "TelegramUIFramework"),
+        ):
+            entry = {"commands": {}}
+            report["bundles"][name] = entry
+            try:
+                resolved = bundle.resolve(strict=True)
+                binary = (resolved / executable).resolve(strict=True)
+                if not resolved.is_relative_to(app) or not binary.is_relative_to(app):
+                    entry["state"] = "unsafe_path"
+                    continue
+                info = binary.stat()
+                if not stat.S_ISREG(info.st_mode):
+                    entry["state"] = "not_regular"
+                    continue
+                entry.update(state="available", executable_bytes=info.st_size, executable_mode=stat.S_IMODE(info.st_mode))
+            except (OSError, RuntimeError):
+                entry["state"] = "unavailable"
+                continue
+            for label, command in (
+                ("signature_details", ["/usr/bin/codesign", "--display", "--verbose=2", str(resolved)]),
+                ("signature_check", ["/usr/bin/codesign", "--verify", "--strict", "--verbose=2", str(resolved)]),
+                ("attribute_names", ["/usr/bin/xattr", str(resolved)]),
+            ):
+                try:
+                    result = subprocess.run(command, cwd=ROOT, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                                            timeout=8, check=False)
+                    diagnostic = result.stdout[:65536].decode("utf-8", errors="replace")
+                    # Remove private credentials and machine-specific paths, even
+                    # if an external tool unexpectedly echoes them in an error.
+                    for value in secrets:
+                        if value:
+                            diagnostic = diagnostic.replace(value, "[REDACTED]")
+                    for path in sorted({str(private_root), str(Path(bazel_root))}, key=len, reverse=True):
+                        diagnostic = diagnostic.replace(path, "[PRIVATE_BUILD]")
+                    for path in sorted({str(ROOT.resolve()), str(ROOT)}, key=len, reverse=True):
+                        diagnostic = diagnostic.replace(path, "[SOURCE]")
+                    entry["commands"][label] = {"exit_code": result.returncode, "output": diagnostic}
+                except (OSError, subprocess.SubprocessError):
+                    entry["commands"][label] = {"state": "unavailable"}
+        # Exclusive creation avoids following a destination file symlink.
+        with (destination / "bundle-diagnostics.json").open("x", encoding="utf-8") as target:
+            target.write(json.dumps(report, indent=2) + "\n")
+    except (OSError, ValueError, TypeError):
+        pass
 
 
 def retain_test_evidence(bazel_root, secrets, outcome, test_target=TEST_TARGET, prebuild=False):
@@ -286,7 +370,7 @@ def retain_integration_test_summary(test_results):
         target.write(json.dumps(summary, indent=2) + "\n")
 
 
-def publish_artifact(source, destination, mode, bundle_id, build_number, test_results=None):
+def publish_artifact(source, destination, mode, bundle_id, build_number, test_results=None, binary_report=None):
     if destination.exists():
         raise FileExistsError("Artifact destination already exists")
     hasher = hashlib.sha256()
@@ -301,7 +385,9 @@ def publish_artifact(source, destination, mode, bundle_id, build_number, test_re
         "tests": (dict(test_results) if test_results is not None else
                   {TEST_TARGET: "passed" if mode == "simulator" else "not_run"}),
         "runtime_verified": False, "signature_verified": False,
+        "integration_qualification": "not_evaluated_by_this_job" if mode == "unsigned-device" else "see_tests",
         "signing": "disabled" if mode == "unsigned-device" else "not_verified",
+        "main_executable": binary_report,
     }
     destination.parent.mkdir(parents=True, exist_ok=True)
     # Upload globs never see this hidden staging directory or a partial package.
@@ -338,6 +424,17 @@ def build(mode, env, build_number, integration_tests=False, tests_only=False):
         proxy.write_text("#!/bin/sh\nexec " + shlex.join([sys.executable, str(Path(__file__).resolve()), "bazel-proxy", str(bazel), mode]) + ' "$@"\n')
         proxy.chmod(0o700)
         child_env = dict(env)
+        child_env.pop("FORK_UNSIGNED_RULES_PATH", None)
+        if mode == "unsigned-device":
+            overlay = temporary / "unsigned-rules-apple"
+            try:
+                overlay_manifest = prepare_unsigned_rules(ROOT / "build-system/bazel-rules/rules_apple", overlay)
+            except (OSError, ValueError, subprocess.SubprocessError) as error:
+                raise InvalidSetup("Reviewed unsigned rules overlay could not be prepared") from error
+            child_env["FORK_UNSIGNED_RULES_PATH"] = str(overlay)
+            evidence = ROOT / "build/fork-evidence"
+            evidence.mkdir(parents=True, exist_ok=True)
+            (evidence / "unsigned-rules.json").write_text(json.dumps(overlay_manifest, indent=2) + "\n")
         for name in ("TELEGRAM_API_ID", "TELEGRAM_API_HASH"):
             child_env.pop(name, None)
         common = [sys.executable, "build-system/Make/Make.py", "--bazel=" + str(proxy), "--bazelUserRoot=" + str(temporary / "bazel-root")]
@@ -354,6 +451,8 @@ def build(mode, env, build_number, integration_tests=False, tests_only=False):
                     run_redacted(common + ["test"] + base + ["--target=" + target], child_env, secret_values)
                     test_outcome = "passed"
                 except InvalidSetup as error:
+                    if target == "//submodules/TelegramUI/Components/Chat/ChatHistoryEntry:ChatLocalTextFilterProjectionTests":
+                        capture_projection_launch(ROOT, secret_values)
                     if not continue_after_failure:
                         raise
                     # A failed target must not hide results for independent
@@ -385,14 +484,22 @@ def build(mode, env, build_number, integration_tests=False, tests_only=False):
                     if tests_only:
                         retain_integration_test_summary(test_results)
             if not tests_only:
-                run_redacted(common + ["build"] + base + ["--buildNumber=" + str(build_number), "--configuration=" + ("debug_sim_arm64" if mode == "simulator" else "release_arm64"), "--lock"], child_env, secret_values)
+                try:
+                    run_redacted(common + ["build"] + base + ["--buildNumber=" + str(build_number), "--configuration=" + ("debug_sim_arm64" if mode == "simulator" else "release_arm64"), "--lock"], child_env, secret_values)
+                except InvalidSetup:
+                    retain_bundle_diagnostics(temporary / "bazel-root", secret_values)
+                    raise
                 # The test invocation may repoint bazel-bin at a different configuration.
                 captured_ipa = temporary / "Telegram.ipa"
                 shutil.copyfile(ROOT / "bazel-bin/Telegram/Telegram.ipa", captured_ipa)
+                try:
+                    binary_report = inspect_ipa(captured_ipa, mode, config["bundle_id"])
+                except InvalidIPA as error:
+                    raise InvalidSetup(str(error)) from error
                 if mode == "simulator" and not integration_tests:
                     run_tests((TEST_TARGET,))
                 publish_artifact(captured_ipa, destination, mode, config["bundle_id"], build_number,
-                                 test_results if mode == "simulator" else None)
+                                 test_results if mode == "simulator" else None, binary_report=binary_report)
         finally:
             # Measure while build products and diagnostics still exist. Cleanup
             # would otherwise hide pressure at the point of a packaging failure.
@@ -411,7 +518,7 @@ def build(mode, env, build_number, integration_tests=False, tests_only=False):
 
 def main():
     if len(sys.argv) > 1 and sys.argv[1] == "bazel-proxy":
-        command = proxy_arguments(Path(sys.argv[2]), ROOT, sys.argv[3], sys.argv[4:])
+        command = proxy_arguments(Path(sys.argv[2]), ROOT, sys.argv[3], sys.argv[4:], rules_override=os.environ.get("FORK_UNSIGNED_RULES_PATH"))
         os.execv(command[0], command)
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("mode", choices=("preflight", "simulator", "unsigned-device", "device"))

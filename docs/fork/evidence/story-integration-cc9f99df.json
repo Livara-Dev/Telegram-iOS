@@ -1,0 +1,44 @@
+{
+  "source_commit": "cc9f99df3020223edfb0f5ccc568e9acaa7ad640",
+  "run": 41821121479,
+  "job": 126544217301,
+  "artifact": 13320092561,
+  "zip_sha256": "78a5a042ec1410d5e599eefb5af9366610c9dc55bb03a98470cf9e828156cbf4",
+  "outcome": "Swift compile failure before any test execution",
+  "failure": "LocalStoryViewReceipts.swift:58 ignoreValues yields Signal<Never,NoError> incompatible with then Signal<Void,NoError>",
+  "files": [
+    {
+      "name": "SHA256SUMS",
+      "bytes": 611
+    },
+    {
+      "name": "host.json",
+      "bytes": 481
+    },
+    {
+      "name": "host.log",
+      "bytes": 84
+    },
+    {
+      "name": "integration-tests.json",
+      "bytes": 731
+    },
+    {
+      "name": "integration-tests.log",
+      "bytes": 536195
+    },
+    {
+      "name": "portable-tests.log",
+      "bytes": 9466
+    },
+    {
+      "name": "prebuild-local-text-filter-projection/collection.json",
+      "bytes": 235
+    },
+    {
+      "name": "runtime.log",
+      "bytes": 12602
+    }
+  ],
+  "inner_hashes_verified": true
+}

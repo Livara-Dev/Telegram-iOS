@@ -188,6 +188,29 @@ public final class ArchiveStore {
         }
     }
 
+    /// Literal word/phrase search. FTS syntax is quoted, never executed from user input.
+    /// The index and its content remain inside this account's encrypted database.
+    public func searchMessages(query: String, peerId: Int64? = nil, kind: ArchiveEventKind? = nil,
+                               beforeSequence: Int64? = nil, limit: Int = 100,
+                               completion: @escaping (Result<[ArchivedRecord], ArchiveError>) -> Void) {
+        submit(completion) {
+            try Self.validatePage(beforeSequence, limit)
+            let query = query.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !query.isEmpty, query.utf8.count <= 512, !query.contains("\0") else { throw ArchiveError.invalidInput }
+            let now = self.clock()
+            guard now >= 0 else { throw ArchiveError.invalidInput }
+            _ = try self.transaction { try self.prune(now: now, policy: self.retention) }
+            let phrase = "\"" + query.replacingOccurrences(of: "\"", with: "\"\"") + "\""
+            var clause = "WHERE account_id=? AND sequence<? AND sequence IN (SELECT rowid FROM events_search WHERE events_search MATCH ?)"
+            var values: [SQLValue] = [.integer(self.accountId), .integer(beforeSequence ?? Int64.max), .text(phrase)]
+            if let peerId { clause += " AND peer_id=?"; values.append(.integer(peerId)) }
+            if let kind { clause += " AND kind=?"; values.append(.integer(Int64(kind.rawValue))) }
+            clause += " ORDER BY sequence DESC LIMIT ?"
+            values.append(.integer(Int64(limit)))
+            return try self.read(clause, values)
+        }
+    }
+
     public func usage(completion: @escaping (Result<ArchiveUsage, ArchiveError>) -> Void) {
         submit(completion) { try self.currentUsage() }
     }
@@ -244,12 +267,16 @@ public final class ArchiveStore {
         let cipher = try textScalar("PRAGMA cipher_version")
         guard !cipher.isEmpty, try scalar("PRAGMA cipher_plaintext_header_size") == 0 else { throw ArchiveError.invalidKey }
         _ = try scalar("SELECT COUNT(*) FROM sqlite_master") // Authenticate existing pages before mutation.
+        try execute("PRAGMA temp_store=MEMORY")
+        guard try scalar("PRAGMA temp_store") == 2 else { throw ArchiveError.protectionUnavailable }
+        try execute("PRAGMA foreign_keys=ON")
+        guard try scalar("PRAGMA foreign_keys") == 1 else { throw ArchiveError.protectionUnavailable }
         let version = try scalar("PRAGMA user_version")
-        guard (0...4).contains(version) else { throw ArchiveError.unsupportedSchema(Int(version)) }
+        guard (0...7).contains(version) else { throw ArchiveError.unsupportedSchema(Int(version)) }
         try transaction {
             // Another connection may have migrated while this one waited for the writer lock.
             let lockedVersion = try scalar("PRAGMA user_version")
-            guard (0...4).contains(lockedVersion) else { throw ArchiveError.unsupportedSchema(Int(lockedVersion)) }
+            guard (0...7).contains(lockedVersion) else { throw ArchiveError.unsupportedSchema(Int(lockedVersion)) }
             if lockedVersion == 0 {
                 guard try scalar("SELECT COUNT(*) FROM sqlite_master WHERE name NOT LIKE 'sqlite_%'") == 0 else {
                     throw ArchiveError.unsupportedSchema(0)
@@ -262,6 +289,9 @@ public final class ArchiveStore {
             if lockedVersion < 2 { try migrateUsageToVersion2() }
             if lockedVersion < 3 { try migrateGenerationToVersion3() }
             if lockedVersion < 4 { try migrateOutboxReceiptToVersion4() }
+            if lockedVersion < 5 { try migrateMediaToVersion5() }
+            if lockedVersion < 6 { try migrateSearchToVersion6() }
+            if lockedVersion < 7 { try migrateMediaToVersion7() }
             _ = try currentUsage()
             _ = try captureGeneration()
             _ = try outboxReceipt()
@@ -366,6 +396,268 @@ public final class ArchiveStore {
         try execute("PRAGMA user_version=4")
     }
 
+    private func createMediaTable(maxBytes: Int) throws {
+        try execute("""
+            CREATE TABLE event_media(event_key TEXT NOT NULL REFERENCES events(event_key) ON DELETE CASCADE,
+            slot INTEGER NOT NULL CHECK(slot>=0 AND slot<10), kind TEXT NOT NULL CHECK(length(CAST(kind AS BLOB))<=32), mime TEXT NOT NULL CHECK(length(CAST(mime AS BLOB))<=256),
+            payload BLOB NOT NULL CHECK(length(payload)<=\(maxBytes)), byte_cost INTEGER NOT NULL CHECK(byte_cost=length(payload)+length(CAST(kind AS BLOB))+length(CAST(mime AS BLOB))+64),
+            PRIMARY KEY(event_key,slot))
+            """)
+    }
+
+    private func installMediaTriggers() throws {
+        try execute("""
+            CREATE TRIGGER archive_media_insert_usage AFTER INSERT ON event_media BEGIN
+            UPDATE archive_usage SET payload_bytes=payload_bytes+NEW.byte_cost WHERE id=1;
+            END
+            """)
+        try execute("""
+            CREATE TRIGGER archive_media_delete_usage AFTER DELETE ON event_media BEGIN
+            UPDATE archive_usage SET payload_bytes=payload_bytes-OLD.byte_cost WHERE id=1;
+            END
+            """)
+        // Also clean up on an older open connection whose foreign_keys pragma
+        // predates this migration; duplicate cascade deletion is harmless.
+        try execute("CREATE TRIGGER archive_event_media_delete AFTER DELETE ON events BEGIN DELETE FROM event_media WHERE event_key=OLD.event_key; END")
+        try execute("CREATE TRIGGER archive_media_immutable BEFORE UPDATE ON event_media BEGIN SELECT RAISE(ABORT,'Archive media is immutable'); END")
+    }
+
+    private func migrateMediaToVersion5() throws {
+        try createMediaTable(maxBytes: 16 * 1024 * 1024)
+        try installMediaTriggers()
+        try execute("PRAGMA user_version=5")
+    }
+
+    private func migrateMediaToVersion7() throws {
+        for name in ["archive_media_insert_usage", "archive_media_delete_usage", "archive_event_media_delete", "archive_media_immutable"] {
+            try execute("DROP TRIGGER " + name)
+        }
+        try execute("ALTER TABLE event_media RENAME TO event_media_v6")
+        try createMediaTable(maxBytes: 512 * 1024 * 1024)
+        // Usage counters already include these rows. Install triggers only after copying.
+        try execute("INSERT INTO event_media SELECT * FROM event_media_v6")
+        try execute("DROP TABLE event_media_v6")
+        try installMediaTriggers()
+        try execute("PRAGMA user_version=7")
+    }
+
+    private func migrateSearchToVersion6() throws {
+        // FTS5 is already enabled in both vendored SQLCipher build definitions.
+        try execute("CREATE VIRTUAL TABLE events_search USING fts5(text, content='events', content_rowid='sequence', tokenize='unicode61 remove_diacritics 2')")
+        try execute("""
+            CREATE TRIGGER archive_search_insert AFTER INSERT ON events BEGIN
+            INSERT INTO events_search(rowid,text) VALUES(NEW.sequence,NEW.text); END
+            """)
+        try execute("""
+            CREATE TRIGGER archive_search_delete AFTER DELETE ON events BEGIN
+            INSERT INTO events_search(events_search,rowid,text) VALUES('delete',OLD.sequence,OLD.text); END
+            """)
+        try execute("INSERT INTO events_search(events_search) VALUES('rebuild')")
+        try execute("PRAGMA user_version=6")
+    }
+
+    /// Bounded bytes copied from an already completed local file. No network or plaintext temporary file.
+    public func recordMedia(eventKey: String, slot: Int, kind: String, mimeType: String, data: Data,
+                            generation: Int64, completion: @escaping (Result<Bool, ArchiveError>) -> Void) {
+        submit(completion) {
+            guard !eventKey.isEmpty, eventKey.utf8.count <= 128, !eventKey.contains("\0"),
+                  self.clock() >= 0, (0..<10).contains(slot), data.count <= 16 * 1024 * 1024,
+                  (!data.isEmpty || kind == "document"),
+                  kind.utf8.count <= 32, mimeType.utf8.count <= 256,
+                  !kind.contains("\0"), !mimeType.contains("\0") else { throw ArchiveError.invalidInput }
+            return try self.transaction {
+                let current = try self.captureGeneration()
+                guard current == generation else { throw ArchiveError.generationMismatch(expected: current, received: generation) }
+                guard try self.scalar("SELECT COUNT(*) FROM events WHERE event_key=?", [.text(eventKey)]) == 1 else { return false }
+                if try self.scalar("SELECT COUNT(*) FROM event_media WHERE event_key=? AND slot=?", [.text(eventKey), .integer(Int64(slot))]) != 0 {
+                    guard try self.scalar("SELECT COUNT(*) FROM event_media WHERE event_key=? AND slot=? AND kind=? AND mime=? AND payload=?", [.text(eventKey), .integer(Int64(slot)), .text(kind), .text(mimeType), .blob(data)]) == 1 else { throw ArchiveError.eventConflict }
+                    return true
+                }
+                let cost = Int64(data.count + kind.utf8.count + mimeType.utf8.count + 64)
+                try self.execute("INSERT INTO event_media VALUES(?,?,?,?,?,?)", [.text(eventKey), .integer(Int64(slot)), .text(kind), .text(mimeType), .blob(data), .integer(cost)])
+                _ = try self.prune(now: self.clock(), policy: self.retention)
+                return try self.scalar("SELECT COUNT(*) FROM event_media WHERE event_key=? AND slot=?", [.text(eventKey), .integer(Int64(slot))]) == 1
+            }
+        }
+    }
+
+    /// Streams a completed local file into encrypted SQLite pages. Only bounded
+    /// buffers are allocated. The row is visible only after the whole transaction commits.
+    public func recordMediaFile(eventKey: String, slot: Int, kind: String, mimeType: String, source: URL,
+                                expectedSize: Int64? = nil, generation: Int64,
+                                completion: @escaping (Result<Bool, ArchiveError>) -> Void) {
+        submit(completion) {
+            guard source.isFileURL, !source.path.contains("\0"), !eventKey.isEmpty,
+                  eventKey.utf8.count <= 128, !eventKey.contains("\0"), (0..<10).contains(slot),
+                  kind.utf8.count <= 32, mimeType.utf8.count <= 256,
+                  !kind.contains("\0"), !mimeType.contains("\0"), expectedSize.map({ $0 >= 0 }) ?? true else { throw ArchiveError.invalidInput }
+            let now = self.clock()
+            guard now >= 0 else { throw ArchiveError.invalidInput }
+            let fd = source.path.withCString { Darwin.open($0, O_RDONLY | O_NOFOLLOW | O_NONBLOCK) }
+            guard fd >= 0 else {
+                if errno == ENOENT || errno == ELOOP || errno == ENOTDIR { return false }
+                throw ArchiveError.protectionUnavailable
+            }
+            defer { Darwin.close(fd) }
+            var info = stat()
+            guard fstat(fd, &info) == 0 else { throw ArchiveError.protectionUnavailable }
+            guard (info.st_mode & S_IFMT) == S_IFREG, info.st_size >= 0, info.st_size <= 512 * 1024 * 1024 else { return false }
+            let size = Int64(info.st_size)
+            // A zero-byte document can be valid; a zero-byte image/video/voice
+            // file contains no usable media, even if it has a completed-path name.
+            guard size > 0 || kind == "document" else { return false }
+            guard expectedSize.map({ $0 == size }) ?? true else { return false }
+            return try self.transaction {
+                let current = try self.captureGeneration()
+                guard current == generation else { throw ArchiveError.generationMismatch(expected: current, received: generation) }
+                guard try self.scalar("SELECT COUNT(*) FROM events WHERE event_key=?", [.text(eventKey)]) == 1 else { return false }
+                if let existing = try self.mediaRow(eventKey: eventKey, slot: slot) {
+                    guard existing.size == size, existing.kind == kind, existing.mime == mimeType else { throw ArchiveError.eventConflict }
+                    if size > 0 {
+                        try self.withMediaBlob(rowId: existing.id, writable: false) { blob in
+                            var buffer = [UInt8](repeating: 0, count: 64 * 1024)
+                            try Self.streamFile(fd: fd, before: info) { source, count, offset in
+                                let code = buffer.withUnsafeMutableBytes { sqlite3_blob_read(blob, $0.baseAddress, Int32(count), Int32(offset)) }
+                                guard code == SQLITE_OK else { throw ArchiveError.unavailable(code) }
+                                let equal = buffer.withUnsafeBytes { memcmp($0.baseAddress!, source, count) == 0 }
+                                guard equal else { throw ArchiveError.eventConflict }
+                            }
+                        }
+                    } else {
+                        try Self.streamFile(fd: fd, before: info) { _, _, _ in }
+                    }
+                    return true
+                }
+                let cost = size + Int64(kind.utf8.count + mimeType.utf8.count + 64)
+                // The complete snapshot must fit, including its text and earlier
+                // attachments. Otherwise adding this file would evict its own
+                // parent and discard content that was already safely preserved.
+                let ownCost = try self.scalar("SELECT payload_bytes + COALESCE((SELECT SUM(byte_cost) FROM event_media WHERE event_key=?),0) FROM events WHERE event_key=?", [.text(eventKey), .text(eventKey)])
+                guard ownCost >= 0 else { throw ArchiveError.unavailable(SQLITE_CORRUPT) }
+                guard ownCost <= self.retention.maxPayloadBytes, cost <= self.retention.maxPayloadBytes - ownCost else { return false }
+                try self.execute("INSERT INTO event_media VALUES(?,?,?,?,zeroblob(?),?)", [.text(eventKey), .integer(Int64(slot)), .text(kind), .text(mimeType), .integer(size), .integer(cost)])
+                let rowId = sqlite3_last_insert_rowid(self.handle)
+                if size > 0 {
+                    try self.withMediaBlob(rowId: rowId, writable: true) { blob in
+                        try Self.streamFile(fd: fd, before: info) { bytes, count, offset in
+                            let code = sqlite3_blob_write(blob, bytes, Int32(count), Int32(offset))
+                            guard code == SQLITE_OK else { throw ArchiveError.unavailable(code) }
+                        }
+                    }
+                } else {
+                    try Self.streamFile(fd: fd, before: info) { _, _, _ in }
+                }
+                _ = try self.prune(now: now, policy: self.retention)
+                return try self.scalar("SELECT COUNT(*) FROM event_media WHERE event_key=? AND slot=?", [.text(eventKey), .integer(Int64(slot))]) == 1
+            }
+        }
+    }
+
+    public func mediaInfo(eventKey: String, slot: Int, completion: @escaping (Result<ArchivedMediaInfo?, ArchiveError>) -> Void) {
+        submit(completion) {
+            try Self.validateMediaLookup(eventKey, slot)
+            let now = self.clock()
+            guard now >= 0 else { throw ArchiveError.invalidInput }
+            _ = try self.transaction { try self.prune(now: now, policy: self.retention) }
+            guard let row = try self.mediaRow(eventKey: eventKey, slot: slot) else { return nil }
+            return ArchivedMediaInfo(slot: slot, kind: row.kind, mimeType: row.mime, byteCount: row.size)
+        }
+    }
+
+    /// Random access for local players/exporters, capped at 1 MiB per read.
+    public func mediaRange(eventKey: String, slot: Int, offset: Int64, count: Int,
+                           completion: @escaping (Result<Data?, ArchiveError>) -> Void) {
+        submit(completion) {
+            try Self.validateMediaLookup(eventKey, slot)
+            let now = self.clock()
+            guard now >= 0, offset >= 0, (0...1024 * 1024).contains(count) else { throw ArchiveError.invalidInput }
+            _ = try self.transaction { try self.prune(now: now, policy: self.retention) }
+            guard let row = try self.mediaRow(eventKey: eventKey, slot: slot) else { return nil }
+            guard offset <= row.size else { throw ArchiveError.invalidInput }
+            let length = min(count, Int(row.size - offset))
+            if length == 0 { return Data() }
+            return try self.withMediaBlob(rowId: row.id, writable: false) { blob in
+                var data = Data(count: length)
+                let code = data.withUnsafeMutableBytes { sqlite3_blob_read(blob, $0.baseAddress, Int32(length), Int32(offset)) }
+                guard code == SQLITE_OK else { throw ArchiveError.unavailable(code) }
+                return data
+            }
+        }
+    }
+
+    private static func validateMediaLookup(_ key: String, _ slot: Int) throws {
+        guard !key.isEmpty, key.utf8.count <= 128, !key.contains("\0"), (0..<10).contains(slot) else { throw ArchiveError.invalidInput }
+    }
+
+    private func mediaRow(eventKey: String, slot: Int) throws -> (id: Int64, size: Int64, kind: String, mime: String)? {
+        let statement = try self.statement("SELECT rowid,length(payload),kind,mime FROM event_media WHERE event_key=? AND slot=?", [.text(eventKey), .integer(Int64(slot))])
+        defer { sqlite3_finalize(statement) }
+        let code = sqlite3_step(statement)
+        if code == SQLITE_DONE { return nil }
+        guard code == SQLITE_ROW else { throw ArchiveError.unavailable(code) }
+        let size = sqlite3_column_int64(statement, 1)
+        guard size >= 0, size <= 512 * 1024 * 1024 else { throw ArchiveError.invalidInput }
+        return (sqlite3_column_int64(statement, 0), size, try self.text(statement, 2), try self.text(statement, 3))
+    }
+
+    private func withMediaBlob<Value>(rowId: Int64, writable: Bool, _ body: (OpaquePointer) throws -> Value) throws -> Value {
+        var pointer: OpaquePointer?
+        let code = sqlite3_blob_open(self.handle, "main", "event_media", "payload", rowId, writable ? 1 : 0, &pointer)
+        guard code == SQLITE_OK, let blob = pointer else { throw ArchiveError.unavailable(code) }
+        var needsClose = true
+        defer { if needsClose { sqlite3_blob_close(blob) } }
+        let result = try body(blob)
+        let closeCode = sqlite3_blob_close(blob)
+        needsClose = false
+        guard closeCode == SQLITE_OK else { throw ArchiveError.unavailable(closeCode) }
+        return result
+    }
+
+    private static func streamFile(fd: Int32, before: stat, _ consume: (UnsafeRawPointer, Int, Int64) throws -> Void) throws {
+        var buffer = [UInt8](repeating: 0, count: 64 * 1024)
+        var offset: Int64 = 0
+        while offset < before.st_size {
+            let length = min(buffer.count, Int(before.st_size - offset))
+            let count = buffer.withUnsafeMutableBytes { Darwin.read(fd, $0.baseAddress, length) }
+            if count < 0 && errno == EINTR { continue }
+            guard count > 0 else { throw ArchiveError.protectionUnavailable }
+            try buffer.withUnsafeBytes { try consume($0.baseAddress!, count, offset) }
+            offset += Int64(count)
+        }
+        var after = stat()
+        guard fstat(fd, &after) == 0, before.st_size == after.st_size,
+              before.st_mtimespec.tv_sec == after.st_mtimespec.tv_sec,
+              before.st_mtimespec.tv_nsec == after.st_mtimespec.tv_nsec else { throw ArchiveError.protectionUnavailable }
+    }
+
+    public func containsMedia(eventKey: String, slot: Int, completion: @escaping (Result<Bool, ArchiveError>) -> Void) {
+        submit(completion) {
+            guard (0..<10).contains(slot), eventKey.utf8.count <= 128 else { throw ArchiveError.invalidInput }
+            return try self.scalar("SELECT COUNT(*) FROM event_media WHERE event_key=? AND slot=?", [.text(eventKey), .integer(Int64(slot))]) == 1
+        }
+    }
+
+    public func media(eventKey: String, slot: Int, completion: @escaping (Result<ArchivedMedia?, ArchiveError>) -> Void) {
+        submit(completion) {
+            let now = self.clock()
+            guard now >= 0, (0..<10).contains(slot), !eventKey.isEmpty, eventKey.utf8.count <= 128, !eventKey.contains("\0") else { throw ArchiveError.invalidInput }
+            // A direct preview can outlive the page that opened it. Enforce age
+            // retention even when no writes or list refresh have happened.
+            _ = try self.transaction { try self.prune(now: now, policy: self.retention) }
+            guard let info = try self.mediaRow(eventKey: eventKey, slot: slot) else { return nil }
+            guard info.size <= 16 * 1024 * 1024 else { throw ArchiveError.invalidInput }
+            let row = try self.statement("SELECT kind,mime,payload FROM event_media WHERE event_key=? AND slot=?", [.text(eventKey), .integer(Int64(slot))])
+            defer { sqlite3_finalize(row) }
+            let code = sqlite3_step(row)
+            if code == SQLITE_DONE { return nil }
+            guard code == SQLITE_ROW else { throw ArchiveError.unavailable(code) }
+            let count = Int(sqlite3_column_bytes(row, 2))
+            guard count <= 16 * 1024 * 1024 else { throw ArchiveError.invalidInput }
+            let bytes = sqlite3_column_blob(row, 2).map { Data(bytes: $0, count: count) } ?? Data()
+            return ArchivedMedia(slot: slot, kind: try self.text(row, 0), mimeType: try self.text(row, 1), data: bytes)
+        }
+    }
+
     private func outboxReceipt() throws -> (index: Int64, eventKey: String) {
         let prepared = try statement("SELECT outbox_high_water,outbox_last_event_key FROM archive_meta WHERE id=1", [])
         defer { sqlite3_finalize(prepared) }
@@ -466,7 +758,8 @@ public final class ArchiveStore {
             let event = ArchiveEvent(eventKey: try text(prepared, 1), message: message, kind: kind,
                                      observedAt: sqlite3_column_int64(prepared, 7), serverEditAt: optional(8),
                                      content: ArchiveContent(text: try text(prepared, 9), authorId: optional(10), sentAt: sqlite3_column_int64(prepared, 11), entities: entities))
-            result.append(ArchivedRecord(sequence: sqlite3_column_int64(prepared, 0), event: event))
+            let mediaCount = try scalar("SELECT COUNT(*) FROM event_media WHERE event_key=?", [.text(event.eventKey)])
+            result.append(ArchivedRecord(sequence: sqlite3_column_int64(prepared, 0), event: event, storedMediaCount: Int(mediaCount)))
             code = sqlite3_step(prepared)
         }
         guard code == SQLITE_DONE else { throw ArchiveError.unavailable(code) }
@@ -509,7 +802,7 @@ public final class ArchiveStore {
     }
 
     private func oldestPayloads() throws -> [(sequence: Int64, bytes: Int64)] {
-        let prepared = try statement("SELECT sequence,payload_bytes FROM events ORDER BY observed_at,sequence LIMIT 256", [])
+        let prepared = try statement("SELECT sequence,payload_bytes+(SELECT COALESCE(SUM(byte_cost),0) FROM event_media WHERE event_key=events.event_key) FROM events ORDER BY observed_at,sequence LIMIT 256", [])
         defer { sqlite3_finalize(prepared) }
         var result: [(sequence: Int64, bytes: Int64)] = []
         var code = sqlite3_step(prepared)

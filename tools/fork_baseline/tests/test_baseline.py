@@ -11,6 +11,7 @@ from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
 
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 SPEC = importlib.util.spec_from_file_location("baseline", Path(__file__).resolve().parents[1] / "baseline.py")
 baseline = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(baseline)
@@ -121,6 +122,24 @@ class PreflightTests(unittest.TestCase):
                     self.assertEqual("--features=disable_legacy_signing" in command, mode == "unsigned-device")
                     self.assertNotIn("--features=apple.skip_codesign_simulator_bundles", command)
 
+    def test_warm_simulator_is_scoped_to_simulator_tests(self):
+        flags = {"--test_env=REUSE_GLOBAL_SIMULATOR=1", "--test_env=SIMULATOR_REUSE_SIMULATOR=1"}
+        for mode in ("simulator", "unsigned-device", "device"):
+            for action in ("test", "build"):
+                args = baseline.proxy_arguments(Path("/bazel"), Path("/repo"), mode, [action])
+                expected = flags if mode == "simulator" and action == "test" else set()
+                self.assertEqual(flags.intersection(args), expected)
+                self.assertNotIn("--features=apple.skip_codesign_simulator_bundles", args)
+
+    def test_unsigned_overlay_is_rejected_for_normal_signing(self):
+        for mode in ("simulator", "device"):
+            with self.assertRaises(baseline.InvalidSetup):
+                baseline.proxy_arguments(Path("/bazel"), Path("/repo"), mode, ["build"], rules_override="/private/overlay")
+        command = baseline.proxy_arguments(Path("/bazel"), Path("/repo"), "unsigned-device", ["build"], rules_override="/private/overlay")
+        self.assertIn("--override_module=rules_apple=/private/overlay", command)
+        self.assertIn("--features=ayugram.unsigned_device", command)
+        self.assertIn("--features=disable_legacy_signing", command)
+
     def test_device_signing_not_disabled_and_version_clean(self):
         command = baseline.proxy_arguments(Path("/bazel"), Path("/repo"), "device", ["build"])
         self.assertNotIn("--features=disable_legacy_signing", command)
@@ -129,7 +148,123 @@ class PreflightTests(unittest.TestCase):
         self.assertEqual(command, ["/bazel", "--version"])
 
 
+class BundleDiagnosticsTests(unittest.TestCase):
+    def make_bundle(self, root, private):
+        app = private / "output/Telegram_archive-root/Payload/Telegram.app"
+        framework = app / "Frameworks/TelegramUIFramework.framework"
+        framework.mkdir(parents=True)
+        (app / "Telegram").write_bytes(b"test application binary")
+        (framework / "TelegramUIFramework").write_bytes(b"test framework binary")
+        link = root / "bazel-bin/Telegram"
+        link.parent.mkdir(parents=True)
+        link.symlink_to(private / "output", target_is_directory=True)
+        return app
+
+    def test_diagnostics_are_read_only_bounded_redacted_and_inside_build(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory) / "source"
+            private = Path(directory) / "private"
+            root.mkdir()
+            self.make_bundle(root, private)
+            secret = "private-api-value"
+            diagnostic = (secret + " " + str(private) + " " + str(root) + "\n").encode() + b"x" * 70000
+            with patch.object(baseline, "ROOT", root), patch.object(baseline.subprocess, "run", return_value=SimpleNamespace(returncode=1, stdout=diagnostic)) as command:
+                baseline.retain_bundle_diagnostics(private, (secret,))
+            self.assertEqual(command.call_count, 6)
+            allowed = {"--display", "--verify"}
+            for call in command.call_args_list:
+                args = call.args[0]
+                self.assertEqual(call.kwargs["timeout"], 8)
+                self.assertTrue(args[0] == "/usr/bin/xattr" or args[1] in allowed)
+                self.assertNotIn("--sign", args)
+                self.assertNotIn("--remove-signature", args)
+                self.assertTrue(Path(args[-1]).is_relative_to(private.resolve()))
+            text = (root / "build/fork-evidence/bundle-diagnostics.json").read_text()
+            self.assertNotIn(secret, text)
+            self.assertNotIn(str(private), text)
+            self.assertNotIn(str(root), text)
+            report = json.loads(text)
+            self.assertTrue(report["read_only"])
+            self.assertFalse(report["signature_or_installation_verified"])
+            self.assertEqual(set(report["bundles"]), {"application", "ui_framework"})
+            self.assertLess(len(text), 400000)
+
+    def test_diagnostic_paths_redact_both_alias_and_physical_names(self):
+        with tempfile.TemporaryDirectory() as directory:
+            base = Path(directory)
+            real = base / "actual"
+            real.mkdir()
+            alias = base / "alias"
+            alias.symlink_to(real, target_is_directory=True)
+            root = alias / "source"
+            private = alias / "private"
+            root.mkdir()
+            self.make_bundle(root, private)
+            raw = " ".join(str(p) for p in (root, root.resolve(), private, private.resolve())).encode()
+            with patch.object(baseline, "ROOT", root), patch.object(baseline.subprocess, "run", return_value=SimpleNamespace(returncode=0, stdout=raw)):
+                baseline.retain_bundle_diagnostics(private, ())
+            text = (root / "build/fork-evidence/bundle-diagnostics.json").read_text()
+            for path in (root, root.resolve(), private, private.resolve()):
+                self.assertNotIn(str(path), text)
+            self.assertIn("[PRIVATE_BUILD]", text)
+            self.assertIn("[SOURCE]", text)
+
+    def test_build_output_escape_is_rejected_without_running_commands(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory) / "source"
+            private = Path(directory) / "private"
+            unrelated = Path(directory) / "unrelated"
+            root.mkdir()
+            private.mkdir()
+            self.make_bundle(root, unrelated)
+            with patch.object(baseline, "ROOT", root), patch.object(baseline.subprocess, "run") as command:
+                baseline.retain_bundle_diagnostics(private, ())
+            command.assert_not_called()
+            self.assertFalse((root / "build/fork-evidence/bundle-diagnostics.json").exists())
+
+    def test_timeouts_do_not_hide_failure_or_overwrite_existing_evidence(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory) / "source"
+            private = Path(directory) / "private"
+            root.mkdir()
+            self.make_bundle(root, private)
+            with patch.object(baseline, "ROOT", root), patch.object(baseline.subprocess, "run", side_effect=subprocess.TimeoutExpired("codesign", 8)):
+                baseline.retain_bundle_diagnostics(private, ())
+                evidence = root / "build/fork-evidence/bundle-diagnostics.json"
+                before = evidence.read_bytes()
+                baseline.retain_bundle_diagnostics(private, ())
+                self.assertEqual(evidence.read_bytes(), before)
+            report = json.loads(before)
+            for bundle in report["bundles"].values():
+                self.assertTrue(all(command == {"state": "unavailable"} for command in bundle["commands"].values()))
+
+
 class PrivacyAndArtifactsTests(unittest.TestCase):
+    def setUp(self):
+        overlay = patch.object(baseline, "prepare_unsigned_rules", return_value={"fixture": "reviewed"})
+        overlay.start()
+        self.addCleanup(overlay.stop)
+        inspection = patch.object(baseline, "inspect_ipa", return_value={"test_fixture": True})
+        inspection.start()
+        self.addCleanup(inspection.stop)
+        probe = patch.object(baseline, "capture_projection_launch")
+        probe.start()
+        self.addCleanup(probe.stop)
+
+    def test_rejected_ipa_is_not_published_after_successful_compilation(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "versions.json").write_text('{}')
+            source = root / "bazel-bin/Telegram/Telegram.ipa"
+            source.parent.mkdir(parents=True)
+            def fake_command(args, env, secrets):
+                source.write_bytes(b"wrong-platform fixture")
+            with patch.object(baseline, "ROOT", root), patch.object(baseline, "preflight", return_value=Path('/bazel')), patch.object(baseline, "run_redacted", side_effect=fake_command), patch.object(baseline.subprocess, "run"), patch.object(baseline, "inspect_ipa", side_effect=baseline.InvalidIPA("Wrong platform")), patch.object(baseline, "publish_artifact") as publish:
+                with self.assertRaisesRegex(baseline.InvalidSetup, "Wrong platform"):
+                    baseline.build("unsigned-device", fixture(), 1)
+                publish.assert_not_called()
+            self.assertFalse((root / "build/fork-baseline-unsigned-device").exists())
+
     def test_storage_diagnostics_precede_cleanup_and_suites_reuse_output_root(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -455,6 +590,7 @@ class PrivacyAndArtifactsTests(unittest.TestCase):
             self.assertFalse(manifest["runtime_verified"])
             self.assertFalse(manifest["signature_verified"])
             self.assertEqual(manifest["signing"], "disabled")
+            self.assertEqual(manifest["integration_qualification"], "not_evaluated_by_this_job")
             self.assertEqual(manifest["sha256"], hashlib.sha256(source.read_bytes()).hexdigest())
             self.assertEqual(manifest["tests"][baseline.TEST_TARGET], "not_run")
             with self.assertRaises(FileExistsError):

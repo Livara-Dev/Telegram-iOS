@@ -17,11 +17,33 @@ swift_library(
     deps = [":LocalMessageArchive", "//submodules/sqlcipher"],
 )
 
-ios_test_runner(name = "ArchiveTestRunner", device_type = "iPhone 17", os_version = "26.5")
+ios_test_runner(name = "ArchiveTestRunner", device_type = "iPhone 17", os_version = "27.0")
 ios_unit_test(
     name = "LocalMessageArchiveTests",
     minimum_os_version = "15.0",
     runner = ":ArchiveTestRunner",
     deps = [":LocalMessageArchiveTestsLib"],
+    visibility = ["//visibility:public"],
+)
+
+swift_library(
+    name = "LocalArchivePlayback",
+    module_name = "LocalArchivePlayback",
+    srcs = glob(["Sources/LocalArchivePlayback/*.swift"]),
+    visibility = ["//visibility:public"],
+)
+
+swift_library(
+    name = "LocalArchivePlaybackTestsLib",
+    testonly = True,
+    srcs = glob(["Tests/LocalArchivePlaybackTests/*.swift"]),
+    deps = [":LocalArchivePlayback", ":LocalMessageArchive"],
+)
+
+ios_unit_test(
+    name = "LocalArchivePlaybackTests",
+    minimum_os_version = "15.0",
+    runner = ":ArchiveTestRunner",
+    deps = [":LocalArchivePlaybackTestsLib"],
     visibility = ["//visibility:public"],
 )

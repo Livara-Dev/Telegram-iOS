@@ -22,6 +22,7 @@ ADDED_PREFIXES = (
 )
 ADDED_FILES = {
     ".github/workflows/archive-integration.yml",
+    ".github/workflows/archive-compatibility.yml",
     ".github/workflows/archive-tests.yml",
     ".github/workflows/fork-baseline.yml", "COPYING",
     "docs/AYUGRAM_FEATURE_MATRIX.md", "docs/WINDOWS_INSTALL.md", "docs/SECURITY_ASSESSMENT.md",
@@ -35,6 +36,10 @@ ADDED_FILES = {
 # gitlinks, stays pinned. An allowlist is a scope tripwire, not a semantic audit of
 # every change within these files; reviewers must inspect their Git diffs.
 REVIEWED_MODIFICATIONS = {
+    "submodules/SettingsUI/BUILD": "link the native archive media reader without adding an external dependency",
+    "build-system/Make/tests/test_postbox_import_check.py": "measure tokenizer CPU budget independently of hosted runner descheduling",
+    "submodules/Postbox/BUILD": "pin simulator test runner to installed iOS 27.0",
+    "submodules/TextFormat/BUILD": "pin simulator test runner to installed iOS 27.0",
     "submodules/TelegramUI/Components/Chat/ChatMessageBubbleItemNode/BUILD": "link the local text-filter placeholder component",
     "submodules/TelegramUI/Components/Chat/ChatHistoryEntry/BUILD": "isolated local text-filter projection test target and host",
     "submodules/TelegramUI/Components/Chat/ChatHistoryEntry/Sources/ChatHistoryEntry.swift": "presentation-only filter state preserving row identity",
@@ -50,6 +55,9 @@ REVIEWED_MODIFICATIONS = {
     "submodules/TelegramCore/Sources/Account/AccountManager.swift": "register archive outbox decoder",
     "submodules/TelegramCore/Sources/State/AccountStateManagementUtils.swift": "capture before server delete/edit",
     "submodules/TelegramCore/Sources/State/ManagedLocalInputActivities.swift": "per-account activity suppression before existing request dispatch",
+    "submodules/TelegramCore/Sources/State/ManagedSynchronizeViewStoriesOperations.swift": "persisted story-receipt policy and generation checks before typed dispatch",
+    "submodules/TelegramCore/Sources/SyncCore/SynchronizeViewStoriesOperation.swift": "backward-compatible story-receipt generation and bounded coalescing",
+    "submodules/TelegramCore/Sources/TelegramEngine/Messages/Stories.swift": "gate ordinary and pinned story-view receipt production",
     "submodules/TelegramCore/Sources/TelegramEngine/Messages/DeleteMessagesInteractively.swift": "capture before user-initiated message deletion",
     "submodules/TelegramCore/Sources/PendingMessages/RequestEditMessage.swift": "capture before acknowledged own-edit replacement",
     "submodules/TelegramCore/Sources/SyncCore/SyncCore_Namespaces.swift": "reserve archive operation tag",
@@ -145,7 +153,8 @@ def inspect_data(root, path, data):
                      else [node.module or ""] if isinstance(node, ast.ImportFrom) and not node.level else [])
             for name in names:
                 top = name.split(".")[0]
-                if top and top not in sys.stdlib_module_names and top not in local_modules:
+                reviewed_local_import = (path == "build-system/Make/tests/test_postbox_import_check.py" and top == "PostboxImportCheck")
+                if top and top not in sys.stdlib_module_names and top not in local_modules and not reviewed_local_import:
                     failures.append(f"Non-stdlib Python import requires review: {path}: {top}")
     return failures
 

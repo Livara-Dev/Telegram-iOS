@@ -1,0 +1,18 @@
+{
+  "source_commit": "9190be8c8666cc84837b527778b60c1c92e91642",
+  "run_id": 41849293725,
+  "job_id": 126640952173,
+  "artifact_id": 13337379282,
+  "artifact_sha256": "c6e4d4d4cfdeb977e464095b6ed86daaf0f6b5bb3cc665298821976b0901ffe3",
+  "artifact_and_internal_checksums_verified": true,
+  "passed_xctest_cases": {
+    "LocalMessageArchive": 64,
+    "TelegramCore": 532,
+    "TextFormat": 270
+  },
+  "postbox_status": "Bazel timeout during first invocation; not qualified",
+  "projection_status": "Three startup attempts ended before XCTest began; not qualified",
+  "full_application_built": false,
+  "physical_device_verified": false,
+  "verified_scope": "iOS storage, encrypted phrase search and account coordinator facades at this earlier revision; does not qualify later streamed-file or playback changes."
+}

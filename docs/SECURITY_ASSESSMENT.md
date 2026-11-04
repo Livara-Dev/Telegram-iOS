@@ -2,6 +2,20 @@
 
 Date: 2026-11-04. This is a source-based threat assessment and a list of acceptance requirements, **not a finding that the app is secure**. The reviewed snapshots are Telegram-iOS `279f89e4d4f63f17227bf877dc3d8990f22ecd58` and AyuGram4A `7013145676d36d82ee13c02a89f72097b7490dcd`. The companion architecture and license audits contain source references. No successful full iOS application build, signed-device test, penetration test, cryptographic review or network privacy verification is established by this document.
 
+## Additional source review at `f295948a`
+
+The [expanded telemetry inventory](fork/TELEMETRY-REVIEW.md) identifies additional
+active channel-reading metrics and music-listening reports, independent of
+AppCenter and the generic app-log queue. It also distinguishes automatic call
+and soft-auth-reset diagnostics from local crash storage and user-triggered
+exports. No telemetry-removal implementation or runtime non-disclosure test is
+claimed by that inventory. Disabling one analytics SDK is insufficient.
+
+The [AyuSync protocol review](fork/AYUSYNC-REVIEW.md) found readable JSON in the
+available historical Android transport, no active archive replication or E2E
+key lifecycle, and unavailable backend source. The Desktop namespace with the
+same name is a forwarding helper. No sync client or archive upload was added.
+
 ## Assets and trust boundaries
 
 Protect Telegram authorization/session material; message text, metadata and media; archive/history records; archive encryption and recovery keys; sync credentials; filter rules; signing keys and CI secrets. Retained versions and deleted messages are especially sensitive because another party may reasonably expect them to have disappeared.
@@ -201,7 +215,6 @@ not establish that the UI or projection has passed. The next run executes the
 new host first so setup failures are visible sooner; all other regressions remain
 required before the application build.
 
-
 At filter revision `f295948a`, the projection host and Swift test module compiled,
 but hosted simulator startup exhausted Bazel's 300-second timeout before any
 XCTest case began. The synthetic one-case error in Bazel XML is a harness result,
@@ -209,3 +222,81 @@ not an executed projection test. [Verified evidence](fork/evidence/filter-integr
 records zero actual cases; other suites were not run by the former fail-fast
 wrapper. The bounded runner allowance and tests-only evidence continuation do
 not turn failures into success or bypass the full-application gate.
+
+## Story-view receipt draft
+
+The [story-only increment](fork/GHOST-STORY-VIEWS.md) adds a separate default-off
+per-account preference and a durable generation to ordinary queued story
+receipts. Its producer gates both ordinary and pinned views; suppressed views
+do not advance the local story read marker. The queue consumer rejects obsolete
+generations and rechecks persisted policy at dispatch. Its tests are authored;
+no native result, live server visibility check or complete application behavior
+is established yet. In-flight requests, other clients, later cumulative reads,
+reactions and replies remain observable. Message-read suppression is a separate
+unimplemented feature; [the read-state audit](fork/GHOST-RECEIPTS-AUDIT.md) explains
+why a generic RPC no-op would break persistent synchronization assumptions.
+
+
+## Bounded local media-copy draft
+
+Schema 5 source adds event-linked encrypted media BLOBs and quota/deletion
+accounting. The account worker reads only completed local cloud-resource paths
+with bounded size and no-follow file opens, before acknowledging its outbox
+item. It performs no download and writes no plaintext media temporary file.
+This code and its new native tests await execution; cache removal before the
+file is opened, incomplete downloads, physical termination/disk pressure and
+real Keychain protection remain unverified. Do not claim lossless retention.
+
+The global-delete handoff defers eager cache unlink only after successful
+creation of an eligible durable outbox entry. This does not create a plaintext
+archive or change timed/protected-content handling. It leaves the existing cache
+file under Telegram's normal cleanup policy until the asynchronous reader runs.
+A simultaneous cache purge can still win; proactive capture remains pending.
+New real-replay regressions are awaiting native execution.
+
+Malformed media MIME values containing a NUL are normalized to the existing
+application/octet-stream fallback before the durable capture is created. This
+prevents an otherwise valid local attachment from repeatedly failing the sink's
+strict MIME validation and blocking the account outbox. A native coordinator
+regression is authored; it is not yet verified by CI.
+
+## Local archive search
+
+Schema 6 indexes only already-archived text in the account's SQLCipher database.
+No plaintext search database, network endpoint or telemetry is added. Queries
+are limited to 512 UTF-8 bytes, FTS phrase-quoted, and separately SQL-bound.
+Search prunes expired rows before reading; insert/delete triggers keep index
+changes in the same transaction as history changes. Temporary SQLite storage
+is forced to memory. The index consumes extra encrypted disk space, and the
+logical quota does not describe that physical overhead. Native tests and UI
+verification of this increment remain pending.
+
+## Large-file archive path review
+
+The schema-7 file API uses O_NOFOLLOW on the final source component, requires a
+regular file, verifies the advertised size when present, and checks size/mtime
+after streaming. Sources are resolved only from validated MediaBox resource
+identifiers. It writes encrypted SQLite pages transactionally with a 64 KiB
+buffer; no decrypted staging copy is made. Reads are bounded to 1 MiB per range;
+the old in-memory preview checks length before selecting the BLOB. A storage
+error rolls back the row and its usage-counter trigger. Quota is logical and
+does not guarantee sufficient free disk for a large WAL/migration transaction.
+Concurrent changes which preserve both size and nanosecond mtime are not
+cryptographically detectable; this is a local completed-file consistency check,
+not a hostile-filesystem integrity guarantee. These new paths need native CI
+and device storage-pressure tests; no new network dependency is introduced.
+
+The first-party playback adapter accepts only an internal archive URL and reads
+at most 64 KiB per request step, with at most eight outstanding AVFoundation
+requests. It cannot fetch a missing source from Telegram or another server.
+Stopping a preview cancels outstanding reads. Native image/player screens clear
+content when the app resigns active or archive access is revoked. This reduces
+app-switcher exposure; it is not a claim that screenshots or OS decoder buffers
+can be recalled. AVFoundation still parses untrusted media and codec/lock-screen
+behavior requires device verification. No new external dependency is introduced.
+
+AVFoundation is explicitly configured with `AVAssetReferenceRestrictions.forbidAll`
+and cellular access disabled, so an untrusted movie's external data references
+cannot resolve remote URLs or unrelated local files. The native playback fixture
+test asserts the effective reference restriction as well as decoded output.
+These assertions are authored and await native execution.

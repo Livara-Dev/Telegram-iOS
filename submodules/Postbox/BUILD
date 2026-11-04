@@ -107,11 +107,14 @@ swift_library(
 ios_test_runner(
     name = "PostboxTestRunner",
     device_type = "iPhone 17",
-    os_version = "26.5",
+    os_version = "27.0",
 )
 
 ios_unit_test(
     name = "PostboxTests",
+    # Full Postbox coverage plus XCTest startup exceeded the default 300s on
+    # the hosted iOS 27 image. Keep assertions unchanged and execution bounded.
+    timeout = "long",
     minimum_os_version = "15.0",
     runner = ":PostboxTestRunner",
     deps = [

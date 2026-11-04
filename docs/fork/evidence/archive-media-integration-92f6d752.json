@@ -1,0 +1,20 @@
+{
+  "source_commit": "92f6d752fbf78f13d717cacb3d91d0e0562b66c6",
+  "run_id": 41842472255,
+  "job_id": 126617353441,
+  "artifact_id": 13332049080,
+  "artifact_sha256": "2a46bc1322cd7ab7e6a7d9ca4b00b423ab5d96702f173dd40a4125848a7a278f",
+  "passed_xctest_cases": {
+    "Postbox": 201,
+    "LocalMessageArchive": 59,
+    "TelegramCore": 530,
+    "TextFormat": 270
+  },
+  "archive_integration_cases_passed": 74,
+  "total_passed": 1060,
+  "projection_cases_executed": 0,
+  "failure": "Hosted projection XCTest startup failed; no complete xcresult.",
+  "verified_scope": "Actual local replay, coordinator, encrypted storage, cache removal and reopen; photo uses generated JPEG/cloud photo resource. Other file types verify byte retention, not codec playback.",
+  "full_application_built": false,
+  "physical_device_verified": false
+}

@@ -14,6 +14,7 @@ private enum LocalGhostSetting: Int {
     case recording
     case uploads
     case games
+    case storyViews
 }
 
 private struct LocalGhostRow: ItemListNodeEntry {
@@ -28,6 +29,9 @@ private struct LocalGhostRow: ItemListNodeEntry {
     let content: Content
 
     static func < (lhs: LocalGhostRow, rhs: LocalGhostRow) -> Bool {
+        if lhs.section != rhs.section {
+            return lhs.section < rhs.section
+        }
         return lhs.stableId < rhs.stableId
     }
 
@@ -54,36 +58,45 @@ private final class LocalGhostArguments {
     }
 }
 
-/// Native account-scoped controls for the implemented activity-indicator subset.
-/// The screen deliberately makes no read-receipt, story or presence guarantee.
+/// Independent account-scoped controls for activity indicators and story views.
+/// Message read receipts and presence are outside these controls.
 public func localGhostSettingsController(context: AccountContext) -> ViewController {
     let ghost = context.account.localGhost
+    let storyPrivacy = context.account.localStoryPrivacy
     let actionDisposable = MetaDisposable()
     let actionState = Promise<(Bool, Bool)>((false, false))
     let arguments = LocalGhostArguments(set: { setting, value in
         actionState.set(.single((true, false)))
-        actionDisposable.set((ghost.updateSettings { settings in
-            switch setting {
-            case .enabled:
-                settings.enabled = value
-            case .typing:
-                settings.suppressTyping = value
-            case .stickers:
-                settings.suppressStickerSelection = value
-            case .recording:
-                settings.suppressRecording = value
-            case .uploads:
-                settings.suppressUploads = value
-            case .games:
-                settings.suppressGamePlay = value
+        let operation: Signal<Bool, NoError>
+        if case .storyViews = setting {
+            operation = storyPrivacy.setSuppressed(value)
+        } else {
+            operation = ghost.updateSettings { settings in
+                switch setting {
+                case .enabled:
+                    settings.enabled = value
+                case .typing:
+                    settings.suppressTyping = value
+                case .stickers:
+                    settings.suppressStickerSelection = value
+                case .recording:
+                    settings.suppressRecording = value
+                case .uploads:
+                    settings.suppressUploads = value
+                case .games:
+                    settings.suppressGamePlay = value
+                case .storyViews:
+                    break
+                }
             }
-        } |> deliverOnMainQueue).start(next: { success in
+        }
+        actionDisposable.set((operation |> deliverOnMainQueue).start(next: { success in
             actionState.set(.single((false, !success)))
         }))
     })
 
-    let signal = combineLatest(queue: .mainQueue(), context.sharedContext.presentationData, ghost.settings, actionState.get())
-    |> map { presentationData, state, actionState -> (ItemListControllerState, (ItemListNodeState, Any)) in
+    let signal = combineLatest(queue: .mainQueue(), context.sharedContext.presentationData, ghost.settings, storyPrivacy.settings, actionState.get())
+    |> map { presentationData, state, storyState, actionState -> (ItemListControllerState, (ItemListNodeState, Any)) in
         let settings: LocalGhostSettings
         let supported: Bool
         switch state {
@@ -97,6 +110,23 @@ public func localGhostSettingsController(context: AccountContext) -> ViewControl
             supported = false
         }
         let canChange = supported && !actionState.0
+        let suppressStoryViews: Bool
+        let canChangeStoryViews: Bool
+        let storyStatus: String
+        switch storyState {
+        case let .available(settings):
+            suppressStoryViews = settings.suppressViewReceipts
+            canChangeStoryViews = !actionState.0
+            storyStatus = settings.suppressViewReceipts
+                ? "Enabled for this account. Stories viewed here may remain unread locally. A receipt already sent to Telegram cannot be recalled."
+                : "Off. This client can send story view receipts."
+        case .unsupported:
+            // Unknown story preferences block their receipt paths independently
+            // of the activity settings. Never present that state as switched off.
+            suppressStoryViews = true
+            canChangeStoryViews = false
+            storyStatus = "This version cannot read the saved story-privacy settings. Story-view receipt sending is blocked and those settings have been kept unchanged."
+        }
         var active: [String] = []
         if settings.enabled {
             if settings.suppressTyping { active.append("typing") }
@@ -126,12 +156,16 @@ public func localGhostSettingsController(context: AccountContext) -> ViewControl
             LocalGhostRow(stableId: 6, section: 1, content: .toggle(.recording, "Voice and video recording", settings.suppressRecording, canChange)),
             LocalGhostRow(stableId: 7, section: 1, content: .toggle(.uploads, "Media and file uploads", settings.suppressUploads, canChange)),
             LocalGhostRow(stableId: 8, section: 1, content: .toggle(.games, "Game activity", settings.suppressGamePlay, canChange)),
-            LocalGhostRow(stableId: 9, section: 2, content: .heading("LIMITS OF THIS BUILD")),
-            LocalGhostRow(stableId: 10, section: 2, content: .text("Message read receipts, story views and online status are not suppressed. Calls and emoji interactions remain visible. Sending messages and using another Telegram client can reveal activity.")),
-            LocalGhostRow(stableId: 11, section: 2, content: .text("These controls apply to new activity indicators sent by this client. An indicator already sent cannot be recalled and may remain visible briefly. Ghost Mode does not guarantee invisibility."))
+            LocalGhostRow(stableId: 13, section: 2, content: .heading("STORY VIEW RECEIPTS")),
+            LocalGhostRow(stableId: 14, section: 2, content: .toggle(.storyViews, "Suppress story view receipts", suppressStoryViews, canChangeStoryViews)),
+            LocalGhostRow(stableId: 15, section: 2, content: .text(storyStatus)),
+            LocalGhostRow(stableId: 16, section: 2, content: .text("Independent of the activity-indicator switch and its quick toggle. When suppression is turned off, viewing a later story can mark earlier stories as read on Telegram. Story reactions, replies and other Telegram clients can reveal activity.")),
+            LocalGhostRow(stableId: 9, section: 3, content: .heading("LIMITS OF THIS BUILD")),
+            LocalGhostRow(stableId: 10, section: 3, content: .text("Message read receipts and online status are not suppressed. Calls and emoji interactions remain visible. Sending messages and using another Telegram client can reveal activity.")),
+            LocalGhostRow(stableId: 11, section: 3, content: .text("Activity settings apply to new indicators sent by this client. An indicator already sent cannot be recalled and may remain visible briefly. Ghost Mode does not guarantee invisibility."))
         ]
         if actionState.1 {
-            entries.append(LocalGhostRow(stableId: 12, section: 2, content: .text("The setting could not be saved. Existing privacy settings have been kept.")))
+            entries.append(LocalGhostRow(stableId: 12, section: 3, content: .text("The setting could not be saved. Existing privacy settings have been kept.")))
         }
         let controller = ItemListControllerState(presentationData: ItemListPresentationData(presentationData), title: .text("Ghost Mode"), leftNavigationButton: nil, rightNavigationButton: nil, backNavigationButton: ItemListBackButton(title: presentationData.strings.Common_Back), animateChanges: false)
         return (controller, (ItemListNodeState(presentationData: ItemListPresentationData(presentationData), entries: entries, style: .blocks), arguments))

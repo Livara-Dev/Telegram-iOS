@@ -3,14 +3,71 @@ import Foundation
 import Postbox
 import LocalMessageArchive
 
+struct LocalArchiveMediaMetadata: Codable, Equatable {
+    enum Kind: String, Codable { case photo, video, voice, videoMessage, animation, document, unsupported }
+    let kind: Kind
+    let namespace: Int32?
+    let id: Int64?
+    let resourceKey: String?
+    let mimeType: String?
+    let byteSize: Int64?
+    // Descriptive metadata only. A record is never evidence of retained bytes.
+    let bytesPreserved: Bool
+    var alternativeResourceKeys: [String]? = nil
+}
+
 private struct LocalArchiveEntities: Codable {
     let version: Int
     let entities: [MessageTextEntity]
+    let media: [LocalArchiveMediaMetadata]?
+}
+
+func localArchiveSafeResourceKey(_ key: String) -> Bool {
+    guard key.utf8.count <= 1024, key.hasPrefix("telegram-cloud-") else { return false }
+    return key.utf8.allSatisfy { (48...57).contains($0) || (65...90).contains($0) || (97...122).contains($0) || $0 == 45 || $0 == 95 }
+}
+
+func localArchiveMediaMetadata(_ media: [Media]) -> [LocalArchiveMediaMetadata] {
+    return media.prefix(10).map { item in
+        if let photo = item as? TelegramMediaImage {
+            let representations = Array(photo.representations.prefix(32)).sorted { lhs, rhs in
+                Int64(max(0, lhs.dimensions.width)) * Int64(max(0, lhs.dimensions.height)) > Int64(max(0, rhs.dimensions.width)) * Int64(max(0, rhs.dimensions.height))
+            }
+            let keys = representations.prefix(10).map { $0.resource.id.stringRepresentation }.filter(localArchiveSafeResourceKey)
+            var result = LocalArchiveMediaMetadata(kind: .photo, namespace: photo.imageId.namespace, id: photo.imageId.id,
+                resourceKey: keys.first, mimeType: "image/jpeg", byteSize: nil, bytesPreserved: false)
+            result.alternativeResourceKeys = Array(keys.dropFirst())
+            return result
+        }
+        if let file = item as? TelegramMediaFile {
+            let kind: LocalArchiveMediaMetadata.Kind
+            if file.isInstantVideo { kind = .videoMessage }
+            else if file.isVoice { kind = .voice }
+            else if file.isAnimated { kind = .animation }
+            else if file.isVideo { kind = .video }
+            else { kind = .document }
+            let resource = file.resource.id.stringRepresentation
+            return LocalArchiveMediaMetadata(kind: kind, namespace: file.fileId.namespace, id: file.fileId.id,
+                resourceKey: localArchiveSafeResourceKey(resource) ? resource : nil,
+                mimeType: file.mimeType.utf8.count <= 256 && !file.mimeType.contains("\0") ? file.mimeType : nil,
+                byteSize: file.size.flatMap { $0 >= 0 ? $0 : nil }, bytesPreserved: false)
+        }
+        return LocalArchiveMediaMetadata(kind: .unsupported, namespace: item.id?.namespace, id: item.id?.id,
+            resourceKey: nil, mimeType: nil, byteSize: nil, bytesPreserved: false)
+    }
+}
+
+func localArchiveDecodedMediaMetadata(_ data: Data) -> [LocalArchiveMediaMetadata]? {
+    guard localArchiveEntityMetadataIsValid(data), let value = try? JSONDecoder().decode(LocalArchiveEntities.self, from: data) else { return nil }
+    return value.media ?? []
 }
 
 func localArchiveEntityMetadataIsValid(_ data: Data) -> Bool {
     guard data.count <= 64 * 1024, let value = try? JSONDecoder().decode(LocalArchiveEntities.self, from: data) else { return false }
-    return value.version == 1
+    guard value.version == 1 || value.version == 2 else { return false }
+    if value.version == 1 { return value.media == nil }
+    guard let media = value.media, media.count <= 10 else { return false }
+    return media.allSatisfy { !$0.bytesPreserved && ($0.resourceKey.map(localArchiveSafeResourceKey) ?? true) && ($0.mimeType?.utf8.count ?? 0) <= 256 && !($0.mimeType?.contains("\0") ?? false) && ($0.byteSize.map { $0 >= 0 } ?? true) && ($0.alternativeResourceKeys?.count ?? 0) <= 9 && ($0.alternativeResourceKeys?.allSatisfy(localArchiveSafeResourceKey) ?? true) }
 }
 
 private func textEntities(_ attributes: [MessageAttribute]) -> [MessageTextEntity] {
@@ -52,7 +109,7 @@ private func eligibleMessage(transaction: Transaction, message: Message, setting
     }
     let encoder = JSONEncoder()
     encoder.outputFormatting = [.sortedKeys]
-    guard let entities = try? encoder.encode(LocalArchiveEntities(version: 1, entities: textEntities(message.attributes))) else {
+    guard let entities = try? encoder.encode(LocalArchiveEntities(version: message.media.isEmpty ? 1 : 2, entities: textEntities(message.attributes), media: message.media.isEmpty ? nil : localArchiveMediaMetadata(message.media))) else {
         return nil
     }
     return .text(botConversation: botConversation, entities: entities)
@@ -101,10 +158,15 @@ private func recordCaptureGap(_ settings: inout LocalArchiveSettings) {
 }
 
 /// Must be called inside the same transaction, before the canonical deletion.
-/// Only already-received eligible content is copied; media files are not retained.
-func captureDeletedLocalArchiveMessages(transaction: Transaction, accountPeerId: PeerId, ids: [MessageId], observedAt: Int64 = Int64(Date().timeIntervalSince1970)) {
+/// Returns resources referenced by successfully queued captures. Deletion handlers
+/// must defer their eager cache unlink for these resources so the asynchronous
+/// archive worker can copy them. They remain subject to normal cache cleanup;
+/// this is not an archive copy or a guarantee against a simultaneous user purge.
+@discardableResult
+func captureDeletedLocalArchiveMessages(transaction: Transaction, accountPeerId: PeerId, ids: [MessageId], observedAt: Int64 = Int64(Date().timeIntervalSince1970)) -> Set<MediaResourceId> {
     var settings = localArchiveSettings(transaction: transaction)
-    guard settings.enabled, !settings.pendingPurge, settings.generation >= 0, !ids.isEmpty else { return }
+    guard settings.enabled, !settings.pendingPurge, settings.generation >= 0, !ids.isEmpty else { return [] }
+    var deferredResources = Set<MediaResourceId>()
     var budget = LocalArchiveOutboxBudget(transaction: transaction, accountPeerId: accountPeerId)
     let previousDropped = settings.droppedCaptures
     var seen = Set<MessageId>()
@@ -121,13 +183,21 @@ func captureDeletedLocalArchiveMessages(transaction: Transaction, accountPeerId:
             sentAt: Int64(message.timestamp), observedAt: observedAt, serverEditAt: message.attributes.compactMap { ($0 as? EditedMessageAttribute).map { Int64($0.date) } }.first,
             botConversation: botConversation
         )
-        if !budget.insert(operation, transaction: transaction, accountPeerId: accountPeerId) {
+        let inserted = budget.insert(operation, transaction: transaction, accountPeerId: accountPeerId)
+        if !inserted {
             recordCaptureGap(&settings)
+        } else {
+            for item in localArchiveDecodedMediaMetadata(entities) ?? [] {
+                for key in [item.resourceKey].compactMap({ $0 }) + (item.alternativeResourceKeys ?? []) {
+                    deferredResources.insert(MediaResourceId(key))
+                }
+            }
         }
     }
     if settings.droppedCaptures != previousDropped {
         setLocalArchiveSettings(transaction: transaction, settings: settings)
     }
+    return deferredResources
 }
 
 /// Must be called from the updateMessage closure before replacing the old value.
@@ -138,7 +208,7 @@ func captureDeletedLocalArchiveMessages(transaction: Transaction, accountPeerId:
 func captureEditedLocalArchiveMessage(transaction: Transaction, accountPeerId: PeerId, previous: Message, updated: StoreMessage, observedAt: Int64 = Int64(Date().timeIntervalSince1970)) {
     var settings = localArchiveSettings(transaction: transaction)
     guard settings.enabled, !settings.pendingPurge, settings.generation >= 0,
-          previous.text != updated.text || textEntities(previous.attributes) != textEntities(updated.attributes) || richText(previous.attributes)?.instantPage != richText(updated.attributes)?.instantPage,
+          previous.text != updated.text || textEntities(previous.attributes) != textEntities(updated.attributes) || richText(previous.attributes)?.instantPage != richText(updated.attributes)?.instantPage || localArchiveMediaMetadata(previous.media) != localArchiveMediaMetadata(updated.media),
           !updated.flags.contains(.CopyProtected), !containsExpiringAttribute(updated.attributes),
           !updated.media.contains(where: { $0 is TelegramMediaExpiredContent || $0 is TelegramMediaAction }),
           let eligible = eligibleMessage(transaction: transaction, message: previous, settings: settings) else { return }
@@ -148,6 +218,7 @@ func captureEditedLocalArchiveMessage(transaction: Transaction, accountPeerId: P
         return
     }
     var budget = LocalArchiveOutboxBudget(transaction: transaction, accountPeerId: accountPeerId)
+    let previousDropped = settings.droppedCaptures
     let operation = LocalArchiveCaptureOperation(
         generation: settings.generation, messageId: previous.id, kindRawValue: ArchiveEventKind.edited.rawValue,
         text: previous.text, entities: entities, authorId: previous.author?.id.toInt64(),
@@ -155,8 +226,11 @@ func captureEditedLocalArchiveMessage(transaction: Transaction, accountPeerId: P
         serverEditAt: previous.attributes.compactMap { ($0 as? EditedMessageAttribute).map { Int64($0.date) } }.first,
         botConversation: botConversation
     )
-    if !budget.insert(operation, transaction: transaction, accountPeerId: accountPeerId) {
+    let inserted = budget.insert(operation, transaction: transaction, accountPeerId: accountPeerId)
+    if !inserted {
         recordCaptureGap(&settings)
+    }
+    if previousDropped != settings.droppedCaptures {
         setLocalArchiveSettings(transaction: transaction, settings: settings)
     }
 }

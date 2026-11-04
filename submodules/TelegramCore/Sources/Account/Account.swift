@@ -1254,6 +1254,10 @@ public class Account {
         return LocalGhostContext(postbox: self.postbox)
     }
 
+    public var localStoryPrivacy: LocalStoryPrivacyContext {
+        return LocalStoryPrivacyContext(postbox: self.postbox)
+    }
+
     public var localMessageFilter: LocalMessageFilterContext {
         return LocalMessageFilterContext(postbox: self.postbox)
     }
