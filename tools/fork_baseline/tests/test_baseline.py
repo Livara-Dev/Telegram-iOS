@@ -159,7 +159,7 @@ class BundleDiagnosticsTests(unittest.TestCase):
                 self.assertTrue(args[0] == "/usr/bin/xattr" or args[1] in allowed)
                 self.assertNotIn("--sign", args)
                 self.assertNotIn("--remove-signature", args)
-                self.assertTrue(Path(args[-1]).is_relative_to(private))
+                self.assertTrue(Path(args[-1]).is_relative_to(private.resolve()))
             text = (root / "build/fork-evidence/bundle-diagnostics.json").read_text()
             self.assertNotIn(secret, text)
             self.assertNotIn(str(private), text)
@@ -169,6 +169,26 @@ class BundleDiagnosticsTests(unittest.TestCase):
             self.assertFalse(report["signature_or_installation_verified"])
             self.assertEqual(set(report["bundles"]), {"application", "ui_framework"})
             self.assertLess(len(text), 400000)
+
+    def test_diagnostic_paths_redact_both_alias_and_physical_names(self):
+        with tempfile.TemporaryDirectory() as directory:
+            base = Path(directory)
+            real = base / "actual"
+            real.mkdir()
+            alias = base / "alias"
+            alias.symlink_to(real, target_is_directory=True)
+            root = alias / "source"
+            private = alias / "private"
+            root.mkdir()
+            self.make_bundle(root, private)
+            raw = " ".join(str(p) for p in (root, root.resolve(), private, private.resolve())).encode()
+            with patch.object(baseline, "ROOT", root), patch.object(baseline.subprocess, "run", return_value=SimpleNamespace(returncode=0, stdout=raw)):
+                baseline.retain_bundle_diagnostics(private, ())
+            text = (root / "build/fork-evidence/bundle-diagnostics.json").read_text()
+            for path in (root, root.resolve(), private, private.resolve()):
+                self.assertNotIn(str(path), text)
+            self.assertIn("[PRIVATE_BUILD]", text)
+            self.assertIn("[SOURCE]", text)
 
     def test_build_output_escape_is_rejected_without_running_commands(self):
         with tempfile.TemporaryDirectory() as directory:

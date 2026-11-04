@@ -88,3 +88,10 @@ descheduling without skipping the test or increasing its algorithm budget.
 The changed upstream test is explicitly recorded in the source-scope guard.
 No application tokenizer implementation or dependency changed. The latest
 macOS run must still demonstrate that the CPU budget passes.
+
+The first diagnostics test at `038ff01b` failed before native compilation because
+macOS resolves a temporary `/var` path to `/private/var`, while the test compared
+the unresolved path. The comparison now uses the canonical path. Diagnostics
+also redact both aliases and physical source/build paths, with a symlink-based
+regression that can run on Linux as well as macOS. No path-containment check was
+removed.

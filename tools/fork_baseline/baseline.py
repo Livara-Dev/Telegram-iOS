@@ -266,7 +266,10 @@ def retain_bundle_diagnostics(bazel_root, secrets):
                     for value in secrets:
                         if value:
                             diagnostic = diagnostic.replace(value, "[REDACTED]")
-                    diagnostic = diagnostic.replace(str(private_root), "[PRIVATE_BUILD]").replace(str(ROOT), "[SOURCE]")
+                    for path in sorted({str(private_root), str(Path(bazel_root))}, key=len, reverse=True):
+                        diagnostic = diagnostic.replace(path, "[PRIVATE_BUILD]")
+                    for path in sorted({str(ROOT.resolve()), str(ROOT)}, key=len, reverse=True):
+                        diagnostic = diagnostic.replace(path, "[SOURCE]")
                     entry["commands"][label] = {"exit_code": result.returncode, "output": diagnostic}
                 except (OSError, subprocess.SubprocessError):
                     entry["commands"][label] = {"state": "unavailable"}
