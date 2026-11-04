@@ -846,7 +846,7 @@ private final class LocalArchiveGalleryController: ViewController, UICollectionV
     private let peerId: Int64?
     private let grid: UICollectionView
     private let flow: UICollectionViewFlowLayout
-    private let toolbar = UIToolbar()
+    private let archiveToolbar = UIToolbar()
     private let empty = UILabel()
     private let refresh = UIRefreshControl()
     private let requests = MetaDisposable()
@@ -889,15 +889,15 @@ private final class LocalArchiveGalleryController: ViewController, UICollectionV
         self.refresh.addTarget(self, action: #selector(self.reloadPage), for: .valueChanged)
         self.grid.refreshControl = self.refresh
         self.empty.textAlignment = .center; self.empty.numberOfLines = 0
-        self.toolbar.items = [self.newer, UIBarButtonItem(barButtonSystemItem: .flexibleSpace, target: nil, action: nil), self.older]
+        self.archiveToolbar.items = [self.newer, UIBarButtonItem(barButtonSystemItem: .flexibleSpace, target: nil, action: nil), self.older]
         self.subscriptions.add((context.sharedContext.presentationData |> deliverOnMainQueue).start(next: { [weak self] presentation in
             guard let self else { return }
             self.theme = presentation.theme
             self.navigationBar?.updatePresentationData(NavigationBarPresentationData(presentationTheme: presentation.theme, presentationStrings: presentation.strings), transition: .immediate)
             self.grid.backgroundColor = presentation.theme.list.blocksBackgroundColor
             self.empty.textColor = presentation.theme.list.itemPrimaryTextColor
-            self.toolbar.barTintColor = presentation.theme.list.blocksBackgroundColor
-            self.toolbar.tintColor = presentation.theme.list.itemAccentColor
+            self.archiveToolbar.barTintColor = presentation.theme.list.blocksBackgroundColor
+            self.archiveToolbar.tintColor = presentation.theme.list.itemAccentColor
             self.grid.reloadData()
         }))
         self.subscriptions.add((archive.status |> deliverOnMainQueue).start(next: { [weak self] status in
@@ -936,7 +936,7 @@ private final class LocalArchiveGalleryController: ViewController, UICollectionV
         self.displayNode.backgroundColor = self.theme.list.blocksBackgroundColor
         self.displayNode.view.addSubview(self.grid)
         self.displayNode.view.addSubview(self.empty)
-        self.displayNode.view.addSubview(self.toolbar)
+        self.displayNode.view.addSubview(self.archiveToolbar)
     }
 
     override func containerLayoutUpdated(_ layout: ContainerViewLayout, transition: ContainedViewLayoutTransition) {
@@ -954,7 +954,7 @@ private final class LocalArchiveGalleryController: ViewController, UICollectionV
         self.flow.sectionInset = UIEdgeInsets(top: 12, left: left, bottom: 12, right: right)
         self.flow.invalidateLayout()
         self.empty.frame = CGRect(x: 24, y: top + height * 0.35, width: max(0, layout.size.width - 48), height: 120)
-        self.toolbar.frame = CGRect(x: 0, y: top + height, width: layout.size.width, height: 44 + bottom)
+        self.archiveToolbar.frame = CGRect(x: 0, y: top + height, width: layout.size.width, height: 44 + bottom)
     }
 
     private func clear(message: String) {

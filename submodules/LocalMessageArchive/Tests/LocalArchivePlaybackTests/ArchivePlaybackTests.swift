@@ -77,6 +77,8 @@ final class ArchivePlaybackTests: XCTestCase {
         let playback = ArchivePlaybackAsset(source: source)
         XCTAssertEqual(playback.asset.referenceRestrictions, .forbidAll)
         XCTAssertEqual(playback.asset.url.scheme, "ayugram-archive")
+        XCTAssertEqual(playback.asset.url.host, "resource")
+        XCTAssertTrue(playback.asset.url.path.isEmpty)
         let duration = try await playback.asset.load(.duration)
         XCTAssertGreaterThan(CMTimeGetSeconds(duration), 0)
         let playable = try await playback.asset.load(.isPlayable)

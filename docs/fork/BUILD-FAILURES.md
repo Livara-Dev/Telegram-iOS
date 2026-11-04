@@ -216,3 +216,20 @@ the test pass. Four other playback cases passed. The hosted projection suite
 again failed before executing cases; its launch probe could not query the
 simulator within the diagnostic bound. The separate device build remained
 active during collection. [Checksummed native evidence](evidence/telemetry-fetch-b324f0d5.json).
+
+
+## Gallery device compile and playback follow-up
+
+The same b324f0d5 device run reached SettingsUI, then failed because the gallery's
+private `toolbar: UIToolbar` collided with Display.ViewController's non-open
+`toolbar: Toolbar?`. The local property is now named `archiveToolbar`; the base
+navigation implementation is untouched. The run produced diagnostics, not an IPA.
+
+The pending playback candidate uses an opaque root custom URL and no network
+transport option, following the shape of WebKit's custom-resource decoder
+([primary source](https://github.com/WebKit/WebKit/blob/main/Source/WebCore/platform/graphics/avfoundation/objc/ImageDecoderAVFObjC.mm)).
+It retains `forbidAll` external-reference restrictions and now accepts only the
+exact asset URL in the delegate. It does not add a network fallback or plaintext
+media file. This is a candidate for the observed AVFoundation EPERM, not a
+proven diagnosis or a passing playback result; the existing decode test remains
+a required check. No private WebKit/AVFoundation option was copied.

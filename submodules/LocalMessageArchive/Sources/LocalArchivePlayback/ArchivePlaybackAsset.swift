@@ -58,9 +58,10 @@ public final class ArchivePlaybackAsset: NSObject, AVAssetResourceLoaderDelegate
         self.source = source
         // A crafted movie may contain data references. Reject every external
         // reference instead of letting AVFoundation resolve local/remote URLs.
-        self.asset = AVURLAsset(url: URL(string: "ayugram-archive://local/media")!, options: [
-            AVURLAssetReferenceRestrictionsKey: AVAssetReferenceRestrictions.forbidAll.rawValue,
-            AVURLAssetAllowsCellularAccessKey: false
+        // Use an opaque root resource, without file-path resolution or network
+        // transport options. All bytes are supplied by this asset's delegate.
+        self.asset = AVURLAsset(url: URL(string: "ayugram-archive://resource")!, options: [
+            AVURLAssetReferenceRestrictionsKey: AVAssetReferenceRestrictions.forbidAll.rawValue
         ])
         super.init()
         self.asset.resourceLoader.setDelegate(self, queue: self.queue)
@@ -94,7 +95,7 @@ public final class ArchivePlaybackAsset: NSObject, AVAssetResourceLoaderDelegate
     }
 
     public func resourceLoader(_ resourceLoader: AVAssetResourceLoader, shouldWaitForLoadingOfRequestedResource request: AVAssetResourceLoadingRequest) -> Bool {
-        guard !self.stopped, self.active.count < 8, request.request.url?.scheme == "ayugram-archive" else {
+        guard !self.stopped, self.active.count < 8, request.request.url == self.asset.url else {
             request.finishLoading(with: Self.unavailable())
             return true
         }
