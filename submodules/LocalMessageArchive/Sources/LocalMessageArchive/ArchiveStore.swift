@@ -462,6 +462,7 @@ public final class ArchiveStore {
         submit(completion) {
             guard !eventKey.isEmpty, eventKey.utf8.count <= 128, !eventKey.contains("\0"),
                   self.clock() >= 0, (0..<10).contains(slot), data.count <= 16 * 1024 * 1024,
+                  (!data.isEmpty || kind == "document"),
                   kind.utf8.count <= 32, mimeType.utf8.count <= 256,
                   !kind.contains("\0"), !mimeType.contains("\0") else { throw ArchiveError.invalidInput }
             return try self.transaction {
@@ -502,6 +503,9 @@ public final class ArchiveStore {
             guard fstat(fd, &info) == 0 else { throw ArchiveError.protectionUnavailable }
             guard (info.st_mode & S_IFMT) == S_IFREG, info.st_size >= 0, info.st_size <= 512 * 1024 * 1024 else { return false }
             let size = Int64(info.st_size)
+            // A zero-byte document can be valid; a zero-byte image/video/voice
+            // file contains no usable media, even if it has a completed-path name.
+            guard size > 0 || kind == "document" else { return false }
             guard expectedSize.map({ $0 == size }) ?? true else { return false }
             return try self.transaction {
                 let current = try self.captureGeneration()
