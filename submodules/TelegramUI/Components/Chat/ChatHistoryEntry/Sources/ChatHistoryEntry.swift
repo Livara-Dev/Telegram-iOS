@@ -10,7 +10,15 @@ public enum ChatMessageEntryContentType {
     case animatedEmoji
 }
 
+/// Presentation-only state. The original message and its server identity stay intact.
+public enum ChatLocalTextFilterPresentation: Equatable {
+    case none
+    case hidden
+    case revealed
+}
+
 public struct ChatMessageEntryAttributes: Equatable {
+    public var localTextFilter: ChatLocalTextFilterPresentation = .none
     public var rank: CachedChannelAdminRank?
     public var isContact: Bool
     public var contentTypeHint: ChatMessageEntryContentType

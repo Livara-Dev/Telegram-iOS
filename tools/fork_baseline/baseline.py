@@ -28,12 +28,16 @@ TEST_TARGET_PATHS = {
         "local-message-archive", ("submodules", "LocalMessageArchive", "LocalMessageArchiveTests")),
     "//submodules/TelegramCore:TelegramCoreTests": (
         "telegram-core", ("submodules", "TelegramCore", "TelegramCoreTests")),
+    "//submodules/TelegramUI/Components/Chat/ChatHistoryEntry:ChatLocalTextFilterProjectionTests": (
+        "local-text-filter-projection", ("submodules", "TelegramUI", "Components", "Chat",
+                                         "ChatHistoryEntry", "ChatLocalTextFilterProjectionTests")),
 }
 INTEGRATION_TEST_TARGETS = (
     "//submodules/Postbox:PostboxTests",
     "//submodules/LocalMessageArchive:LocalMessageArchiveTests",
     "//submodules/TelegramCore:TelegramCoreTests",
     TEST_TARGET,
+    "//submodules/TelegramUI/Components/Chat/ChatHistoryEntry:ChatLocalTextFilterProjectionTests",
 )
 TEST_EVIDENCE_LIMIT = 2 * 1024 * 1024
 

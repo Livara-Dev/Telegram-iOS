@@ -1,4 +1,7 @@
 load("@build_bazel_rules_swift//swift:swift.bzl", "swift_library")
+load("@build_bazel_rules_apple//apple:ios.bzl", "ios_application", "ios_unit_test")
+load("@build_bazel_rules_apple//apple/testing/default_runner:ios_test_runner.bzl", "ios_test_runner")
+load("//build-system/bazel-utils:plist_fragment.bzl", "plist_fragment")
 
 swift_library(
     name = "ChatHistoryEntry",
@@ -19,4 +22,65 @@ swift_library(
     visibility = [
         "//visibility:public",
     ],
+)
+
+swift_library(
+    name = "ChatLocalTextFilterProjectionTestsLib",
+    testonly = True,
+    srcs = glob(["Tests/**/*.swift"], exclude = ["Tests/ChatLocalTextFilterTestHost.swift"]),
+    deps = [
+        ":ChatHistoryEntry",
+        "//submodules/TelegramCore",
+        "//submodules/TelegramPresentationData",
+    ],
+)
+
+swift_library(
+    name = "ChatLocalTextFilterTestHostLib",
+    testonly = True,
+    srcs = ["Tests/ChatLocalTextFilterTestHost.swift"],
+)
+
+plist_fragment(
+    name = "ChatLocalTextFilterTestHostInfo",
+    extension = "plist",
+    template = """
+    <key>CFBundleDisplayName</key>
+    <string>Local Filter Projection Tests</string>
+    <key>UILaunchScreen</key>
+    <dict/>
+    """,
+)
+
+ios_application(
+    name = "ChatLocalTextFilterTestHost",
+    testonly = True,
+    bundle_id = "org.livara.ayugram.tests.local-text-filter",
+    families = ["iphone"],
+    minimum_os_version = "15.0",
+    infoplists = [":ChatLocalTextFilterTestHostInfo"],
+    # ChatPresentationData needs real generated strings in getAppBundle().
+    # Putting them only in the XCTest bundle would leave the main host empty.
+    resources = [
+        "//Telegram:AppStringResources",
+        "//Telegram:GeneratedPresentationStrings/Resources/PresentationStrings.data",
+    ],
+    deps = [":ChatLocalTextFilterTestHostLib"],
+)
+
+ios_test_runner(
+    name = "ChatLocalTextFilterProjectionTestRunner",
+    device_type = "iPhone 17",
+    os_version = "26.5",
+)
+
+ios_unit_test(
+    name = "ChatLocalTextFilterProjectionTests",
+    # AccountContext -> LegacyComponents references MPVolumeView.
+    linkopts = ["-framework", "MediaPlayer"],
+    minimum_os_version = "15.0",
+    runner = ":ChatLocalTextFilterProjectionTestRunner",
+    test_host = ":ChatLocalTextFilterTestHost",
+    deps = [":ChatLocalTextFilterProjectionTestsLib"],
+    visibility = ["//visibility:public"],
 )

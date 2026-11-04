@@ -88,6 +88,15 @@ public final class ChatMessageAccessibilityData {
     public let singleUrl: String?
     
     public init(item: ChatMessageItem, isSelected: Bool?) {
+        if item.content.firstMessageAttributes.localTextFilter == .hidden {
+            self.label = "Message hidden by a local filter"
+            self.value = nil
+            self.hint = "Double-tap to show filtered messages in this chat"
+            self.traits = [.button]
+            self.customActions = nil
+            self.singleUrl = nil
+            return
+        }
         var hint: String?
         var traits: UIAccessibilityTraits = []
         var singleUrl: String?

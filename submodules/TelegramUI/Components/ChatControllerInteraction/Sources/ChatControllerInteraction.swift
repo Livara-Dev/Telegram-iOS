@@ -141,6 +141,9 @@ public final class ChatSendMessageEffect {
 }
 
 public final class ChatControllerInteraction: ChatControllerInteractionProtocol {
+    /// Session-only reveal for this chat controller. Never written to account
+    /// preferences or shared with another account's controller.
+    public let localTextFilterRevealed = ValuePromise<Bool>(false, ignoreRepeated: true)
     public enum OpenPeerSource {
         case `default`
         case reaction

@@ -1,6 +1,6 @@
 # Experimental local text filters
 
-This increment is under development. It is not verified in the running Telegram
+This increment has source code and automated tests prepared for native CI. It is not verified in the running Telegram
 application. Keep library tests, iOS integration tests, full application builds
 and recorded UI interaction as separate acceptance gates.
 
@@ -71,8 +71,49 @@ other devices and in surfaces outside this increment. Background translation,
 read status, mentions, downloads and other existing processing do not implicitly
 stop because a bubble is hidden. This feature does not extend Ghost Mode.
 
+## Implemented boundary awaiting native verification
+
+`TelegramCore/Sources/LocalMessageFilter` supplies the preferences facade and
+pure evaluator. `SettingsUI/LocalMessageFilterSettingsController.swift` supplies
+native rule management; a message-menu action opens an editable excerpt rather
+than saving or enabling automatically. Case-insensitive matching uses
+`en_US_POSIX`; Foundation canonical Unicode equivalence applies, without a
+separate diacritic-insensitive option.
+
+`ChatHistoryEntry/ChatLocalTextFilterProjection.swift` retains original message
+objects, row count, identity and indexes. Its eligibility allowlist limits this
+increment to ordinary incoming cloud text without media, reply/forward/group,
+expiry, rich content or unknown attributes. The live history integration also
+excludes protected chats, special subjects and tagged views. Large/animated
+emoji keep their existing rendering classes.
+
+`ChatHistoryListNode.swift` evaluates immutable snapshots on a dedicated queue,
+discards obsolete results, and retains pending initial/scroll metadata for the
+same location while evaluation is superseded. This asynchronous integration
+still requires live scrolling/reconnection regression tests. The new content
+node replaces only the inside of the existing ordinary text bubble. Original
+text is removed immediately rather than faded over the hidden placeholder.
+Accessibility, context, reaction, share, swipe and selection entry points have
+explicit hidden-state guards.
+
+Temporary reveal belongs to `ChatControllerInteraction` and therefore to that
+chat controller, not a global peer-ID set. A placeholder or chat menu can reveal
+all matching text; the menu can hide it again. **Selection mode shows originals**
+so Telegram's existing selection toolbar does not operate on hidden text. An
+already selected row also stays visible if the selection-mode flag is stale.
+This is intentional, not a persistent exception to the rules.
+
 ## Verification status
 
-Implementation and tests are being prepared on `feature/message-filter-draft`.
-No filter test pass, successful full application build, iPhone performance
-measurement or working UI is claimed yet.
+The branch is `feature/message-filter-draft`, [PR #4](https://github.com/Livara-Dev/Telegram-iOS/pull/4).
+There are 18 real-Postbox core tests and 12 production projection tests. The
+projection target has a separate test-only UIKit host bundling the existing
+Telegram presentation strings; it creates no Telegram account or connection.
+The hosted integration workflow runs that target in addition to the inherited
+Postbox, archive, TelegramCore and TextFormat suites before the full app build.
+
+Portable tooling, source-scope/credential and Postbox-import checks are separate
+from native verification. No filter test pass, successful full application
+build, iPhone performance measurement or working UI is claimed by this source
+checkpoint. Consult PR #4 for revision-specific CI evidence. No synthetic
+benchmark is represented as an iPhone 15 Pro measurement.

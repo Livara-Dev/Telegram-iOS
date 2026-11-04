@@ -17,6 +17,8 @@ ADDED_PREFIXES = (
     "submodules/TelegramCore/Sources/LocalArchive/", "submodules/TelegramCore/Tests/LocalArchive",
     "submodules/TelegramCore/Sources/LocalPrivacy/", "submodules/TelegramCore/Tests/LocalGhost",
     "submodules/TelegramCore/Sources/LocalMessageFilter/", "submodules/TelegramCore/Tests/LocalMessageFilter",
+    "submodules/TelegramUI/Components/Chat/ChatHistoryEntry/Tests/",
+    "submodules/TelegramUI/Components/Chat/ChatMessageLocalFilterBubbleContentNode/",
 )
 ADDED_FILES = {
     ".github/workflows/archive-integration.yml",
@@ -26,12 +28,22 @@ ADDED_FILES = {
     "submodules/SettingsUI/Sources/LocalArchiveSettingsController.swift",
     "submodules/SettingsUI/Sources/LocalGhostSettingsController.swift",
     "submodules/SettingsUI/Sources/LocalMessageFilterSettingsController.swift",
+    "submodules/TelegramUI/Components/Chat/ChatHistoryEntry/Sources/ChatLocalTextFilterProjection.swift",
 }
 # Explicit integration seams only. Everything else in the upstream tree, including
 # MTProto, authentication methods, cryptography, Postbox, dependency manifests and
 # gitlinks, stays pinned. An allowlist is a scope tripwire, not a semantic audit of
 # every change within these files; reviewers must inspect their Git diffs.
 REVIEWED_MODIFICATIONS = {
+    "submodules/TelegramUI/Components/Chat/ChatMessageBubbleItemNode/BUILD": "link the local text-filter placeholder component",
+    "submodules/TelegramUI/Components/Chat/ChatHistoryEntry/BUILD": "isolated local text-filter projection test target and host",
+    "submodules/TelegramUI/Components/Chat/ChatHistoryEntry/Sources/ChatHistoryEntry.swift": "presentation-only filter state preserving row identity",
+    "submodules/TelegramUI/Components/ChatControllerInteraction/Sources/ChatControllerInteraction.swift": "controller-scoped temporary reveal state",
+    "submodules/TelegramUI/Sources/ChatHistoryListNode.swift": "off-main literal evaluation and identity-preserving projection",
+    "submodules/TelegramUI/Sources/ChatInterfaceStateContextMenus.swift": "create local literal rule from eligible message text",
+    "submodules/TelegramUI/Components/Chat/ChatMessageBubbleItemNode/Sources/ChatMessageBubbleItemNode.swift": "render local text placeholder and guard hidden-message actions",
+    "submodules/TelegramUI/Components/Chat/ChatMessageItemView/Sources/ChatMessageItemView.swift": "redact hidden message accessibility data",
+    "Telegram/BUILD": "allow the isolated filter projection test host to bundle existing string resources",
     "submodules/TelegramCore/BUILD": "link the local archive and its integration tests",
     "submodules/TelegramCore/Tests/EngineMessageReplyQuoteTests.swift": "repair stale rich-quote fixture to use the production rich initializer",
     "submodules/TelegramCore/Sources/Account/Account.swift": "account-owned archive lifecycle",

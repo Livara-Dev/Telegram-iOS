@@ -165,3 +165,27 @@ writer/purge boundary and an injected SQL failure after deletion. These are not
 process-termination, disk-full or live Postbox handoff tests; the application-level
 purge/capture protocol remains unimplemented. The 11 Keychain tests still use
 injected Security responses. See [exact evidence](fork/evidence/archive-tests-c326364b.json).
+
+
+## Local literal filter draft
+
+The filter increment adds only local preferences and presentation decisions.
+There is no remote rule import/export, arbitrary regex engine, moderation RPC or
+new endpoint. Rules, identifiers, exclusions, serialized preferences and evaluated
+text have explicit bounds; malformed/newer preferences remain read-only. Matching
+runs off-main with revision checks; all original Postbox messages remain intact.
+
+The first UI scope is deliberately ordinary incoming cloud text. Dedicated
+placeholder content and accessibility/interaction guards are source-implemented;
+selection mode reveals originals to avoid invisible toolbar actions. Native
+compilation, VoiceOver, hide/reveal, scroll anchoring and other real UI behavior
+remain unverified. Notification/search/dialog previews, translation, read status
+and other processing remain outside the display filter. It is not access control.
+See [the implementation boundary and pending tests](fork/MESSAGE-FILTERS.md).
+
+Archive revision `387177fd` has since passed all 978 iOS XCTest cases, including
+56 local Postbox capture/replay/coordinator tests and the MediaBox cache-clear
+regression. [Retained evidence](fork/evidence/archive-integration-387177fd.json)
+records the exact revision and artifact digest. These local integration results
+do not close the physical-device, disk-full/process-termination, UI, telemetry,
+network-canary or distribution risks in this assessment.

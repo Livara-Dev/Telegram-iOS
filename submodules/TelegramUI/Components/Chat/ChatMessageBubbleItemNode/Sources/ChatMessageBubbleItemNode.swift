@@ -72,6 +72,7 @@ import ChatMessageBirthdateSuggestionContentNode
 import ChatMessageRestrictedBubbleContentNode
 import ChatMessageStoryMentionContentNode
 import ChatMessageUnsupportedBubbleContentNode
+import ChatMessageLocalFilterBubbleContentNode
 import ChatMessageWallpaperBubbleContentNode
 import ChatMessageGiftBubbleContentNode
 import ChatMessageGiftOfferBubbleContentNode
@@ -116,6 +117,9 @@ private final class ChatMessageBubbleClippingNode: ASDisplayNode {
 }
 
 private func contentNodeMessagesAndClassesForItem(_ item: ChatMessageItem) -> ([(Message, AnyClass, ChatMessageEntryAttributes, BubbleItemAttributes)], Bool, Bool, Bool) {
+    if item.content.firstMessageAttributes.localTextFilter == .hidden {
+        return ([(item.content.firstMessage, ChatMessageLocalFilterBubbleContentNode.self, item.content.firstMessageAttributes, BubbleItemAttributes(isAttachment: false, neighborType: .text, neighborSpacing: .default))], false, false, false)
+    }
     var result: [(Message, AnyClass, ChatMessageEntryAttributes, BubbleItemAttributes)] = []
     var skipText = false
     var messageWithCaptionToAdd: (Message, ChatMessageEntryAttributes)?
@@ -872,6 +876,9 @@ public class ChatMessageBubbleItemNode: ChatMessageItemView, ChatMessagePreviewI
             guard let strongSelf = self else {
                 return .none
             }
+            if strongSelf.item?.content.firstMessageAttributes.localTextFilter == .hidden {
+                return .none
+            }
             if !strongSelf.backgroundNode.frame.contains(location) {
                 return .none
             }
@@ -920,6 +927,7 @@ public class ChatMessageBubbleItemNode: ChatMessageItemView, ChatMessagePreviewI
             guard let strongSelf = self, let item = strongSelf.item else {
                 return
             }
+            guard item.content.firstMessageAttributes.localTextFilter != .hidden else { return }
             
             if let action = strongSelf.gestureRecognized(gesture: .longTap, location: location, recognizer: nil) {
                 switch action {
@@ -953,6 +961,10 @@ public class ChatMessageBubbleItemNode: ChatMessageItemView, ChatMessagePreviewI
         self.messageAccessibilityArea.activate = { [weak self] in
             guard let strongSelf = self, let accessibilityData = strongSelf.accessibilityData else {
                 return false
+            }
+            if let item = strongSelf.item, item.content.firstMessageAttributes.localTextFilter == .hidden {
+                item.controllerInteraction.localTextFilterRevealed.set(true)
+                return true
             }
             
             for node in strongSelf.contentNodes {
@@ -1274,6 +1286,9 @@ public class ChatMessageBubbleItemNode: ChatMessageItemView, ChatMessagePreviewI
         let recognizer = TapLongTapOrDoubleTapGestureRecognizer(target: self, action: #selector(self.tapLongTapOrDoubleTapGesture(_:)))
         recognizer.tapActionAtPoint = { [weak self] point in
             if let strongSelf = self {
+                if strongSelf.item?.content.firstMessageAttributes.localTextFilter == .hidden {
+                    return strongSelf.backgroundNode.frame.contains(point) ? .waitForSingleTap : .fail
+                }
                 if let item = strongSelf.item, let subject = item.associatedData.subject, case let .messageOptions(_, _, info) = subject {
                     if case let .link(link) = info {
                         let options = Atomic<ChatControllerSubject.LinkOptions?>(value: nil)
@@ -1479,6 +1494,7 @@ public class ChatMessageBubbleItemNode: ChatMessageItemView, ChatMessagePreviewI
         }
         replyRecognizer.shouldBegin = { [weak self] in
             if let strongSelf = self, let item = strongSelf.item {
+                guard item.content.firstMessageAttributes.localTextFilter != .hidden else { return false }
                 if strongSelf.selectionNode != nil {
                     return false
                 }
@@ -2021,6 +2037,11 @@ public class ChatMessageBubbleItemNode: ChatMessageItemView, ChatMessagePreviewI
             needsShareButton = false
             needsSummarizeButton = false
             allowFullWidth = true
+        }
+
+        if item.content.firstMessageAttributes.localTextFilter == .hidden {
+            needsShareButton = false
+            needsSummarizeButton = false
         }
 
         var tmpWidth: CGFloat
@@ -3795,6 +3816,9 @@ public class ChatMessageBubbleItemNode: ChatMessageItemView, ChatMessagePreviewI
         let disablesComments = !hasInstantVideo
         
         return (layout, { animation, applyInfo, synchronousLoads in
+            // Never retain/fade a previous original text node over the hidden
+            // placeholder, including a revealed -> hidden reuse transition.
+            let animation: ListViewItemUpdateAnimation = item.content.firstMessageAttributes.localTextFilter == .hidden || currentItem?.content.firstMessageAttributes.localTextFilter == .hidden ? .None : animation
             return ChatMessageBubbleItemNode.applyLayout(selfReference: selfReference, animation, synchronousLoads,
                 inputParams: (item, params, mergedTop, mergedBottom, dateHeaderAtBottom),
                 params: params,
@@ -3960,6 +3984,8 @@ public class ChatMessageBubbleItemNode: ChatMessageItemView, ChatMessagePreviewI
             strongSelf.trailingItemSpaceOffset = 0.0
         }
         
+        let wasLocalFilterHidden = strongSelf.appliedItem?.content.firstMessageAttributes.localTextFilter == .hidden
+        let isLocalFilterHidden = item.content.firstMessageAttributes.localTextFilter == .hidden
         let themeUpdated = strongSelf.appliedItem?.presentationData.theme.theme !== item.presentationData.theme.theme
         let previousContextFrame = strongSelf.mainContainerNode.frame
         strongSelf.mainContainerNode.frame = CGRect(origin: CGPoint(x: 0.0, y: strongSelf.trailingItemSpaceOffset), size: layout.contentSize)
@@ -3971,6 +3997,12 @@ public class ChatMessageBubbleItemNode: ChatMessageItemView, ChatMessagePreviewI
         strongSelf.appliedForwardInfo = ChatMessageAppliedForwardInfo(messageId: item.content.firstMessage.id, source: forwardSource, authorSignature: forwardAuthorSignature)
         strongSelf.updateAccessibilityData(accessibilityData)
         strongSelf.disablesComments = disablesComments
+        if isLocalFilterHidden {
+            strongSelf.mainContainerNode.cancelGesture()
+            strongSelf.replyRecognizer?.isEnabled = false
+        } else if wasLocalFilterHidden {
+            strongSelf.replyRecognizer?.isEnabled = true
+        }
         
         strongSelf.authorNameColor = authorNameColor
         strongSelf.authorRank = authorRank
@@ -3979,7 +4011,7 @@ public class ChatMessageBubbleItemNode: ChatMessageItemView, ChatMessagePreviewI
         strongSelf.view.disablesInteractiveTransitionGestureRecognizer = false//!item.context.sharedContext.immediateExperimentalUISettings.unidirectionalSwipeToReply
         
         var animation = animation
-        if strongSelf.mainContextSourceNode.isExtractedToContextPreview {
+        if strongSelf.mainContextSourceNode.isExtractedToContextPreview && !isLocalFilterHidden && !wasLocalFilterHidden {
             animation = .System(duration: 0.25, transition: ControlledTransition(duration: 0.25, curve: .easeInOut, interactive: false))
         }
         
@@ -5794,6 +5826,7 @@ public class ChatMessageBubbleItemNode: ChatMessageItemView, ChatMessagePreviewI
     }
     
     @objc private func performLocalAccessibilityCustomAction(_ action: UIAccessibilityCustomAction) {
+        guard self.item?.content.firstMessageAttributes.localTextFilter != .hidden else { return }
         if let action = action as? ChatMessageAccessibilityCustomAction {
             switch action.action {
                 case .reply:
@@ -5826,6 +5859,12 @@ public class ChatMessageBubbleItemNode: ChatMessageItemView, ChatMessagePreviewI
     }
     
     @objc private func tapLongTapOrDoubleTapGesture(_ recognizer: TapLongTapOrDoubleTapGestureRecognizer) {
+        if let item = self.item, item.content.firstMessageAttributes.localTextFilter == .hidden {
+            if recognizer.state == .ended, let (gesture, location) = recognizer.lastRecognizedGestureAndLocation, case .tap = gesture, self.backgroundNode.frame.contains(location) {
+                item.controllerInteraction.localTextFilterRevealed.set(true)
+            }
+            return
+        }
         switch recognizer.state {
         case .ended:
             if let (gesture, location) = recognizer.lastRecognizedGestureAndLocation, let item = self.item {
@@ -5859,6 +5898,7 @@ public class ChatMessageBubbleItemNode: ChatMessageItemView, ChatMessagePreviewI
     }
     
     private func gestureRecognized(gesture: TapLongTapOrDoubleTapGesture, location: CGPoint, recognizer: TapLongTapOrDoubleTapGestureRecognizer?) -> InternalBubbleTapAction? {
+        guard self.item?.content.firstMessageAttributes.localTextFilter != .hidden else { return nil }
         var mediaMessage: Message?
         var forceOpen = false
         if let item = self.item {
@@ -6849,7 +6889,7 @@ public class ChatMessageBubbleItemNode: ChatMessageItemView, ChatMessagePreviewI
         
         let wasSelected = self.selectionNode?.selected
         
-        var canHaveSelection = true
+        var canHaveSelection = item.content.firstMessageAttributes.localTextFilter != .hidden
         switch item.content {
             case let .message(message, _, _, _, _):
                 for media in message.media {
@@ -6904,6 +6944,7 @@ public class ChatMessageBubbleItemNode: ChatMessageItemView, ChatMessagePreviewI
             } else {
                 let selectionNode = ChatMessageSelectionNode(wallpaper: item.presentationData.theme.wallpaper, theme: item.presentationData.theme.theme, toggle: { [weak self] value in
                     if let strongSelf = self, let item = strongSelf.item {
+                        guard item.content.firstMessageAttributes.localTextFilter != .hidden else { return }
                         switch item.content {
                         case let .message(message, _, _, _, _):
                             item.controllerInteraction.toggleMessagesSelection([message.id], value)
@@ -7152,6 +7193,7 @@ public class ChatMessageBubbleItemNode: ChatMessageItemView, ChatMessagePreviewI
     }
     
     @objc private func shareButtonPressed() {
+        guard self.item?.content.firstMessageAttributes.localTextFilter != .hidden else { return }
         if let item = self.item {
             if item.message.adAttribute != nil {
                 item.controllerInteraction.openNoAdsDemo()
@@ -7185,6 +7227,7 @@ public class ChatMessageBubbleItemNode: ChatMessageItemView, ChatMessagePreviewI
     }
                                                
     private func openQuickShare(node: ASDisplayNode, gesture: ContextGesture) {
+        guard self.item?.content.firstMessageAttributes.localTextFilter != .hidden else { return }
         if let item = self.item {
             item.controllerInteraction.displayQuickShare(item.message.id, node, gesture)
         }
@@ -7268,6 +7311,21 @@ public class ChatMessageBubbleItemNode: ChatMessageItemView, ChatMessagePreviewI
     
     private var playedSwipeToReplyHaptic = false
     @objc private func swipeToReplyGesture(_ recognizer: ChatSwipeToReplyRecognizer) {
+        if self.item?.content.firstMessageAttributes.localTextFilter == .hidden {
+            self.currentSwipeAction = nil
+            self.currentSwipeToReplyTranslation = 0.0
+            self.swipeToReplyFeedback = nil
+            self.swipeToReplyNode?.removeFromSupernode()
+            self.swipeToReplyNode = nil
+            var bounds = self.bounds
+            bounds.origin.x = 0.0
+            self.bounds = bounds
+            var shadowBounds = self.shadowNode.bounds
+            shadowBounds.origin.x = 0.0
+            self.shadowNode.bounds = shadowBounds
+            self.updateAttachedAvatarNodeOffset(offset: 0.0, transition: .immediate)
+            return
+        }
         var offset: CGFloat = 0.0
         var leftOffset: CGFloat = 0.0
         var swipeOffset: CGFloat = 45.0
@@ -7471,6 +7529,7 @@ public class ChatMessageBubbleItemNode: ChatMessageItemView, ChatMessagePreviewI
     }
     
     override public func getMessageContextSourceNode(stableId: UInt32?) -> ContextExtractedContentContainingNode? {
+        guard self.item?.content.firstMessageAttributes.localTextFilter != .hidden else { return nil }
         if self.contentContainers.count > 1 {
             return self.contentContainers.first(where: { $0.contentMessageStableId == stableId })?.sourceNode ?? self.mainContextSourceNode
         } else {
@@ -7492,6 +7551,7 @@ public class ChatMessageBubbleItemNode: ChatMessageItemView, ChatMessagePreviewI
         guard let item = self.item else {
             return
         }
+        guard item.content.firstMessageAttributes.localTextFilter != .hidden else { return }
         let subFrame = self.backgroundNode.frame
         item.controllerInteraction.openMessageContextMenu(item.message, true, self, subFrame, nil, nil)
     }

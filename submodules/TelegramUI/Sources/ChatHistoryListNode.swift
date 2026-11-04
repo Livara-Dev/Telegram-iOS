@@ -82,6 +82,12 @@ enum ChatHistoryViewUpdate {
     case HistoryView(view: MessageHistoryView, type: ChatHistoryViewUpdateType, scrollPosition: ChatHistoryViewScrollPosition?, flashIndicators: Bool, originalScrollPosition: ChatHistoryViewScrollPosition?, initialData: ChatHistoryCombinedInitialData, id: Int32)
 }
 
+private struct ChatHistoryLocalTextFilterResult {
+    let update: (ChatHistoryViewUpdate, Int, ChatHistoryLocationInput?, ClosedRange<Int32>?, Set<MessageId>)
+    let matches: [EngineMessage.Id: ChatLocalTextFilterSnapshot]
+    let revealed: Bool
+}
+
 struct ChatHistoryView {
     let originalView: MessageHistoryView
     let filteredEntries: [ChatHistoryEntry]
@@ -2054,8 +2060,68 @@ public final class ChatHistoryListNodeImpl: ASDisplayNode, ChatHistoryNode, Chat
         let startTime = CFAbsoluteTimeGetCurrent()
         var measure_isFirstTime = true
         let messageViewQueue = Queue.mainQueue()
+        let localFilterQueue = Queue(name: "LocalMessageFilter.chat", qos: .userInitiated)
+        let localFilterRevision = Atomic<Int64>(value: 0)
+        // Accessed only on messageViewQueue. Coalescing a superseded matching
+        // job must not lose an initial/scroll transition carried by that view.
+        var pendingLocalFilterUpdate: (ChatHistoryViewUpdate, Int, ChatHistoryLocationInput?, ClosedRange<Int32>?, Set<MessageId>)?
+        // Pair a decision with its exact history update. There is deliberately no
+        // initial empty-decision emission that could flash matching text first.
+        let historyWithLocalFilter = combineLatest(queue: messageViewQueue, historyViewUpdate, context.account.localMessageFilter.settings, controllerInteraction.localTextFilterRevealed.get())
+        |> map { incomingUpdate, state, revealed -> Signal<ChatHistoryLocalTextFilterResult, NoError> in
+            let revision = localFilterRevision.modify { $0 &+ 1 }
+            var update = incomingUpdate
+            if let pending = pendingLocalFilterUpdate, pending.2 == update.2,
+               case let .HistoryView(_, previousType, previousScroll, previousFlash, previousOriginalScroll, _, previousId) = pending.0,
+               case let .HistoryView(view, type, scroll, flash, originalScroll, data, id) = update.0, previousId == id {
+                var carriedType = type
+                if case .Generic(.Generic) = type {
+                    carriedType = previousType
+                }
+                update.0 = .HistoryView(view: view, type: carriedType, scrollPosition: scroll ?? previousScroll, flashIndicators: flash || previousFlash, originalScrollPosition: originalScroll ?? previousOriginalScroll, initialData: data, id: id)
+            }
+            // Fill-hole updates navigate the history view and do not render
+            // message bodies. Deliver them immediately in their original order.
+            if case .HistoryView(_, .Generic(.FillHole), _, _, _, _, _) = update.0 {
+                pendingLocalFilterUpdate = nil
+                return .single(ChatHistoryLocalTextFilterResult(update: update, matches: [:], revealed: revealed))
+            }
+            guard case .bubbles = mode, subject == nil, tag == nil,
+                  case let .available(settings) = state, settings.enabled,
+                  case let .HistoryView(view, _, _, _, _, _, _) = update.0 else {
+                pendingLocalFilterUpdate = nil
+                return .single(ChatHistoryLocalTextFilterResult(update: update, matches: [:], revealed: revealed))
+            }
+            pendingLocalFilterUpdate = update
+            let matchedUpdate = update
+            let candidates = view.entries.compactMap { entry -> ChatLocalTextFilterSnapshot? in
+                guard chatHistoryMessageSupportsLocalTextFiltering(entry.message) else { return nil }
+                return ChatLocalTextFilterSnapshot(message: entry.message)
+            }
+            return Signal { subscriber in
+                let cancelled = Atomic<Bool>(value: false)
+                localFilterQueue.async {
+                    let evaluator = LocalMessageFilterEvaluator(settings: settings)
+                    var matches: [EngineMessage.Id: ChatLocalTextFilterSnapshot] = [:]
+                    for candidate in candidates {
+                        if cancelled.with({ $0 }) { return }
+                        if case .matched = evaluator.evaluate(text: candidate.text, peerId: candidate.id.peerId.toInt64()) {
+                            matches[candidate.id] = candidate
+                        }
+                    }
+                    messageViewQueue.async {
+                        guard !cancelled.with({ $0 }), localFilterRevision.with({ $0 }) == revision else { return }
+                        pendingLocalFilterUpdate = nil
+                        subscriber.putNext(ChatHistoryLocalTextFilterResult(update: matchedUpdate, matches: matches, revealed: revealed))
+                        subscriber.putCompletion()
+                    }
+                }
+                return ActionDisposable { let _ = cancelled.swap(true) }
+            }
+        }
+        |> switchToLatest
         let historyViewTransitionDisposable = (combineLatest(queue: messageViewQueue,
-            historyViewUpdate |> debug_measureTimeToFirstEvent(label: "chatHistoryNode_historyViewUpdate"),
+            historyWithLocalFilter |> debug_measureTimeToFirstEvent(label: "chatHistoryNode_historyViewUpdate"),
             self.chatPresentationDataPromise.get() |> debug_measureTimeToFirstEvent(label: "chatHistoryNode_chatPresentationData"),
             selectedMessages |> debug_measureTimeToFirstEvent(label: "chatHistoryNode_selectedMessages"),
             updatingMedia |> debug_measureTimeToFirstEvent(label: "chatHistoryNode_updatingMedia"),
@@ -2081,7 +2147,8 @@ public final class ChatHistoryListNodeImpl: ASDisplayNode, ChatHistoryNode, Chat
             chatThemes |> debug_measureTimeToFirstEvent(label: "chatHistoryNode_chatThemes"),
             deviceContactsNumbers |> debug_measureTimeToFirstEvent(label: "chatHistoryNode_deviceContactsNumbers"),
             contentSettings |> debug_measureTimeToFirstEvent(label: "chatHistoryNode_contentSettings")
-        ) |> debug_measureTimeToFirstEvent(label: "chatHistoryNode_firstChatHistoryTransition")).startStrict(next: { [weak self] update, chatPresentationData, selectedMessages, updatingMedia, networkType, preferredStoryHighQuality, animatedEmojiAndGiftStickers, additionalAnimatedEmojiStickers, customChannelDiscussionReadState, customThreadOutgoingReadState, availableReactions, availableMessageEffects, savedMessageTags, defaultReaction, accountPeer, accountCountry, suggestAudioTranscription, promises, topicAuthorId, translationState, maxReadStoryId, recommendedChannels, audioTranscriptionTrial, chatThemes, deviceContactsNumbers, contentSettings in
+        ) |> debug_measureTimeToFirstEvent(label: "chatHistoryNode_firstChatHistoryTransition")).startStrict(next: { [weak self] filteredUpdate, chatPresentationData, selectedMessages, updatingMedia, networkType, preferredStoryHighQuality, animatedEmojiAndGiftStickers, additionalAnimatedEmojiStickers, customChannelDiscussionReadState, customThreadOutgoingReadState, availableReactions, availableMessageEffects, savedMessageTags, defaultReaction, accountPeer, accountCountry, suggestAudioTranscription, promises, topicAuthorId, translationState, maxReadStoryId, recommendedChannels, audioTranscriptionTrial, chatThemes, deviceContactsNumbers, contentSettings in
+            let update = filteredUpdate.update
             let (animatedEmojiStickers, premiumGiftStickers, tonGiftStickers) = animatedEmojiAndGiftStickers
             let (historyAppearsCleared, pendingUnpinnedAllMessages, pendingRemovedMessages, currentlyPlayingMessageIdAndType, scrollToMessageId, chatHasBots, allAdMessages) = promises
             
@@ -2369,7 +2436,7 @@ public final class ChatHistoryListNodeImpl: ASDisplayNode, ChatHistoryNode, Chat
                 }
                                 
                 let previousChatHistoryEntriesForViewState = chatHistoryEntriesForViewState.with({ $0 })
-                let (filteredEntries, updatedChatHistoryEntriesForViewState) = chatHistoryEntriesForView(
+                let (unfilteredEntries, updatedChatHistoryEntriesForViewState) = chatHistoryEntriesForView(
                     currentState: previousChatHistoryEntriesForViewState,
                     context: context,
                     location: chatLocation,
@@ -2398,6 +2465,9 @@ public final class ChatHistoryListNodeImpl: ASDisplayNode, ChatHistoryNode, Chat
                     isMusicPlaylist: isMusicPlaylist,
                     pinToTopStableId: pinToTopStableId
                 )
+                // Selection mode deliberately shows originals: Telegram's
+                // existing selection toolbar must not operate on hidden rows.
+                let filteredEntries = chatHistoryApplyingLocalTextFilter(unfilteredEntries, matches: isCopyProtectionEnabled ? [:] : filteredUpdate.matches, revealed: filteredUpdate.revealed, selectionActive: selectedMessages != nil)
                 let lastHeaderId = filteredEntries.last.flatMap { listMessageDateHeaderId(timestamp: $0.index.timestamp) } ?? 0
                 let processedView = ChatHistoryView(originalView: view, filteredEntries: filteredEntries, associatedData: associatedData, lastHeaderId: lastHeaderId, id: id, locationInput: update.2, ignoreMessagesInTimestampRange: update.3, ignoreMessageIds: update.4)
                 let previousValueAndVersion = previousView.swap((processedView, update.1, selectedMessages, allAdMessages.version))
@@ -5290,6 +5360,7 @@ public final class ChatHistoryListNodeImpl: ASDisplayNode, ChatHistoryNode, Chat
             // (0, 0, w, h) inside its host, so `itemNode.frame.contains(point)` could never match.
             if resultMessages == nil, let itemNode = itemNode as? ListViewItemNode, self.listView.itemNodeFrame(itemNode)?.contains(point) == true {
                 if let itemNode = itemNode as? ChatMessageItemView, let item = itemNode.item {
+                    guard item.content.firstMessageAttributes.localTextFilter != .hidden else { return }
                     switch item.content {
                         case let .message(message, _, _ , _, _):
                             resultMessages = [message]
