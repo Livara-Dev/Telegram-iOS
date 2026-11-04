@@ -7,7 +7,7 @@ iOS build, on-device launch, and messaging tests remain separate evidence.
 Use a fresh, isolated Apple Silicon macOS runner matching `versions.json` and a
 complete recursive checkout. `prepare_host.py` provisions the checksum-pinned Bazel
 executable; `baseline.py` verifies it again before execution. Simulator tests also need
-the iPhone 17 / iOS 26.5 runtime pinned in `TextFormatTestRunner`.
+the iPhone 17 / iOS 27.0 runtime pinned in `TextFormatTestRunner`.
 
 Provide these environment variables through CI variables/secrets:
 

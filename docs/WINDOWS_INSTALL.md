@@ -48,7 +48,7 @@ layout. A successful run of one branch does not validate another branch.
    `unsigned_device` option controls the independent device job; pushes enable
    that job automatically. All jobs use GitHub's `xcode-27` hosted Apple Silicon
    image, verify Xcode 27.1/macOS 27 and the pinned Bazel download. Test and
-   simulator jobs install the required iOS 26.5 runtime; the device job does not.
+   simulator jobs validate the installed iOS 27.0 runtime; the device job does not.
 3. After `unsigned-device-build` succeeds, download
    `archive-unsigned-device-<commit>`. Open its
    `fork-baseline-unsigned-device/manifest.json`; confirm `source_commit` and

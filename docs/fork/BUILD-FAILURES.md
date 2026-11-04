@@ -39,3 +39,13 @@ independent unsigned-device jobs. Keep logs, checksums and manifests for the
 actual completed revision. A successful source compilation does not establish
 an IPA, a successful unsigned device package does not establish signing, and a
 signature does not establish installation or runtime behavior on an iPhone.
+
+## Runtime alignment for archive validation
+
+The `e5d49047` job failed every suite: the first exited before producing test
+outputs, subsequent runner invocations reported iOS 26.5 unsupported and listed
+only 27.0. The extended projection attempt also failed before XCTest began.
+The archive branch now explicitly pins all five test runners and preflight to
+the installed iOS 27.0 runtime, without downloading 26.5. Xcode 27.1, source and
+dependency pins remain unchanged. Runtime availability is checked before tests;
+no fallback or successful native result is assumed.

@@ -17,7 +17,7 @@ swift_library(
     deps = [":LocalMessageArchive", "//submodules/sqlcipher"],
 )
 
-ios_test_runner(name = "ArchiveTestRunner", device_type = "iPhone 17", os_version = "26.5")
+ios_test_runner(name = "ArchiveTestRunner", device_type = "iPhone 17", os_version = "27.0")
 ios_unit_test(
     name = "LocalMessageArchiveTests",
     minimum_os_version = "15.0",

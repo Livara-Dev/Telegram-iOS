@@ -94,10 +94,10 @@ jobs:
           sudo xcode-select -s /Applications/Xcode_27.1.app/Contents/Developer
           python3 tools/fork_baseline/prepare_host.py 2>&1 | tee build/fork-evidence/host.log
 
-      - name: Install the upstream test runtime
+      - name: Validate the pinned test runtime
         run: |
           set -euo pipefail
-          xcodebuild -downloadPlatform iOS -buildVersion 26.5 -architectureVariant arm64 2>&1 | tee build/fork-evidence/runtime.log
+          xcrun simctl list runtimes --json 2>&1 | tee build/fork-evidence/runtime.log
           python3 tools/fork_baseline/prepare_host.py --simulator
 
       - name: Build simulator baseline and run the explicit iOS test target

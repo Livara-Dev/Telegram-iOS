@@ -42,11 +42,11 @@ def command(*args):
 
 def prepare_simulator():
     runtimes = json.loads(command("xcrun", "simctl", "list", "runtimes", "--json"))["runtimes"]
-    runtime = next((r for r in runtimes if r.get("version") == "26.5"
+    runtime = next((r for r in runtimes if r.get("version") == "27.0"
                     and r.get("identifier", "").startswith("com.apple.CoreSimulator.SimRuntime.iOS-")
                     and r.get("isAvailable")), None)
     if runtime is None:
-        raise RuntimeError("iOS 26.5 runtime is unavailable; existing iOS tests cannot run")
+        raise RuntimeError("iOS 27.0 runtime is unavailable; existing iOS tests cannot run")
     devices = json.loads(command("xcrun", "simctl", "list", "devices", "available", "--json"))["devices"]
     if not any(d["name"] == "iPhone 17" for d in devices.get(runtime["identifier"], [])):
         command("xcrun", "simctl", "create", "iPhone 17", "com.apple.CoreSimulator.SimDeviceType.iPhone-17", runtime["identifier"])

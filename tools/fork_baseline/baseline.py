@@ -123,8 +123,8 @@ def preflight(env, simulator=False):
     output(["git", "submodule", "foreach", "--quiet", "--recursive", "git diff --quiet && git diff --cached --quiet"])
     if simulator:
         devices = json.loads(output(["xcrun", "simctl", "list", "devices", "available", "--json"]))["devices"]
-        if not any("iOS-26-5" in runtime and any(d["name"] == "iPhone 17" for d in entries) for runtime, entries in devices.items()):
-            raise InvalidSetup("The explicit iOS test runners require an available iPhone 17 simulator on iOS 26.5")
+        if not any("iOS-27-0" in runtime and any(d["name"] == "iPhone 17" for d in entries) for runtime, entries in devices.items()):
+            raise InvalidSetup("The explicit iOS test runners require an available iPhone 17 simulator on iOS 27.0")
     return bazel
 
 
