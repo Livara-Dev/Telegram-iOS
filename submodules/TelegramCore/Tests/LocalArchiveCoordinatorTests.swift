@@ -331,6 +331,26 @@ final class LocalArchiveCoordinatorTests: XCTestCase {
         XCTAssertEqual(settings.maxPayloadBytes, 1024 * 1024 * 1024)
     }
 
+    func testMalformedMimeDoesNotBlockDurableMediaCapture() throws {
+        let bytes = Data([1, 2, 3])
+        let resource = CloudDocumentMediaResource(datacenterId: 1, fileId: 9500, accessHash: 0, size: Int64(bytes.count), fileReference: nil, fileName: nil)
+        self.fixture.postbox.mediaBox.storeResourceData(resource.id, data: bytes, synchronous: true)
+        let file = TelegramMediaFile(fileId: MediaId(namespace: Namespaces.Media.CloudFile, id: 9500), partialReference: nil, resource: resource, previewRepresentations: [], videoThumbnails: [], immediateThumbnailData: nil, mimeType: "application/pdf\0untrusted", size: Int64(bytes.count), attributes: [], alternativeRepresentations: [])
+        _ = try self.queueDeletion(95, media: [file])
+        let key = try XCTUnwrap(self.pending().first?.operation?.eventKey)
+        let instance = self.start()
+        try self.awaitStatus(.ready, in: instance)
+        XCTAssertTrue(try self.pending().isEmpty)
+        let store = try XCTUnwrap(instance.storage.with { $0?.store })
+        let done = expectation(description: "read normalized MIME attachment")
+        var result: Result<ArchivedMedia?, ArchiveError>?
+        store.media(eventKey: key, slot: 0) { result = $0; done.fulfill() }
+        wait(for: [done], timeout: 15)
+        let media = try XCTUnwrap(try XCTUnwrap(result).get())
+        XCTAssertEqual(media.mimeType, "application/octet-stream")
+        XCTAssertEqual(media.data, bytes)
+    }
+
     func testMediaQuotaEvictionReportsGapWithoutResurrectingEvent() throws {
         _ = try self.localArchiveValue(self.fixture.postbox.transaction { transaction in
             var settings = localArchiveSettings(transaction: transaction)

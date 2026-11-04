@@ -49,7 +49,7 @@ func localArchiveMediaMetadata(_ media: [Media]) -> [LocalArchiveMediaMetadata] 
             let resource = file.resource.id.stringRepresentation
             return LocalArchiveMediaMetadata(kind: kind, namespace: file.fileId.namespace, id: file.fileId.id,
                 resourceKey: localArchiveSafeResourceKey(resource) ? resource : nil,
-                mimeType: file.mimeType.utf8.count <= 256 ? file.mimeType : nil,
+                mimeType: file.mimeType.utf8.count <= 256 && !file.mimeType.contains("\0") ? file.mimeType : nil,
                 byteSize: file.size.flatMap { $0 >= 0 ? $0 : nil }, bytesPreserved: false)
         }
         return LocalArchiveMediaMetadata(kind: .unsupported, namespace: item.id?.namespace, id: item.id?.id,
@@ -67,7 +67,7 @@ func localArchiveEntityMetadataIsValid(_ data: Data) -> Bool {
     guard value.version == 1 || value.version == 2 else { return false }
     if value.version == 1 { return value.media == nil }
     guard let media = value.media, media.count <= 10 else { return false }
-    return media.allSatisfy { !$0.bytesPreserved && ($0.resourceKey.map(localArchiveSafeResourceKey) ?? true) && ($0.mimeType?.utf8.count ?? 0) <= 256 && ($0.byteSize.map { $0 >= 0 } ?? true) && ($0.alternativeResourceKeys?.count ?? 0) <= 9 && ($0.alternativeResourceKeys?.allSatisfy(localArchiveSafeResourceKey) ?? true) }
+    return media.allSatisfy { !$0.bytesPreserved && ($0.resourceKey.map(localArchiveSafeResourceKey) ?? true) && ($0.mimeType?.utf8.count ?? 0) <= 256 && !($0.mimeType?.contains("\0") ?? false) && ($0.byteSize.map { $0 >= 0 } ?? true) && ($0.alternativeResourceKeys?.count ?? 0) <= 9 && ($0.alternativeResourceKeys?.allSatisfy(localArchiveSafeResourceKey) ?? true) }
 }
 
 private func textEntities(_ attributes: [MessageAttribute]) -> [MessageTextEntity] {

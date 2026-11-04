@@ -253,3 +253,9 @@ archive or change timed/protected-content handling. It leaves the existing cache
 file under Telegram's normal cleanup policy until the asynchronous reader runs.
 A simultaneous cache purge can still win; proactive capture remains pending.
 New real-replay regressions are awaiting native execution.
+
+Malformed media MIME values containing a NUL are normalized to the existing
+application/octet-stream fallback before the durable capture is created. This
+prevents an otherwise valid local attachment from repeatedly failing the sink's
+strict MIME validation and blocking the account outbox. A native coordinator
+regression is authored; it is not yet verified by CI.
