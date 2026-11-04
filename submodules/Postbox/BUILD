@@ -112,6 +112,9 @@ ios_test_runner(
 
 ios_unit_test(
     name = "PostboxTests",
+    # Full Postbox coverage plus XCTest startup exceeded the default 300s on
+    # the hosted iOS 27 image. Keep assertions unchanged and execution bounded.
+    timeout = "long",
     minimum_os_version = "15.0",
     runner = ":PostboxTestRunner",
     deps = [
