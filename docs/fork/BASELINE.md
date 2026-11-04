@@ -18,6 +18,13 @@ Test report retention now copies only bounded, credential-redacted `test.xml` an
 `test.log` files for the explicit target before the private Bazel root is removed,
 including when tests fail. Missing/unsafe/oversized files are recorded as omissions.
 
+Run 41791996708 completed the recursive checkout on macOS 27.0.1 and uploaded
+diagnostic artifacts. It then failed a portable test that compared a canonical
+Bazel path against an unresolved `/var` alias; macOS resolves that alias through
+`/private/var`. The test now expects the canonical path and exercises a directory
+symlink explicitly. No application compile ran in that job. Superseded branch
+runs are now canceled when a new fix is pushed, avoiding redundant cold builds.
+
 ## Current result
 
 The current checkpoint is **not a working iOS baseline**. The local executor is

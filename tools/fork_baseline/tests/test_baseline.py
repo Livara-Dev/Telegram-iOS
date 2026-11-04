@@ -81,7 +81,22 @@ class PreflightTests(unittest.TestCase):
                     baseline.verify_bazel(binary, "9.2.0:" + "0" * 64)
                 call.assert_not_called()
                 digest = hashlib.sha256(binary.read_bytes()).hexdigest()
-                self.assertEqual(baseline.verify_bazel(binary, "9.2.0:" + digest), binary)
+                self.assertEqual(baseline.verify_bazel(binary, "9.2.0:" + digest), binary.resolve())
+
+    def test_verified_binary_returns_canonical_path_for_directory_alias(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            actual = root / "actual"
+            actual.mkdir()
+            binary = actual / "bazel"
+            binary.write_bytes(b"test executable")
+            binary.chmod(0o700)
+            alias = root / "alias"
+            alias.symlink_to(actual, target_is_directory=True)
+            digest = hashlib.sha256(binary.read_bytes()).hexdigest()
+            with patch.object(baseline, "output", return_value="bazel 9.2.0") as call:
+                self.assertEqual(baseline.verify_bazel(alias / "bazel", "9.2.0:" + digest), binary.resolve())
+                call.assert_called_once_with([str(binary.resolve()), "--version"])
 
     def test_unsigned_proxy_disables_signing_and_remote_services(self):
         command = baseline.proxy_arguments(Path("/bazel"), Path("/repo"), "unsigned-device", ["--output_user_root=/private", "build", "Telegram/Telegram"])
