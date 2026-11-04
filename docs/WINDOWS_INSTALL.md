@@ -3,7 +3,7 @@
 No successful iOS artifact exists from this workspace yet. These instructions
 describe how to obtain and test one after GitHub Actions succeeds.
 
-1. Push this existing fork to `Livara-Dev/AyuGram-iOS` once it exists. In Settings →
+1. Open the authorized fork `Livara-Dev/Telegram-iOS`. In Settings →
    Secrets and variables → Actions, set repository secrets `TELEGRAM_API_ID` and
    `TELEGRAM_API_HASH` from your own application registered at
    https://my.telegram.org/apps. The workflow uses `org.livara.ayugram`, as requested;

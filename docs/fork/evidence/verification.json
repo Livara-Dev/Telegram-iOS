@@ -1,11 +1,11 @@
 {
   "date": "2026-11-04",
   "platform": "Linux",
-  "tooling_test_count": 21,
+  "tooling_test_count": 28,
   "source_guard_test_count": 22,
   "upstream_python_test_count": 44,
-  "ios_build": "not_run",
-  "ios_runtime_tests": "not_run",
+  "ios_build": "not_yet_run",
+  "ios_runtime_tests": "not_yet_run",
   "signed_ipa": "not_produced",
   "checks": [
     {

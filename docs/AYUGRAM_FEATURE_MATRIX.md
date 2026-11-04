@@ -3,8 +3,8 @@
 Updated 2026-11-04. **No requested feature is implemented or runtime-tested yet.**
 The existing project is the official Telegram-iOS checkout plus the audited
 baseline tooling. Its source remains unchanged. Portable tooling tests do not
-prove iOS app behavior. Phase A remains blocked on running the hosted build with
-an identified fork repository and the owner's API credentials.
+prove iOS app behavior. Phase A is being exercised through the hosted workflow
+on `Livara-Dev/Telegram-iOS`, with the owner's API credentials read from Secrets.
 
 Evidence dates matter: the public Android `rewrite` source is July 2023,
 official docs are January 2025, and the October 5, 2026 improvements are first-party
@@ -80,9 +80,9 @@ technical claim of impossibility. All entries require actual integration tests.
 | --- | --- | --- |
 | Existing source retained | Complete for audit checkpoint | Source guard checks immutable upstream tree and dependency manifest; no auth/crypto/network source edits |
 | Android/Desktop/October feature audit | Source/document review | Reference docs distinguish inspected code from release claims and missing proprietary source |
-| Hosted macOS workflow | Written; not executed | `xcode-27`, exact toolchain guards, runtime install attempt, tests, SHA-256 and artifact publishing |
+| Hosted macOS workflow | Published; baseline not passed | `xcode-27` runner starts after workflow-context fix; see execution record for results |
 | Portable tooling tests | Executed locally | Final counts and commands in [baseline evidence](fork/BASELINE.md) |
-| Working iOS baseline | Blocked, not demonstrated | No supplied GitHub fork/API credentials; local executor is Linux |
+| Working iOS baseline | Not demonstrated | GitHub fork and Actions are accessible; hosted compilation and iOS tests still must pass |
 | Installable independently signed IPA | Not produced | Unsigned mode is separate; signing, all entitlements and device installation still need verification |
 | GPL review | Obligations identified; incomplete release clearance | [license audit](fork/LICENSE-AND-SUPPLY-CHAIN.md); full dependency/source bundle required |
 | Security verification | Source findings only | [risk register](SECURITY_ASSESSMENT.md); no runtime privacy attestation |

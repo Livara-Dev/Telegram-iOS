@@ -120,12 +120,21 @@ class PrivacyAndArtifactsTests(unittest.TestCase):
             source.parent.mkdir(parents=True)
             def fake_command(args, env, secrets):
                 if "test" in args:
+                    bazel_root = Path(next(arg.split("=", 1)[1] for arg in args if arg.startswith("--bazelUserRoot=")))
+                    logs = bazel_root / "output/testlogs/submodules/TextFormat/TextFormatTests"
+                    logs.mkdir(parents=True)
+                    (root / "bazel-testlogs").symlink_to(bazel_root / "output/testlogs", target_is_directory=True)
+                    (logs / "test.log").write_text("failure " + fixture()["TELEGRAM_API_HASH"])
                     raise baseline.InvalidSetup("test failed")
                 source.write_bytes(b"build IPA")
             with patch.object(baseline, "ROOT", root), patch.object(baseline, "preflight", return_value=Path('/bazel')), patch.object(baseline, "run_redacted", side_effect=fake_command), patch.object(baseline.subprocess, "run"):
                 with self.assertRaises(baseline.InvalidSetup):
                     baseline.build("simulator", fixture(), 1)
             self.assertFalse((root / "build/fork-baseline-simulator").exists())
+            evidence = root / "build/fork-evidence/textformat"
+            self.assertEqual((evidence / "test.log").read_text(), "failure [REDACTED]")
+            self.assertEqual(json.loads((evidence / "collection.json").read_text())["invocation"], "failed")
+            self.assertFalse((root / "bazel-testlogs").exists())  # Private source was cleaned.
 
     def test_generated_config_private_and_cleanup_even_on_failure(self):
         with tempfile.TemporaryDirectory() as directory, patch.object(baseline, "ROOT", Path(directory)):
@@ -185,6 +194,87 @@ class PrivacyAndArtifactsTests(unittest.TestCase):
                     baseline.publish_artifact(source, destination, "unsigned-device", "org.livara.ayugram", 1)
             self.assertFalse(destination.exists())
             self.assertEqual(list(Path(directory).glob(".fork-artifact-*")), [])
+
+
+class TestEvidenceTests(unittest.TestCase):
+    def setUp(self):
+        self.directory = tempfile.TemporaryDirectory()
+        self.addCleanup(self.directory.cleanup)
+        self.root = Path(self.directory.name)
+        self.bazel_root = self.root / "private-bazel"
+        self.logs = self.bazel_root / "output/testlogs/submodules/TextFormat/TextFormatTests"
+        self.logs.mkdir(parents=True)
+        (self.root / "bazel-testlogs").symlink_to(self.bazel_root / "output/testlogs", target_is_directory=True)
+        self.destination = self.root / "build/fork-evidence/textformat"
+        patcher = patch.object(baseline, "ROOT", self.root)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def collect(self):
+        baseline.retain_test_evidence(self.bazel_root, [fixture()["TELEGRAM_API_HASH"], fixture()["TELEGRAM_API_ID"]], "passed")
+        return json.loads((self.destination / "collection.json").read_text())
+
+    def test_only_target_files_retained_with_both_secrets_redacted(self):
+        value = fixture()
+        (self.logs / "test.xml").write_text('<system-out>' + value["TELEGRAM_API_HASH"] + '</system-out>')
+        (self.logs / "test.log").write_text('API ' + value["TELEGRAM_API_ID"])
+        (self.logs / "credentials.json").write_text('must not be copied')
+        summary = self.collect()
+        self.assertEqual(summary["target"], baseline.TEST_TARGET)
+        self.assertEqual(summary["files"], {"test.xml": "retained_redacted", "test.log": "retained_redacted"})
+        self.assertEqual((self.destination / "test.xml").read_text(), '<system-out>[REDACTED]</system-out>')
+        self.assertEqual((self.destination / "test.log").read_text(), 'API [REDACTED]')
+        self.assertEqual({p.name for p in self.destination.iterdir()}, {"test.xml", "test.log", "collection.json"})
+
+    def test_oversized_file_omitted_without_truncated_xml(self):
+        (self.logs / "test.xml").write_bytes(b"x" * 65)
+        with patch.object(baseline, "TEST_EVIDENCE_LIMIT", 64):
+            summary = self.collect()
+        self.assertEqual(summary["files"]["test.xml"], "omitted_size_limit")
+        self.assertFalse((self.destination / "test.xml").exists())
+
+    def test_convenience_symlink_outside_private_root_rejected(self):
+        link = self.root / "bazel-testlogs"
+        link.unlink()
+        external = self.root / "outside/submodules/TextFormat/TextFormatTests"
+        external.mkdir(parents=True)
+        (external / "test.log").write_text('private data')
+        link.symlink_to(self.root / "outside", target_is_directory=True)
+        summary = self.collect()
+        self.assertEqual(summary["files"]["test.log"], "unavailable_or_unsafe")
+        self.assertFalse((self.destination / "test.log").exists())
+
+    def test_redaction_expansion_is_also_bounded(self):
+        (self.logs / "test.log").write_text(fixture()["TELEGRAM_API_ID"] * 9)
+        with patch.object(baseline, "TEST_EVIDENCE_LIMIT", 64):
+            summary = self.collect()
+        self.assertEqual(summary["files"]["test.log"], "omitted_size_limit")
+        self.assertFalse((self.destination / "test.log").exists())
+
+    def test_target_file_symlink_rejected_even_within_private_root(self):
+        private = self.bazel_root / "private.txt"
+        private.write_text('do not expose')
+        (self.logs / "test.log").symlink_to(private)
+        summary = self.collect()
+        self.assertEqual(summary["files"]["test.log"], "unavailable_or_unsafe")
+        self.assertFalse((self.destination / "test.log").exists())
+
+    def test_target_directory_symlink_rejected(self):
+        self.logs.rmdir()
+        external = self.root / "external"
+        external.mkdir()
+        (external / "test.log").write_text('do not expose')
+        self.logs.symlink_to(external, target_is_directory=True)
+        summary = self.collect()
+        self.assertEqual(summary["files"]["test.log"], "unavailable_or_unsafe")
+
+    def test_evidence_destination_symlink_rejected(self):
+        external = self.root / "external"
+        external.mkdir()
+        (self.root / "build").symlink_to(external, target_is_directory=True)
+        with self.assertRaises(baseline.InvalidSetup):
+            self.collect()
+        self.assertEqual(list(external.iterdir()), [])
 
 
 if __name__ == "__main__":

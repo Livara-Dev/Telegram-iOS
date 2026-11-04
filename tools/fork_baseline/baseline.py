@@ -13,12 +13,14 @@ import platform
 import re
 import shlex
 import shutil
+import stat
 import subprocess
 import sys
 import tempfile
 
 ROOT = Path(__file__).resolve().parents[2]
 TEST_TARGET = "//submodules/TextFormat:TextFormatTests"
+TEST_EVIDENCE_LIMIT = 2 * 1024 * 1024
 
 
 class InvalidSetup(Exception):
@@ -152,6 +154,59 @@ def run_redacted(args, env, secrets):
             raise InvalidSetup("Upstream build/test failed; no successful baseline is recorded")
 
 
+def retain_test_evidence(bazel_root, secrets, outcome):
+    """Copy only this target's bounded, redacted text outputs before Bazel cleanup."""
+    destination = ROOT / "build/fork-evidence/textformat"
+    for directory in (ROOT / "build", destination.parent, destination):
+        if directory.is_symlink():
+            raise InvalidSetup("Test evidence destination must not contain symlinks")
+    destination.mkdir(parents=True, exist_ok=False)
+    summary = {"target": TEST_TARGET, "invocation": outcome, "files": {}}
+    source_fd = None
+    try:
+        # bazel-testlogs itself is an expected convenience symlink. Its resolved
+        # root must belong to this invocation's private Bazel directory.
+        source_root = (ROOT / "bazel-testlogs").resolve(strict=True)
+        if not source_root.is_relative_to(Path(bazel_root).resolve(strict=True)):
+            raise InvalidSetup("Test log root escaped the private Bazel directory")
+        source_fd = os.open(source_root, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+        for component in ("submodules", "TextFormat", "TextFormatTests"):
+            child_fd = os.open(component, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=source_fd)
+            os.close(source_fd)
+            source_fd = child_fd
+        for name in ("test.xml", "test.log"):
+            try:
+                fd = os.open(name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=source_fd)
+                with os.fdopen(fd, "rb") as source:
+                    info = os.fstat(source.fileno())
+                    if not stat.S_ISREG(info.st_mode):
+                        summary["files"][name] = "omitted_nonregular"
+                        continue
+                    data = source.read(TEST_EVIDENCE_LIMIT + 1)
+                if len(data) > TEST_EVIDENCE_LIMIT:
+                    summary["files"][name] = "omitted_size_limit"
+                    continue
+                text = data.decode("utf-8", errors="replace")
+                for value in secrets:
+                    if value:
+                        text = text.replace(value, "[REDACTED]")
+                if len(text.encode("utf-8")) > TEST_EVIDENCE_LIMIT:
+                    summary["files"][name] = "omitted_size_limit"
+                    continue
+                with (destination / name).open("x", encoding="utf-8") as target:
+                    target.write(text)
+                summary["files"][name] = "retained_redacted"
+            except OSError:
+                # Do not copy arbitrary file types or disclose filesystem details.
+                summary["files"][name] = "unavailable_or_unsafe"
+    except (OSError, RuntimeError, InvalidSetup):
+        summary["files"] = {name: "unavailable_or_unsafe" for name in ("test.xml", "test.log")}
+    finally:
+        if source_fd is not None:
+            os.close(source_fd)
+    (destination / "collection.json").write_text(json.dumps(summary, indent=2) + "\n")
+
+
 def publish_artifact(source, destination, mode, bundle_id, build_number):
     if destination.exists():
         raise FileExistsError("Artifact destination already exists")
@@ -211,7 +266,15 @@ def build(mode, env, build_number):
             captured_ipa = temporary / "Telegram.ipa"
             shutil.copyfile(ROOT / "bazel-bin/Telegram/Telegram.ipa", captured_ipa)
             if mode == "simulator":
-                run_redacted(common + ["test"] + base + ["--target=" + TEST_TARGET], child_env, secret_values)
+                test_outcome = "failed"
+                try:
+                    run_redacted(common + ["test"] + base + ["--target=" + TEST_TARGET], child_env, secret_values)
+                    test_outcome = "passed"
+                finally:
+                    try:
+                        retain_test_evidence(temporary / "bazel-root", secret_values, test_outcome)
+                    except (OSError, InvalidSetup):
+                        print("Test evidence could not be retained; console output remains available.", flush=True)
             publish_artifact(captured_ipa, destination, mode, config["bundle_id"], build_number)
         finally:
             subprocess.run([str(bazel), "--nosystem_rc", "--nohome_rc", "--noworkspace_rc", "--output_user_root=" + str(temporary / "bazel-root"), "shutdown"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=60, check=False)

@@ -11,6 +11,13 @@ an allowed context in `jobs.baseline.defaults.run.working-directory`. The workfl
 now uses a relative checkout directory and checks API Secrets before the expensive
 toolchain/runtime setup. The earlier discovery record below is historical.
 
+The follow-up commit `a7b9d5ff` started a hosted runner successfully in
+[run 41791996708](https://github.com/Livara-Dev/Telegram-iOS/actions/runs/41791996708).
+The code is reviewable in [draft PR 1](https://github.com/Livara-Dev/Telegram-iOS/pull/1).
+Test report retention now copies only bounded, credential-redacted `test.xml` and
+`test.log` files for the explicit target before the private Bazel root is removed,
+including when tests fail. Missing/unsafe/oversized files are recorded as omissions.
+
 ## Current result
 
 The current checkpoint is **not a working iOS baseline**. The local executor is
@@ -26,7 +33,7 @@ signed build, iPhone installation or performance benchmark has passed in this
 session. No IPA/download URL exists. Portable Python tooling tests and source
 integrity checks are recorded separately below.
 
-Executed on Linux: **87 passing portable Python tests** (21 build-tooling,
+Executed on Linux: **94 passing portable Python tests** (28 build-tooling,
 22 source-guard, 44 upstream build-system tests), plus passing source integrity
 and `git diff --check`. [Raw output](evidence/portable-tests.txt) and
 [machine-readable record](evidence/verification.json) are retained. Mocked
@@ -78,11 +85,11 @@ modified. The available connector exposes commit/tree/ref writes but no reposito
 creation/fork endpoint, no Secrets-management endpoint and no new-workflow-dispatch
 endpoint. These are tool capability limits, not an approval rejection.
 
-Create a fork of the official repository as `Livara-Dev/AyuGram-iOS` and grant
-the connected app access. Once it exists, push this reviewable branch using the
-connector; a branch push can trigger the configured workflow. Preserve any newer
-remote changes when reconciling. Do not replace the fork with a few standalone
-files: the actual Telegram source and gitlinks are required.
+Subsequent installation enumeration found the user's new fork under
+`Livara-Dev/Telegram-iOS`, with its master at the exact pinned upstream commit.
+The user explicitly authorized that destination. Repository creation and access
+are resolved; no rename is required. The connector writes commits and updates
+the feature branch with a non-force lease. Master remains unchanged.
 
 Required **repository Secrets**: `TELEGRAM_API_ID`, `TELEGRAM_API_HASH`, obtained
 from the owner's registered Telegram application. No invented/demo credentials

@@ -16,13 +16,20 @@ test_failed_test_does_not_publish_build_artifact (test_baseline.PrivacyAndArtifa
 test_generated_config_private_and_cleanup_even_on_failure (test_baseline.PrivacyAndArtifactsTests.test_generated_config_private_and_cleanup_even_on_failure) ... ok
 test_manifest_hash_and_no_false_runtime_claim (test_baseline.PrivacyAndArtifactsTests.test_manifest_hash_and_no_false_runtime_claim) ... ok
 test_subprocess_output_redaction_and_failure (test_baseline.PrivacyAndArtifactsTests.test_subprocess_output_redaction_and_failure) ... ok
+test_convenience_symlink_outside_private_root_rejected (test_baseline.TestEvidenceTests.test_convenience_symlink_outside_private_root_rejected) ... ok
+test_evidence_destination_symlink_rejected (test_baseline.TestEvidenceTests.test_evidence_destination_symlink_rejected) ... ok
+test_only_target_files_retained_with_both_secrets_redacted (test_baseline.TestEvidenceTests.test_only_target_files_retained_with_both_secrets_redacted) ... ok
+test_oversized_file_omitted_without_truncated_xml (test_baseline.TestEvidenceTests.test_oversized_file_omitted_without_truncated_xml) ... ok
+test_redaction_expansion_is_also_bounded (test_baseline.TestEvidenceTests.test_redaction_expansion_is_also_bounded) ... ok
+test_target_directory_symlink_rejected (test_baseline.TestEvidenceTests.test_target_directory_symlink_rejected) ... ok
+test_target_file_symlink_rejected_even_within_private_root (test_baseline.TestEvidenceTests.test_target_file_symlink_rejected_even_within_private_root) ... ok
 test_correct_digest_installs_executable (test_prepare_host.VerifiedDownloadTests.test_correct_digest_installs_executable) ... ok
 test_existing_staging_file_is_not_removed (test_prepare_host.VerifiedDownloadTests.test_existing_staging_file_is_not_removed) ... ok
 test_invalid_pin_never_downloads (test_prepare_host.VerifiedDownloadTests.test_invalid_pin_never_downloads) ... ok
 test_tamper_cannot_replace_existing_binary (test_prepare_host.VerifiedDownloadTests.test_tamper_cannot_replace_existing_binary) ... ok
 
 ----------------------------------------------------------------------
-Ran 21 tests in 0.030s
+Ran 28 tests in 0.031s
 
 OK
 
@@ -51,14 +58,14 @@ test_unreviewed_dependency_rejected (test_check.SourceGuardTests.test_unreviewed
 test_worktree_application_edit_rejected (test_check.SourceGuardTests.test_worktree_application_edit_rejected) ... ok
 
 ----------------------------------------------------------------------
-Ran 22 tests in 1.319s
+Ran 22 tests in 1.276s
 
 OK
 
 $ python3 -m unittest discover -s build-system/Make/tests
 ............................................
 ----------------------------------------------------------------------
-Ran 44 tests in 0.584s
+Ran 44 tests in 0.522s
 
 OK
 

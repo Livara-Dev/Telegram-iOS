@@ -49,11 +49,14 @@ GPL modification rights and use of Telegram's service are separate questions.
 
 ## Current blockers
 
-The provided workspace is Linux, with no Swift/Xcode/Apple SDK toolchain, Telegram
-API credentials, Apple signing assets, or fork remote. The connected GitHub login
-was discovered as `Livara-Dev`; `AyuGram-iOS` was not found and the exposed connector
-cannot create/fork repositories. GitHub's hosted `xcode-27` image is compatible on
-paper; its workflow has been prepared but not executed.
+The provided workspace is Linux, with no Swift/Xcode/Apple SDK toolchain or Apple
+signing assets. The user authorized the discovered fork
+[`Livara-Dev/Telegram-iOS`](https://github.com/Livara-Dev/Telegram-iOS). Prepared
+changes are published on `fork/00-feasibility-baseline` and tracked in
+[draft PR 1](https://github.com/Livara-Dev/Telegram-iOS/pull/1). The first hosted run
+failed workflow validation; its directory-expression fix is pushed and a second
+run started on GitHub's `xcode-27` runner. See [the execution record](BASELINE.md)
+for outcomes. Credentials are read only from Actions Secrets, never from source.
 All iOS gitlinks were fetched at their recorded revisions. This is source readiness,
 not a successful compilation. The upstream toolchain pins macOS 27, Xcode 27.1 and
 Bazel 9.2.0; iOS tests additionally specify an iPhone 17 / iOS 26.5 simulator.
