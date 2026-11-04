@@ -125,3 +125,24 @@ performance or physical-iPhone playback result is claimed.
 The schema-6 search revision e690da94 passed 64 macOS archive tests and iOS
 simulator module compilation in run 41849015889. That is not full application
 qualification and does not qualify subsequent source revisions automatically.
+
+## Native playback work (not yet runtime verified)
+
+A separate first-party `LocalArchivePlayback` module now feeds AVFoundation from
+64 KiB encrypted-store reads through a private URL scheme. It writes no plaintext
+media file and contains no HTTP client. Native archive-version rows open an
+embedded iOS player for video, round-video and voice entries. Actual codec support
+is whatever AVFoundation can decode; Ogg/Opus voice support is not established,
+and documents do not yet have a reader/export UI. Image/animation entries retain
+the bounded first-frame preview. This is not a finished media gallery.
+
+Tests use a generated 16×16 H.264 MP4 fixture: store encrypted bytes, remove the
+source, reopen the database, load AVAsset metadata and decode a frame. Missing
+metadata/bytes and cancellation have separate cases. Native results are pending;
+authenticated Telegram conversations and physical-device playback remain untested.
+
+Before UI verification, expected frames are: version row opens a paused player
+below the navigation bar; transport controls remain visible and tappable in both
+orientations; back closes playback; background/lock/purge clears decoded content
+and requires reopening. Image previews also clear on background/lock. No recorded
+simulator frames exist yet, so layout and animation quality are not verified.

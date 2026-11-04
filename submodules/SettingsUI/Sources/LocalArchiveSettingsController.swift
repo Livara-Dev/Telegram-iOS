@@ -2,6 +2,9 @@
 import Foundation
 import UIKit
 import ImageIO
+import AVFoundation
+import AVKit
+import LocalArchivePlayback
 import AsyncDisplayKit
 import Display
 import SwiftSignalKit
@@ -444,6 +447,11 @@ private func localArchiveMessagesController(context: AccountContext, archive: Lo
             pushController?(localArchiveSettingsController(context: context, peerId: peerId))
         case let .media(sequence, slot):
             guard let record = model.state.records.first(where: { $0.sequence == sequence }) else { return }
+            let kind = record.mediaKinds.indices.contains(slot) ? record.mediaKinds[slot] : "unsupported"
+            if kind == "video" || kind == "videoMessage" || kind == "voice" {
+                pushController?(LocalArchivedPlaybackController(archive: archive, eventKey: record.eventKey, slot: slot, presentationData: context.sharedContext.currentPresentationData.with { $0 }))
+                return
+            }
             mediaDisposable.set((archive.mediaData(eventKey: record.eventKey, slot: slot)
             |> deliverOn(Queue.concurrentDefaultQueue())
             |> map { data -> UIImage? in
@@ -457,7 +465,7 @@ private func localArchiveMessagesController(context: AccountContext, archive: Lo
             }
             |> deliverOnMainQueue).start(next: { image in
                 if let image {
-                    pushController?(LocalArchivedImageController(image: image, presentationData: context.sharedContext.currentPresentationData.with { $0 }))
+                    pushController?(LocalArchivedImageController(image: image, archive: archive, presentationData: context.sharedContext.currentPresentationData.with { $0 }))
                 } else {
                     let data = context.sharedContext.currentPresentationData.with { $0 }
                     presentController?(textAlertController(context: context, title: "Preview unavailable", text: "This attachment is missing or cannot be previewed as an image.", actions: [TextAlertAction(type: .defaultAction, title: data.strings.Common_OK, action: {})]))
@@ -529,8 +537,12 @@ private func localArchiveMessagesController(context: AccountContext, archive: Lo
                         text += "\n\n[Preview limited to 8,000 characters.]"
                     }
                     entries.append(LocalArchiveRow(stableId: .record(record.sequence), order: 6 + index * 20, section: Int32(1 + index), content: .text(text)))
-                    for (slot, kind) in record.mediaKinds.enumerated() where kind == "photo" || kind == "animation" {
-                        entries.append(LocalArchiveRow(stableId: .media(record.sequence, slot), order: 7 + index * 20 + slot, section: Int32(1 + index), content: .action("Preview archived image \(slot + 1)", "Local archive", true)))
+                    for (slot, kind) in record.mediaKinds.enumerated() {
+                        if kind == "photo" || kind == "animation" {
+                            entries.append(LocalArchiveRow(stableId: .media(record.sequence, slot), order: 7 + index * 20 + slot, section: Int32(1 + index), content: .action("Preview archived image \(slot + 1)", "Local archive", true)))
+                        } else if kind == "video" || kind == "videoMessage" || kind == "voice" {
+                            entries.append(LocalArchiveRow(stableId: .media(record.sequence, slot), order: 7 + index * 20 + slot, section: Int32(1 + index), content: .action("Play archived \(kind == "voice" ? "voice message" : "video") \(slot + 1)", "Supported iOS formats", true)))
+                        }
                     }
                 }
             }
@@ -554,14 +566,27 @@ private func localArchiveMessagesController(context: AccountContext, archive: Lo
 
 private final class LocalArchivedImageController: ViewController {
     private let imageView: UIImageView
+    private let statusDisposable = MetaDisposable()
+    private var inactiveObserver: NSObjectProtocol?
 
-    init(image: UIImage, presentationData: PresentationData) {
+    init(image: UIImage, archive: LocalArchiveCoordinator, presentationData: PresentationData) {
         self.imageView = UIImageView(image: image)
         super.init(navigationBarPresentationData: NavigationBarPresentationData(presentationTheme: presentationData.theme, presentationStrings: presentationData.strings))
         self.title = "Archived image"
         self.imageView.contentMode = .scaleAspectFit
         self.imageView.accessibilityLabel = "Locally archived image"
         self.imageView.isAccessibilityElement = true
+        self.statusDisposable.set((archive.status |> deliverOnMainQueue).start(next: { [weak self] status in
+            if !localArchiveCanRead(status) { self?.imageView.image = nil }
+        }))
+        self.inactiveObserver = NotificationCenter.default.addObserver(forName: UIApplication.willResignActiveNotification, object: nil, queue: .main) { [weak self] _ in
+            self?.imageView.image = nil
+        }
+    }
+
+    deinit {
+        self.statusDisposable.dispose()
+        if let observer = self.inactiveObserver { NotificationCenter.default.removeObserver(observer) }
     }
 
     required init(coder: NSCoder) { fatalError("init(coder:) is not supported") }
@@ -575,5 +600,99 @@ private final class LocalArchivedImageController: ViewController {
     override func containerLayoutUpdated(_ layout: ContainerViewLayout, transition: ContainedViewLayoutTransition) {
         super.containerLayoutUpdated(layout, transition: transition)
         self.imageView.frame = CGRect(origin: .zero, size: layout.size)
+    }
+}
+
+
+private final class LocalArchivePlaybackSource: ArchivePlaybackSource {
+    private let archive: LocalArchiveCoordinator
+    private let eventKey: String
+    private let slot: Int
+
+    init(archive: LocalArchiveCoordinator, eventKey: String, slot: Int) {
+        self.archive = archive; self.eventKey = eventKey; self.slot = slot
+    }
+
+    func info(completion: @escaping (ArchivePlaybackInfo?) -> Void) -> ArchivePlaybackCancellation {
+        let disposable = self.archive.mediaInfo(eventKey: self.eventKey, slot: self.slot).start(next: { info in
+            completion(info.map { ArchivePlaybackInfo(mimeType: $0.mimeType, byteCount: $0.byteCount) })
+        })
+        return ArchivePlaybackCancellation { disposable.dispose() }
+    }
+
+    func read(offset: Int64, count: Int, completion: @escaping (Data?) -> Void) -> ArchivePlaybackCancellation {
+        let disposable = self.archive.mediaRange(eventKey: self.eventKey, slot: self.slot, offset: offset, count: count).start(next: completion)
+        return ArchivePlaybackCancellation { disposable.dispose() }
+    }
+}
+
+private final class LocalArchivedPlaybackController: ViewController {
+    private let loader: ArchivePlaybackAsset
+    private let playback = AVPlayerViewController()
+    private let player = AVPlayer()
+    private let messageLabel = UILabel()
+    private let statusDisposable = MetaDisposable()
+    private var inactiveObserver: NSObjectProtocol?
+    private var itemObservation: NSKeyValueObservation?
+
+    init(archive: LocalArchiveCoordinator, eventKey: String, slot: Int, presentationData: PresentationData) {
+        self.loader = ArchivePlaybackAsset(source: LocalArchivePlaybackSource(archive: archive, eventKey: eventKey, slot: slot))
+        super.init(navigationBarPresentationData: NavigationBarPresentationData(presentationTheme: presentationData.theme, presentationStrings: presentationData.strings))
+        self.title = "Archived media"
+        self.messageLabel.textColor = .white
+        self.messageLabel.textAlignment = .center
+        self.messageLabel.numberOfLines = 0
+        self.playback.player = self.player
+        self.playback.allowsPictureInPicturePlayback = false
+        let item = AVPlayerItem(asset: self.loader.asset)
+        self.itemObservation = item.observe(\.status, options: [.new]) { [weak self] item, _ in
+            if item.status == .failed {
+                DispatchQueue.main.async { [weak self] in self?.messageLabel.text = "This attachment is unavailable or its format cannot be played by iOS." }
+            }
+        }
+        self.player.replaceCurrentItem(with: item)
+        self.statusDisposable.set((archive.status |> deliverOnMainQueue).start(next: { [weak self] status in
+            if !localArchiveCanRead(status) { self?.closeMedia() }
+        }))
+        self.inactiveObserver = NotificationCenter.default.addObserver(forName: UIApplication.willResignActiveNotification, object: nil, queue: .main) { [weak self] _ in
+            self?.closeMedia()
+        }
+    }
+
+    required init(coder: NSCoder) { fatalError("init(coder:) is not supported") }
+
+    deinit {
+        self.statusDisposable.dispose()
+        if let observer = self.inactiveObserver { NotificationCenter.default.removeObserver(observer) }
+        self.player.pause()
+        self.loader.stop()
+    }
+
+    private func closeMedia() {
+        self.player.pause()
+        self.player.replaceCurrentItem(with: nil)
+        self.loader.stop()
+        self.messageLabel.text = "Preview closed. Reopen the attachment to continue."
+    }
+
+    override func loadDisplayNode() {
+        super.loadDisplayNode()
+        self.displayNode.backgroundColor = .black
+        self.addChild(self.playback)
+        self.displayNode.view.addSubview(self.playback.view)
+        self.playback.didMove(toParent: self)
+        self.displayNode.view.addSubview(self.messageLabel)
+    }
+
+    override func viewWillDisappear(_ animated: Bool) {
+        super.viewWillDisappear(animated)
+        self.closeMedia()
+    }
+
+    override func containerLayoutUpdated(_ layout: ContainerViewLayout, transition: ContainedViewLayoutTransition) {
+        super.containerLayoutUpdated(layout, transition: transition)
+        let top = self.navigationLayout(layout: layout).navigationFrame.maxY
+        self.playback.view.frame = CGRect(x: 0, y: top, width: layout.size.width, height: max(0, layout.size.height - top - layout.intrinsicInsets.bottom))
+        self.messageLabel.frame = CGRect(x: 24, y: top + max(0, layout.size.height - top - 120) * 0.5, width: max(0, layout.size.width - 48), height: 120)
     }
 }

@@ -206,3 +206,9 @@ usage accounting transactionally. Tests cover a 20 MiB source, range reads,
 rollback, retry, account isolation and real Postbox/cache restart. These new
 cases are awaiting macOS CI. Full video/document playback and a verified app
 build remain open; this is not an additional parity-complete feature claim.
+
+The native playback follow-up adds an AVFoundation reader over encrypted archive
+ranges, plus native video/voice-row entry points and lock/background cleanup.
+Its generated H.264 decode test and cancellation tests await native CI. Ogg voice,
+animated playback, document viewing, a grid gallery and UI/device verification
+remain open. Source existence does not establish codec or UI parity.

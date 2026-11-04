@@ -28,6 +28,8 @@ TEST_TARGET_PATHS = {
     "//submodules/Postbox:PostboxTests": ("postbox", ("submodules", "Postbox", "PostboxTests")),
     "//submodules/LocalMessageArchive:LocalMessageArchiveTests": (
         "local-message-archive", ("submodules", "LocalMessageArchive", "LocalMessageArchiveTests")),
+    "//submodules/LocalMessageArchive:LocalArchivePlaybackTests": (
+        "local-archive-playback", ("submodules", "LocalMessageArchive", "LocalArchivePlaybackTests")),
     "//submodules/TelegramCore:TelegramCoreTests": (
         "telegram-core", ("submodules", "TelegramCore", "TelegramCoreTests")),
     "//submodules/TelegramUI/Components/Chat/ChatHistoryEntry:ChatLocalTextFilterProjectionTests": (
@@ -40,6 +42,7 @@ INTEGRATION_TEST_TARGETS = (
     "//submodules/Postbox:PostboxTests",
     "//submodules/LocalMessageArchive:LocalMessageArchiveTests",
     "//submodules/TelegramCore:TelegramCoreTests",
+    "//submodules/LocalMessageArchive:LocalArchivePlaybackTests",
     TEST_TARGET,
     "//submodules/TelegramUI/Components/Chat/ChatHistoryEntry:ChatLocalTextFilterProjectionTests",
 )

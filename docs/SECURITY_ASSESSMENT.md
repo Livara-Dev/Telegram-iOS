@@ -285,3 +285,12 @@ Concurrent changes which preserve both size and nanosecond mtime are not
 cryptographically detectable; this is a local completed-file consistency check,
 not a hostile-filesystem integrity guarantee. These new paths need native CI
 and device storage-pressure tests; no new network dependency is introduced.
+
+The first-party playback adapter accepts only an internal archive URL and reads
+at most 64 KiB per request step, with at most eight outstanding AVFoundation
+requests. It cannot fetch a missing source from Telegram or another server.
+Stopping a preview cancels outstanding reads. Native image/player screens clear
+content when the app resigns active or archive access is revoked. This reduces
+app-switcher exposure; it is not a claim that screenshots or OS decoder buffers
+can be recalled. AVFoundation still parses untrusted media and codec/lock-screen
+behavior requires device verification. No new external dependency is introduced.

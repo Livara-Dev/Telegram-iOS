@@ -25,3 +25,25 @@ ios_unit_test(
     deps = [":LocalMessageArchiveTestsLib"],
     visibility = ["//visibility:public"],
 )
+
+swift_library(
+    name = "LocalArchivePlayback",
+    module_name = "LocalArchivePlayback",
+    srcs = glob(["Sources/LocalArchivePlayback/*.swift"]),
+    visibility = ["//visibility:public"],
+)
+
+swift_library(
+    name = "LocalArchivePlaybackTestsLib",
+    testonly = True,
+    srcs = glob(["Tests/LocalArchivePlaybackTests/*.swift"]),
+    deps = [":LocalArchivePlayback", ":LocalMessageArchive"],
+)
+
+ios_unit_test(
+    name = "LocalArchivePlaybackTests",
+    minimum_os_version = "15.0",
+    runner = ":ArchiveTestRunner",
+    deps = [":LocalArchivePlaybackTestsLib"],
+    visibility = ["//visibility:public"],
+)

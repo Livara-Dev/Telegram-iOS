@@ -35,6 +35,7 @@ ADDED_FILES = {
 # gitlinks, stays pinned. An allowlist is a scope tripwire, not a semantic audit of
 # every change within these files; reviewers must inspect their Git diffs.
 REVIEWED_MODIFICATIONS = {
+    "submodules/SettingsUI/BUILD": "link the native archive media reader without adding an external dependency",
     "build-system/Make/tests/test_postbox_import_check.py": "measure tokenizer CPU budget independently of hosted runner descheduling",
     "submodules/Postbox/BUILD": "pin simulator test runner to installed iOS 27.0",
     "submodules/TextFormat/BUILD": "pin simulator test runner to installed iOS 27.0",
