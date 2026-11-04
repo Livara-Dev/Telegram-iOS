@@ -6414,9 +6414,10 @@ public final class ChatControllerImpl: TelegramBaseController, ChatController, G
 
                 // Observe this account's persisted policy; never infer it from a
                 // global toggle or from another chat/account's presentation state.
-                let itemsWithGhost = combineLatest(items, context.account.localGhost.settings)
+                let localFilterReveal = strongSelf.controllerInteraction?.localTextFilterRevealed.get() ?? .single(false)
+                let itemsWithGhost = combineLatest(items, context.account.localGhost.settings, localFilterReveal)
                 |> deliverOnMainQueue
-                |> map { [weak self] items, ghostState -> [ContextMenuItem] in
+                |> map { [weak self] items, ghostState, filterRevealed -> [ContextMenuItem] in
                     var items = items
                     items.append(.separator)
                     var detail = "Activity indicators only"
@@ -6456,6 +6457,17 @@ public final class ChatControllerImpl: TelegramBaseController, ChatController, G
                         complete(.dismissWithoutContent)
                         self?.push(localGhostSettingsController(context: context))
                     })))
+                    if let peerId = self?.chatLocation.peerId, peerId.namespace == Namespaces.Peer.CloudUser || peerId.namespace == Namespaces.Peer.CloudGroup || peerId.namespace == Namespaces.Peer.CloudChannel {
+                        items.append(.separator)
+                        items.append(.action(ContextMenuActionItem(text: filterRevealed ? "Hide Filtered Messages Again" : "Show Filtered Messages", textLayout: .secondLineWithValue("This chat only · temporary"), icon: { _ in nil }, action: { [weak self] _, complete in
+                            complete(.dismissWithoutContent)
+                            self?.controllerInteraction?.localTextFilterRevealed.set(!filterRevealed)
+                        })))
+                        items.append(.action(ContextMenuActionItem(text: "Message Filters", textLayout: .secondLineWithValue("Local incoming text filters"), icon: { _ in nil }, action: { [weak self] _, complete in
+                            complete(.dismissWithoutContent)
+                            self?.push(localMessageFilterSettingsController(context: context, peerId: peerId.toInt64()))
+                        })))
+                    }
                     return items
                 }
                 

@@ -7,6 +7,7 @@ from pathlib import Path
 import subprocess
 import sys
 import tempfile
+from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
 
@@ -106,6 +107,20 @@ class PreflightTests(unittest.TestCase):
         self.assertIn("--lockfile_mode=error", command)
         self.assertLess(command.index("--output_user_root=/private"), command.index("build"))
 
+    def test_proxy_disables_disk_cache_without_changing_startup_or_signing(self):
+        for mode in ("simulator", "unsigned-device", "device"):
+            for action in ("build", "test"):
+                with self.subTest(mode=mode, action=action):
+                    command = baseline.proxy_arguments(Path("/bazel"), Path("/repo"), mode,
+                        ["--output_user_root=/private", action, "--disk_cache=/old-cache",
+                         "//Telegram:Telegram", "--disk_cache", "/later-cache"])
+                    self.assertEqual([arg for arg in command if arg.startswith("--disk_cache")], ["--disk_cache="])
+                    self.assertNotIn("/later-cache", command)
+                    self.assertIn("//Telegram:Telegram", command)
+                    self.assertLess(command.index("--output_user_root=/private"), command.index(action))
+                    self.assertEqual("--features=disable_legacy_signing" in command, mode == "unsigned-device")
+                    self.assertNotIn("--features=apple.skip_codesign_simulator_bundles", command)
+
     def test_device_signing_not_disabled_and_version_clean(self):
         command = baseline.proxy_arguments(Path("/bazel"), Path("/repo"), "device", ["build"])
         self.assertNotIn("--features=disable_legacy_signing", command)
@@ -115,6 +130,63 @@ class PreflightTests(unittest.TestCase):
 
 
 class PrivacyAndArtifactsTests(unittest.TestCase):
+    def test_storage_diagnostics_precede_cleanup_and_suites_reuse_output_root(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "versions.json").write_text('{}')
+            sequence = []
+            scratch_paths = []
+            output_roots = []
+            def disk_usage(path):
+                self.assertTrue(path.is_dir())
+                scratch_paths.append(path)
+                sequence.append("measure")
+                return SimpleNamespace(total=1000, used=250, free=750)
+            def fake_command(args, env, secrets):
+                self.assertFalse(any(arg.startswith("--cacheDir") for arg in args))
+                output_roots.append(next(arg for arg in args if arg.startswith("--bazelUserRoot=")))
+                sequence.append("suite")
+            def shutdown(*args, **kwargs):
+                self.assertTrue(scratch_paths[-1].is_dir())
+                sequence.append("shutdown")
+            buffer = io.StringIO()
+            with patch.object(baseline, "ROOT", root), patch.object(baseline, "preflight", return_value=Path('/bazel')), patch.object(baseline.shutil, "disk_usage", side_effect=disk_usage), patch.object(baseline, "run_redacted", side_effect=fake_command), patch.object(baseline.subprocess, "run", side_effect=shutdown), patch.object(baseline, "output", return_value="c" * 40), patch.object(baseline, "retain_test_evidence"), contextlib.redirect_stdout(buffer):
+                baseline.build("simulator", fixture(), 1, integration_tests=True, tests_only=True)
+            self.assertEqual(sequence, ["measure"] + ["suite"] * len(baseline.INTEGRATION_TEST_TARGETS) + ["measure", "shutdown"])
+            self.assertEqual(len(set(output_roots)), 1)
+            self.assertEqual(scratch_paths, [scratch_paths[0], scratch_paths[0]])
+            self.assertFalse(scratch_paths[0].exists())
+            self.assertIn("Build storage before: total_bytes=1000 used_bytes=250 free_bytes=750", buffer.getvalue())
+            self.assertIn("Build storage after: total_bytes=1000 used_bytes=250 free_bytes=750", buffer.getvalue())
+            self.assertNotIn(str(root), buffer.getvalue())
+
+    def test_storage_measurement_errors_preserve_original_failure_and_cleanup(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            original_failure = baseline.InvalidSetup("original build failure")
+            generated = root / "build-input/configuration-repository"
+            scratch_paths = []
+            def disk_usage(path):
+                self.assertTrue(path.is_dir())
+                scratch_paths.append(path)
+                raise OSError("sensitive diagnostic path")
+            def fake_command(args, env, secrets):
+                generated.mkdir(parents=True)
+                (generated / "variables.bzl").write_text("private fixture")
+                raise original_failure
+            buffer = io.StringIO()
+            with patch.object(baseline, "ROOT", root), patch.object(baseline, "preflight", return_value=Path('/bazel')), patch.object(baseline.shutil, "disk_usage", side_effect=disk_usage), patch.object(baseline, "run_redacted", side_effect=fake_command), patch.object(baseline.subprocess, "run") as shutdown, contextlib.redirect_stdout(buffer):
+                with self.assertRaises(baseline.InvalidSetup) as caught:
+                    baseline.build("unsigned-device", fixture(), 1)
+                self.assertIs(caught.exception, original_failure)
+                shutdown.assert_called_once()
+            self.assertEqual(len(scratch_paths), 2)
+            self.assertIn("Build storage before: unavailable", buffer.getvalue())
+            self.assertIn("Build storage after: unavailable", buffer.getvalue())
+            self.assertNotIn("sensitive", buffer.getvalue())
+            self.assertFalse(generated.exists())
+            self.assertTrue(all(not path.exists() for path in scratch_paths))
+
     def test_tests_only_retains_commit_bound_results_without_build_or_ipa(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -141,14 +213,16 @@ class PrivacyAndArtifactsTests(unittest.TestCase):
             self.assertTrue((root / "build/fork-evidence/prebuild-textformat/collection.json").exists())
             self.assertFalse((root / "build/fork-evidence/textformat").exists())
 
-    def test_tests_only_failure_distinguishes_passed_failed_and_unrun_targets(self):
+    def test_tests_only_failure_retains_all_suite_results_and_still_fails(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             (root / "versions.json").write_text('{}')
             failure = baseline.InvalidSetup("injected suite failure")
             failed_target = baseline.INTEGRATION_TEST_TARGETS[1]
+            invoked = []
             def fake_command(args, env, secrets):
                 target = next(arg.split("=", 1)[1] for arg in args if arg.startswith("--target="))
+                invoked.append(target)
                 if target == failed_target:
                     raise failure
             with patch.object(baseline, "ROOT", root), patch.object(baseline, "preflight", return_value=Path('/bazel')), patch.object(baseline, "run_redacted", side_effect=fake_command), patch.object(baseline.subprocess, "run"), patch.object(baseline, "output", return_value="d" * 40):
@@ -156,10 +230,58 @@ class PrivacyAndArtifactsTests(unittest.TestCase):
                     baseline.build("simulator", fixture(), 1, integration_tests=True, tests_only=True)
                 self.assertIs(caught.exception, failure)
             summary = json.loads((root / "build/fork-evidence/integration-tests.json").read_text())
-            expected = dict.fromkeys(baseline.INTEGRATION_TEST_TARGETS, "not_run")
-            expected[baseline.INTEGRATION_TEST_TARGETS[0]] = "passed"
+            expected = dict.fromkeys(baseline.INTEGRATION_TEST_TARGETS, "passed")
             expected[failed_target] = "failed"
             self.assertEqual(summary["tests"], expected)
+            self.assertEqual(invoked, list(baseline.INTEGRATION_TEST_TARGETS))
+            for target, outcome in expected.items():
+                name = baseline.TEST_TARGET_PATHS[target][0]
+                collected = json.loads((root / "build/fork-evidence" / ("prebuild-" + name) / "collection.json").read_text())
+                self.assertEqual(collected["target"], target)
+                self.assertEqual(collected["invocation"], outcome)
+            self.assertFalse((root / "build/fork-baseline-simulator").exists())
+
+    def test_tests_only_multiple_failures_preserve_failure_and_clean_private_state(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "versions.json").write_text('{}')
+            first_failure = baseline.InvalidSetup("first suite failure")
+            failed_targets = {baseline.INTEGRATION_TEST_TARGETS[0], baseline.INTEGRATION_TEST_TARGETS[-1]}
+            invoked = []
+            private_directories = []
+            generated = root / "build-input/configuration-repository"
+            def fake_command(args, env, secrets):
+                self.assertIn("test", args)
+                self.assertNotIn("build", args)
+                self.assertNotIn("TELEGRAM_API_ID", env)
+                self.assertNotIn("TELEGRAM_API_HASH", env)
+                target = next(arg.split("=", 1)[1] for arg in args if arg.startswith("--target="))
+                invoked.append(target)
+                configuration = Path(next(arg.split("=", 1)[1] for arg in args if arg.startswith("--configurationPath=")))
+                private_directories.append(configuration.parent)
+                generated.mkdir(parents=True, exist_ok=True)
+                (generated / "variables.bzl").write_text("private test configuration")
+                if target == baseline.INTEGRATION_TEST_TARGETS[0]:
+                    raise first_failure
+                if target in failed_targets:
+                    raise baseline.InvalidSetup("later suite failure")
+            buffer = io.StringIO()
+            with patch.object(baseline, "ROOT", root), patch.object(baseline, "preflight", return_value=Path('/bazel')), patch.object(baseline, "run_redacted", side_effect=fake_command), patch.object(baseline.subprocess, "run") as shutdown, patch.object(baseline, "output", return_value="e" * 40), patch.object(baseline, "publish_artifact") as publish, contextlib.redirect_stdout(buffer):
+                with self.assertRaises(baseline.InvalidSetup) as caught:
+                    baseline.build("simulator", fixture(), 1, integration_tests=True, tests_only=True)
+                self.assertIs(caught.exception, first_failure)
+                shutdown.assert_called_once()
+                publish.assert_not_called()
+            self.assertEqual(invoked, list(baseline.INTEGRATION_TEST_TARGETS))
+            summary = json.loads((root / "build/fork-evidence/integration-tests.json").read_text())
+            expected = {target: "failed" if target in failed_targets else "passed" for target in baseline.INTEGRATION_TEST_TARGETS}
+            self.assertEqual(summary["tests"], expected)
+            self.assertFalse(summary["full_application_built"])
+            self.assertFalse(summary["physical_device_verified"])
+            self.assertNotIn("targets passed", buffer.getvalue())
+            self.assertFalse(generated.exists())
+            self.assertTrue(private_directories)
+            self.assertTrue(all(not path.exists() for path in private_directories))
             self.assertFalse((root / "build/fork-baseline-simulator").exists())
 
     def test_tests_only_requires_simulator_and_integration_option_before_preflight(self):

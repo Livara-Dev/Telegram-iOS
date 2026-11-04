@@ -163,7 +163,10 @@ genrule(
     # //Tests/ComposerHarness bundles the .data output. `-[_PresentationStrings
     # initWithPrimaryComponent:…]` asserts when it cannot load it, so a standalone app that builds
     # a PresentationData dies at launch without it.
-    visibility = ["//Tests:__subpackages__"],
+    visibility = [
+        "//Tests:__subpackages__",
+        "//submodules/TelegramUI/Components/Chat/ChatHistoryEntry:__pkg__",
+    ],
 )
 
 minimum_os_version = "15.0"
@@ -281,7 +284,10 @@ filegroup(
     # //Tests/ComposerHarness bundles these. `defaultPresentationStrings` FORCE-UNWRAPS
     # `getAppBundle().path(forResource: "Localizable" …)`, so any standalone app that builds a
     # PresentationData traps at launch without them.
-    visibility = ["//Tests:__subpackages__"],
+    visibility = [
+        "//Tests:__subpackages__",
+        "//submodules/TelegramUI/Components/Chat/ChatHistoryEntry:__pkg__",
+    ],
 )
 
 filegroup(

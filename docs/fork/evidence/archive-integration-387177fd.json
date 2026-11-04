@@ -1,0 +1,94 @@
+{
+  "schema": 1,
+  "repository": "Livara-Dev/Telegram-iOS",
+  "commit": "387177fd32dee9dac5a86aa178de0c1d3ac7d106",
+  "run_id": 41813622355,
+  "job_id": 126518740302,
+  "run_url": "https://github.com/Livara-Dev/Telegram-iOS/actions/runs/41813622355",
+  "integration_job_conclusion": "success",
+  "tests": [
+    {
+      "target": "//submodules/Postbox:PostboxTests",
+      "conclusion": "passed",
+      "reported_target_seconds": 192.5,
+      "reported_at": "2026-11-04T10:39:34.257838Z",
+      "xctest_cases": 201,
+      "failures": 0
+    },
+    {
+      "target": "//submodules/LocalMessageArchive:LocalMessageArchiveTests",
+      "conclusion": "passed",
+      "reported_target_seconds": 4.2,
+      "reported_at": "2026-11-04T10:39:48.152879Z",
+      "xctest_cases": 54,
+      "failures": 0
+    },
+    {
+      "target": "//submodules/TelegramCore:TelegramCoreTests",
+      "conclusion": "passed",
+      "reported_target_seconds": 16.8,
+      "reported_at": "2026-11-04T10:43:35.729519Z",
+      "xctest_cases": 453,
+      "failures": 0
+    },
+    {
+      "target": "//submodules/TextFormat:TextFormatTests",
+      "conclusion": "passed",
+      "reported_target_seconds": 13.7,
+      "reported_at": "2026-11-04T10:45:03.493258Z",
+      "xctest_cases": 270,
+      "failures": 0
+    }
+  ],
+  "individual_xctest_case_counts_verified": true,
+  "artifact": {
+    "id": 13315230392,
+    "name": "archive-integration-tests-387177fd32dee9dac5a86aa178de0c1d3ac7d106",
+    "sha256": "c106a979d5ed08c278e9c15a965eb02b10a37c75423155d1ab85b042321eed52",
+    "size_bytes": 80938,
+    "created_at": "2026-11-04T10:45:13Z",
+    "expires_at": "2026-11-11T10:45:13Z",
+    "url": "https://github.com/Livara-Dev/Telegram-iOS/actions/runs/41813622355/artifacts/13315230392"
+  },
+  "scope_limits": [
+    "Counts verified from retained test.log files in the checksum-verified integration artifact; these are simulator tests, not physical installation or UI verification",
+    "No full application build or IPA produced by the integration-test job",
+    "No physical device installation or native UI frame verification"
+  ],
+  "total_xctest_cases": 978,
+  "total_failures": 0,
+  "archive_integration_case_count": 56,
+  "archive_integration_suites": [
+    {
+      "name": "LocalArchiveAcknowledgedEditTests",
+      "tests": 5,
+      "failures": 0
+    },
+    {
+      "name": "LocalArchiveCaptureTests",
+      "tests": 25,
+      "failures": 0
+    },
+    {
+      "name": "LocalArchiveCoordinatorTests",
+      "tests": 12,
+      "failures": 0
+    },
+    {
+      "name": "LocalArchiveReplayTests",
+      "tests": 14,
+      "failures": 0
+    }
+  ],
+  "corrected_upstream_fixture": {
+    "suite": "EngineMessageReplyQuoteTests",
+    "tests": 6,
+    "failures": 0,
+    "testRichQuoteCodableRoundTrip": "passed"
+  },
+  "integration_job_timestamps": {
+    "started_at": "2026-11-04T10:21:27Z",
+    "completed_at": "2026-11-04T10:45:16Z"
+  },
+  "test_log_skipped_markers": []
+}

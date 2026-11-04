@@ -1,0 +1,116 @@
+{
+  "schema": 1,
+  "repository": "Livara-Dev/Telegram-iOS",
+  "commit": "6eba37ff513949b7769b8bf531f808cc413f6f67",
+  "run_id": 41817303240,
+  "job_id": 126531207747,
+  "run_url": "https://github.com/Livara-Dev/Telegram-iOS/actions/runs/41817303240",
+  "integration_job_conclusion": "failure",
+  "tests": [
+    {
+      "target": "//submodules/Postbox:PostboxTests",
+      "conclusion": "passed",
+      "reported_target_seconds": 187.3,
+      "xctest_cases": 201,
+      "failures": 0
+    },
+    {
+      "target": "//submodules/LocalMessageArchive:LocalMessageArchiveTests",
+      "conclusion": "passed",
+      "reported_target_seconds": 5.9,
+      "xctest_cases": 54,
+      "failures": 0
+    },
+    {
+      "target": "//submodules/TelegramCore:TelegramCoreTests",
+      "conclusion": "passed",
+      "reported_target_seconds": 27.5,
+      "xctest_cases": 486,
+      "failures": 0
+    },
+    {
+      "target": "//submodules/TextFormat:TextFormatTests",
+      "conclusion": "passed",
+      "reported_target_seconds": 16.5,
+      "xctest_cases": 270,
+      "failures": 0
+    },
+    {
+      "target": "//submodules/TelegramUI/Components/Chat/ChatHistoryEntry:ChatLocalTextFilterProjectionTests",
+      "conclusion": "failed_to_build",
+      "xctest_cases": 0,
+      "executed": false,
+      "failure": "ChatLocalTextFilterTestHost is missing CFBundleVersion; BUILD:55:16 plisttool bundling error"
+    }
+  ],
+  "individual_xctest_case_counts_verified": true,
+  "artifact": {
+    "id": 13316995631,
+    "name": "archive-integration-tests-6eba37ff513949b7769b8bf531f808cc413f6f67",
+    "sha256": "9c715cc9dce992f5498133bf6fb7acde76c02ab84e67034f1f7fdb5564db0a99",
+    "size_bytes": 85021,
+    "created_at": "2026-11-04T11:17:42Z",
+    "expires_at": "2026-11-11T11:17:40Z",
+    "url": "https://github.com/Livara-Dev/Telegram-iOS/actions/runs/41817303240/artifacts/13316995631"
+  },
+  "scope_limits": [
+    "Counts verified from retained test.log files in the checksum-verified integration artifact; these are simulator tests, not physical installation or UI verification",
+    "No full application build or IPA produced by the integration-test job",
+    "No physical device installation or native UI frame verification",
+    "Ghost request-boundary tests use an injected request sink, not a live Telegram server or physical iPhone",
+    "The projection test host failed packaging before any of its 12 authored tests ran; 1011 total is only the first four targets"
+  ],
+  "total_xctest_cases": 1011,
+  "total_failures": 0,
+  "archive_integration_case_count": 56,
+  "archive_integration_suites": [
+    {
+      "name": "LocalArchiveAcknowledgedEditTests",
+      "tests": 5,
+      "failures": 0
+    },
+    {
+      "name": "LocalArchiveCaptureTests",
+      "tests": 25,
+      "failures": 0
+    },
+    {
+      "name": "LocalArchiveCoordinatorTests",
+      "tests": 12,
+      "failures": 0
+    },
+    {
+      "name": "LocalArchiveReplayTests",
+      "tests": 14,
+      "failures": 0
+    }
+  ],
+  "corrected_upstream_fixture": {
+    "suite": "EngineMessageReplyQuoteTests",
+    "tests": 6,
+    "failures": 0,
+    "testRichQuoteCodableRoundTrip": "passed"
+  },
+  "integration_job_timestamps": {
+    "started_at": "2026-11-04T10:56:50Z",
+    "completed_at": null
+  },
+  "test_log_skipped_markers": [],
+  "ghost_integration_suites": [
+    {
+      "name": "LocalGhostActivityTests",
+      "tests": 15,
+      "failures": 0
+    }
+  ],
+  "ghost_integration_case_count": 15,
+  "filter_integration_case_count": 18,
+  "filter_integration_suites": [
+    {
+      "name": "LocalMessageFilterTests",
+      "tests": 18,
+      "failures": 0
+    }
+  ],
+  "projection_tests": "not_run"
+}

@@ -33,6 +33,7 @@ import ChatRichTextEditorComposer
 import SettingsUI
 import TextNodeWithEntities
 import ChatControllerInteraction
+import ChatHistoryEntry
 import ChatMessageItemCommon
 import ChatMessageItemView
 import ChatMessageBubbleItemNode
@@ -1348,6 +1349,17 @@ func contextMenuForChatPresentationInterfaceState(chatPresentationInterfaceState
         }
         
         let isCopyProtected = chatPresentationInterfaceState.copyProtectionEnabled || message.isCopyProtected()
+        if messages.count == 1, !isScheduled, !isEmbeddedMode, !isCopyProtected,
+           chatHistoryMessageSupportsLocalTextFiltering(message) {
+            actions.append(.action(ContextMenuActionItem(text: "Create Text Filter…", icon: { theme in
+                return generateTintedImage(image: UIImage(bundleImageName: "Chat/Context Menu/Search"), color: theme.actionSheet.primaryTextColor)
+            }, action: { _, completion in
+                completion(.dismissWithoutContent)
+                controllerInteraction.navigationController()?.pushViewController(
+                    localMessageFilterRuleEditorController(context: context, peerId: message.id.peerId.toInt64(), initialText: message.text)
+                )
+            })))
+        }
         if !messageText.isEmpty || richMessageMarkdown != nil || (resourceAvailable && isImage) || diceEmoji != nil {
             if !isExpired {
                 if !isPoll {

@@ -5,16 +5,21 @@ application compilation and running UI behavior remain unverified. Results must
 identify the tested commit and remain separate from the archive module's earlier
 test results.
 
-The first iOS integration run at `3a164860`,
-[run 41813786252](https://github.com/Livara-Dev/Telegram-iOS/actions/runs/41813786252),
-compiled TelegramCore and executed all 15 Ghost tests: 14 passed and one failed.
-The failing emoji-preservation assertion compared `EmojiInteraction` values whose
-synthesized equality includes distinct internal `NSDecimalNumberHandler` objects.
-The test now compares animation values, emoji/message identity and the exact JSON
-payload instead. Production emoji behavior is unchanged. This correction needs a
-fresh passing native run; the failed run is not a successful Ghost verification.
-All 56 inherited archive integration cases passed in that run. The later TextFormat
-target and full application build were skipped after the Core test failure.
+At `cd1effef`, [run 41816366729](https://github.com/Livara-Dev/Telegram-iOS/actions/runs/41816366729)
+passed all 993 XCTest cases: 201 Postbox, 54 archive, 468 TelegramCore and 270
+TextFormat. This includes all 15 Ghost worker/dispatch cases and all 56 inherited
+archive integration cases, with no failures or skipped markers. The
+[recorded evidence](evidence/ghost-activity-cd1effef.json) identifies the exact
+commit, scope, artifact and checksum. These tests use a typed request sink and
+real local Postbox data; they do not verify live Telegram delivery or another
+client's observations. The full application build is separate and remains
+unverified at this checkpoint.
+
+The earlier `3a164860` run compiled TelegramCore and passed 14 of 15 Ghost tests.
+One assertion compared synthesized `EmojiInteraction` equality, which includes
+internal decimal-formatter object identity. The correction checks exact animation
+values, emoji/message identity and the parsed JSON payload/round trip. Production
+emoji behavior was unchanged; the corrected assertion passed in the run above.
 
 This increment covers five outgoing activity categories, with settings stored
 independently in each account's Postbox. The master switch defaults **off**. Each

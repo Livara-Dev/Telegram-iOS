@@ -109,7 +109,9 @@ upstream telemetry is still unresolved.
 The separate Ghost activity draft adds only application-level decisions before
 existing `messages.setTyping` / `setEncryptedTyping` dispatch. Its disabled
 default, account-specific persisted policy and read-only incompatible-settings
-behavior have authored real-Postbox tests; execution is pending. The existing
+behavior passed all 15 real-Postbox worker/dispatch tests at `cd1effef`; see
+[revision-specific evidence](fork/evidence/ghost-activity-cd1effef.json). This is
+not live server or UI verification. The existing
 Network and encryption implementations are unchanged. Calls, emoji interactions
 and explicit live-draft stop remain outside suppression. Requests already sent,
 other clients and server-derived activity remain observable. Read/story receipts
@@ -165,3 +167,45 @@ writer/purge boundary and an injected SQL failure after deletion. These are not
 process-termination, disk-full or live Postbox handoff tests; the application-level
 purge/capture protocol remains unimplemented. The 11 Keychain tests still use
 injected Security responses. See [exact evidence](fork/evidence/archive-tests-c326364b.json).
+
+
+## Local literal filter draft
+
+The filter increment adds only local preferences and presentation decisions.
+There is no remote rule import/export, arbitrary regex engine, moderation RPC or
+new endpoint. Rules, identifiers, exclusions, serialized preferences and evaluated
+text have explicit bounds; malformed/newer preferences remain read-only. Matching
+runs off-main with revision checks; all original Postbox messages remain intact.
+
+The first UI scope is deliberately ordinary incoming cloud text. Dedicated
+placeholder content and accessibility/interaction guards are source-implemented;
+selection mode reveals originals to avoid invisible toolbar actions. Native
+compilation, VoiceOver, hide/reveal, scroll anchoring and other real UI behavior
+remain unverified. Notification/search/dialog previews, translation, read status
+and other processing remain outside the display filter. It is not access control.
+See [the implementation boundary and pending tests](fork/MESSAGE-FILTERS.md).
+
+Archive revision `387177fd` has since passed all 978 iOS XCTest cases, including
+56 local Postbox capture/replay/coordinator tests and the MediaBox cache-clear
+regression. [Retained evidence](fork/evidence/archive-integration-387177fd.json)
+records the exact revision and artifact digest. These local integration results
+do not close the physical-device, disk-full/process-termination, UI, telemetry,
+network-canary or distribution risks in this assessment.
+
+
+At filter revision `6eba37ff`, 18 filter-core tests and the inherited Ghost/archive
+regressions passed. The projection test host failed packaging before any of its
+12 tests executed because its Info.plist lacked a bundle version. The explicit
+version-field fix is a test-host change and still needs a new native run. It does
+not establish that the UI or projection has passed. The next run executes the
+new host first so setup failures are visible sooner; all other regressions remain
+required before the application build.
+
+
+At filter revision `f295948a`, the projection host and Swift test module compiled,
+but hosted simulator startup exhausted Bazel's 300-second timeout before any
+XCTest case began. The synthetic one-case error in Bazel XML is a harness result,
+not an executed projection test. [Verified evidence](fork/evidence/filter-integration-f295948a.json)
+records zero actual cases; other suites were not run by the former fail-fast
+wrapper. The bounded runner allowance and tests-only evidence continuation do
+not turn failures into success or bypass the full-application gate.
