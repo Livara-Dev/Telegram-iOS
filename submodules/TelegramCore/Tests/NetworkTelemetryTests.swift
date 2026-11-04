@@ -1157,18 +1157,18 @@ final class NetworkTelemetryTests: XCTestCase {
         XCTAssertEqual(configuration([:]).reportInterval, 24.0 * 3600.0)
     }
 
-    func testRecordingDecision() {
-        let enabled = NetworkTelemetryConfiguration(isEnabled: true, variant: nil, reportInterval: 86400.0)
-        XCTAssertFalse(networkTelemetryShouldRecord(supplementary: true, isAppExtension: false, configuration: enabled))
-        XCTAssertFalse(networkTelemetryShouldRecord(supplementary: false, isAppExtension: true, configuration: enabled))
-        XCTAssertTrue(networkTelemetryShouldRecord(supplementary: false, isAppExtension: false, configuration: enabled))
-        XCTAssertEqual(networkTelemetryShouldRecord(supplementary: false, isAppExtension: false, configuration: .disabled), networkTelemetryAlwaysRecords)
-
-        networkTelemetryOverrides.recording = true
-        XCTAssertTrue(networkTelemetryShouldRecord(supplementary: true, isAppExtension: true, configuration: .disabled))
-        networkTelemetryOverrides.recording = false
-        XCTAssertFalse(networkTelemetryShouldRecord(supplementary: false, isAppExtension: false, configuration: enabled))
-        networkTelemetryOverrides.recording = nil
+    func testRecordingDecisionCannotBeEnabledByRemoteFlagsOrOverrides() {
+        defer { networkTelemetryOverrides.recording = nil }
+        for override in [Optional<Bool>.none, true, false] {
+            networkTelemetryOverrides.recording = override
+            for supplementary in [false, true] {
+                for extensionProcess in [false, true] {
+                    for configuration in [NetworkTelemetryConfiguration.disabled, NetworkTelemetryConfiguration(isEnabled: true, variant: "remote", reportInterval: 3600)] {
+                        XCTAssertFalse(networkTelemetryShouldRecord(supplementary: supplementary, isAppExtension: extensionProcess, configuration: configuration))
+                    }
+                }
+            }
+        }
     }
 
     func testReportIsDue() {

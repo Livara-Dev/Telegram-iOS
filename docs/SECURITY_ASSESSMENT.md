@@ -300,3 +300,13 @@ and cellular access disabled, so an untrusted movie's external data references
 cannot resolve remote URLs or unrelated local files. The native playback fixture
 test asserts the effective reference restriction as well as decoded output.
 These assertions are authored and await native execution.
+
+## Optional telemetry containment branch
+
+The separate privacy change removes the audited automatic app-event, network,
+viewport/listening and call-log upload paths, AppCenter linkage/startup and the
+hardcoded call-feedback attachment destination. See
+[the implementation scope and remaining risks](fork/TELEMETRY-CONTAINMENT.md).
+This source change has portable checks only; native application regression,
+binary inspection and network canary tests are pending. It does not establish
+a telemetry-free binary or replace the broader assessment above.

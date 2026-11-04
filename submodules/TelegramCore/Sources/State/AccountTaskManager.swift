@@ -148,7 +148,7 @@ final class AccountTaskManager {
                     tasks.add(managedAppUpdateInfo(network: self.stateManager.network, stateManager: self.stateManager).start())
                     tasks.add(managedLocalizationUpdatesOperations(accountManager: self.accountManager, postbox: self.stateManager.postbox, network: self.stateManager.network).start())
                     tasks.add(managedPendingPeerNotificationSettings(postbox: self.stateManager.postbox, network: self.stateManager.network).start())
-                    tasks.add(managedSynchronizeAppLogEventsOperations(postbox: self.stateManager.postbox, network: self.stateManager.network).start())
+                    tasks.add(managedSynchronizeAppLogEventsOperations(postbox: self.stateManager.postbox).start())
                     tasks.add(managedNotificationSettingsBehaviors(postbox: self.stateManager.postbox).start())
                     tasks.add(managedThemesUpdates(accountManager: self.accountManager, postbox: self.stateManager.postbox, network: self.stateManager.network).start())
                     tasks.add(managedContactBirthdays(stateManager: self.stateManager).start())

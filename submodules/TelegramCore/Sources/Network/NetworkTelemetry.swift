@@ -45,12 +45,6 @@ public struct NetworkTelemetryConfiguration: Equatable {
     }
 }
 
-#if DEBUG
-let networkTelemetryAlwaysRecords = true
-#else
-let networkTelemetryAlwaysRecords = false
-#endif
-
 /// Settings that benchmarks and tests replace to measure the recording itself.
 struct NetworkTelemetryOverrides {
     var recording: Bool?
@@ -60,16 +54,11 @@ struct NetworkTelemetryOverrides {
 
 var networkTelemetryOverrides = NetworkTelemetryOverrides()
 
-/// Records the networks of the app's accounts while the server enables it, and always in Debug builds.
-/// Extensions and supplementary networks never record.
+/// Production recording is disabled, including Debug, remote flags and test
+/// overrides. Tests may still instantiate a recorder directly to validate data
+/// structures; they cannot turn on collection in an account's Network factory.
 func networkTelemetryShouldRecord(supplementary: Bool, isAppExtension: Bool, configuration: NetworkTelemetryConfiguration) -> Bool {
-    if let recording = networkTelemetryOverrides.recording {
-        return recording
-    }
-    if supplementary || isAppExtension {
-        return false
-    }
-    return networkTelemetryAlwaysRecords || configuration.isEnabled
+    return false
 }
 
 func networkTelemetrySystemVersion() -> String {
