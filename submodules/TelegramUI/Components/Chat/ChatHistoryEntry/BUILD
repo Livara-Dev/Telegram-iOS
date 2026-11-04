@@ -45,6 +45,10 @@ plist_fragment(
     name = "ChatLocalTextFilterTestHostInfo",
     extension = "plist",
     template = """
+    <key>CFBundleVersion</key>
+    <string>1</string>
+    <key>CFBundleShortVersionString</key>
+    <string>1.0</string>
     <key>CFBundleDisplayName</key>
     <string>Local Filter Projection Tests</string>
     <key>UILaunchScreen</key>

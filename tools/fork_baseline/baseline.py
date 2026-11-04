@@ -32,12 +32,14 @@ TEST_TARGET_PATHS = {
         "local-text-filter-projection", ("submodules", "TelegramUI", "Components", "Chat",
                                          "ChatHistoryEntry", "ChatLocalTextFilterProjectionTests")),
 }
+# Exercise the new host first: malformed host resources must fail before the
+# longer regression runs. Every target still runs before any app-build claim.
 INTEGRATION_TEST_TARGETS = (
+    "//submodules/TelegramUI/Components/Chat/ChatHistoryEntry:ChatLocalTextFilterProjectionTests",
     "//submodules/Postbox:PostboxTests",
     "//submodules/LocalMessageArchive:LocalMessageArchiveTests",
     "//submodules/TelegramCore:TelegramCoreTests",
     TEST_TARGET,
-    "//submodules/TelegramUI/Components/Chat/ChatHistoryEntry:ChatLocalTextFilterProjectionTests",
 )
 TEST_EVIDENCE_LIMIT = 2 * 1024 * 1024
 
