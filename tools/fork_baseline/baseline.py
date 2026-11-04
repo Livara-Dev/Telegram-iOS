@@ -281,7 +281,12 @@ def build(mode, env, build_number):
                         print("Test evidence could not be retained; console output remains available.", flush=True)
             publish_artifact(captured_ipa, destination, mode, config["bundle_id"], build_number)
         finally:
-            subprocess.run([str(bazel), "--nosystem_rc", "--nohome_rc", "--noworkspace_rc", "--output_user_root=" + str(temporary / "bazel-root"), "shutdown"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=60, check=False)
+            try:
+                subprocess.run([str(bazel), "--nosystem_rc", "--nohome_rc", "--noworkspace_rc", "--output_user_root=" + str(temporary / "bazel-root"), "shutdown"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=60, check=False)
+            except (OSError, subprocess.SubprocessError):
+                # Cleanup must not replace the build/test outcome. Exceptions may
+                # contain command arguments, paths or output; never relay them.
+                print("Warning: Bazel shutdown did not complete; temporary build data cleanup will still run.", flush=True)
     print(f"Upstream {mode} build completed. IPA requires independent signature/runtime verification.")
 
 

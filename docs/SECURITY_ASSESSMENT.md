@@ -50,7 +50,7 @@ Use an archive-specific export schema rather than uploading a live database plus
 
 ## Hosted macOS build and Windows installation
 
-GitHub-hosted macOS can be a build target only when its installed Xcode/SDK versions satisfy the pinned repository. This source pins Xcode 27.1 and macOS 27; hosted availability has not been established by this assessment. Windows/Sideloadly can be an installation path, not an Xcode compilation substitute.
+GitHub-hosted macOS can be a build target only when its installed Xcode/SDK versions satisfy the pinned repository. This source pins Xcode 27.1 and macOS 27; hosted run 41792257376 verified both on the `xcode-27` image. Full compilation and device behavior remain unverified. Windows/Sideloadly can be an installation path, not an Xcode compilation substitute.
 
 Keep unsigned build/testing and optional signing as distinct CI jobs/artifacts with explicit status. Secrets belong in the selected repository/environment, with protected signing access and no untrusted pull-request code allowed to consume them. The build must not download arbitrary “latest” signing tools or binary patches. Record source revision, dependency pins, toolchain versions and IPA hash; provide matching GPL corresponding source without secrets. Clean ephemeral signing keychains and generated configuration and restrict artifact retention/access. Telegram API identifiers embedded in a mobile binary are extractable; hiding them from logs does not make them a client authentication secret.
 

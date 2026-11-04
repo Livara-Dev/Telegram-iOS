@@ -25,8 +25,9 @@ Bazel path against an unresolved `/var` alias; macOS resolves that alias through
 symlink explicitly. No application compile ran in that job. Superseded branch
 runs are now canceled when a new fix is pushed, avoiding redundant cold builds.
 
-That same run passed API Secrets validation, pinned toolchain verification and
-iOS 26.5 runtime installation. Its build invocation stopped at the upstream Bazel
+[Run 41792257376](https://github.com/Livara-Dev/Telegram-iOS/actions/runs/41792257376)
+passed all 95 portable checks, API Secrets validation, pinned toolchain verification
+and iOS 26.5 runtime installation. Its build invocation stopped at the upstream Bazel
 version probe, before application compilation: the wrapper prepended startup
 options to `--version`. The wrapper now preserves the executable's exact version
 fast path; binary hash/version verification remains enabled.
@@ -46,10 +47,14 @@ signed build, iPhone installation or performance benchmark has passed in this
 session. No IPA/download URL exists. Portable Python tooling tests and source
 integrity checks are recorded separately below.
 
-Executed on Linux: **94 passing portable Python tests** (28 build-tooling,
+Executed on Linux: **96 passing portable Python tests** (30 build-tooling,
 22 source-guard, 44 upstream build-system tests), plus passing source integrity
 and `git diff --check`. [Raw output](evidence/portable-tests.txt) and
-[machine-readable record](evidence/verification.json) are retained. Mocked
+[machine-readable record](evidence/verification.json) retain the earlier 94-test
+checkpoint; hosted run 41792257376 additionally exercises the macOS path regression.
+The latest local test also verifies that a Bazel shutdown timeout or OS error
+preserves the build result, still cleans private configuration and emits only a
+fixed warning without exception details. Mocked
 build orchestration tests are not application compilation or iOS feature tests.
 
 ## Prepared GitHub-hosted pipeline
@@ -67,7 +72,9 @@ execution, and attempts Apple's iOS 26.5 simulator download. Existing tests requ
 an iPhone 17 on that runtime. Failure to acquire it is a test blocker, not a reason
 to skip tests or claim a build passed. Upstream Make.py builds the full Telegram
 target and runs `//submodules/TextFormat:TextFormatTests` explicitly; the default
-AllTests suite currently references a dangling target.
+AllTests suite currently references a dangling target. The watch application is
+not embedded in this baseline (`--embedWatchApp` is not enabled); no watch build
+or watch runtime validation is claimed.
 
 The workflow overrides the two relative submodule URLs in the checkout's local
 Git configuration to their original TelegramMessenger repositories. Otherwise
