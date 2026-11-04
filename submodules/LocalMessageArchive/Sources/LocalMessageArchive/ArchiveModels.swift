@@ -92,7 +92,7 @@ public struct ArchiveRetentionPolicy {
     public let maxAgeSeconds: Int64
     /// Logical text/entity/event-key/record bytes, not SQLite/WAL disk allocation.
     public let maxPayloadBytes: Int64
-    public init(maxAgeSeconds: Int64 = 30 * 86400, maxPayloadBytes: Int64 = 32 * 1024 * 1024) {
+    public init(maxAgeSeconds: Int64 = Int64.max, maxPayloadBytes: Int64 = 32 * 1024 * 1024) {
         self.maxAgeSeconds = maxAgeSeconds; self.maxPayloadBytes = maxPayloadBytes
     }
 }
@@ -106,6 +106,24 @@ public struct ArchiveCapture {
 public struct ArchivedRecord: Equatable {
     public let sequence: Int64
     public let event: ArchiveEvent
+    public let storedMediaCount: Int
+    public init(sequence: Int64, event: ArchiveEvent, storedMediaCount: Int = 0) {
+        self.sequence = sequence; self.event = event; self.storedMediaCount = storedMediaCount
+    }
+}
+
+public struct ArchivedMedia: Equatable {
+    public let slot: Int
+    public let kind: String
+    public let mimeType: String
+    public let data: Data
+}
+
+public struct ArchivedMediaInfo: Equatable {
+    public let slot: Int
+    public let kind: String
+    public let mimeType: String
+    public let byteCount: Int64
 }
 
 public struct ArchiveWriteResult: Equatable {

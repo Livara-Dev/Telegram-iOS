@@ -235,3 +235,68 @@ is established yet. In-flight requests, other clients, later cumulative reads,
 reactions and replies remain observable. Message-read suppression is a separate
 unimplemented feature; [the read-state audit](fork/GHOST-RECEIPTS-AUDIT.md) explains
 why a generic RPC no-op would break persistent synchronization assumptions.
+
+
+## Bounded local media-copy draft
+
+Schema 5 source adds event-linked encrypted media BLOBs and quota/deletion
+accounting. The account worker reads only completed local cloud-resource paths
+with bounded size and no-follow file opens, before acknowledging its outbox
+item. It performs no download and writes no plaintext media temporary file.
+This code and its new native tests await execution; cache removal before the
+file is opened, incomplete downloads, physical termination/disk pressure and
+real Keychain protection remain unverified. Do not claim lossless retention.
+
+The global-delete handoff defers eager cache unlink only after successful
+creation of an eligible durable outbox entry. This does not create a plaintext
+archive or change timed/protected-content handling. It leaves the existing cache
+file under Telegram's normal cleanup policy until the asynchronous reader runs.
+A simultaneous cache purge can still win; proactive capture remains pending.
+New real-replay regressions are awaiting native execution.
+
+Malformed media MIME values containing a NUL are normalized to the existing
+application/octet-stream fallback before the durable capture is created. This
+prevents an otherwise valid local attachment from repeatedly failing the sink's
+strict MIME validation and blocking the account outbox. A native coordinator
+regression is authored; it is not yet verified by CI.
+
+## Local archive search
+
+Schema 6 indexes only already-archived text in the account's SQLCipher database.
+No plaintext search database, network endpoint or telemetry is added. Queries
+are limited to 512 UTF-8 bytes, FTS phrase-quoted, and separately SQL-bound.
+Search prunes expired rows before reading; insert/delete triggers keep index
+changes in the same transaction as history changes. Temporary SQLite storage
+is forced to memory. The index consumes extra encrypted disk space, and the
+logical quota does not describe that physical overhead. Native tests and UI
+verification of this increment remain pending.
+
+## Large-file archive path review
+
+The schema-7 file API uses O_NOFOLLOW on the final source component, requires a
+regular file, verifies the advertised size when present, and checks size/mtime
+after streaming. Sources are resolved only from validated MediaBox resource
+identifiers. It writes encrypted SQLite pages transactionally with a 64 KiB
+buffer; no decrypted staging copy is made. Reads are bounded to 1 MiB per range;
+the old in-memory preview checks length before selecting the BLOB. A storage
+error rolls back the row and its usage-counter trigger. Quota is logical and
+does not guarantee sufficient free disk for a large WAL/migration transaction.
+Concurrent changes which preserve both size and nanosecond mtime are not
+cryptographically detectable; this is a local completed-file consistency check,
+not a hostile-filesystem integrity guarantee. These new paths need native CI
+and device storage-pressure tests; no new network dependency is introduced.
+
+The first-party playback adapter accepts only an internal archive URL and reads
+at most 64 KiB per request step, with at most eight outstanding AVFoundation
+requests. It cannot fetch a missing source from Telegram or another server.
+Stopping a preview cancels outstanding reads. Native image/player screens clear
+content when the app resigns active or archive access is revoked. This reduces
+app-switcher exposure; it is not a claim that screenshots or OS decoder buffers
+can be recalled. AVFoundation still parses untrusted media and codec/lock-screen
+behavior requires device verification. No new external dependency is introduced.
+
+AVFoundation is explicitly configured with `AVAssetReferenceRestrictions.forbidAll`
+and cellular access disabled, so an untrusted movie's external data references
+cannot resolve remote URLs or unrelated local files. The native playback fixture
+test asserts the effective reference restriction as well as decoded output.
+These assertions are authored and await native execution.

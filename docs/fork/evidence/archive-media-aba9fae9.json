@@ -1,0 +1,12 @@
+{
+  "source_commit": "aba9fae93c44d9b3db41b71ea1c0d83330701c99",
+  "run_id": 41838526587,
+  "job_id": 126603668893,
+  "artifact_id": 13328885274,
+  "artifact_sha256": "791913345ba3d42ec012b9f73a59038aeb5caa7733d2599539c676f559c8f73e",
+  "result": "59 macOS XCTest cases passed; standalone archive module compiled for iOS simulator. No TelegramCore/UI/device verification.",
+  "limitations": [
+    "This predates the current handoff fix and truncated-file guard.",
+    "No device IPA or physical iPhone validation."
+  ]
+}

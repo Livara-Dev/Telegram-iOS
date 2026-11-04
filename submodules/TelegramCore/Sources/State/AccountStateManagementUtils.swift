@@ -4622,11 +4622,15 @@ func replayFinalState(
             case let .DeleteEphemeralMessages(peerId, ids):
                 deleteEphemeralMessages(transaction: transaction, peerId: peerId, ids: ids)
             case let .DeleteMessagesWithGlobalIds(ids):
-                captureDeletedLocalArchiveMessages(transaction: transaction, accountPeerId: accountPeerId, ids: transaction.messageIdsForGlobalIds(ids))
+                let deferredArchiveResources = captureDeletedLocalArchiveMessages(transaction: transaction, accountPeerId: accountPeerId, ids: transaction.messageIdsForGlobalIds(ids))
                 var resourceIds: [MediaResourceId] = []
                 transaction.deleteMessagesWithGlobalIds(ids, forEachMedia: { media in
                     addMessageMediaResourceIdsToRemove(media: media, resourceIds: &resourceIds)
                 })
+                // Preserve only successfully queued, eligible cloud resources until
+                // the independent archive worker has a chance to copy their bytes.
+                // Excluded/unsupported content keeps Telegram's normal removal.
+                resourceIds.removeAll(where: { deferredArchiveResources.contains($0) })
                 if !resourceIds.isEmpty {
                     let _ = mediaBox.removeCachedResources(Array(Set(resourceIds)), force: true).start()
                 }

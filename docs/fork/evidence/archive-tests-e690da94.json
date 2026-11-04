@@ -1,0 +1,15 @@
+{
+  "source_commit": "e690da949182880c43a4607c5e7d4d7fe22c57e3",
+  "run_id": 41849015889,
+  "job_id": 126639981498,
+  "artifact_id": 13333825645,
+  "artifact_sha256": "ba3509df4745e36d61f69e79366eccd66d4190cbbb6b0d5f4b77c8c4f4d0d5ce",
+  "passed_macos_xctest_cases": 64,
+  "storage_cases": 53,
+  "keychain_cases": 11,
+  "artifact_and_internal_checksums_verified": true,
+  "ios_simulator_module_compiled": true,
+  "verified_scope": "Schema-6 archive phrase search, account scope, retention, encrypted-store migrations and mocked Keychain behavior. Does not qualify subsequent streaming/playback revisions.",
+  "full_application_built": false,
+  "physical_device_verified": false
+}

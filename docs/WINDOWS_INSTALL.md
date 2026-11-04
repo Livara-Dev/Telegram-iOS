@@ -8,18 +8,24 @@ how to obtain and test a device build after the application workflow succeeds.
 Use **Archive application integration (hosted macOS)** for the archive,
 Ghost activity, story-view privacy and literal-filter branches. Pushes run it automatically;
 `ci/parallel-device-build` also runs it to verify the build-job split. The
-`integration-tests` job must pass for the exact commit before application jobs
-become eligible to start. The `application-build` simulator job and the
-`unsigned-device-build` job then run independently, subject to runner capacity.
-Each has its own 360-minute limit and branch-specific queue. A slow simulator
+`integration-tests` job must pass for the exact commit before the simulator
+`application-build` starts. The `unsigned-device-build` job compiles independently
+of simulator startup, subject to runner capacity. Its output is unverified until
+the same commit's integration tests pass; inspect both jobs before installation.
+Tests and each app build have separate 360-minute limits and branch-specific queues. A slow simulator
 build no longer consumes the device build's time budget or prevents it starting.
 The device job uses Xcode's device SDK and does not download a simulator runtime.
+An explicitly unsigned build applies a hash-verified, temporary rules_apple
+compatibility patch to omit provisioning-profile embedding; normal signed
+builds do not use it. No fake profiles or signing keys are supplied. The build
+evidence includes the patch's source revision and hashes in unsigned-rules.json.
 
 The existing simulator concurrency group is retained with
 `cancel-in-progress: false`; the new device queue also preserves running jobs.
 Publishing this workflow change does not alter jobs already in progress. GitHub
 can replace an older *pending* job when a newer commit enters the same queue, so
-always inspect the commit of the job that actually ran. No private Bazel state
+always inspect the commit of the job that actually ran. Checkout fetches the exact source and audit-baseline trees without full root history;
+submodule pins remain unchanged. No private Bazel state
 or credentials are shared between jobs; some compilation repeats on fresh hosts.
 
 | Result | Downloadable artifact | What it establishes |
@@ -48,18 +54,23 @@ layout. A successful run of one branch does not validate another branch.
    `unsigned_device` option controls the independent device job; pushes enable
    that job automatically. All jobs use GitHub's `xcode-27` hosted Apple Silicon
    image, verify Xcode 27.1/macOS 27 and the pinned Bazel download. Test and
-   simulator jobs install the required iOS 26.5 runtime; the device job does not.
+   simulator jobs validate the installed iOS 27.0 runtime; the device job does not.
 3. After `unsigned-device-build` succeeds, download
    `archive-unsigned-device-<commit>`. Open its
    `fork-baseline-unsigned-device/manifest.json`; confirm `source_commit` and
    `mode: unsigned-device`. `signing: disabled` and unverified signature/runtime
    fields are expected at this stage. The device manifest does not claim that
-   tests ran in the device job: inspect the same run's successful
-   `integration-tests` job and its separate evidence artifact.
+   tests ran in the device job: inspect the same run's
+   `integration-tests` job and its separate evidence artifact. The device manifest
+   explicitly records `integration_qualification: not_evaluated_by_this_job`;
+   a device build can exist even when simulator tests failed. It is not a release
+   qualification or a functional-app claim.
 4. Compare the IPA to its SHA-256 checksum in Windows PowerShell:
    `Get-FileHash .\Telegram.ipa -Algorithm SHA256`, from the extracted
    `fork-baseline-unsigned-device` directory. Compare with its `SHA256SUMS` and
-   manifest. Select the **device** output; a simulator IPA cannot run on an iPhone,
+   manifest. Before publication, the workflow checks the bundle ID, declared SDK
+   and ARM64 Mach-O platform of the main executable. This is not signature or
+   runtime verification. Select the **device** output; a simulator IPA cannot run on an iPhone,
    even if both report arm64. Build logs have their own `SHA256SUMS` under
    `fork-evidence`.
 5. For local signing, obtain Sideloadly only from https://sideloadly.io/ and follow

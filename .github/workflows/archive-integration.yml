@@ -2,7 +2,7 @@ name: Archive application integration (hosted macOS)
 
 on:
   push:
-    branches: [feature/archive-engine-draft, feature/ghost-activity-draft, feature/message-filter-draft, feature/ghost-story-draft, ci/parallel-device-build]
+    branches: [feature/archive-engine-draft, feature/ghost-activity-draft, feature/message-filter-draft, feature/ghost-story-draft, feature/archive-media-capture, ci/parallel-device-build]
   workflow_dispatch:
     inputs:
       unsigned_device:
@@ -13,10 +13,13 @@ on:
 permissions:
   contents: read
 
-# Test jobs are deliberately independent across revisions. Long application
-# builds must not prevent a newer PR commit from reaching the iOS test runners.
+# Tests and both application builds have separate queues. One heavy integration
+# job per branch preserves running tests without exhausting all macOS runners.
 jobs:
   integration-tests:
+    concurrency:
+      group: archive-integration-tests-${{ github.ref }}
+      cancel-in-progress: false
     # macos-latest does not satisfy versions.json. This preview image does;
     # prepare_host.py additionally verifies the actual OS/Xcode versions.
     runs-on: xcode-27
@@ -49,7 +52,9 @@ jobs:
           token = auth_env.pop('CHECKOUT_TOKEN')
           auth_env.update(GIT_CONFIG_COUNT='1', GIT_CONFIG_KEY_0='http.https://github.com/.extraheader',
                           GIT_CONFIG_VALUE_0='AUTHORIZATION: basic ' + base64.b64encode(('x-access-token:' + token).encode()).decode())
-          run(['git', 'fetch', '--no-tags', 'origin', sha], auth_env)
+          # Both exact trees are needed by the source guard; full history is not.
+          run(['git', 'fetch', '--no-tags', '--depth=1', 'origin', sha,
+               '279f89e4d4f63f17227bf877dc3d8990f22ecd58'], auth_env)
           run(['git', 'checkout', '--detach', sha])
           # Relative upstream submodule URLs otherwise resolve under Livara-Dev.
           run(['git', 'submodule', 'init'])
@@ -92,10 +97,10 @@ jobs:
           sudo xcode-select -s /Applications/Xcode_27.1.app/Contents/Developer
           python3 tools/fork_baseline/prepare_host.py 2>&1 | tee build/fork-evidence/host.log
 
-      - name: Install the upstream test runtime
+      - name: Validate the pinned test runtime
         run: |
           set -euo pipefail
-          xcodebuild -downloadPlatform iOS -buildVersion 26.5 -architectureVariant arm64 2>&1 | tee build/fork-evidence/runtime.log
+          xcrun simctl list runtimes --json 2>&1 | tee build/fork-evidence/runtime.log
           python3 tools/fork_baseline/prepare_host.py --simulator
 
       - name: Run real iOS integration suites
@@ -135,8 +140,9 @@ jobs:
           include-hidden-files: false
 
   unsigned-device-build:
-    needs: integration-tests
-    if: success() && (github.event_name == 'push' || inputs.unsigned_device)
+    # Compilation must not wait for an unrelated simulator to boot. Passing
+    # same-commit integration tests remains a separate release requirement.
+    if: github.event_name == 'push' || inputs.unsigned_device
     concurrency:
       # Device compilation has its own queue; it never cancels or waits for
       # the simulator application job running for the same branch.
@@ -174,7 +180,9 @@ jobs:
           token = auth_env.pop('CHECKOUT_TOKEN')
           auth_env.update(GIT_CONFIG_COUNT='1', GIT_CONFIG_KEY_0='http.https://github.com/.extraheader',
                           GIT_CONFIG_VALUE_0='AUTHORIZATION: basic ' + base64.b64encode(('x-access-token:' + token).encode()).decode())
-          run(['git', 'fetch', '--no-tags', 'origin', sha], auth_env)
+          # Both exact trees are needed by the source guard; full history is not.
+          run(['git', 'fetch', '--no-tags', '--depth=1', 'origin', sha,
+               '279f89e4d4f63f17227bf877dc3d8990f22ecd58'], auth_env)
           run(['git', 'checkout', '--detach', sha])
           # Relative upstream submodule URLs otherwise resolve under Livara-Dev.
           run(['git', 'submodule', 'init'])
@@ -299,7 +307,9 @@ jobs:
           token = auth_env.pop('CHECKOUT_TOKEN')
           auth_env.update(GIT_CONFIG_COUNT='1', GIT_CONFIG_KEY_0='http.https://github.com/.extraheader',
                           GIT_CONFIG_VALUE_0='AUTHORIZATION: basic ' + base64.b64encode(('x-access-token:' + token).encode()).decode())
-          run(['git', 'fetch', '--no-tags', 'origin', sha], auth_env)
+          # Both exact trees are needed by the source guard; full history is not.
+          run(['git', 'fetch', '--no-tags', '--depth=1', 'origin', sha,
+               '279f89e4d4f63f17227bf877dc3d8990f22ecd58'], auth_env)
           run(['git', 'checkout', '--detach', sha])
           # Relative upstream submodule URLs otherwise resolve under Livara-Dev.
           run(['git', 'submodule', 'init'])
@@ -342,10 +352,10 @@ jobs:
           sudo xcode-select -s /Applications/Xcode_27.1.app/Contents/Developer
           python3 tools/fork_baseline/prepare_host.py 2>&1 | tee build/fork-evidence/host.log
 
-      - name: Install the upstream test runtime
+      - name: Validate the pinned test runtime
         run: |
           set -euo pipefail
-          xcodebuild -downloadPlatform iOS -buildVersion 26.5 -architectureVariant arm64 2>&1 | tee build/fork-evidence/runtime.log
+          xcrun simctl list runtimes --json 2>&1 | tee build/fork-evidence/runtime.log
           python3 tools/fork_baseline/prepare_host.py --simulator
 
       # This job checks out the same requested SHA on a fresh hosted runner.

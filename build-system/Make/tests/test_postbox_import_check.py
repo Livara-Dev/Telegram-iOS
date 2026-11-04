@@ -280,9 +280,11 @@ class AccessDetectionTests(unittest.TestCase):
         # made it cost ~6 s (17 MB at ~4 MB/s). Strip ~10 MB of typical Swift in under a second.
         line = 'let value = context.account.postbox.mediaBox.resourceData(file.resource) // note "x"\n'
         source = ('/* header */\n' + line + 'let s = "text \\(a.b) more"\n') * 80000
-        start = time.perf_counter()
+        # Budget tokenizer CPU, not time descheduled by a contended hosted runner.
+        # Keep the same limit so a per-character implementation still fails.
+        start = time.process_time()
         stripped = PostboxImportCheck.strip_comments_and_strings(source)
-        elapsed = time.perf_counter() - start
+        elapsed = time.process_time() - start
         self.assertEqual(len(stripped), len(source))
         self.assertLess(elapsed, 1.0)
 

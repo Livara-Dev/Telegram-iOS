@@ -42,7 +42,7 @@ class SourceGuardTests(unittest.TestCase):
         self.assertTrue(any(expected in item for item in self.failures()), self.failures())
 
     def add_upstream_fixture(self, path):
-        self.write(path, "// upstream fixture\n")
+        self.write(path, "# upstream fixture\n" if path.endswith(".py") else "// upstream fixture\n")
         self.git("add", path)
         self.git("commit", "-qm", "upstream fixture")
         self.base = self.git("rev-parse", "HEAD").decode().strip()
@@ -116,7 +116,7 @@ class SourceGuardTests(unittest.TestCase):
             self.add_upstream_fixture(path)
             self.write(path, "// forbidden change\n")
             self.assertFailure("Upstream source differs")
-            self.write(path, "// upstream fixture\n")
+            self.write(path, "# upstream fixture\n" if path.endswith(".py") else "// upstream fixture\n")
 
     def test_signing_file_rejected(self):
         self.write("docs/fork/signing.p12", "fixture")
@@ -152,6 +152,14 @@ class SourceGuardTests(unittest.TestCase):
 
     def test_unreviewed_dependency_rejected(self):
         self.write("tools/fork_audit/new.py", "import requests\n")
+        self.assertFailure("Non-stdlib Python import")
+
+    def test_upstream_import_exception_is_limited_to_its_exact_test(self):
+        path = "build-system/Make/tests/test_postbox_import_check.py"
+        self.add_upstream_fixture(path)
+        self.write(path, "import PostboxImportCheck\n")
+        self.assertEqual([], self.failures())
+        self.write("tools/fork_baseline/new.py", "import PostboxImportCheck\n")
         self.assertFailure("Non-stdlib Python import")
 
     def test_stdlib_tool_passes(self):
