@@ -197,9 +197,11 @@ final class ArchiveStoreTests: XCTestCase {
         let info = try XCTUnwrap(try awaitResult { reopened.mediaInfo(eventKey: "large", slot: 0, completion: $0) })
         XCTAssertEqual(info.byteCount, 20 * 1024 * 1024)
         XCTAssertEqual(info.kind, "video")
-        for offset in [Int64(0), 64 * 1024 - 1, 17 * 1024 * 1024, 20 * 1024 * 1024 - 7] {
+        let offsets: [Int64] = [0, 64 * 1024 - 1, 17 * 1024 * 1024, 20 * 1024 * 1024 - 7]
+        for offset in offsets {
             let bytes = try XCTUnwrap(try awaitResult { reopened.mediaRange(eventKey: "large", slot: 0, offset: offset, count: 64 * 1024, completion: $0) })
-            XCTAssertEqual(bytes, Data(repeating: 0x5b, count: min(64 * 1024, 20 * 1024 * 1024 - Int(offset))))
+            let expectedCount = min(64 * 1024, 20 * 1024 * 1024 - Int(offset))
+            XCTAssertEqual(bytes, Data(repeating: 0x5b, count: expectedCount))
         }
         XCTAssertEqual(try awaitResult { reopened.mediaRange(eventKey: "large", slot: 0, offset: 20 * 1024 * 1024, count: 10, completion: $0) }, Data())
         assertError(.invalidInput) { try awaitResult { reopened.media(eventKey: "large", slot: 0, completion: $0) } }
@@ -212,6 +214,7 @@ final class ArchiveStoreTests: XCTestCase {
     }
 
     func testStreamedMediaRejectsIncompleteUnsafeOversizeAndConflictingSources() throws {
+        let directory = try XCTUnwrap(self.directory)
         let store = try open()
         _ = try write(store, [event("file")])
         let source = try mediaFile()

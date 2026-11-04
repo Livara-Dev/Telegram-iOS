@@ -168,3 +168,17 @@ installation's iOS simulator SDK. This supplies earlier compatibility feedback
 while the full app's pinned runner queue is busy. It cannot qualify the complete
 Telegram app, its Xcode 27.1 build or a physical-device installation. Artifacts
 record the exact compatibility toolchain and this limited scope.
+
+
+## Streaming test compilation at 115f83bf
+
+[Run 41851183642](https://github.com/Livara-Dev/Telegram-iOS/actions/runs/41851183642)
+passed 533 TelegramCore cases (including the real Postbox 20 MiB document
+stream/cache-clear case) and 270 TextFormat cases. The archive test module did
+not compile: a mixed numeric literal array inferred `Any`, and the implicitly
+unwrapped test-directory property made a source array infer optional URLs.
+The fixes explicitly type the Int64 offsets and unwrap the test directory.
+Assertions and fixture coverage are preserved. The corrected module still
+requires a native rerun. Postbox startup and the zero-case hosted projection
+also failed on this earlier revision; the later warm-up/scene changes remain
+pending. [Checksummed evidence](evidence/archive-streaming-115f83bf.json).

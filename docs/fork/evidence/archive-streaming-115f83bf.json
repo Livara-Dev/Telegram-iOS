@@ -1,0 +1,47 @@
+{
+  "source_commit": "115f83bf4d50869e1784f4fd89550b2bb2ef6a38",
+  "run_id": 41851183642,
+  "job_id": 126647609458,
+  "overall_result": "failure",
+  "toolchain": {
+    "xcode": "27.1",
+    "macos": "27",
+    "ios_simulator": "27.0"
+  },
+  "suites": {
+    "TelegramCore": {
+      "executed": 533,
+      "failures": 0,
+      "result": "passed"
+    },
+    "TextFormat": {
+      "executed": 270,
+      "failures": 0,
+      "result": "passed"
+    },
+    "LocalMessageArchive": {
+      "executed": 0,
+      "result": "compile_failure",
+      "errors": [
+        "ArchiveStoreTests.swift array inferred as Any instead of Int64",
+        "ArchiveStoreTests.swift candidate array inferred as optional URL"
+      ]
+    },
+    "Postbox": {
+      "result": "startup_timeout"
+    },
+    "ChatLocalTextFilterProjection": {
+      "executed": 0,
+      "result": "startup_failure"
+    }
+  },
+  "verified_case": "testLargeDocumentStreamsFromRealPostboxAndSurvivesCacheRemoval",
+  "artifact": {
+    "id": 13341182489,
+    "sha256": "1eac1b4690a18a526afbec8f364e240ba74b3bf3ae37642457c9a1476b247165",
+    "outer_and_inner_checksums_verified": true
+  },
+  "full_application_built": false,
+  "physical_device_verified": false,
+  "scope": "Earlier streaming revision only. Gallery, playback and subsequent changes are not covered."
+}
