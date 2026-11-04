@@ -45,6 +45,7 @@ swift_library(
     ]),
     deps = [
         ":TelegramCore",
+        "//submodules/EncryptionProvider:EncryptionProvider",
         "//submodules/LocalMessageArchive:LocalMessageArchive",
         "//submodules/SSignalKit/SwiftSignalKit:SwiftSignalKit",
         "//submodules/TelegramApi:TelegramApi",
