@@ -33,6 +33,8 @@ REVIEWED_MODIFICATIONS = {
     "submodules/TelegramCore/Sources/Account/Account.swift": "account-owned archive lifecycle",
     "submodules/TelegramCore/Sources/Account/AccountManager.swift": "register archive outbox decoder",
     "submodules/TelegramCore/Sources/State/AccountStateManagementUtils.swift": "capture before server delete/edit",
+    "submodules/TelegramCore/Sources/TelegramEngine/Messages/DeleteMessagesInteractively.swift": "capture before user-initiated message deletion",
+    "submodules/TelegramCore/Sources/PendingMessages/RequestEditMessage.swift": "capture before acknowledged own-edit replacement",
     "submodules/TelegramCore/Sources/SyncCore/SyncCore_Namespaces.swift": "reserve archive operation tag",
     "submodules/SettingsUI/Sources/Data and Storage/DataAndStorageSettingsController.swift": "native archive settings entry",
     "submodules/TelegramUI/Sources/ChatController.swift": "open this conversation's deleted-message archive",

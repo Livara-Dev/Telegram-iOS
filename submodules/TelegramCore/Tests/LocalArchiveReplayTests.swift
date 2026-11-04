@@ -36,9 +36,9 @@ private struct LocalArchiveReplayKey: ArchiveKeyProvider {
     }
 }
 
-/// Calls the actual replayFinalState switch used by AccountStateManager. There
-/// are deliberately no direct calls to the archive capture helpers in this file.
-/// This validates local update replay, not MTProto delivery or logged-in UI behavior.
+/// Calls the actual interactive-delete helper and replayFinalState switch used by
+/// AccountStateManager. There are no direct archive-capture helper calls in this file.
+/// This validates local mutation/replay, not MTProto delivery or logged-in UI behavior.
 final class LocalArchiveReplayTests: XCTestCase {
     private static let logger: Logger = {
         let logger = Logger(rootPath: "", basePath: "")
@@ -99,6 +99,29 @@ final class LocalArchiveReplayTests: XCTestCase {
         let accountPeerId = self.accountPeerId
         return try self.localArchiveValue(self.fixture.postbox.transaction { transaction in
             localArchivePendingCaptures(transaction: transaction, accountPeerId: accountPeerId).compactMap { $0.operation }
+        })
+    }
+
+    private func interactiveDelete(_ ids: [MessageId], type: InteractiveMessagesDeletionType = .forEveryone,
+                                   deleteAllInGroup: Bool = false) throws {
+        let postbox = self.fixture.postbox!
+        let _ = try self.localArchiveValue(postbox.transaction { transaction in
+            deleteMessagesInteractively(transaction: transaction, stateManager: nil, postbox: postbox,
+                messageIds: ids, type: type, deleteAllInGroup: deleteAllInGroup, removeIfPossiblyDelivered: false)
+        })
+    }
+
+    private func outgoingDeletes() throws -> [CloudChatRemoveMessagesOperation] {
+        let chatPeerId = self.chatPeerId
+        return try self.localArchiveValue(self.fixture.postbox.transaction { transaction in
+            var operations: [CloudChatRemoveMessagesOperation] = []
+            transaction.operationLogEnumerateEntries(peerId: chatPeerId, tag: OperationLogTags.CloudChatRemoveMessages) { entry in
+                if let operation = entry.contents as? CloudChatRemoveMessagesOperation {
+                    operations.append(operation)
+                }
+                return true
+            }
+            return operations
         })
     }
 
@@ -287,5 +310,153 @@ final class LocalArchiveReplayTests: XCTestCase {
         XCTAssertTrue(try self.pending().isEmpty)
         XCTAssertEqual(try self.localArchiveValue(self.fixture.postbox.transaction { $0.getMessage(id)?.text }), "still current")
         XCTAssertEqual(try self.localArchiveValue(self.fixture.postbox.transaction { ($0.getState() as? AuthorizedAccountState)?.state }), newerState)
+    }
+
+    func testInteractiveDeleteForLocalPeerPersistsCaptureAndCanonicalRemovalTogether() throws {
+        let id = self.id()
+        try self.store([localArchiveTestMessage(id, text: "locally deleted", attributes: [EditedMessageAttribute(date: 120, isHidden: false)])])
+        let postbox = self.fixture.postbox!
+        let accountPeerId = self.accountPeerId
+        let result = try self.localArchiveValue(postbox.transaction { transaction -> (Bool, LocalArchiveCaptureOperation?) in
+            deleteMessagesInteractively(transaction: transaction, stateManager: nil, postbox: postbox,
+                messageIds: [id], type: .forLocalPeer, removeIfPossiblyDelivered: false)
+            return (transaction.getMessage(id) == nil,
+                    localArchivePendingCaptures(transaction: transaction, accountPeerId: accountPeerId).first?.operation)
+        })
+        XCTAssertTrue(result.0)
+        let capture = try XCTUnwrap(result.1)
+        XCTAssertEqual(capture.text, "locally deleted")
+        XCTAssertEqual(capture.serverEditAt, 120)
+        XCTAssertEqual(capture.kindRawValue, ArchiveEventKind.deleted.rawValue)
+        try self.fixture.reopen()
+        XCTAssertNil(try self.localArchiveValue(self.fixture.postbox.transaction { $0.getMessage(id) }))
+        XCTAssertEqual(try self.pending().map { $0.eventKey }, [capture.eventKey])
+        let outgoing = try self.outgoingDeletes()
+        XCTAssertEqual(outgoing.count, 1)
+        XCTAssertEqual(outgoing.first?.messageIds, [id])
+        XCTAssertEqual(outgoing.first?.type, .forLocalPeer)
+        XCTAssertNil(outgoing.first?.threadId)
+    }
+
+    func testInteractiveDeleteFollowedByServerReplayDoesNotCaptureTwice() throws {
+        let id = self.id()
+        try self.store([localArchiveTestMessage(id, text: "deleted for everyone")])
+        try self.interactiveDelete([id])
+        let original = try XCTUnwrap(self.pending().first)
+        let _ = try XCTUnwrap(self.replay([.DeleteMessages([id]), .DeleteMessagesWithGlobalIds([id.id])]))
+        XCTAssertEqual(try self.pending().map { $0.eventKey }, [original.eventKey])
+        XCTAssertNil(try self.localArchiveValue(self.fixture.postbox.transaction { $0.getMessage(id) }))
+        let outgoing = try self.outgoingDeletes()
+        XCTAssertEqual(outgoing.count, 1, "server replay must not enqueue another outgoing deletion")
+        XCTAssertEqual(outgoing.first?.messageIds, [id])
+        XCTAssertEqual(outgoing.first?.type, .forEveryone)
+        let page = try self.drainIntoIndependentArchive()
+        XCTAssertEqual(page.records.map { $0.text }, ["deleted for everyone"])
+    }
+
+    func testInteractiveDeleteWithDisabledArchiveKeepsOutgoingOperation() throws {
+        let id = self.id()
+        try self.store([localArchiveTestMessage(id)])
+        let _ = try self.localArchiveValue(self.fixture.postbox.transaction { transaction in
+            setLocalArchiveSettings(transaction: transaction, settings: LocalArchiveSettings())
+        })
+        try self.interactiveDelete([id])
+        XCTAssertTrue(try self.pending().isEmpty)
+        XCTAssertNil(try self.localArchiveValue(self.fixture.postbox.transaction { $0.getMessage(id) }))
+        let outgoing = try self.outgoingDeletes()
+        XCTAssertEqual(outgoing.count, 1)
+        XCTAssertEqual(outgoing.first?.messageIds, [id])
+        XCTAssertEqual(outgoing.first?.type, .forEveryone)
+    }
+
+    func testInteractiveDeleteHonorsPeerSenderAndExpiryExclusions() throws {
+        let excludedByPeer = self.id(1)
+        let excludedBySender = self.id(2)
+        let expiring = self.id(3)
+        let allowed = self.id(4)
+        let chatPeerId = self.chatPeerId
+        try self.store([
+            localArchiveTestMessage(excludedByPeer),
+            localArchiveTestMessage(excludedBySender),
+            localArchiveTestMessage(expiring, authorId: self.accountPeerId, attributes: [AutoremoveTimeoutMessageAttribute(timeout: 3600, countdownBeginTime: nil)]),
+            localArchiveTestMessage(allowed, text: "eligible", authorId: self.accountPeerId)
+        ])
+        let _ = try self.localArchiveValue(self.fixture.postbox.transaction { transaction in
+            setLocalArchiveSettings(transaction: transaction,
+                settings: LocalArchiveSettings(enabled: true, excludedPeerIds: [chatPeerId.toInt64()]))
+        })
+        try self.interactiveDelete([excludedByPeer])
+        let _ = try self.localArchiveValue(self.fixture.postbox.transaction { transaction in
+            setLocalArchiveSettings(transaction: transaction,
+                settings: LocalArchiveSettings(enabled: true, excludedSenderIds: [chatPeerId.toInt64()]))
+        })
+        try self.interactiveDelete([excludedBySender, expiring, allowed])
+        XCTAssertEqual(try self.pending().map { $0.messageId }, [allowed])
+        for id in [excludedByPeer, excludedBySender, expiring, allowed] {
+            XCTAssertNil(try self.localArchiveValue(self.fixture.postbox.transaction { $0.getMessage(id) }))
+        }
+        let outgoing = try self.outgoingDeletes()
+        XCTAssertEqual(outgoing.count, 2)
+        XCTAssertEqual(try XCTUnwrap(outgoing.first).messageIds, [excludedByPeer])
+        XCTAssertEqual(try XCTUnwrap(outgoing.dropFirst().first).messageIds, [excludedBySender, expiring, allowed])
+        XCTAssertTrue(outgoing.allSatisfy { $0.type == .forEveryone })
+    }
+
+    func testInteractiveDeleteWithoutAuthorizedAccountDoesNotGuessArchiveOwner() throws {
+        let id = self.id()
+        try self.store([localArchiveTestMessage(id)])
+        let _ = try self.localArchiveValue(self.fixture.postbox.transaction { transaction in
+            transaction.setState(UnauthorizedAccountState(isTestingEnvironment: true, masterDatacenterId: 1, contents: .empty))
+        })
+        try self.interactiveDelete([id])
+        XCTAssertTrue(try self.pending().isEmpty)
+        XCTAssertNil(try self.localArchiveValue(self.fixture.postbox.transaction { $0.getMessage(id) }))
+        XCTAssertEqual(try self.outgoingDeletes().count, 1)
+    }
+
+    func testInteractiveDeleteCapturesExpandedMessageGroup() throws {
+        let first = self.id(1)
+        let second = self.id(2)
+        let messages = [first, second].map { id -> StoreMessage in
+            let media = TelegramMediaImage(imageId: MediaId(namespace: Namespaces.Media.CloudImage, id: Int64(id.id)),
+                representations: [], immediateThumbnailData: nil, reference: nil, partialReference: nil, flags: [])
+            return StoreMessage(id: id, customStableId: nil, globallyUniqueId: nil, groupingKey: 77,
+                threadId: nil, timestamp: 100, flags: [.Incoming], tags: [], globalTags: [], localTags: [],
+                forwardInfo: nil, authorId: id.peerId, text: "caption \(id.id)", attributes: [], media: [media])
+        }
+        try self.store(messages)
+        XCTAssertEqual(try self.localArchiveValue(self.fixture.postbox.transaction { $0.getMessageGroup(first)?.count }), 2)
+        try self.interactiveDelete([first], deleteAllInGroup: true)
+        XCTAssertEqual(Set(try self.pending().map { $0.messageId }), Set([first, second]))
+        XCTAssertNil(try self.localArchiveValue(self.fixture.postbox.transaction { $0.getMessage(first) }))
+        XCTAssertNil(try self.localArchiveValue(self.fixture.postbox.transaction { $0.getMessage(second) }))
+        let outgoing = try self.outgoingDeletes()
+        XCTAssertEqual(outgoing.count, 1)
+        let operation = try XCTUnwrap(outgoing.first)
+        XCTAssertEqual(Set(operation.messageIds), Set([first, second]))
+        XCTAssertEqual(operation.type, .forEveryone)
+    }
+
+    func testAcknowledgedOwnEditFollowedByServerReplayKeepsOnePreviousVersion() throws {
+        let id = self.id()
+        let original = localArchiveTestMessage(id, text: "sent original", authorId: self.accountPeerId,
+            attributes: [EditedMessageAttribute(date: 120, isHidden: false)]).withUpdatedFlags([])
+        let replacement = localArchiveTestMessage(id, text: "sent replacement", authorId: self.accountPeerId,
+            attributes: [EditedMessageAttribute(date: 180, isHidden: false)]).withUpdatedFlags([])
+        try self.store([original])
+        let accountPeerId = self.accountPeerId
+        let _ = try self.localArchiveValue(self.fixture.postbox.transaction { transaction in
+            applyAcknowledgedEditMessage(transaction: transaction, accountPeerId: accountPeerId, message: replacement)
+        })
+        let capture = try XCTUnwrap(self.pending().first)
+        XCTAssertEqual(capture.text, "sent original")
+        XCTAssertEqual(capture.serverEditAt, 120)
+        XCTAssertEqual(capture.kindRawValue, ArchiveEventKind.edited.rawValue)
+        try self.fixture.reopen()
+        let _ = try XCTUnwrap(self.replay([.EditMessage(id, replacement)]))
+        XCTAssertEqual(try self.pending().map { $0.eventKey }, [capture.eventKey])
+        let stored = try XCTUnwrap(self.localArchiveValue(self.fixture.postbox.transaction { $0.getMessage(id) }))
+        XCTAssertEqual(stored.text, "sent replacement")
+        XCTAssertFalse(stored.flags.contains(.Incoming))
     }
 }
