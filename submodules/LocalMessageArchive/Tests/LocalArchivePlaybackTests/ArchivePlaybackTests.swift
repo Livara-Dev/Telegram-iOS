@@ -75,6 +75,8 @@ final class ArchivePlaybackTests: XCTestCase {
         let reopened: ArchiveStore = try await result { ArchiveStore.open(baseDirectory: root, accountId: 8, keyProvider: Keys(), completion: $0) }
         let source = EncryptedSource(reopened)
         let playback = ArchivePlaybackAsset(source: source)
+        XCTAssertEqual(playback.asset.referenceRestrictions, .forbidAll)
+        XCTAssertEqual(playback.asset.url.scheme, "ayugram-archive")
         let duration = try await playback.asset.load(.duration)
         XCTAssertGreaterThan(CMTimeGetSeconds(duration), 0)
         let playable = try await playback.asset.load(.isPlayable)

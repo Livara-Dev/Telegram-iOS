@@ -12,7 +12,7 @@ Ghost activity, story-view privacy and literal-filter branches. Pushes run it au
 `application-build` starts. The `unsigned-device-build` job compiles independently
 of simulator startup, subject to runner capacity. Its output is unverified until
 the same commit's integration tests pass; inspect both jobs before installation.
-Each has its own 360-minute limit and branch-specific queue. A slow simulator
+Tests and each app build have separate 360-minute limits and branch-specific queues. A slow simulator
 build no longer consumes the device build's time budget or prevents it starting.
 The device job uses Xcode's device SDK and does not download a simulator runtime.
 An explicitly unsigned build applies a hash-verified, temporary rules_apple
@@ -24,7 +24,8 @@ The existing simulator concurrency group is retained with
 `cancel-in-progress: false`; the new device queue also preserves running jobs.
 Publishing this workflow change does not alter jobs already in progress. GitHub
 can replace an older *pending* job when a newer commit enters the same queue, so
-always inspect the commit of the job that actually ran. No private Bazel state
+always inspect the commit of the job that actually ran. Checkout fetches the exact source and audit-baseline trees without full root history;
+submodule pins remain unchanged. No private Bazel state
 or credentials are shared between jobs; some compilation repeats on fresh hosts.
 
 | Result | Downloadable artifact | What it establishes |

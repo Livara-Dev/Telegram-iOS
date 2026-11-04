@@ -56,7 +56,12 @@ public final class ArchivePlaybackAsset: NSObject, AVAssetResourceLoaderDelegate
 
     public init(source: ArchivePlaybackSource) {
         self.source = source
-        self.asset = AVURLAsset(url: URL(string: "ayugram-archive://local/media")!)
+        // A crafted movie may contain data references. Reject every external
+        // reference instead of letting AVFoundation resolve local/remote URLs.
+        self.asset = AVURLAsset(url: URL(string: "ayugram-archive://local/media")!, options: [
+            AVURLAssetReferenceRestrictionsKey: AVAssetReferenceRestrictions.forbidAll.rawValue,
+            AVURLAssetAllowsCellularAccessKey: false
+        ])
         super.init()
         self.asset.resourceLoader.setDelegate(self, queue: self.queue)
     }

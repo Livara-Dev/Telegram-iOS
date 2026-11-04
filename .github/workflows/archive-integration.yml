@@ -13,10 +13,13 @@ on:
 permissions:
   contents: read
 
-# Test jobs are deliberately independent across revisions. Long application
-# builds must not prevent a newer PR commit from reaching the iOS test runners.
+# Tests and both application builds have separate queues. One heavy integration
+# job per branch preserves running tests without exhausting all macOS runners.
 jobs:
   integration-tests:
+    concurrency:
+      group: archive-integration-tests-${{ github.ref }}
+      cancel-in-progress: false
     # macos-latest does not satisfy versions.json. This preview image does;
     # prepare_host.py additionally verifies the actual OS/Xcode versions.
     runs-on: xcode-27
@@ -49,7 +52,9 @@ jobs:
           token = auth_env.pop('CHECKOUT_TOKEN')
           auth_env.update(GIT_CONFIG_COUNT='1', GIT_CONFIG_KEY_0='http.https://github.com/.extraheader',
                           GIT_CONFIG_VALUE_0='AUTHORIZATION: basic ' + base64.b64encode(('x-access-token:' + token).encode()).decode())
-          run(['git', 'fetch', '--no-tags', 'origin', sha], auth_env)
+          # Both exact trees are needed by the source guard; full history is not.
+          run(['git', 'fetch', '--no-tags', '--depth=1', 'origin', sha,
+               '279f89e4d4f63f17227bf877dc3d8990f22ecd58'], auth_env)
           run(['git', 'checkout', '--detach', sha])
           # Relative upstream submodule URLs otherwise resolve under Livara-Dev.
           run(['git', 'submodule', 'init'])
@@ -175,7 +180,9 @@ jobs:
           token = auth_env.pop('CHECKOUT_TOKEN')
           auth_env.update(GIT_CONFIG_COUNT='1', GIT_CONFIG_KEY_0='http.https://github.com/.extraheader',
                           GIT_CONFIG_VALUE_0='AUTHORIZATION: basic ' + base64.b64encode(('x-access-token:' + token).encode()).decode())
-          run(['git', 'fetch', '--no-tags', 'origin', sha], auth_env)
+          # Both exact trees are needed by the source guard; full history is not.
+          run(['git', 'fetch', '--no-tags', '--depth=1', 'origin', sha,
+               '279f89e4d4f63f17227bf877dc3d8990f22ecd58'], auth_env)
           run(['git', 'checkout', '--detach', sha])
           # Relative upstream submodule URLs otherwise resolve under Livara-Dev.
           run(['git', 'submodule', 'init'])
@@ -300,7 +307,9 @@ jobs:
           token = auth_env.pop('CHECKOUT_TOKEN')
           auth_env.update(GIT_CONFIG_COUNT='1', GIT_CONFIG_KEY_0='http.https://github.com/.extraheader',
                           GIT_CONFIG_VALUE_0='AUTHORIZATION: basic ' + base64.b64encode(('x-access-token:' + token).encode()).decode())
-          run(['git', 'fetch', '--no-tags', 'origin', sha], auth_env)
+          # Both exact trees are needed by the source guard; full history is not.
+          run(['git', 'fetch', '--no-tags', '--depth=1', 'origin', sha,
+               '279f89e4d4f63f17227bf877dc3d8990f22ecd58'], auth_env)
           run(['git', 'checkout', '--detach', sha])
           # Relative upstream submodule URLs otherwise resolve under Livara-Dev.
           run(['git', 'submodule', 'init'])

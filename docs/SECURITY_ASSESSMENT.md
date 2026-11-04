@@ -294,3 +294,9 @@ content when the app resigns active or archive access is revoked. This reduces
 app-switcher exposure; it is not a claim that screenshots or OS decoder buffers
 can be recalled. AVFoundation still parses untrusted media and codec/lock-screen
 behavior requires device verification. No new external dependency is introduced.
+
+AVFoundation is explicitly configured with `AVAssetReferenceRestrictions.forbidAll`
+and cellular access disabled, so an untrusted movie's external data references
+cannot resolve remote URLs or unrelated local files. The native playback fixture
+test asserts the effective reference restriction as well as decoded output.
+These assertions are authored and await native execution.
