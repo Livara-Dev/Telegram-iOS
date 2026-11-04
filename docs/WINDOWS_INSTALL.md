@@ -15,6 +15,10 @@ the same commit's integration tests pass; inspect both jobs before installation.
 Each has its own 360-minute limit and branch-specific queue. A slow simulator
 build no longer consumes the device build's time budget or prevents it starting.
 The device job uses Xcode's device SDK and does not download a simulator runtime.
+An explicitly unsigned build applies a hash-verified, temporary rules_apple
+compatibility patch to omit provisioning-profile embedding; normal signed
+builds do not use it. No fake profiles or signing keys are supplied. The build
+evidence includes the patch's source revision and hashes in unsigned-rules.json.
 
 The existing simulator concurrency group is retained with
 `cancel-in-progress: false`; the new device queue also preserves running jobs.

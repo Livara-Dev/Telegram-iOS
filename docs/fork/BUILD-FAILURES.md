@@ -113,3 +113,23 @@ Unsigned device compilation now runs alongside integration tests. Artifacts
 remain explicitly unsigned and integration-unqualified until same-commit tests
 pass; this exposes device compiler errors without waiting for simulator startup.
 The simulator application build retains its integration gate.
+
+## Unsigned device profile requirement
+
+Run 41848210784 at `be6376fd` reached device target analysis, then failed because
+IntentsExtension had no provisioning_profile. The pinned rules_apple source
+embeds profiles for device bundles even when `disable_legacy_signing` is set.
+
+The unsigned wrapper now makes a temporary copy of tracked rules_apple files
+from commit 485016eb5b0948cc17307064e7977a6d68e94046, verifies each Git blob and
+the exact SHA-256 of the two patched rule files, and conditionally omits profile
+embedding under `ayugram.unsigned_device`. Six iOS and three watchOS sites are
+patched. Normal signing checks and the repository gitlink are unchanged.
+`--override_module` selects this copy only for explicitly unsigned builds; the
+existing signing-disable and profile-disable flags remain required. No fake
+profile, team credential or entitlement is generated. The artifact includes
+`unsigned-rules.json` with input/output hashes. This is not an installable signed
+build, and native device compilation must still verify the compatibility patch.
+
+The derived rule sources retain their upstream Apache-2.0 license and copyright
+files; the patch implementation is included in this source repository.

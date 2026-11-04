@@ -92,3 +92,12 @@ bytes from the database counters. The read uses the same protected, account-scop
 queue and retention gate as browsing. Settings changes refresh usage. These
 figures deliberately exclude SQLite/index allocation overhead and must not be
 presented as exact disk usage. Native facade and UI verification remain pending.
+
+At `92f6d752`, 1,060 iOS XCTest cases passed across Postbox, archive storage,
+TelegramCore and TextFormat, including all 74 archive integration cases. Real
+global-delete/photo copying, edit replacement, typed cached-file retention,
+cache removal/reopen, quota loss, malformed MIME and acknowledgement recovery
+cases passed. [Exact evidence](evidence/archive-media-integration-92f6d752.json)
+limits this to local integration: the projection host did not launch, and no
+full Telegram app, physical device or codec playback was verified. Later
+search/usage changes require their own native results.

@@ -11,6 +11,7 @@ from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
 
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 SPEC = importlib.util.spec_from_file_location("baseline", Path(__file__).resolve().parents[1] / "baseline.py")
 baseline = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(baseline)
@@ -130,6 +131,15 @@ class PreflightTests(unittest.TestCase):
                 self.assertEqual(flags.intersection(args), expected)
                 self.assertNotIn("--features=apple.skip_codesign_simulator_bundles", args)
 
+    def test_unsigned_overlay_is_rejected_for_normal_signing(self):
+        for mode in ("simulator", "device"):
+            with self.assertRaises(baseline.InvalidSetup):
+                baseline.proxy_arguments(Path("/bazel"), Path("/repo"), mode, ["build"], rules_override="/private/overlay")
+        command = baseline.proxy_arguments(Path("/bazel"), Path("/repo"), "unsigned-device", ["build"], rules_override="/private/overlay")
+        self.assertIn("--override_module=rules_apple=/private/overlay", command)
+        self.assertIn("--features=ayugram.unsigned_device", command)
+        self.assertIn("--features=disable_legacy_signing", command)
+
     def test_device_signing_not_disabled_and_version_clean(self):
         command = baseline.proxy_arguments(Path("/bazel"), Path("/repo"), "device", ["build"])
         self.assertNotIn("--features=disable_legacy_signing", command)
@@ -230,6 +240,11 @@ class BundleDiagnosticsTests(unittest.TestCase):
 
 
 class PrivacyAndArtifactsTests(unittest.TestCase):
+    def setUp(self):
+        overlay = patch.object(baseline, "prepare_unsigned_rules", return_value={"fixture": "reviewed"})
+        overlay.start()
+        self.addCleanup(overlay.stop)
+
     def test_storage_diagnostics_precede_cleanup_and_suites_reuse_output_root(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

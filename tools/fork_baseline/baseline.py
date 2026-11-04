@@ -18,6 +18,8 @@ import subprocess
 import sys
 import tempfile
 
+from unsigned_rules import prepare_unsigned_rules
+
 ROOT = Path(__file__).resolve().parents[2]
 TEST_TARGET = "//submodules/TextFormat:TextFormatTests"
 # Fixed labels and evidence paths: no user-provided target or path is accepted.
@@ -128,7 +130,9 @@ def preflight(env, simulator=False):
     return bazel
 
 
-def proxy_arguments(bazel, root, mode, arguments):
+def proxy_arguments(bazel, root, mode, arguments, rules_override=None):
+    if rules_override is not None and mode != "unsigned-device":
+        raise InvalidSetup("Unsigned rules overlay is forbidden for signed or simulator builds")
     # Bazel's --version fast path must be the sole argument. Prepending startup
     # flags makes the upstream get_bazel_version probe fail before any build.
     if arguments == ["--version"]:
@@ -163,6 +167,8 @@ def proxy_arguments(bazel, root, mode, arguments):
                 command.append("--//Telegram:disableProvisioningProfiles=true")
             if mode == "unsigned-device":
                 command.append("--features=disable_legacy_signing")
+                if rules_override is not None:
+                    command.extend(["--override_module=rules_apple=" + str(rules_override), "--features=ayugram.unsigned_device"])
     return command
 
 
@@ -412,6 +418,17 @@ def build(mode, env, build_number, integration_tests=False, tests_only=False):
         proxy.write_text("#!/bin/sh\nexec " + shlex.join([sys.executable, str(Path(__file__).resolve()), "bazel-proxy", str(bazel), mode]) + ' "$@"\n')
         proxy.chmod(0o700)
         child_env = dict(env)
+        child_env.pop("FORK_UNSIGNED_RULES_PATH", None)
+        if mode == "unsigned-device":
+            overlay = temporary / "unsigned-rules-apple"
+            try:
+                overlay_manifest = prepare_unsigned_rules(ROOT / "build-system/bazel-rules/rules_apple", overlay)
+            except (OSError, ValueError, subprocess.SubprocessError) as error:
+                raise InvalidSetup("Reviewed unsigned rules overlay could not be prepared") from error
+            child_env["FORK_UNSIGNED_RULES_PATH"] = str(overlay)
+            evidence = ROOT / "build/fork-evidence"
+            evidence.mkdir(parents=True, exist_ok=True)
+            (evidence / "unsigned-rules.json").write_text(json.dumps(overlay_manifest, indent=2) + "\n")
         for name in ("TELEGRAM_API_ID", "TELEGRAM_API_HASH"):
             child_env.pop(name, None)
         common = [sys.executable, "build-system/Make/Make.py", "--bazel=" + str(proxy), "--bazelUserRoot=" + str(temporary / "bazel-root")]
@@ -489,7 +506,7 @@ def build(mode, env, build_number, integration_tests=False, tests_only=False):
 
 def main():
     if len(sys.argv) > 1 and sys.argv[1] == "bazel-proxy":
-        command = proxy_arguments(Path(sys.argv[2]), ROOT, sys.argv[3], sys.argv[4:])
+        command = proxy_arguments(Path(sys.argv[2]), ROOT, sys.argv[3], sys.argv[4:], rules_override=os.environ.get("FORK_UNSIGNED_RULES_PATH"))
         os.execv(command[0], command)
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("mode", choices=("preflight", "simulator", "unsigned-device", "device"))
