@@ -1253,6 +1253,10 @@ public class Account {
     public var localGhost: LocalGhostContext {
         return LocalGhostContext(postbox: self.postbox)
     }
+
+    public var localMessageFilter: LocalMessageFilterContext {
+        return LocalMessageFilterContext(postbox: self.postbox)
+    }
     private(set) var contactSyncManager: ContactSyncManager!
     public private(set) var callSessionManager: CallSessionManager!
     

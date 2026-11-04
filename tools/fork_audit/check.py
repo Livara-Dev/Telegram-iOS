@@ -16,6 +16,7 @@ ADDED_PREFIXES = (
     "docs/fork/", "tools/fork_audit/", "tools/fork_baseline/", "submodules/LocalMessageArchive/",
     "submodules/TelegramCore/Sources/LocalArchive/", "submodules/TelegramCore/Tests/LocalArchive",
     "submodules/TelegramCore/Sources/LocalPrivacy/", "submodules/TelegramCore/Tests/LocalGhost",
+    "submodules/TelegramCore/Sources/LocalMessageFilter/", "submodules/TelegramCore/Tests/LocalMessageFilter",
 )
 ADDED_FILES = {
     ".github/workflows/archive-integration.yml",
@@ -24,6 +25,7 @@ ADDED_FILES = {
     "docs/AYUGRAM_FEATURE_MATRIX.md", "docs/WINDOWS_INSTALL.md", "docs/SECURITY_ASSESSMENT.md",
     "submodules/SettingsUI/Sources/LocalArchiveSettingsController.swift",
     "submodules/SettingsUI/Sources/LocalGhostSettingsController.swift",
+    "submodules/SettingsUI/Sources/LocalMessageFilterSettingsController.swift",
 }
 # Explicit integration seams only. Everything else in the upstream tree, including
 # MTProto, authentication methods, cryptography, Postbox, dependency manifests and

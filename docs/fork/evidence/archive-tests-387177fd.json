@@ -1,0 +1,60 @@
+{
+  "schema": 1,
+  "repository": "Livara-Dev/Telegram-iOS",
+  "commit": "387177fd32dee9dac5a86aa178de0c1d3ac7d106",
+  "run_id": 41813622350,
+  "run_url": "https://github.com/Livara-Dev/Telegram-iOS/actions/runs/41813622350",
+  "job_id": 126518740501,
+  "conclusion": "success",
+  "job_started_at": "2026-11-04T10:21:28Z",
+  "job_completed_at": "2026-11-04T10:23:39Z",
+  "tests": {
+    "platform": "macOS host via Swift Package Manager XCTest",
+    "total": 54,
+    "failures": 0,
+    "unexpected_failures": 0,
+    "suites": [
+      {
+        "name": "ArchiveStoreTests",
+        "tests": 43,
+        "failures": 0,
+        "includes_benchmark": true,
+        "reported_execution_seconds": 1.778
+      },
+      {
+        "name": "KeychainArchiveKeyStoreTests",
+        "tests": 11,
+        "failures": 0,
+        "security_calls": "injected mocks",
+        "reported_execution_seconds": 0.003
+      }
+    ],
+    "reported_total_execution_seconds": 1.78,
+    "step_started_at": "2026-11-04T10:22:08Z",
+    "step_completed_at": "2026-11-04T10:23:14Z"
+  },
+  "ios_simulator_module_compile": {
+    "conclusion": "success",
+    "target": "LocalMessageArchive",
+    "triple": "arm64-apple-ios15.0-simulator",
+    "runtime_test": false,
+    "started_at": "2026-11-04T10:23:14Z",
+    "completed_at": "2026-11-04T10:23:34Z"
+  },
+  "artifact": {
+    "id": 13314325268,
+    "name": "archive-draft-387177fd32dee9dac5a86aa178de0c1d3ac7d106",
+    "url": "https://github.com/Livara-Dev/Telegram-iOS/actions/runs/41813622350/artifacts/13314325268",
+    "sha256": "77d041b4922629b8095ea9796220b9a22500eb4007402fcbf34338cba07852d7",
+    "size_bytes": 22184,
+    "created_at": "2026-11-04T10:23:36Z",
+    "expires_at": "2026-11-11T10:23:35Z",
+    "contents": "test logs, host metadata and SHA256SUMS; no application or IPA"
+  },
+  "scope_limits": [
+    "Does not verify Telegram application integration or UI",
+    "Keychain tests use mocked Security responses",
+    "No physical iPhone installation or Data Protection validation",
+    "No full simulator app or unsigned device IPA produced by this workflow"
+  ]
+}
