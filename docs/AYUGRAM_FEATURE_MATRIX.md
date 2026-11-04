@@ -1,6 +1,6 @@
 # AyuGram for iOS feature matrix
 
-Updated 2026-11-04. **No requested feature is verified in the running application yet.**
+Updated 2026-11-04. Active priority: [deleted-message/media preservation](fork/PRESERVATION-STATUS.md). Secondary feature development is paused. **No requested feature is verified in the running application yet.**
 The existing fork now includes experimental default-off TelegramCore archive hooks,
 an account worker and native archive screens, in addition to the tested storage library.
 Archive commit `387177fd` passed 978 iOS XCTest cases, including all 56 archive

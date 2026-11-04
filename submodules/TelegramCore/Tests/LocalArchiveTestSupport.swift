@@ -89,8 +89,8 @@ func localArchiveTestUser(_ id: PeerId, bot: Bool = false) -> TelegramUser {
 }
 
 func localArchiveTestMessage(_ id: MessageId, text: String = "original text", authorId: PeerId? = nil,
-                             attributes: [MessageAttribute] = []) -> StoreMessage {
+                             attributes: [MessageAttribute] = [], media: [Media] = []) -> StoreMessage {
     return StoreMessage(id: id, customStableId: nil, globallyUniqueId: nil, groupingKey: nil,
         threadId: nil, timestamp: 100, flags: [.Incoming], tags: [], globalTags: [], localTags: [],
-        forwardInfo: nil, authorId: authorId ?? id.peerId, text: text, attributes: attributes, media: [])
+        forwardInfo: nil, authorId: authorId ?? id.peerId, text: text, attributes: attributes, media: media)
 }

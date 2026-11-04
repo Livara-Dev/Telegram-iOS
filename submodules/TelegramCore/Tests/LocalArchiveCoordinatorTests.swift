@@ -152,11 +152,11 @@ final class LocalArchiveCoordinatorTests: XCTestCase {
         XCTAssertEqual(try self.localArchiveValue(coordinator.status |> filter { $0 == status }), status)
     }
 
-    private func queueDeletion(_ number: Int32 = 1, text: String = "preserved locally") throws -> MessageId {
+    private func queueDeletion(_ number: Int32 = 1, text: String = "preserved locally", media: [Media] = []) throws -> MessageId {
         let id = MessageId(peerId: self.chatPeerId, namespace: Namespaces.Message.Cloud, id: number)
         let accountPeerId = self.accountPeerId
         let _ = try self.localArchiveValue(self.fixture.postbox.transaction { transaction in
-            let _ = transaction.addMessages([localArchiveTestMessage(id, text: text)], location: .Random)
+            let _ = transaction.addMessages([localArchiveTestMessage(id, text: text, media: media)], location: .Random)
             captureDeletedLocalArchiveMessages(transaction: transaction, accountPeerId: accountPeerId, ids: [id], observedAt: 200)
             transaction.deleteMessages([id], forEachMedia: nil)
         })
@@ -270,6 +270,25 @@ final class LocalArchiveCoordinatorTests: XCTestCase {
         XCTAssertTrue(configured.pendingPurge)
         XCTAssertEqual(configured.droppedCaptures, 0)
         XCTAssertNil(instance.storage.with { $0 })
+    }
+
+    func testDeletedPhotoMetadataDrainsToEncryptedStoreAndSurvivesRestart() throws {
+        let image = TelegramMediaImage(imageId: MediaId(namespace: Namespaces.Media.CloudImage, id: 501),
+            representations: [], immediateThumbnailData: nil, reference: nil, partialReference: nil, flags: [])
+        let id = try self.queueDeletion(51, text: "photo caption", media: [image])
+        let first = self.start()
+        try self.awaitStatus(.ready, in: first)
+        XCTAssertTrue(try self.pending().isEmpty)
+        let before = try self.localArchiveValue(try XCTUnwrap(first.coordinator).deletedMessages())
+        XCTAssertEqual(before.records.first?.unavailableMediaCount, 1)
+        try self.stop(first)
+        try self.fixture.reopen()
+        let recovered = self.start()
+        try self.awaitStatus(.ready, in: recovered)
+        let after = try self.localArchiveValue(try XCTUnwrap(recovered.coordinator).deletedMessages())
+        XCTAssertEqual(after.records.first?.messageId, id.id)
+        XCTAssertEqual(after.records.first?.text, "photo caption")
+        XCTAssertEqual(after.records.first?.unavailableMediaCount, 1)
     }
 
     func testCommittedDeletionDrainsIntoRealEncryptedArchiveAndReadsThroughFacade() throws {

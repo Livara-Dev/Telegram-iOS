@@ -27,6 +27,7 @@ public struct LocalArchivedMessage {
     public let observedAt: Int64
     public let serverEditAt: Int64?
     public let isDeleted: Bool
+    public let unavailableMediaCount: Int
 
     init(_ record: ArchivedRecord) {
         self.sequence = record.sequence
@@ -39,6 +40,7 @@ public struct LocalArchivedMessage {
         self.observedAt = record.event.observedAt
         self.serverEditAt = record.event.serverEditAt
         self.isDeleted = record.event.kind == .deleted
+        self.unavailableMediaCount = localArchiveDecodedMediaMetadata(record.event.content.entities)?.count ?? 0
     }
 }
 

@@ -428,6 +428,12 @@ final class LocalArchiveReplayTests: XCTestCase {
         XCTAssertEqual(try self.localArchiveValue(self.fixture.postbox.transaction { $0.getMessageGroup(first)?.count }), 2)
         try self.interactiveDelete([first], deleteAllInGroup: true)
         XCTAssertEqual(Set(try self.pending().map { $0.messageId }), Set([first, second]))
+        for operation in try self.pending() {
+            let metadata = try XCTUnwrap(localArchiveDecodedMediaMetadata(operation.entities))
+            XCTAssertEqual(metadata.map(\.kind), [.photo])
+            XCTAssertEqual(metadata.map(\.id), [Int64(operation.messageId.id)])
+            XCTAssertFalse(try XCTUnwrap(metadata.first).bytesPreserved)
+        }
         XCTAssertNil(try self.localArchiveValue(self.fixture.postbox.transaction { $0.getMessage(first) }))
         XCTAssertNil(try self.localArchiveValue(self.fixture.postbox.transaction { $0.getMessage(second) }))
         let outgoing = try self.outgoingDeletes()

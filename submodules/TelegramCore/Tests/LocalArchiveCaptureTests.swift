@@ -78,6 +78,47 @@ final class LocalArchiveCaptureTests: XCTestCase {
         return try self.localArchiveValue(self.fixture.postbox.transaction { localArchiveSettings(transaction: $0).droppedCaptures })
     }
 
+    private func photo(_ id: Int64) -> TelegramMediaImage {
+        return TelegramMediaImage(imageId: MediaId(namespace: Namespaces.Media.CloudImage, id: id),
+            representations: [], immediateThumbnailData: nil, reference: nil, partialReference: nil, flags: [])
+    }
+
+    func testDeletedPhotoMetadataSurvivesPostboxReopenWithoutClaimingFileRetention() throws {
+        try self.settings { $0.enabled = true }
+        let id = self.id(71)
+        try self.store([localArchiveTestMessage(id, text: "caption", media: [self.photo(701)])])
+        try self.captureAndDelete([id])
+        try self.fixture.reopen()
+        let operation = try XCTUnwrap(self.pending().first?.operation)
+        let capture = try XCTUnwrap(operation.makeCapture(accountId: 55))
+        let metadata = try XCTUnwrap(localArchiveDecodedMediaMetadata(capture.event.content.entities))
+        XCTAssertEqual(capture.event.content.text, "caption")
+        XCTAssertEqual(metadata.map(\.kind), [.photo])
+        XCTAssertEqual(metadata.map(\.id), [701])
+        XCTAssertFalse(try XCTUnwrap(metadata.first).bytesPreserved)
+        XCTAssertEqual(try self.missedCaptures(), 1)
+        XCTAssertNil(try self.localArchiveValue(self.fixture.postbox.transaction { $0.getMessage(id) }))
+    }
+
+    func testAttachmentOnlyEditKeepsPreviousPhotoIdentity() throws {
+        try self.settings { $0.enabled = true }
+        let id = self.id(72)
+        try self.store([localArchiveTestMessage(id, text: "unchanged caption", media: [self.photo(702)])])
+        try self.captureAndEdit(id, updated: localArchiveTestMessage(id, text: "unchanged caption", media: [self.photo(703)]))
+        let operation = try XCTUnwrap(self.pending().first?.operation)
+        XCTAssertEqual(operation.kindRawValue, ArchiveEventKind.edited.rawValue)
+        XCTAssertEqual(try XCTUnwrap(localArchiveDecodedMediaMetadata(operation.entities)).map(\.id), [702])
+        XCTAssertEqual(operation.text, "unchanged caption")
+    }
+
+    func testRepeatedPhotoIdentityDoesNotCreateAnEditVersion() throws {
+        try self.settings { $0.enabled = true }
+        let id = self.id(73)
+        try self.store([localArchiveTestMessage(id, text: "caption", media: [self.photo(704)])])
+        try self.captureAndEdit(id, updated: localArchiveTestMessage(id, text: "caption", media: [self.photo(704)]))
+        XCTAssertTrue(try self.pending().isEmpty)
+    }
+
     func testDisabledByDefaultStillAppliesCanonicalDeletion() throws {
         let id = self.id(1)
         try self.store([localArchiveTestMessage(id)])

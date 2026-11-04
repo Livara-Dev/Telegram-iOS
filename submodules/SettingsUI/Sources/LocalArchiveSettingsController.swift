@@ -434,7 +434,7 @@ private func localArchiveMessagesController(context: AccountContext, archive: Lo
                 let kind = record.isDeleted ? "Deleted" : "Before edit"
                 let peerName = state.peerNames[record.peerId] ?? "Unavailable chat"
                 if message == nil {
-                    let preview = record.text.isEmpty ? "[No text]" : String(record.text.prefix(160))
+                    let preview = record.text.isEmpty ? (record.unavailableMediaCount > 0 ? "[Attachment file not archived]" : "[No text]") : String(record.text.prefix(160))
                     entries.append(LocalArchiveRow(stableId: .record(record.sequence), order: 4 + index, section: 1, content: .action(preview, "\(peerName) · \(date)", true)))
                 } else {
                     let sent = formatter.string(from: Date(timeIntervalSince1970: TimeInterval(record.sentAt)))
@@ -445,6 +445,9 @@ private func localArchiveMessagesController(context: AccountContext, archive: Lo
                     entries.append(LocalArchiveRow(stableId: .recordHeading(record.sequence), order: 4 + index * 2, section: Int32(1 + index), content: .heading(detail)))
                     let boundedText = String(record.text.prefix(8001))
                     var text = boundedText.isEmpty ? "[No text]" : String(boundedText.prefix(8000))
+                    if record.unavailableMediaCount > 0 {
+                        text += "\n\n[\(record.unavailableMediaCount) attachment(s): metadata saved; file bytes not archived.]"
+                    }
                     if boundedText.count > 8000 {
                         text += "\n\n[Preview limited to 8,000 characters.]"
                     }
