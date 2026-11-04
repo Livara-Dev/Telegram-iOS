@@ -65,3 +65,8 @@ and standalone iOS simulator module compilation. [Verified artifact details](evi
 and SHA-256 digest. This result predates the global-delete handoff and truncated-
 file fixes, and does not validate TelegramCore integration, SettingsUI, codec
 playback, an application package or physical iPhone behavior.
+
+The same `aba9fae9` revision passed 201 Postbox and 59 archive tests on the iOS
+simulator, then failed compiling the TelegramCore media-read signal. No new
+TelegramCore media-capture/replay case executed. The explicit weak-capture fix
+and release-completion regression are pending a new native run.

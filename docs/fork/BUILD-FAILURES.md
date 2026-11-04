@@ -66,3 +66,14 @@ configuration files, credential values, signing keys, and bundle contents; paths
 and API secrets are redacted. Unsafe paths and diagnostic failures are ignored
 without changing the original build result. This is evidence collection, not a
 signing workaround or an asserted fix for Apple's code-signing error.
+
+## Media integration compiler failure
+
+Run `41838526609` at `aba9fae9` passed 201 Postbox and 59 archive XCTest cases on
+iOS 27.0. TelegramCore then failed Swift compilation in `mediaData` because the
+outer signal implicitly captured `self` strongly and its nested closure captured
+it weakly. TextFormat and the projection target also failed to build on this
+shared dependency; no cases in those three targets executed. The explicit weak
+outer capture now follows the existing page-reader pattern and returns a nil
+result with completion when the coordinator is released. A lifetime regression
+is included. [Verified failure evidence](evidence/archive-media-integration-aba9fae9.json) records the exact revision and checksum; the fix still requires native validation.

@@ -248,7 +248,11 @@ public final class LocalArchiveCoordinator {
     }
 
     public func mediaData(eventKey: String, slot: Int) -> Signal<Data?, NoError> {
-        return Signal { subscriber in
+        return Signal { [weak self] subscriber in
+            guard let self else {
+                subscriber.putNext(nil); subscriber.putCompletion()
+                return EmptyDisposable
+            }
             self.queue.justDispatch { [weak self] in
                 guard let self, !self.stopped, self.mayAccessProtectedData, self.activeSettings.enabled,
                       !self.activeSettings.pendingPurge, let storage = self.storage else {
@@ -256,7 +260,11 @@ public final class LocalArchiveCoordinator {
                 }
                 let epoch = self.epoch
                 storage.media(eventKey: eventKey, slot: slot) { [weak self] result in
-                    self?.queue.justDispatch { [weak self] in
+                    guard let self else {
+                        subscriber.putNext(nil); subscriber.putCompletion()
+                        return
+                    }
+                    self.queue.justDispatch { [weak self] in
                         guard let self, self.isCurrent(epoch) else { subscriber.putNext(nil); subscriber.putCompletion(); return }
                         subscriber.putNext((try? result.get())?.data)
                         subscriber.putCompletion()

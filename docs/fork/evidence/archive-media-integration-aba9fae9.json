@@ -1,0 +1,20 @@
+{
+  "source_commit": "aba9fae93c44d9b3db41b71ea1c0d83330701c99",
+  "run_id": 41838526609,
+  "job_id": 126603668136,
+  "artifact_id": 13327614872,
+  "artifact_sha256": "c65d536c3b961b5fc5cf22cad312a9709a9d30baee8053d84e15f6a8cd126791",
+  "passed_xctest_cases": {
+    "Postbox": 201,
+    "LocalMessageArchive": 59
+  },
+  "not_executed": [
+    "TelegramCoreTests",
+    "TextFormatTests",
+    "ChatLocalTextFilterProjectionTests"
+  ],
+  "failure": "Swift compilation: LocalArchiveCoordinator.swift:252 weak nested capture differs from implicit strong outer capture.",
+  "response": "Media signal now explicitly captures the coordinator weakly and completes if released. Native rerun required.",
+  "full_application_built": false,
+  "physical_device_verified": false
+}

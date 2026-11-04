@@ -331,6 +331,16 @@ final class LocalArchiveCoordinatorTests: XCTestCase {
         XCTAssertEqual(settings.maxPayloadBytes, 1024 * 1024 * 1024)
     }
 
+    func testMediaSignalCompletesAfterCoordinatorRelease() throws {
+        let instance = self.start()
+        try self.awaitStatus(.ready, in: instance)
+        weak var coordinator = instance.coordinator
+        let signal = try XCTUnwrap(instance.coordinator).mediaData(eventKey: "unavailable", slot: 0)
+        try self.stop(instance)
+        XCTAssertNil(coordinator, "an unstarted media signal must not retain an account coordinator")
+        XCTAssertNil(try self.localArchiveValue(signal))
+    }
+
     func testMalformedMimeDoesNotBlockDurableMediaCapture() throws {
         let bytes = Data([1, 2, 3])
         let resource = CloudDocumentMediaResource(datacenterId: 1, fileId: 9500, accessHash: 0, size: Int64(bytes.count), fileReference: nil, fileName: nil)
