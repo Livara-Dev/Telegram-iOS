@@ -164,7 +164,7 @@ swift_library(
     deps = [
         ":SettingsUI",
         "//submodules/TelegramCore:TelegramCore",
-        "//submodules/SwiftSignalKit:SwiftSignalKit",
+        "//submodules/SSignalKit/SwiftSignalKit:SwiftSignalKit",
     ],
 )
 

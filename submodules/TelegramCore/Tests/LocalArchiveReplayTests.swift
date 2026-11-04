@@ -271,7 +271,7 @@ final class LocalArchiveReplayTests: XCTestCase {
         let channel = try self.installRangeTestChannel()
         let id = MessageId(peerId: channel, namespace: Namespaces.Message.Cloud, id: 10)
         let resource = CloudDocumentMediaResource(datacenterId: 1, fileId: 8201, accessHash: 0, size: 3, fileReference: nil, fileName: nil)
-        let file = TelegramMediaFile(fileId: MediaId(namespace: Namespaces.Media.CloudFile, id: 8201), partialReference: nil, resource: resource, previewRepresentations: [], videoThumbnails: [], immediateThumbnailData: nil, mimeType: "video/mp4", size: 3, attributes: [])
+        let file = TelegramMediaFile(fileId: MediaId(namespace: Namespaces.Media.CloudFile, id: 8201), partialReference: nil, resource: resource, previewRepresentations: [], videoThumbnails: [], immediateThumbnailData: nil, mimeType: "video/mp4", size: 3, attributes: [], alternativeRepresentations: [])
         self.fixture.postbox.mediaBox.storeResourceData(resource.id, data: Data([1, 2, 3]), synchronous: true)
         try self.store([localArchiveTestMessage(id, attributes: [AutoremoveTimeoutMessageAttribute(timeout: 30, countdownBeginTime: nil)], media: [file])])
         _ = try XCTUnwrap(self.replay(self.finalState([.UpdateMinAvailableMessage(id)], including: [channel])))

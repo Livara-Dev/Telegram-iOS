@@ -1,0 +1,50 @@
+{
+  "source_commit": "b324f0d59935fce70b0577b87c7aeb59b1a085c4",
+  "run_id": 41880193766,
+  "integration_job_id": 126750330595,
+  "overall_result": "failure",
+  "network_stats_optional_compile_errors": "not present; production TelegramCore compiled",
+  "suites": {
+    "Postbox": {
+      "executed": 201,
+      "failures": 0,
+      "result": "passed"
+    },
+    "LocalMessageArchive": {
+      "executed": 77,
+      "failures": 0,
+      "result": "passed"
+    },
+    "TextFormat": {
+      "executed": 270,
+      "failures": 0,
+      "result": "passed"
+    },
+    "TelegramCore": {
+      "executed": 0,
+      "result": "test fixture failed compilation",
+      "error": "missing alternativeRepresentations argument in LocalArchiveReplayTests"
+    },
+    "LocalArchivePlayback": {
+      "executed": 5,
+      "failures": 1,
+      "result": "failed",
+      "error": "AVFoundation -11800 with underlying NSPOSIXErrorDomain code1"
+    },
+    "SettingsUI": {
+      "executed": 0,
+      "result": "invalid SwiftSignalKit dependency label"
+    },
+    "ChatLocalTextFilterProjection": {
+      "executed": 0,
+      "result": "host startup failure"
+    }
+  },
+  "artifact": {
+    "id": 13354087568,
+    "sha256": "5ba6569017de47045f07282c43f3fe3eb079ffb513e867854e7d6c5b6ceb40a2",
+    "outer_and_inner_checksums_verified": true
+  },
+  "device_build": "separate job still running at evidence collection",
+  "physical_device_verified": false
+}

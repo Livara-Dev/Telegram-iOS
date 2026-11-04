@@ -197,3 +197,22 @@ value through unchanged. No collector is created, force-unwrapped or substituted
 resource routing, secret-file keys and decryption arguments are unchanged.
 The source fix requires full native qualification at the corrected commit.
 The failed run produced no IPA; its integration job was canceled before running.
+
+
+## Native result after optional-statistics fix
+
+At `b324f0d5`, run 41880193766 compiled production TelegramCore without the
+optional `NetworkStatsContext` errors. Native Postbox (201), LocalMessageArchive
+(77), and TextFormat (270) cases passed. The TelegramCore test bundle stopped at
+a missing `alternativeRepresentations: []` fixture argument; SettingsUITests
+referenced the nonexistent `//submodules/SwiftSignalKit` package instead of
+`//submodules/SSignalKit/SwiftSignalKit`. Both fixture/build-label errors are now
+corrected in source, pending rerun.
+
+The encrypted-movie playback case failed with AVFoundation -11800 / POSIX EPERM.
+Its cause is not established. External-reference restrictions remain enabled;
+no network fallback or plaintext production-media file was introduced to make
+the test pass. Four other playback cases passed. The hosted projection suite
+again failed before executing cases; its launch probe could not query the
+simulator within the diagnostic bound. The separate device build remained
+active during collection. [Checksummed native evidence](evidence/telemetry-fetch-b324f0d5.json).
