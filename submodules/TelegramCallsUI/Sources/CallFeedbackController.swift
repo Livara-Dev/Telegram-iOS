@@ -213,7 +213,7 @@ private struct CallFeedbackState: Equatable {
     let comment: String
     let includeLogs: Bool
     
-    init(reasons: Set<CallFeedbackReason> = Set(), comment: String = "", includeLogs: Bool = true) {
+    init(reasons: Set<CallFeedbackReason> = Set(), comment: String = "", includeLogs: Bool = false) {
         self.reasons = reasons
         self.comment = comment
         self.includeLogs = includeLogs
@@ -253,8 +253,6 @@ private func callFeedbackControllerEntries(theme: PresentationTheme, strings: Pr
     
     entries.append(.comment(theme, state.comment, strings.CallFeedback_AddComment))
     
-    entries.append(.includeLogs(theme, strings.CallFeedback_IncludeLogs, state.includeLogs))
-    entries.append(.includeLogsInfo(theme, strings.CallFeedback_IncludeLogsInfo))
     
     return entries
 }
@@ -312,7 +310,7 @@ public func callFeedbackController(sharedContext: SharedAccountContext, account:
             }
             comment.append(hashtags)
             
-            let _ = rateCallAndSendLogs(engine: TelegramEngine(account: account), callId: callId, starsCount: rating, comment: comment, userInitiated: userInitiated, includeLogs: state.includeLogs).start()
+            let _ = rateCallWithoutDiagnosticAttachments(engine: TelegramEngine(account: account), callId: callId, starsCount: rating, comment: comment, userInitiated: userInitiated).start()
             dismissImpl?()
             
             presentControllerImpl?(OverlayStatusController(theme: presentationData.theme, type: .starSuccess(presentationData.strings.CallFeedback_Success)))

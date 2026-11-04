@@ -26,7 +26,7 @@ def fixture():
 class ConfigurationTests(unittest.TestCase):
     def test_valid_config_disables_optional_cloud_services(self):
         value = baseline.configuration(fixture())
-        self.assertEqual(value["app_center_id"], "0")
+        self.assertEqual(value["app_center_id"], "")
         self.assertFalse(value["enable_icloud"])
         self.assertFalse(value["enable_siri"])
 

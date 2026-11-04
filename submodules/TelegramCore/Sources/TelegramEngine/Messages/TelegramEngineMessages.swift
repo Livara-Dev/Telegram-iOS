@@ -1876,49 +1876,16 @@ public extension TelegramEngine {
             return GroupCallMessagesContext(account: self.account, appConfig: appConfig, callId: callId, reference: reference, e2eContext: e2eContext, messageLifetime: messageLifetime, isLiveStream: isLiveStream)
         }
         
+        // Optional behavior analytics are disabled; ordinary message read state
+        // and media playback are separate APIs and keep their existing behavior.
         public func reportPeerReadMetrics(peerId: EnginePeer.Id, metrics: [TelegramMessageReadMetric]) -> Signal<Never, NoError> {
-            return self.account.postbox.transaction { transaction -> Api.InputPeer? in
-                return transaction.getPeer(peerId).flatMap(apiInputPeer)
-            }
-            |> mapToSignal { inputPeer -> Signal<Never, NoError> in
-                guard let inputPeer else {
-                    return .complete()
-                }
-                return self.account.network.request(Api.functions.messages.reportReadMetrics(
-                    peer: inputPeer,
-                    metrics: metrics.map { metric in
-                        return Api.InputMessageReadMetric.inputMessageReadMetric(Api.InputMessageReadMetric.Cons_inputMessageReadMetric(
-                            msgId: metric.messageId.id,
-                            viewId: metric.id,
-                            timeInViewMs: Int32(metric.timeInViewMs),
-                            activeTimeInViewMs: Int32(metric.activeTimeInViewMs),
-                            heightToViewportRatioPermille: Int32((metric.heightToViewportRatio * 1000.0).rounded()),
-                            seenRangeRatioPermille: Int32((metric.seenRangeRatio * 1000.0).rounded())
-                        ))
-                    }
-                ))
-                |> `catch` { _ -> Signal<Api.Bool, NoError> in
-                    return .single(.boolFalse)
-                }
-                |> ignoreValues
-            }
+            return .complete()
         }
-        
+
         public func reportMusicListened(file: FileMediaReference, duration: Int) -> Signal<Never, NoError> {
-            guard let resource = file.media.resource as? CloudDocumentMediaResource, let reference = file.resourceReference(file.media.resource) as? TelegramCloudMediaResourceWithFileReference else {
-                return .complete()
-            }
-            return self.account.network.request(Api.functions.messages.reportMusicListen(id: .inputDocument(Api.InputDocument.Cons_inputDocument(
-                id: resource.fileId,
-                accessHash: resource.accessHash,
-                fileReference: Buffer(data: reference.fileReference ?? Data())
-            )), listenedDuration: Int32(clamping: duration)))
-            |> `catch` { _ -> Signal<Api.Bool, NoError> in
-                return .single(.boolFalse)
-            }
-            |> ignoreValues
+            return .complete()
         }
-        
+
         public func composeAIMessageStyles() -> Signal<[TelegramComposeAIMessageMode.CloudStyle], NoError> {
             return _internal_cachedCloudAITextStyles(postbox: self.account.postbox)
             |> map { value in

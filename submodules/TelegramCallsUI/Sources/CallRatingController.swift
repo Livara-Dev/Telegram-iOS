@@ -10,30 +10,10 @@ import TelegramVoip
 import AccountContext
 import AlertComponent
 
-func rateCallAndSendLogs(engine: TelegramEngine, callId: CallId, starsCount: Int, comment: String, userInitiated: Bool, includeLogs: Bool) -> Signal<Void, NoError> {
-    let peerId = EnginePeer.Id(namespace: Namespaces.Peer.CloudUser, id: EnginePeer.Id.Id._internalFromInt64Value(4244000))
-
-    let rate = engine.calls.rateCall(callId: callId, starsCount: Int32(starsCount), comment: comment, userInitiated: userInitiated)
-    if includeLogs {
-        let id = Int64.random(in: Int64.min ... Int64.max)
-        let name = "\(callId.id)_\(callId.accessHash).log.json"
-        let path = callLogsPath(account: engine.account) + "/" + name
-        let file = TelegramMediaFile(fileId: EngineMedia.Id(namespace: Namespaces.Media.LocalFile, id: id), partialReference: nil, resource: LocalFileReferenceMediaResource(localFilePath: path, randomId: id), previewRepresentations: [], videoThumbnails: [], immediateThumbnailData: nil, mimeType: "application/text", size: nil, attributes: [.FileName(fileName: name)], alternativeRepresentations: [])
-        let message = EnqueueMessage.message(text: comment, attributes: [], inlineStickers: [:], mediaReference: .standalone(media: file), threadId: nil, replyToMessageId: nil, replyToStoryId: nil, localGroupingKey: nil, correlationId: nil, bubbleUpEmojiOrStickersets: [])
-        return rate
-        |> then(enqueueMessages(account: engine.account, peerId: peerId, messages: [message])
-        |> mapToSignal({ _ -> Signal<Void, NoError> in
-            return .single(Void())
-        }))
-    } else if !comment.isEmpty {
-        return rate
-        |> then(enqueueMessages(account: engine.account, peerId: peerId, messages: [.message(text: comment, attributes: [], inlineStickers: [:], mediaReference: nil, threadId: nil, replyToMessageId: nil, replyToStoryId: nil, localGroupingKey: nil, correlationId: nil, bubbleUpEmojiOrStickersets: [])])
-        |> mapToSignal({ _ -> Signal<Void, NoError> in
-            return .single(Void())
-        }))
-    } else {
-        return rate
-    }
+// This is an explicit user rating only. Do not send diagnostic files or a
+// second message to a hardcoded support account as a side effect.
+func rateCallWithoutDiagnosticAttachments(engine: TelegramEngine, callId: CallId, starsCount: Int, comment: String, userInitiated: Bool) -> Signal<Void, NoError> {
+    return engine.calls.rateCall(callId: callId, starsCount: Int32(starsCount), comment: comment, userInitiated: userInitiated)
 }
 
 public func callRatingController(
@@ -67,7 +47,7 @@ public func callRatingController(
                 if rating < 4 {
                     push(callFeedbackController(sharedContext: sharedContext, account: account, callId: callId, rating: rating, userInitiated: userInitiated, isVideo: isVideo))
                 } else {
-                    let _ = rateCallAndSendLogs(engine: TelegramEngine(account: account), callId: callId, starsCount: rating, comment: "", userInitiated: userInitiated, includeLogs: false).start()
+                    let _ = rateCallWithoutDiagnosticAttachments(engine: TelegramEngine(account: account), callId: callId, starsCount: rating, comment: "", userInitiated: userInitiated).start()
                 }
             })
         )

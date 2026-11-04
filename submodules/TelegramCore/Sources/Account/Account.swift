@@ -1326,10 +1326,8 @@ public class Account {
     
     var transformOutgoingMessageMedia: TransformOutgoingMessageMedia?
     
-    private var lastSmallLogPostTimestamp: Double?
-    private let smallLogPostDisposable = MetaDisposable()
     
-    let networkStatsContext: NetworkStatsContext
+    let networkStatsContext: NetworkStatsContext?
     
     public let filteredStorySubscriptionsContext: StorySubscriptionsContext?
     public let hiddenStorySubscriptionsContext: StorySubscriptionsContext?
@@ -1348,7 +1346,7 @@ public class Account {
         self.supplementary = supplementary
         self.isSupportUser = isSupportUser
         
-        self.networkStatsContext = NetworkStatsContext(postbox: postbox)
+        self.networkStatsContext = nil
         
         self.peerInputActivityManager = PeerInputActivityManager()
         
@@ -1423,9 +1421,9 @@ public class Account {
                 strongSelf.callSessionManager.dropAll()
             }
         }
-        self.network.didReceiveSoftAuthResetError = { [weak self] in
-            self?.postSmallLogIfNeeded()
-        }
+        // Authentication recovery stays in Network. The optional short-log
+        // upload callback is deliberately not installed.
+        self.network.didReceiveSoftAuthResetError = nil
         
         let networkStateQueue = Queue()
         
@@ -1623,9 +1621,6 @@ public class Account {
             network.disableRustEngine(reason: reason ?? "")
         }))
         #endif
-        if !supplementary {
-            self.managedOperationsDisposable.add(managedNetworkTelemetryReports(postbox: postbox, network: network).start())
-        }
 
         if !supplementary {
             let mediaBox = postbox.mediaBox
@@ -1679,35 +1674,11 @@ public class Account {
         self.managedServiceViewsActionDisposable.dispose()
         self.managedOperationsDisposable.dispose()
         self.storageSettingsDisposable?.dispose()
-        self.smallLogPostDisposable.dispose()
         self.networkTypeDisposable?.dispose()
     }
     
     private func restartConfigurationUpdates() {
         self.managedOperationsDisposable.add(managedConfigurationUpdates(accountManager: self.accountManager, postbox: self.postbox, network: self.network).start())
-    }
-    
-    private func postSmallLogIfNeeded() {
-        let timestamp = CFAbsoluteTimeGetCurrent()
-        if self.lastSmallLogPostTimestamp == nil || self.lastSmallLogPostTimestamp! < timestamp - 30.0 {
-            self.lastSmallLogPostTimestamp = timestamp
-            let network = self.network
-            
-            self.smallLogPostDisposable.set((Logger.shared.collectShortLog()
-            |> mapToSignal { events -> Signal<Never, NoError> in
-                if events.isEmpty {
-                    return .complete()
-                } else {
-                    return network.request(Api.functions.help.saveAppLog(events: events.map { event -> Api.InputAppEvent in
-                        return .inputAppEvent(.init(time: event.0, type: "", peer: 0, data: .jsonString(.init(value: event.1))))
-                    }))
-                    |> ignoreValues
-                    |> `catch` { _ -> Signal<Never, NoError> in
-                        return .complete()
-                    }
-                }
-            }).start())
-        }
     }
     
     public func resetStateManagement() {
@@ -1896,7 +1867,7 @@ public func standaloneStateManager(
                                 Logger.shared.log("StandaloneStateManager", "received phone number")
                                 
                                 let mediaReferenceRevalidationContext = MediaReferenceRevalidationContext()
-                                let networkStatsContext = NetworkStatsContext(postbox: postbox)
+                                let networkStatsContext: NetworkStatsContext? = nil
                                 
                                 return initializedNetwork(
                                     accountId: id,
