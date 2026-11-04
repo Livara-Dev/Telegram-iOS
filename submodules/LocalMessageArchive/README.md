@@ -43,7 +43,7 @@ successful `record` completion before treating a snapshot as durable. The future
 Postbox adapter needs a durable capture/outbox and deletion barrier; independent
 databases do not offer a shared transaction. No hook is installed by this draft.
 
-Schema version 3 preserves the version-1 event layout: a unique event key,
+Schema version 4 preserves the version-1 event layout: a unique event key,
 account/peer/namespace/message identity, previous text/entity metadata, event kind,
 local observation time, optional server edit time, and monotonically increasing
 local sequence. Timeline pages use capture sequence, not an assumed server order.
@@ -70,15 +70,30 @@ Capture is disabled by default and unclassified, secret, expiring, and view-once
 messages are excluded. Bot conversations are excluded by default; peer and sender
 exclusions are supported. No messages can be recovered before capture.
 
-An identical event retry is a no-op while that event exists. Reusing its key with
-different data fails and rolls back the whole batch. There are no replay tombstones
-for retention within a generation. A replay with the same original expired time
-is immediately pruned; a caller that invents a new time can reintroduce evicted data.
+For generic `record` calls, an identical event retry is a no-op while that event
+exists. Reusing its key with different data fails and rolls back the whole batch.
+Generic calls do not carry durable replay receipts after retention.
+
+The application outbox uses `recordFromOutbox` instead. Version 4 adds one
+account/generation-scoped high-water index and its last event key, committed in
+the same transaction as the snapshot and retention. The caller must supply
+monotonically increasing indices from a **single ordered outbox**, process them
+in ascending order, and never reset/reuse them within a generation. Skipped
+indices are permitted (for example when a capture was rejected before enqueue).
+Entries at/below the receipt are consumed without reinsertion even when their
+snapshot was evicted. The current boundary detects a different event key; while
+an event still exists, conflicting content is rejected too. Older evicted payload
+identity cannot be reconstructed from this bounded receipt, so these ordering
+requirements are essential. Policy-excluded events advance the receipt too,
+preventing later policy changes from resurrecting an already-consumed item.
+Version-4 migration initializes an empty receipt without changing history or
+generation; it cannot retroactively deduplicate old generic calls.
 
 `record` requires an explicit generation and checks it against the persisted value
 inside the same write transaction as capture. Stale and future generations are
 rejected. `currentGeneration` exposes the current token. `purge(advancingToGeneration:)`
-accepts exactly the next generation, clearing events and advancing metadata
+accepts exactly the next generation, clearing events, resetting the outbox receipt
+and advancing metadata
 atomically. Retrying the current generation is a no-op, preserving records captured
 after the completed purge. Older targets, skipped generations and counter exhaustion
 fail without deletion. Generations survive reopen and are isolated by account.
@@ -149,3 +164,11 @@ account isolation, fault rollback after event deletion, integer exhaustion, and
 a queued writer/purge boundary. They do not exercise a Telegram/Postbox outbox.
 Real Keychain accessibility, interruption/storage exhaustion, Telegram deletion
 ordering, media and foreground/background behavior remain integration work.
+
+Schema-4 tests cover an encrypted version-3 migration, partial migration rollback,
+replay after quota/age retention and reopening, injected receipt failure rolling
+back insertion/retention/counters together, policy changes, shared handles,
+account/generation isolation and malformed cursor/boundary input. These tests
+require a new native CI result; the schema-3 result cited above does not validate
+these later changes. Library receipt tests do not establish the Postbox caller's
+commit durability or application lifecycle behavior.

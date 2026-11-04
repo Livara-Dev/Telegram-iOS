@@ -65,6 +65,13 @@ final class ArchiveStoreTests: XCTestCase {
     private func generation(_ store: ArchiveStore) throws -> Int64 {
         try awaitResult { store.currentGeneration(completion: $0) }
     }
+    private func writeOutbox(_ store: ArchiveStore, _ event: ArchiveEvent, index: Int64,
+                             generation: Int64 = 0, policy: ArchiveCapturePolicy? = nil) throws -> ArchiveWriteResult {
+        try awaitResult {
+            store.recordFromOutbox(capture(event), index: index, generation: generation,
+                                   policy: policy ?? enabled, completion: $0)
+        }
+    }
     private func purge(_ store: ArchiveStore, to target: Int64) throws -> ArchivePurgeResult {
         try awaitResult { store.purge(advancingToGeneration: target, completion: $0) }
     }
@@ -261,9 +268,9 @@ final class ArchiveStoreTests: XCTestCase {
 
     func testFutureSchemaIsRejectedWithoutMigration() throws {
         let store = try open(); close(store)
-        try rawDatabase(store.databaseURL, statements: ["PRAGMA user_version=4"])
+        try rawDatabase(store.databaseURL, statements: ["PRAGMA user_version=5"])
         let before = try Data(contentsOf: store.databaseURL)
-        assertError(.unsupportedSchema(4)) { try open() }
+        assertError(.unsupportedSchema(5)) { try open() }
         XCTAssertEqual(try Data(contentsOf: store.databaseURL), before)
     }
 
@@ -314,7 +321,7 @@ final class ArchiveStoreTests: XCTestCase {
         XCTAssertEqual(timeline.map(\.event), expected)
         XCTAssertEqual(timeline.map(\.sequence), [7, 9])
         XCTAssertEqual(try usage(store), ArchiveUsage(records: 2, logicalPayloadBytes: 167))
-        XCTAssertEqual(try rawInteger(url, query: "PRAGMA user_version"), 3)
+        XCTAssertEqual(try rawInteger(url, query: "PRAGMA user_version"), 4)
         _ = try write(store, [event("after-migration")])
         XCTAssertEqual(try usage(store).records, 3)
         close(store)
@@ -440,7 +447,7 @@ final class ArchiveStoreTests: XCTestCase {
         let store = try open()
         XCTAssertEqual(try generation(store), 0)
         XCTAssertEqual(try usage(store), ArchiveUsage(records: 2, logicalPayloadBytes: 167))
-        XCTAssertEqual(try rawInteger(url, query: "PRAGMA user_version"), 3)
+        XCTAssertEqual(try rawInteger(url, query: "PRAGMA user_version"), 4)
         XCTAssertEqual(try records(store).first?.event.eventKey, "legacy-delete")
         _ = try write(store, [event("generation-zero")], generation: 0)
         close(store)
@@ -550,6 +557,131 @@ final class ArchiveStoreTests: XCTestCase {
         XCTAssertEqual(try generation(store), 1)
         XCTAssertEqual(try records(store).map(\.event.eventKey), ["after"])
         XCTAssertEqual(try usage(store).records, 1)
+    }
+
+    private func legacyV3Database(extraStatements: [String] = []) throws -> URL {
+        let url = try legacyV2Database()
+        try rawDatabase(url, statements: [
+            "ALTER TABLE archive_meta ADD COLUMN capture_generation INTEGER NOT NULL DEFAULT 0 CHECK(typeof(capture_generation)='integer' AND capture_generation>=0)",
+            "PRAGMA user_version=3"
+        ] + extraStatements)
+        return url
+    }
+
+    func testVersionThreeMigrationPreservesGenerationAndInitializesOutboxReceipt() throws {
+        let url = try legacyV3Database(extraStatements: ["UPDATE archive_meta SET capture_generation=7"])
+        let store = try open()
+        XCTAssertEqual(try generation(store), 7)
+        XCTAssertEqual(try rawInteger(url, query: "PRAGMA user_version"), 4)
+        XCTAssertEqual(try rawInteger(url, query: "SELECT outbox_high_water FROM archive_meta"), -1)
+        XCTAssertEqual(try usage(store), ArchiveUsage(records: 2, logicalPayloadBytes: 167))
+        XCTAssertEqual(try writeOutbox(store, event("new-receipt"), index: 24, generation: 7).inserted, 1)
+        close(store)
+        let reopened = try open()
+        XCTAssertEqual(try generation(reopened), 7)
+        XCTAssertEqual(try rawInteger(url, query: "SELECT outbox_high_water FROM archive_meta"), 24)
+        XCTAssertEqual(try writeOutbox(reopened, event("new-receipt"), index: 24, generation: 7).duplicates, 1)
+    }
+
+    func testVersionFourMigrationFailureRollsBackReceiptColumns() throws {
+        let url = try legacyV3Database(extraStatements: [
+            // Second ALTER fails after the first succeeds; the migration must roll back both.
+            "ALTER TABLE archive_meta ADD COLUMN outbox_last_event_key TEXT NOT NULL DEFAULT ''"
+        ])
+        XCTAssertThrowsError(try open())
+        XCTAssertEqual(try rawInteger(url, query: "PRAGMA user_version"), 3)
+        XCTAssertEqual(try rawInteger(url, query: "SELECT COUNT(*) FROM pragma_table_info('archive_meta') WHERE name='outbox_high_water'"), 0)
+        XCTAssertEqual(try rawInteger(url, query: "SELECT COUNT(*) FROM events"), 2)
+        try rawDatabase(url, statements: ["ALTER TABLE archive_meta DROP COLUMN outbox_last_event_key"])
+        XCTAssertEqual(try usage(open()).records, 2)
+        XCTAssertEqual(try rawInteger(url, query: "PRAGMA user_version"), 4)
+    }
+
+    func testOutboxReplayAfterQuotaAndAgeRetentionDoesNotResurrectMessages() throws {
+        let policy = ArchiveRetentionPolicy(maxAgeSeconds: 1000, maxPayloadBytes: 66)
+        let store = try open(retention: policy)
+        let first = event("a", text: "a"), second = event("b", text: "b")
+        XCTAssertEqual(try writeOutbox(store, first, index: 0).inserted, 1)
+        XCTAssertEqual(try writeOutbox(store, second, index: 1).removedByRetention, 1)
+        XCTAssertEqual(try records(store).map(\.event.eventKey), ["b"])
+        // Simulate restart after archive commit but before the Postbox acknowledgement.
+        close(store)
+        let reopened = try open(retention: policy)
+        XCTAssertEqual(try writeOutbox(reopened, first, index: 0).duplicates, 1)
+        XCTAssertEqual(try records(reopened).map(\.event.eventKey), ["b"])
+        let removed: Int = try awaitResult {
+            reopened.setRetention(ArchiveRetentionPolicy(maxAgeSeconds: 50, maxPayloadBytes: 66), completion: $0)
+        }
+        XCTAssertEqual(removed, 1)
+        XCTAssertEqual(try writeOutbox(reopened, second, index: 1).duplicates, 1)
+        XCTAssertTrue(try records(reopened).isEmpty)
+        XCTAssertEqual(try rawInteger(reopened.databaseURL, query: "SELECT outbox_high_water FROM archive_meta"), 1)
+    }
+
+    func testOutboxReceiptFailureRollsBackInsertRetentionCountersAndCursor() throws {
+        let store = try open(retention: ArchiveRetentionPolicy(maxAgeSeconds: 1000, maxPayloadBytes: 66))
+        _ = try writeOutbox(store, event("a", text: "a"), index: 0)
+        try rawDatabase(store.databaseURL, statements: [
+            "CREATE TRIGGER test_receipt_fault BEFORE UPDATE OF outbox_high_water ON archive_meta BEGIN SELECT RAISE(ABORT,'Injected receipt failure'); END"
+        ])
+        XCTAssertThrowsError(try writeOutbox(store, event("b", text: "b"), index: 1))
+        XCTAssertEqual(try records(store).map(\.event.eventKey), ["a"])
+        XCTAssertEqual(try usage(store), ArchiveUsage(records: 1, logicalPayloadBytes: 66))
+        XCTAssertEqual(try rawInteger(store.databaseURL, query: "SELECT outbox_high_water FROM archive_meta"), 0)
+        try rawDatabase(store.databaseURL, statements: ["DROP TRIGGER test_receipt_fault"])
+        XCTAssertEqual(try writeOutbox(store, event("b", text: "b"), index: 1).inserted, 1)
+        XCTAssertEqual(try records(store).map(\.event.eventKey), ["b"])
+        XCTAssertEqual(try rawInteger(store.databaseURL, query: "SELECT outbox_high_water FROM archive_meta"), 1)
+    }
+
+    func testOutboxExclusionsAreConsumedAndDoNotReappearAfterPolicyChange() throws {
+        let store = try open()
+        let excluded = event("excluded")
+        XCTAssertEqual(try writeOutbox(store, excluded, index: 3, policy: ArchiveCapturePolicy()).excluded, 1)
+        XCTAssertEqual(try writeOutbox(store, excluded, index: 3).duplicates, 1)
+        XCTAssertTrue(try records(store).isEmpty)
+        XCTAssertEqual(try writeOutbox(store, event("next"), index: 8).inserted, 1)
+        XCTAssertEqual(try records(store).map(\.event.eventKey), ["next"])
+    }
+
+    func testOutboxReceiptIsSharedAcrossHandlesButIsolatedAcrossAccountsAndGenerations() throws {
+        let first = try open(), second = try open(), other = try open(account: 2)
+        let original = event("same")
+        _ = try writeOutbox(first, original, index: 20)
+        XCTAssertEqual(try writeOutbox(second, original, index: 20).duplicates, 1)
+        XCTAssertEqual(try writeOutbox(other, event("same", account: 2), index: 20).inserted, 1)
+        _ = try purge(second, to: 1)
+        assertError(.generationMismatch(expected: 1, received: 0)) { try writeOutbox(first, original, index: 20) }
+        XCTAssertEqual(try writeOutbox(first, event("new-generation"), index: 21, generation: 1).inserted, 1)
+        XCTAssertFalse(try purge(second, to: 1).didPurge)
+        XCTAssertEqual(try writeOutbox(second, event("new-generation"), index: 21, generation: 1).duplicates, 1)
+        XCTAssertEqual(try rawInteger(first.databaseURL, query: "SELECT outbox_high_water FROM archive_meta"), 21)
+        XCTAssertEqual(try generation(other), 0)
+        XCTAssertEqual(try records(other).map(\.event.eventKey), ["same"])
+    }
+
+    func testOutboxRejectsInvalidIndicesAccountGenerationAndBoundaryReuse() throws {
+        let store = try open()
+        assertError(.invalidInput) { try writeOutbox(store, event("negative"), index: -1) }
+        assertError(.accountMismatch) { try writeOutbox(store, event("wrong", account: 2), index: 0) }
+        assertError(.generationMismatch(expected: 0, received: 1)) { try writeOutbox(store, event("future"), index: 0, generation: 1) }
+        XCTAssertEqual(try rawInteger(store.databaseURL, query: "SELECT outbox_high_water FROM archive_meta"), -1)
+        _ = try writeOutbox(store, event("initial"), index: 0)
+        assertError(.eventConflict) { try writeOutbox(store, event("reused-index"), index: 0) }
+        assertError(.eventConflict) { try writeOutbox(store, event("initial", text: "changed"), index: 0) }
+        XCTAssertEqual(try records(store).map(\.event.eventKey), ["initial"])
+        XCTAssertEqual(try rawInteger(store.databaseURL, query: "SELECT outbox_high_water FROM archive_meta"), 0)
+    }
+
+    func testOutboxMalformedPersistedReceiptFailsClosed() throws {
+        let store = try open(); close(store)
+        try rawDatabase(store.databaseURL, statements: [
+            "PRAGMA ignore_check_constraints=ON",
+            "UPDATE archive_meta SET outbox_high_water=-2"
+        ])
+        assertError(.unavailable(SQLITE_CORRUPT)) { try open() }
+        try rawDatabase(store.databaseURL, statements: ["UPDATE archive_meta SET outbox_high_water=1,outbox_last_event_key=''"])
+        assertError(.unavailable(SQLITE_CORRUPT)) { try open() }
     }
 
     func testUnknownUnversionedDatabaseIsNotAdopted() throws {

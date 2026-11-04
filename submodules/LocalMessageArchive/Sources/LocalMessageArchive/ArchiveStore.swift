@@ -98,29 +98,70 @@ public final class ArchiveStore {
             return try self.transaction {
                 let current = try self.captureGeneration()
                 guard generation == current else { throw ArchiveError.generationMismatch(expected: current, received: generation) }
-                var inserted = 0, duplicates = 0, excluded = 0
-                for capture in captures {
-                    let event = capture.event
-                    guard policy.allows(event, context: capture.context) else { excluded += 1; continue }
-                    if let existing = try self.read("WHERE event_key = ?", [.text(event.eventKey)]).first {
-                        guard existing.event == event else { throw ArchiveError.eventConflict }
-                        duplicates += 1
-                    } else {
-                        try self.execute("""
-                            INSERT INTO events(event_key,account_id,peer_id,namespace,message_id,kind,observed_at,
-                            server_edit_at,text,author_id,sent_at,entities,payload_bytes) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)
-                            """, [.text(event.eventKey), .integer(self.accountId), .integer(event.message.peerId),
-                                   .integer(Int64(event.message.namespace)), .integer(Int64(event.message.messageId)),
-                                   .integer(Int64(event.kind.rawValue)), .integer(event.observedAt), .optionalInteger(event.serverEditAt),
-                                   .text(event.content.text), .optionalInteger(event.content.authorId), .integer(event.content.sentAt),
-                                   .blob(event.content.entities), .integer(event.logicalBytes)])
-                        inserted += 1
-                    }
-                }
-                let removed = try self.prune(now: now, policy: self.retention)
-                return ArchiveWriteResult(inserted: inserted, duplicates: duplicates, excluded: excluded, removedByRetention: removed)
+                return try self.recordLocked(captures, now: now, policy: policy)
             }
         }
+    }
+
+    /// Consume one item from this account's single monotonically indexed outbox.
+    /// The caller must drain ascending indices and must never reuse/reset an index within a generation.
+    /// A receipt survives event retention, so a crash before the caller's acknowledgement cannot
+    /// resurrect an evicted snapshot. Policy exclusions are also durably consumed.
+    public func recordFromOutbox(_ capture: ArchiveCapture, index: Int64, generation: Int64,
+                                 policy: ArchiveCapturePolicy,
+                                 completion: @escaping (Result<ArchiveWriteResult, ArchiveError>) -> Void) {
+        submit(completion) {
+            let now = self.clock()
+            guard now >= 0, index >= 0, generation >= 0 else { throw ArchiveError.invalidInput }
+            try self.validate(capture.event, now: now)
+            return try self.transaction {
+                let current = try self.captureGeneration()
+                guard generation == current else { throw ArchiveError.generationMismatch(expected: current, received: generation) }
+                let receipt = try self.outboxReceipt()
+                if index <= receipt.index {
+                    // Detect accidental reuse at the current boundary. Older indices have already
+                    // been consumed under the caller's ordering contract; retain no unbounded ledger.
+                    if index == receipt.index, capture.event.eventKey != receipt.eventKey {
+                        throw ArchiveError.eventConflict
+                    }
+                    if let existing = try self.read("WHERE event_key = ?", [.text(capture.event.eventKey)]).first,
+                       existing.event != capture.event {
+                        throw ArchiveError.eventConflict
+                    }
+                    return ArchiveWriteResult(inserted: 0, duplicates: 1, excluded: 0, removedByRetention: 0)
+                }
+                let result = try self.recordLocked([capture], now: now, policy: policy)
+                try self.execute("UPDATE archive_meta SET outbox_high_water=?,outbox_last_event_key=? WHERE id=1",
+                                 [.integer(index), .text(capture.event.eventKey)])
+                guard sqlite3_changes(self.handle) == 1 else { throw ArchiveError.unavailable(SQLITE_CORRUPT) }
+                return result
+            }
+        }
+    }
+
+    /// Called only under the caller's IMMEDIATE transaction.
+    private func recordLocked(_ captures: [ArchiveCapture], now: Int64, policy: ArchiveCapturePolicy) throws -> ArchiveWriteResult {
+        var inserted = 0, duplicates = 0, excluded = 0
+        for capture in captures {
+            let event = capture.event
+            guard policy.allows(event, context: capture.context) else { excluded += 1; continue }
+            if let existing = try read("WHERE event_key = ?", [.text(event.eventKey)]).first {
+                guard existing.event == event else { throw ArchiveError.eventConflict }
+                duplicates += 1
+            } else {
+                try execute("""
+                    INSERT INTO events(event_key,account_id,peer_id,namespace,message_id,kind,observed_at,
+                    server_edit_at,text,author_id,sent_at,entities,payload_bytes) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)
+                    """, [.text(event.eventKey), .integer(accountId), .integer(event.message.peerId),
+                           .integer(Int64(event.message.namespace)), .integer(Int64(event.message.messageId)),
+                           .integer(Int64(event.kind.rawValue)), .integer(event.observedAt), .optionalInteger(event.serverEditAt),
+                           .text(event.content.text), .optionalInteger(event.content.authorId), .integer(event.content.sentAt),
+                           .blob(event.content.entities), .integer(event.logicalBytes)])
+                inserted += 1
+            }
+        }
+        let removed = try prune(now: now, policy: retention)
+        return ArchiveWriteResult(inserted: inserted, duplicates: duplicates, excluded: excluded, removedByRetention: removed)
     }
 
     /// Ordered by local capture sequence, oldest first within this page; server edit time remains separate metadata.
@@ -179,7 +220,7 @@ public final class ArchiveStore {
                 let next = current + 1
                 guard target == next else { throw ArchiveError.generationMismatch(expected: next, received: target) }
                 try self.execute("DELETE FROM events")
-                try self.execute("UPDATE archive_meta SET capture_generation=? WHERE id=1", [.integer(target)])
+                try self.execute("UPDATE archive_meta SET capture_generation=?,outbox_high_water=-1,outbox_last_event_key='' WHERE id=1", [.integer(target)])
                 guard sqlite3_changes(self.handle) == 1 else { throw ArchiveError.unavailable(SQLITE_CORRUPT) }
                 return ArchivePurgeResult(generation: target, didPurge: true)
             }
@@ -204,11 +245,11 @@ public final class ArchiveStore {
         guard !cipher.isEmpty, try scalar("PRAGMA cipher_plaintext_header_size") == 0 else { throw ArchiveError.invalidKey }
         _ = try scalar("SELECT COUNT(*) FROM sqlite_master") // Authenticate existing pages before mutation.
         let version = try scalar("PRAGMA user_version")
-        guard (0...3).contains(version) else { throw ArchiveError.unsupportedSchema(Int(version)) }
+        guard (0...4).contains(version) else { throw ArchiveError.unsupportedSchema(Int(version)) }
         try transaction {
             // Another connection may have migrated while this one waited for the writer lock.
             let lockedVersion = try scalar("PRAGMA user_version")
-            guard (0...3).contains(lockedVersion) else { throw ArchiveError.unsupportedSchema(Int(lockedVersion)) }
+            guard (0...4).contains(lockedVersion) else { throw ArchiveError.unsupportedSchema(Int(lockedVersion)) }
             if lockedVersion == 0 {
                 guard try scalar("SELECT COUNT(*) FROM sqlite_master WHERE name NOT LIKE 'sqlite_%'") == 0 else {
                     throw ArchiveError.unsupportedSchema(0)
@@ -220,8 +261,10 @@ public final class ArchiveStore {
             }
             if lockedVersion < 2 { try migrateUsageToVersion2() }
             if lockedVersion < 3 { try migrateGenerationToVersion3() }
+            if lockedVersion < 4 { try migrateOutboxReceiptToVersion4() }
             _ = try currentUsage()
             _ = try captureGeneration()
+            _ = try outboxReceipt()
         }
         try execute("PRAGMA journal_mode=WAL")
         try execute("PRAGMA synchronous=FULL")
@@ -309,6 +352,34 @@ public final class ArchiveStore {
         let value = sqlite3_column_int64(prepared, 0)
         guard sqlite3_column_type(prepared, 0) == SQLITE_INTEGER, value >= 0 else { throw ArchiveError.unavailable(SQLITE_CORRUPT) }
         return value
+    }
+
+    private func migrateOutboxReceiptToVersion4() throws {
+        try execute("""
+            ALTER TABLE archive_meta ADD COLUMN outbox_high_water INTEGER NOT NULL DEFAULT -1
+            CHECK(typeof(outbox_high_water)='integer' AND outbox_high_water>=-1)
+            """)
+        try execute("""
+            ALTER TABLE archive_meta ADD COLUMN outbox_last_event_key TEXT NOT NULL DEFAULT ''
+            CHECK(typeof(outbox_last_event_key)='text' AND length(CAST(outbox_last_event_key AS BLOB))<=128)
+            """)
+        try execute("PRAGMA user_version=4")
+    }
+
+    private func outboxReceipt() throws -> (index: Int64, eventKey: String) {
+        let prepared = try statement("SELECT outbox_high_water,outbox_last_event_key FROM archive_meta WHERE id=1", [])
+        defer { sqlite3_finalize(prepared) }
+        let code = sqlite3_step(prepared)
+        guard code == SQLITE_ROW else { throw ArchiveError.unavailable(code == SQLITE_DONE ? SQLITE_CORRUPT : code) }
+        let index = sqlite3_column_int64(prepared, 0)
+        let key = try text(prepared, 1)
+        guard sqlite3_column_type(prepared, 0) == SQLITE_INTEGER,
+              sqlite3_column_type(prepared, 1) == SQLITE_TEXT, index >= -1,
+              key.utf8.count <= 128, !key.contains("\0"),
+              (index == -1 && key.isEmpty) || (index >= 0 && !key.isEmpty) else {
+            throw ArchiveError.unavailable(SQLITE_CORRUPT)
+        }
+        return (index, key)
     }
 
     private func submit<T>(_ completion: @escaping (Result<T, ArchiveError>) -> Void, operation: @escaping () throws -> T) {
