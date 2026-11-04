@@ -525,7 +525,12 @@ public final class ArchiveStore {
                     return true
                 }
                 let cost = size + Int64(kind.utf8.count + mimeType.utf8.count + 64)
-                guard cost <= self.retention.maxPayloadBytes else { return false }
+                // The complete snapshot must fit, including its text and earlier
+                // attachments. Otherwise adding this file would evict its own
+                // parent and discard content that was already safely preserved.
+                let ownCost = try self.scalar("SELECT payload_bytes + COALESCE((SELECT SUM(byte_cost) FROM event_media WHERE event_key=?),0) FROM events WHERE event_key=?", [.text(eventKey), .text(eventKey)])
+                guard ownCost >= 0 else { throw ArchiveError.unavailable(SQLITE_CORRUPT) }
+                guard ownCost <= self.retention.maxPayloadBytes, cost <= self.retention.maxPayloadBytes - ownCost else { return false }
                 try self.execute("INSERT INTO event_media VALUES(?,?,?,?,zeroblob(?),?)", [.text(eventKey), .integer(Int64(slot)), .text(kind), .text(mimeType), .integer(size), .integer(cost)])
                 let rowId = sqlite3_last_insert_rowid(self.handle)
                 if size > 0 {

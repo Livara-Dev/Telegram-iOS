@@ -669,8 +669,11 @@ private final class LocalArchivedPlaybackController: ViewController {
     }
 
     private func closeMedia() {
+        self.itemObservation?.invalidate()
+        self.itemObservation = nil
         self.player.pause()
         self.player.replaceCurrentItem(with: nil)
+        self.playback.player = nil
         self.loader.stop()
         self.messageLabel.text = "Preview closed. Reopen the attachment to continue."
     }
@@ -682,11 +685,6 @@ private final class LocalArchivedPlaybackController: ViewController {
         self.displayNode.view.addSubview(self.playback.view)
         self.playback.didMove(toParent: self)
         self.displayNode.view.addSubview(self.messageLabel)
-    }
-
-    override func viewWillDisappear(_ animated: Bool) {
-        super.viewWillDisappear(animated)
-        self.closeMedia()
     }
 
     override func containerLayoutUpdated(_ layout: ContainerViewLayout, transition: ContainedViewLayoutTransition) {

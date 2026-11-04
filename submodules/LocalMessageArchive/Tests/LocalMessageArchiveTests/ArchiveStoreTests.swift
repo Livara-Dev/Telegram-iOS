@@ -262,6 +262,22 @@ final class ArchiveStoreTests: XCTestCase {
         assertError(.generationMismatch(expected: 1, received: 0)) { try awaitResult { store.recordMediaFile(eventKey: "scoped", slot: 0, kind: "document", mimeType: "application/octet-stream", source: source, generation: 0, completion: $0) } }
     }
 
+    func testStreamedQuotaPreservesTextAndEarlierAttachmentsWhenWholeSnapshotCannotFit() throws {
+        let store = try open(retention: ArchiveRetentionPolicy(maxPayloadBytes: 64 * 1024 + 96))
+        _ = try write(store, [event("boundary")])
+        let source = try mediaFile()
+        // The file alone fits exactly; file + parent text does not.
+        XCTAssertFalse(try awaitResult { store.recordMediaFile(eventKey: "boundary", slot: 0, kind: "document", mimeType: "application/octet-stream", source: source, generation: 0, completion: $0) })
+        XCTAssertEqual(try records(store).map(\.event.eventKey), ["boundary"])
+        XCTAssertEqual(try records(store).first?.storedMediaCount, 0)
+        _ = try awaitResult { store.setRetention(ArchiveRetentionPolicy(maxPayloadBytes: 100_000), completion: $0) }
+        XCTAssertTrue(try awaitResult { store.recordMediaFile(eventKey: "boundary", slot: 0, kind: "document", mimeType: "application/octet-stream", source: source, generation: 0, completion: $0) })
+        XCTAssertFalse(try awaitResult { store.recordMediaFile(eventKey: "boundary", slot: 1, kind: "document", mimeType: "application/octet-stream", source: source, generation: 0, completion: $0) })
+        XCTAssertEqual(try records(store).first?.storedMediaCount, 1)
+        XCTAssertEqual(try awaitResult { store.mediaRange(eventKey: "boundary", slot: 0, offset: 0, count: 1, completion: $0) }, Data([0x5b]))
+        XCTAssertLessThanOrEqual(try usage(store).logicalPayloadBytes, 100_000)
+    }
+
     func testVersionSixMediaMigrationPreservesBytesCountersAndCascade() throws {
         let store = try open()
         _ = try write(store, [event("migrate-media")])
