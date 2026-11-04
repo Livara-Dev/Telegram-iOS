@@ -105,6 +105,9 @@ private final class LocalArchiveInterceptingStorage: LocalArchiveStorage {
     func searchMessages(query: String, peerId: Int64?, kind: ArchiveEventKind?, beforeSequence: Int64?, limit: Int, completion: @escaping (Result<[ArchivedRecord], ArchiveError>) -> Void) {
         self.store.searchMessages(query: query, peerId: peerId, kind: kind, beforeSequence: beforeSequence, limit: limit, completion: completion)
     }
+    func mediaItems(peerId: Int64?, kind: String?, beforeSequence: Int64?, beforeSlot: Int?, limit: Int, completion: @escaping (Result<[ArchivedMediaItem], ArchiveError>) -> Void) {
+        self.store.mediaItems(peerId: peerId, kind: kind, beforeSequence: beforeSequence, beforeSlot: beforeSlot, limit: limit, completion: completion)
+    }
     func usage(completion: @escaping (Result<ArchiveUsage, ArchiveError>) -> Void) {
         self.store.usage(completion: completion)
     }
@@ -492,6 +495,26 @@ final class LocalArchiveCoordinatorTests: XCTestCase {
         }
     }
 
+    func testGalleryFacadeListsOnlyMediaCapturedFromPostbox() throws {
+        let bytes = localArchiveTestPhotoData()
+        let resource = CloudPhotoSizeMediaResource(datacenterId: 1, photoId: 9700, accessHash: 0, sizeSpec: "x", size: Int64(bytes.count), fileReference: nil)
+        self.fixture.postbox.mediaBox.storeResourceData(resource.id, data: bytes, synchronous: true)
+        let photo = TelegramMediaImage(imageId: MediaId(namespace: Namespaces.Media.CloudImage, id: 9700), representations: [TelegramMediaImageRepresentation(dimensions: PixelDimensions(width: 16, height: 16), resource: resource, progressiveSizes: [], immediateThumbnailData: nil)], immediateThumbnailData: nil, reference: nil, partialReference: nil, flags: [])
+        _ = try self.queueDeletion(97, text: "gallery caption", media: [photo])
+        let missing = TelegramMediaImage(imageId: MediaId(namespace: Namespaces.Media.CloudImage, id: 9701), representations: [], immediateThumbnailData: nil, reference: nil, partialReference: nil, flags: [])
+        _ = try self.queueDeletion(98, text: "missing bytes", media: [missing])
+        let instance = self.start()
+        try self.awaitStatus(.ready, in: instance)
+        let coordinator = try XCTUnwrap(instance.coordinator)
+        let page = try self.localArchiveValue(coordinator.mediaItems())
+        XCTAssertFalse(page.unavailable)
+        XCTAssertEqual(page.items.count, 1)
+        XCTAssertEqual(page.items.first?.caption, "gallery caption")
+        XCTAssertEqual(page.items.first?.byteCount, Int64(bytes.count))
+        XCTAssertEqual(page.items.first?.kind, "photo")
+        XCTAssertTrue(try self.localArchiveValue(coordinator.mediaItems(kind: "video")).items.isEmpty)
+    }
+
     func testLargeDocumentStreamsFromRealPostboxAndSurvivesCacheRemoval() throws {
         let size: Int64 = 20 * 1024 * 1024
         let resource = CloudDocumentMediaResource(datacenterId: 1, fileId: 9600, accessHash: 0, size: size, fileReference: nil, fileName: nil)
@@ -797,6 +820,9 @@ final class LocalArchiveCoordinatorTests: XCTestCase {
         let lockedPage = try self.localArchiveValue(try XCTUnwrap(instance.coordinator).deletedMessages())
         XCTAssertTrue(lockedPage.unavailable)
         XCTAssertTrue(lockedPage.records.isEmpty)
+        let lockedGallery = try self.localArchiveValue(try XCTUnwrap(instance.coordinator).mediaItems())
+        XCTAssertTrue(lockedGallery.unavailable)
+        XCTAssertTrue(lockedGallery.items.isEmpty)
     }
 
     func testPendingPurgeSurvivesRestartAndRetiresUnacknowledgedGeneration() throws {

@@ -27,6 +27,7 @@ ADDED_FILES = {
     ".github/workflows/fork-baseline.yml", "COPYING",
     "docs/AYUGRAM_FEATURE_MATRIX.md", "docs/WINDOWS_INSTALL.md", "docs/SECURITY_ASSESSMENT.md",
     "submodules/SettingsUI/Sources/LocalArchiveSettingsController.swift",
+    "submodules/SettingsUI/Tests/LocalArchiveGalleryTests.swift",
     "submodules/SettingsUI/Sources/LocalGhostSettingsController.swift",
     "submodules/SettingsUI/Sources/LocalMessageFilterSettingsController.swift",
     "submodules/TelegramUI/Components/Chat/ChatHistoryEntry/Sources/ChatLocalTextFilterProjection.swift",
@@ -36,7 +37,7 @@ ADDED_FILES = {
 # gitlinks, stays pinned. An allowlist is a scope tripwire, not a semantic audit of
 # every change within these files; reviewers must inspect their Git diffs.
 REVIEWED_MODIFICATIONS = {
-    "submodules/SettingsUI/BUILD": "link the native archive media reader without adding an external dependency",
+    "submodules/SettingsUI/BUILD": "link native archive media reader and gallery tests; use the installed iOS 27.0 test runtime",
     "build-system/Make/tests/test_postbox_import_check.py": "measure tokenizer CPU budget independently of hosted runner descheduling",
     "submodules/Postbox/BUILD": "pin simulator test runner to installed iOS 27.0",
     "submodules/TextFormat/BUILD": "pin simulator test runner to installed iOS 27.0",

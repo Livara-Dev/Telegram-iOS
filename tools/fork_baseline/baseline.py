@@ -32,6 +32,8 @@ TEST_TARGET_PATHS = {
         "local-message-archive", ("submodules", "LocalMessageArchive", "LocalMessageArchiveTests")),
     "//submodules/LocalMessageArchive:LocalArchivePlaybackTests": (
         "local-archive-playback", ("submodules", "LocalMessageArchive", "LocalArchivePlaybackTests")),
+    "//submodules/SettingsUI:SettingsUITests": (
+        "settings-ui", ("submodules", "SettingsUI", "SettingsUITests")),
     "//submodules/TelegramCore:TelegramCoreTests": (
         "telegram-core", ("submodules", "TelegramCore", "TelegramCoreTests")),
     "//submodules/TelegramUI/Components/Chat/ChatHistoryEntry:ChatLocalTextFilterProjectionTests": (
@@ -46,6 +48,7 @@ INTEGRATION_TEST_TARGETS = (
     "//submodules/TelegramCore:TelegramCoreTests",
     "//submodules/LocalMessageArchive:LocalArchivePlaybackTests",
     TEST_TARGET,
+    "//submodules/SettingsUI:SettingsUITests",
     "//submodules/TelegramUI/Components/Chat/ChatHistoryEntry:ChatLocalTextFilterProjectionTests",
 )
 TEST_EVIDENCE_LIMIT = 2 * 1024 * 1024

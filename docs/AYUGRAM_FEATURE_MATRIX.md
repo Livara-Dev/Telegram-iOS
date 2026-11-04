@@ -1,26 +1,34 @@
 # AyuGram for iOS feature matrix
 
 Updated 2026-11-04. Active priority: [deleted-message/media preservation](fork/PRESERVATION-STATUS.md). Secondary feature development is paused. **No requested feature is verified in the running application yet.**
-The existing fork includes default-off TelegramCore archive hooks, a durable
-account worker, encrypted media storage and native archive screens. Schema 5
-passed 59 archive tests on macOS and 59 on the iOS simulator at `aba9fae9`;
-201 Postbox tests also passed. TelegramCore media integration then failed Swift
-compilation. The explicit weak-capture fix is pushed and awaits native retest;
-no new media replay or UI test pass is claimed. See [storage evidence](fork/evidence/archive-media-aba9fae9.json) and [integration failure evidence](fork/evidence/archive-media-integration-aba9fae9.json).
+The current archive branch contains default-off TelegramCore/Postbox capture,
+a durable per-account outbox, independent encrypted media storage, indexed text
+search, streaming attachment reads and native archive screens. The gallery
+increment adds an encrypted attachment index, paginated account/chat-scoped
+browsing, type filters and message-history navigation. **The gallery, schema-7
+streaming and AVFoundation playback changes still await native CI.**
 
-Earlier text-archive commit `387177fd` passed 978 iOS XCTest cases, including all 56 archive
-integration cases, and 54 macOS archive tests. See the
-[revision-specific iOS evidence](fork/evidence/archive-integration-387177fd.json).
-These exercise actual local Postbox capture/replay/coordinator paths, not live
-Telegram delivery, physical device protection or the running user interface.
-The separate Ghost activity draft adds per-account activity controls and native
-settings. All 15 worker/dispatch tests passed at `cd1effef` within a 993-case
-iOS run; [evidence](fork/evidence/ghost-activity-cd1effef.json). Full application
-behavior remains unverified.
-A further story-view draft adds independent per-account suppression, durable queued-receipt generations and native controls; its tests are authored but have no native result yet. See [story scope](fork/GHOST-STORY-VIEWS.md).
-See [integration scope and verification gates](fork/ARCHIVE-INTEGRATION.md). Portable tooling tests do not
-prove iOS app behavior. Phase A is being exercised through the hosted workflow
-on `Livara-Dev/Telegram-iOS`, with the owner's API credentials read from Secrets.
+Verified revisions must be kept separate from this source:
+
+- `92f6d752`: 1,060 iOS XCTest cases passed, including 74 archive integration
+  cases. These exercised actual local message-processing paths with a generated
+  JPEG and synthetic bytes for other media types, cache removal and reopening.
+- `9190be8c`: 64 archive, 532 TelegramCore and 270 TextFormat iOS cases passed.
+  The Postbox runner timed out and the UI-hosted projection suite executed zero
+  cases; the overall integration job failed. See
+  [the exact result](fork/evidence/archive-integration-9190be8c.json).
+- `e690da94`: 64 macOS archive tests and iOS module compilation passed. This
+  predates streaming and the gallery; [evidence](fork/evidence/archive-tests-e690da94.json).
+- The separate Ghost activity draft passed 15 worker/dispatch cases at
+  `cd1effef`. Story tests and telemetry-removal tests on newer feature branches
+  still need their own successful runs.
+
+These are local integration tests, not verified live Telegram delivery,
+physical-device protection or running-app UI. No full application build,
+installable signed IPA, device installation or iPhone performance result is
+claimed. Hosted workflows read the owner's API credentials from Secrets.
+[Integration scope](fork/ARCHIVE-INTEGRATION.md) and
+[preservation limits](fork/PRESERVATION-STATUS.md) remain release gates.
 
 Evidence dates matter: the public Android `rewrite` source is July 2023,
 official docs are January 2025, and the October 5, 2026 improvements are first-party
@@ -55,7 +63,7 @@ technical claim of impossibility. All entries require actual integration tests.
 | Size/age limits and cleanup | Requested addition; January 2026 post 49 documents historical excessive storage/cleanup fixes. | Bounded archive, media quota and deterministic retention; test crash/restart, shared attachment deletion, disk-full and logout purge. | Transactional age and text/media-payload quota tested in storage module; presets through 1 GiB authored; quota measures logical payload, not physical disk allocation |
 | Searchable deleted-only view | `android/saving.md:23`. | Dedicated archive query API; test paging, localization, escaped search input, account isolation and deleted-only results. | Native paginated view and encrypted indexed word/phrase search authored; schema-6 search tests and UI verification pending |
 | Deleted results in normal chat search | October post 61. | Distinguish local archived results from Telegram results and prohibit upload of archive content/query index. Test deduplication and navigation to absent canonical message. | Not implemented |
-| Deleted media in chat profile | October post 61. | Clearly marked local-only media collection; no false reference to server availability. | Not implemented |
+| Deleted media in chat profile | October post 61. | Clearly marked local-only media collection; no false reference to server availability. | Account/chat-scoped native archive gallery authored; not embedded into the standard chat profile media section; native/UI validation pending |
 | Inline deleted/edited markers and timeline integration | Historical Android customizable marks; docs acknowledge deleted messages can disappear between loaded batches (`android/saving.md:25`). | Merge with stable keys and deterministic pagination; preserve archive-only view as complete index. Test gap boundaries and all-deleted spans. | Not implemented |
 | Archive dashboard | Requested addition; not established in inspected docs or October notes. | Local counts, bytes, retention policy, purge progress and encryption status; no fabricated completeness metric. | Snapshot/payload counters, retention and purge controls authored; physical/index overhead is additional and not measured |
 | Encrypted export/import | Docs mention DB import/export deep links (`android/various.md:28`), October adds options, **neither establishes encryption**. | New authenticated versioned format, reviewed password KDF/key handling, resource limits, corruption/tamper tests, dry-run preview and account mapping. Reject unsafe paths/zip bombs and accidental plaintext exports. | Not implemented |
@@ -85,7 +93,7 @@ technical claim of impossibility. All entries require actual integration tests.
 | Case sensitivity, selected-text and spam rules | Old AyuFilter regex flags and find(); current docs rule creation | Literal predicates with fixed-locale case matching; no generic spam classifier | Case-sensitive/insensitive literals and editable message excerpt authored; regex and classifier absent; native verification pending |
 | Native dark/light, smooth animations, settings search | Upstream native iOS supports appearance; Android redesign and Desktop search reference | Reuse themes and native components; settings registry, VoiceOver/Dynamic Type, frame-recorded UI tests | Native themed archive settings authored; recorded UI frames and settings search absent |
 | Client-side Premium cosmetics | October local folder colors/tags; docs distinguish server limits | Local appearance metadata only, never alter entitlement checks | Not implemented |
-| Photos/video/documents/voice archive | Android saved attachment path; Desktop archive currently text-only | Independent encrypted BLOBs and pending outbox, bounded cached files; no guaranteed redownload after deletion | [Source implemented](fork/PRESERVATION-STATUS.md) up to 16 MiB/file; native storage tests passed, adapter/replay tests pending; not verified in app |
+| Photos/video/documents/voice archive | Android saved attachment path; Desktop archive currently text-only | Independent encrypted BLOBs and pending outbox, bounded cached files; no guaranteed redownload after deletion | [Source implemented](fork/PRESERVATION-STATUS.md): completed cached bytes, schema-7 streaming up to 512 MiB/file; earlier small-file integration passed at `92f6d752`, streaming and app validation pending |
 | Encrypted database and Keychain keys | Historical Android Room and Desktop SQLite do not establish encryption | Independent SQLCipher, per-account random keys, Keychain this-device-only, Data Protection and backup exclusion | 59 SQLCipher/Keychain tests pass on macOS and iOS simulator at `aba9fae9`; Keychain mocked; actual device checks pending |
 | Import/export and optional sync | October import/export options; E2E format/protocol unverified | Authenticated versioned encrypted files; sync only after protocol review and explicit user endpoint choice | Not implemented; [legacy protocol review](fork/AYUSYNC-REVIEW.md) found no E2E archive format and unavailable backend source |
 | No telemetry / no archive upload | Both upstreams contain telemetry; Android sync exists | Separate reviewed telemetry-removal diff and request-canary tests, no archive networking capability | Not satisfied; [expanded inventory](fork/TELEMETRY-REVIEW.md) includes app/call logs, channel-reading metrics and music-listening reports |

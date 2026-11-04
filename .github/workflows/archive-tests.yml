@@ -2,7 +2,7 @@ name: Archive engine draft tests
 
 on:
   push:
-    branches: [feature/archive-engine-draft, feature/ghost-activity-draft, feature/message-filter-draft, feature/ghost-story-draft, feature/archive-media-capture]
+    branches: [feature/archive-engine-draft, feature/ghost-activity-draft, feature/message-filter-draft, feature/ghost-story-draft, feature/archive-media-capture, feature/archive-gallery]
   workflow_dispatch:
 
 permissions:

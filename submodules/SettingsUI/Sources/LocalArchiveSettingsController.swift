@@ -153,6 +153,8 @@ func localArchiveSettingsController(context: AccountContext, peerId: Int64? = ni
         switch id {
         case .fixed(3):
             pushController?(localArchiveMessagesController(context: context, archive: archive, peerId: nil, message: nil))
+        case .fixed(19):
+            pushController?(LocalArchiveGalleryController(context: context, archive: archive, peerId: peerId))
         case .fixed(9):
             selectRetention(true)
         case .fixed(10):
@@ -203,6 +205,7 @@ func localArchiveSettingsController(context: AccountContext, peerId: Int64? = ni
             LocalArchiveRow(stableId: .fixed(5), order: 12, section: 4, content: .heading("CURRENT LIMITS")),
             LocalArchiveRow(stableId: .fixed(6), order: 13, section: 4, content: .text("This preview captures supported deletion and edit updates for messages already received while capture is enabled. It cannot recover earlier deletions and does not cover every deletion path. Completed local cloud files up to 512 MiB are attempted within the storage limit; image previews are limited to 16 MiB; missing or incomplete files are not downloaded. Structured rich messages, secret chats and disappearing content are excluded. Storage failures or a locked device can leave gaps."))
         ]
+        entries.append(LocalArchiveRow(stableId: .fixed(19), order: 19, section: 6, content: .action("Archived Media", "Photos, video and files", localArchiveCanRead(status))))
         if actionState.1 {
             entries.append(LocalArchiveRow(stableId: .fixed(7), order: 14, section: 4, content: .text("The setting could not be changed. Unlock the device and try again.")))
         }
@@ -263,6 +266,12 @@ private struct LocalArchiveMessageReference {
         self.peerId = message.peerId
         self.namespace = message.namespace
         self.messageId = message.messageId
+    }
+
+    init(_ item: LocalArchivedMediaItem) {
+        self.peerId = item.peerId
+        self.namespace = item.namespace
+        self.messageId = item.messageId
     }
 }
 
@@ -692,5 +701,365 @@ private final class LocalArchivedPlaybackController: ViewController {
         let top = self.navigationLayout(layout: layout).navigationFrame.maxY
         self.playback.view.frame = CGRect(x: 0, y: top, width: layout.size.width, height: max(0, layout.size.height - top - layout.intrinsicInsets.bottom))
         self.messageLabel.frame = CGRect(x: 24, y: top + max(0, layout.size.height - top - 120) * 0.5, width: max(0, layout.size.width - 48), height: 120)
+    }
+}
+
+
+func localArchiveGalleryImage(_ data: Data, maximumDimension: Int) -> UIImage? {
+    guard data.count <= 16 * 1024 * 1024,
+          let source = CGImageSourceCreateWithData(data as CFData, [kCGImageSourceShouldCache: false] as CFDictionary),
+          let properties = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [String: Any],
+          let width = (properties[kCGImagePropertyPixelWidth as String] as? NSNumber)?.uint64Value,
+          let height = (properties[kCGImagePropertyPixelHeight as String] as? NSNumber)?.uint64Value,
+          width > 0, height > 0, width <= 20_000, height <= 20_000, width * height <= 80_000_000,
+          let image = CGImageSourceCreateThumbnailAtIndex(source, 0, [kCGImageSourceCreateThumbnailFromImageAlways: true,
+              kCGImageSourceThumbnailMaxPixelSize: maximumDimension, kCGImageSourceCreateThumbnailWithTransform: true] as CFDictionary) else { return nil }
+    return UIImage(cgImage: image)
+}
+
+/// Start the next read only after the previous thumbnail has been decoded.
+/// A page of large photos must not queue a page of decrypted full-size blobs.
+final class LocalArchiveThumbnailLoader {
+    private final class Request {
+        let key: String
+        let slot: Int
+        let receive: (UIImage?) -> Void
+        let disposable = MetaDisposable()
+        init(key: String, slot: Int, receive: @escaping (UIImage?) -> Void) {
+            self.key = key; self.slot = slot; self.receive = receive
+        }
+    }
+    private let load: (String, Int) -> Signal<Data?, NoError>
+    private let queue = Queue(name: "LocalArchive.thumbnails", qos: .utility)
+    private var pending: [Request] = []
+    private var active: Request?
+
+    init(load: @escaping (String, Int) -> Signal<Data?, NoError>) { self.load = load }
+
+    func image(eventKey: String, slot: Int) -> Signal<UIImage?, NoError> {
+        return Signal { [weak self] subscriber in
+            guard let self else { subscriber.putNext(nil); subscriber.putCompletion(); return EmptyDisposable }
+            let request = Request(key: eventKey, slot: slot, receive: { image in
+                subscriber.putNext(image); subscriber.putCompletion()
+            })
+            self.queue.async { [weak self] in
+                guard let self else { return }
+                self.pending.append(request)
+                self.advance()
+            }
+            return ActionDisposable { [weak self] in
+                self?.queue.async { [weak self] in
+                    guard let self else { return }
+                    self.pending.removeAll { $0 === request }
+                    // Let an in-flight decode finish before the next read. Its
+                    // disposed subscriber ignores the result after cell reuse.
+                }
+            }
+        }
+    }
+
+    private func advance() {
+        guard self.active == nil, !self.pending.isEmpty else { return }
+        let request = self.pending.removeFirst()
+        self.active = request
+        request.disposable.set((self.load(request.key, request.slot)
+            |> deliverOn(self.queue)).start(next: { [weak self, weak request] data in
+                guard let self, let request, self.active === request else { return }
+                let image = autoreleasepool { data.flatMap { localArchiveGalleryImage($0, maximumDimension: 320) } }
+                request.receive(image)
+                self.active = nil
+                request.disposable.dispose()
+                self.advance()
+            }))
+    }
+}
+
+private final class LocalArchiveGalleryCell: UICollectionViewCell {
+    let picture = UIImageView()
+    let caption = UILabel()
+    let request = MetaDisposable()
+    var representedKey: String?
+
+    override init(frame: CGRect) {
+        super.init(frame: frame)
+        self.contentView.layer.cornerRadius = 10
+        self.contentView.clipsToBounds = true
+        self.picture.contentMode = .scaleAspectFit
+        self.caption.font = .preferredFont(forTextStyle: .caption1)
+        self.caption.adjustsFontForContentSizeCategory = true
+        self.caption.numberOfLines = 2
+        self.contentView.addSubview(self.picture)
+        self.contentView.addSubview(self.caption)
+        self.isAccessibilityElement = true
+    }
+
+    required init?(coder: NSCoder) { fatalError("init(coder:) is not supported") }
+    deinit { self.request.dispose() }
+
+    func clear() {
+        self.request.set(nil)
+        self.representedKey = nil
+        self.picture.image = nil
+        self.caption.text = nil
+        self.accessibilityLabel = nil
+    }
+
+    override func prepareForReuse() {
+        super.prepareForReuse()
+        self.clear()
+    }
+
+    override func layoutSubviews() {
+        super.layoutSubviews()
+        let height = max(40, ceil(self.caption.font.lineHeight * 2))
+        self.picture.frame = CGRect(x: 8, y: 8, width: max(0, self.bounds.width - 16), height: max(0, self.bounds.height - height - 20))
+        self.caption.frame = CGRect(x: 8, y: max(0, self.bounds.height - height - 8), width: max(0, self.bounds.width - 16), height: height)
+    }
+}
+
+/// Bounded pages keep scrolling memory independent of total archive size.
+private final class LocalArchiveGalleryController: ViewController, UICollectionViewDataSource, UICollectionViewDelegate {
+    private let context: AccountContext
+    private let archive: LocalArchiveCoordinator
+    private let peerId: Int64?
+    private let grid: UICollectionView
+    private let flow: UICollectionViewFlowLayout
+    private let toolbar = UIToolbar()
+    private let empty = UILabel()
+    private let refresh = UIRefreshControl()
+    private let requests = MetaDisposable()
+    private let preview = MetaDisposable()
+    private let subscriptions = DisposableSet()
+    private let allCells = NSHashTable<LocalArchiveGalleryCell>.weakObjects()
+    private let thumbnails: LocalArchiveThumbnailLoader
+    private var observers: [NSObjectProtocol] = []
+    private var items: [LocalArchivedMediaItem] = []
+    private var cursor: (Int64, Int)?
+    private var previous: [(Int64, Int)?] = []
+    private var kind: String?
+    private var readable = false
+    private var foreground = true
+    private var loading = false
+    private var hasOlder = false
+    private var token = 0
+    private var theme: PresentationTheme
+    private let dateFormatter: DateFormatter = {
+        let formatter = DateFormatter(); formatter.dateStyle = .short; formatter.timeStyle = .short
+        return formatter
+    }()
+    private lazy var newer = UIBarButtonItem(title: "Newer", style: .plain, target: self, action: #selector(self.showNewer))
+    private lazy var older = UIBarButtonItem(title: "Older", style: .plain, target: self, action: #selector(self.showOlder))
+
+    init(context: AccountContext, archive: LocalArchiveCoordinator, peerId: Int64?) {
+        self.context = context; self.archive = archive; self.peerId = peerId
+        self.thumbnails = LocalArchiveThumbnailLoader(load: { archive.mediaData(eventKey: $0, slot: $1) })
+        let presentation = context.sharedContext.currentPresentationData.with { $0 }
+        self.theme = presentation.theme
+        let flow = UICollectionViewFlowLayout()
+        self.flow = flow
+        self.grid = UICollectionView(frame: .zero, collectionViewLayout: flow)
+        super.init(navigationBarPresentationData: NavigationBarPresentationData(presentationTheme: presentation.theme, presentationStrings: presentation.strings))
+        self.title = "Archived Media"
+        self.navigationItem.rightBarButtonItem = UIBarButtonItem(title: "Type", style: .plain, target: self, action: #selector(self.chooseType))
+        self.grid.register(LocalArchiveGalleryCell.self, forCellWithReuseIdentifier: "archive")
+        self.grid.dataSource = self; self.grid.delegate = self
+        self.grid.alwaysBounceVertical = true
+        self.refresh.addTarget(self, action: #selector(self.reloadPage), for: .valueChanged)
+        self.grid.refreshControl = self.refresh
+        self.empty.textAlignment = .center; self.empty.numberOfLines = 0
+        self.toolbar.items = [self.newer, UIBarButtonItem(barButtonSystemItem: .flexibleSpace, target: nil, action: nil), self.older]
+        self.subscriptions.add((context.sharedContext.presentationData |> deliverOnMainQueue).start(next: { [weak self] presentation in
+            guard let self else { return }
+            self.theme = presentation.theme
+            self.navigationBar?.updatePresentationData(NavigationBarPresentationData(presentationTheme: presentation.theme, presentationStrings: presentation.strings), transition: .immediate)
+            self.grid.backgroundColor = presentation.theme.list.blocksBackgroundColor
+            self.empty.textColor = presentation.theme.list.itemPrimaryTextColor
+            self.toolbar.barTintColor = presentation.theme.list.blocksBackgroundColor
+            self.toolbar.tintColor = presentation.theme.list.itemAccentColor
+            self.grid.reloadData()
+        }))
+        self.subscriptions.add((archive.status |> deliverOnMainQueue).start(next: { [weak self] status in
+            guard let self else { return }
+            let readable = localArchiveCanRead(status)
+            let wasReadable = self.readable
+            self.readable = readable
+            if !readable { self.clear(message: localArchiveStatusText(status)) }
+            else if !wasReadable { self.load() }
+        }))
+        self.observers.append(NotificationCenter.default.addObserver(forName: UIApplication.willResignActiveNotification, object: nil, queue: .main) { [weak self] _ in
+            self?.foreground = false
+            self?.clear(message: "Reopen the archive to continue.")
+        })
+        self.observers.append(NotificationCenter.default.addObserver(forName: UIApplication.didBecomeActiveNotification, object: nil, queue: .main) { [weak self] _ in
+            self?.foreground = true
+            self?.load()
+        })
+    }
+
+    required init(coder: NSCoder) { fatalError("init(coder:) is not supported") }
+    deinit {
+        self.requests.dispose(); self.preview.dispose(); self.subscriptions.dispose()
+        for observer in self.observers { NotificationCenter.default.removeObserver(observer) }
+    }
+
+    override func loadDisplayNode() {
+        super.loadDisplayNode()
+        self.displayNode.backgroundColor = self.theme.list.blocksBackgroundColor
+        self.displayNode.view.addSubview(self.grid)
+        self.displayNode.view.addSubview(self.empty)
+        self.displayNode.view.addSubview(self.toolbar)
+    }
+
+    override func containerLayoutUpdated(_ layout: ContainerViewLayout, transition: ContainedViewLayoutTransition) {
+        super.containerLayoutUpdated(layout, transition: transition)
+        let top = self.navigationLayout(layout: layout).navigationFrame.maxY
+        let bottom = layout.intrinsicInsets.bottom
+        let height = max(0, layout.size.height - top - bottom - 44)
+        self.grid.frame = CGRect(x: 0, y: top, width: layout.size.width, height: height)
+        let columns: CGFloat = self.traitCollection.preferredContentSizeCategory.isAccessibilityCategory ? 2 : 3
+        let left = 12 + layout.safeInsets.left, right = 12 + layout.safeInsets.right
+        let width = floor(max(1, layout.size.width - left - right - (columns - 1) * 8) / columns)
+        let footer = max(60, ceil(UIFont.preferredFont(forTextStyle: .caption1).lineHeight * 2) + 24)
+        self.flow.itemSize = CGSize(width: width, height: width + footer)
+        self.flow.minimumInteritemSpacing = 8; self.flow.minimumLineSpacing = 12
+        self.flow.sectionInset = UIEdgeInsets(top: 12, left: left, bottom: 12, right: right)
+        self.flow.invalidateLayout()
+        self.empty.frame = CGRect(x: 24, y: top + height * 0.35, width: max(0, layout.size.width - 48), height: 120)
+        self.toolbar.frame = CGRect(x: 0, y: top + height, width: layout.size.width, height: 44 + bottom)
+    }
+
+    private func clear(message: String) {
+        self.token += 1; self.loading = false
+        self.requests.set(nil); self.preview.set(nil)
+        self.items = []; self.cursor = nil; self.previous = []; self.hasOlder = false
+        for cell in self.allCells.allObjects { cell.clear() }
+        self.empty.text = message; self.empty.isHidden = false
+        self.refresh.endRefreshing(); self.newer.isEnabled = false; self.older.isEnabled = false
+        self.grid.reloadData()
+    }
+
+    @objc private func reloadPage() {
+        self.cursor = nil; self.previous = []
+        self.load()
+    }
+
+    @objc private func showOlder() {
+        guard !self.loading, self.hasOlder, let last = self.items.last else { return }
+        self.previous.append(self.cursor); self.cursor = (last.sequence, last.slot)
+        self.load()
+    }
+
+    @objc private func showNewer() {
+        guard !self.loading, !self.previous.isEmpty else { return }
+        self.cursor = self.previous.removeLast(); self.load()
+    }
+
+    private func load() {
+        guard self.readable, self.foreground else { self.refresh.endRefreshing(); return }
+        self.token += 1
+        let token = self.token
+        self.loading = true; self.newer.isEnabled = false; self.older.isEnabled = false
+        for cell in self.allCells.allObjects { cell.clear() }
+        self.items = []; self.grid.reloadData()
+        self.empty.text = "Loading archived media…"; self.empty.isHidden = false
+        self.requests.set((self.archive.mediaItems(peerId: self.peerId, kind: self.kind, beforeSequence: self.cursor?.0, beforeSlot: self.cursor?.1, limit: 61) |> deliverOnMainQueue).start(next: { [weak self] page in
+            guard let self, self.token == token, self.readable, self.foreground else { return }
+            self.loading = false; self.refresh.endRefreshing()
+            self.hasOlder = page.items.count > 60
+            self.items = Array(page.items.prefix(60))
+            self.newer.isEnabled = !self.previous.isEmpty; self.older.isEnabled = self.hasOlder
+            self.empty.text = page.unavailable ? "Archive unavailable. Unlock this iPhone and try again." : "No retained media on this page."
+            self.empty.isHidden = !self.items.isEmpty
+            self.grid.reloadData()
+            self.grid.setContentOffset(.zero, animated: false)
+        }))
+    }
+
+    @objc private func chooseType() {
+        let presentation = self.context.sharedContext.currentPresentationData.with { $0 }
+        let sheet = ActionSheetController(presentationData: presentation)
+        let options: [(String, String?)] = [("All media", nil), ("Photos", "photo"), ("Videos", "video"), ("Video messages", "videoMessage"), ("Voice messages", "voice"), ("Animations", "animation"), ("Documents", "document")]
+        sheet.setItemGroups([
+            ActionSheetItemGroup(items: options.map { title, kind in
+                ActionSheetButtonItem(title: title, color: .accent, action: { [weak self, weak sheet] in
+                    sheet?.dismissAnimated(); self?.kind = kind; self?.reloadPage()
+                })
+            }),
+            ActionSheetItemGroup(items: [ActionSheetButtonItem(title: presentation.strings.Common_Cancel, color: .accent, action: { [weak sheet] in sheet?.dismissAnimated() })])
+        ])
+        self.present(sheet, in: .window(.root))
+    }
+
+    func collectionView(_ collectionView: UICollectionView, numberOfItemsInSection section: Int) -> Int { self.items.count }
+
+    func collectionView(_ collectionView: UICollectionView, cellForItemAt indexPath: IndexPath) -> UICollectionViewCell {
+        let cell = collectionView.dequeueReusableCell(withReuseIdentifier: "archive", for: indexPath) as! LocalArchiveGalleryCell
+        self.allCells.add(cell)
+        let item = self.items[indexPath.item]
+        let key = item.eventKey + ":" + String(item.slot)
+        cell.clear(); cell.representedKey = key
+        let title = item.kind == "videoMessage" ? "Video message" : item.kind.capitalized
+        let size = ByteCountFormatter.string(fromByteCount: item.byteCount, countStyle: .file)
+        cell.contentView.backgroundColor = self.theme.list.itemBlocksBackgroundColor
+        cell.caption.textColor = self.theme.list.itemPrimaryTextColor
+        cell.picture.tintColor = self.theme.list.itemAccentColor
+        cell.picture.image = UIImage(systemName: item.kind == "photo" || item.kind == "animation" ? "photo" : (item.kind == "voice" ? "waveform" : (item.kind == "document" ? "doc" : "play.rectangle")))
+        let marker = item.isDeleted ? "Deleted" : "Before edit"
+        cell.caption.text = title + " · " + marker + "\n" + size
+        cell.accessibilityLabel = [title, marker, self.dateFormatter.string(from: Date(timeIntervalSince1970: TimeInterval(item.observedAt))), item.caption, size].filter { !$0.isEmpty }.joined(separator: ", ")
+        if item.kind == "photo" || item.mimeType.hasPrefix("image/") {
+            cell.request.set((self.thumbnails.image(eventKey: item.eventKey, slot: item.slot)
+                |> deliverOnMainQueue).start(next: { [weak cell] image in
+                    guard let cell, cell.representedKey == key, let image else { return }
+                    cell.picture.image = image
+                }))
+        }
+        return cell
+    }
+
+    func collectionView(_ collectionView: UICollectionView, didSelectItemAt indexPath: IndexPath) {
+        guard self.items.indices.contains(indexPath.item) else { return }
+        self.open(self.items[indexPath.item])
+    }
+
+    func collectionView(_ collectionView: UICollectionView, contextMenuConfigurationForItemAt indexPath: IndexPath, point: CGPoint) -> UIContextMenuConfiguration? {
+        guard self.readable, self.foreground, self.items.indices.contains(indexPath.item) else { return nil }
+        let item = self.items[indexPath.item]
+        return UIContextMenuConfiguration(identifier: nil, previewProvider: nil, actionProvider: { [weak self] _ in
+            UIMenu(children: [
+                UIAction(title: "Open attachment", image: UIImage(systemName: "arrow.up.right.square")) { [weak self] _ in self?.open(item) },
+                UIAction(title: "Message history", image: UIImage(systemName: "clock")) { [weak self] _ in
+                    guard let self, self.readable, self.foreground else { return }
+                    (self.navigationController as? NavigationController)?.pushViewController(localArchiveMessagesController(context: self.context, archive: self.archive, peerId: item.peerId, message: LocalArchiveMessageReference(item)))
+                }
+            ])
+        })
+    }
+
+    private func open(_ item: LocalArchivedMediaItem) {
+        guard self.readable, self.foreground, self.items.contains(where: { $0.eventKey == item.eventKey && $0.slot == item.slot }) else { return }
+        let token = self.token
+        let presentation = self.context.sharedContext.currentPresentationData.with { $0 }
+        if item.kind == "video" || item.kind == "videoMessage" || item.kind == "voice" || item.mimeType.hasPrefix("video/") {
+            (self.navigationController as? NavigationController)?.pushViewController(LocalArchivedPlaybackController(archive: self.archive, eventKey: item.eventKey, slot: item.slot, presentationData: presentation))
+        } else if item.kind == "photo" || item.mimeType.hasPrefix("image/") {
+            self.preview.set((self.archive.mediaData(eventKey: item.eventKey, slot: item.slot)
+                |> deliverOn(Queue.concurrentDefaultQueue())
+                |> map { $0.flatMap { localArchiveGalleryImage($0, maximumDimension: 2048) } }
+                |> deliverOnMainQueue).start(next: { [weak self] image in
+                    guard let self, self.readable, self.foreground, self.token == token else { return }
+                    if let image { (self.navigationController as? NavigationController)?.pushViewController(LocalArchivedImageController(image: image, archive: self.archive, presentationData: presentation)) }
+                    else { self.showInformation(title: "Preview unavailable", text: "This image cannot be previewed by iOS.") }
+                }))
+        } else {
+            let formatter = DateFormatter(); formatter.dateStyle = .medium; formatter.timeStyle = .short
+            let date = formatter.string(from: Date(timeIntervalSince1970: TimeInterval(item.observedAt)))
+            self.showInformation(title: "Archived document", text: [item.caption, ByteCountFormatter.string(fromByteCount: item.byteCount, countStyle: .file), "Captured " + date, "Document preview is not available for this format."].filter { !$0.isEmpty }.joined(separator: "\n\n"))
+        }
+    }
+
+    private func showInformation(title: String, text: String) {
+        let presentation = self.context.sharedContext.currentPresentationData.with { $0 }
+        self.present(textAlertController(context: self.context, title: title, text: text, actions: [TextAlertAction(type: .defaultAction, title: presentation.strings.Common_OK, action: {})]), in: .window(.root))
     }
 }

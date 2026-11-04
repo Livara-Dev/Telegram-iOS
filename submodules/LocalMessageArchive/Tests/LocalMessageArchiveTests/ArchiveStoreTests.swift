@@ -115,10 +115,10 @@ final class ArchiveStoreTests: XCTestCase {
         _ = try write(store, [event("migrated", text: "historical archive text")])
         let url = store.databaseURL
         close(store)
-        try rawDatabase(url, statements: ["DROP TRIGGER archive_search_insert", "DROP TRIGGER archive_search_delete", "DROP TABLE events_search", "PRAGMA user_version=5"])
+        try rawDatabase(url, statements: ["DROP TRIGGER archive_gallery_insert", "DROP TRIGGER archive_gallery_delete", "DROP TABLE media_gallery", "DROP TRIGGER archive_search_insert", "DROP TRIGGER archive_search_delete", "DROP TABLE events_search", "PRAGMA user_version=5"])
         let reopened = try open()
         XCTAssertEqual(try awaitResult { reopened.searchMessages(query: "historical archive", completion: $0) }.map(\.event.eventKey), ["migrated"])
-        XCTAssertEqual(try rawInteger(url, query: "PRAGMA user_version"), 7)
+        XCTAssertEqual(try rawInteger(url, query: "PRAGMA user_version"), 8)
     }
 
     func testSearchMigrationFailureRollsBackEarlierSchemaChanges() throws {
@@ -291,6 +291,84 @@ final class ArchiveStoreTests: XCTestCase {
         XCTAssertEqual(try awaitResult { store.mediaRange(eventKey: "empty", slot: 0, offset: 0, count: 32, completion: $0) }, Data())
     }
 
+    func testGalleryContainsOnlyRetainedSlotsAndPagesWithoutDuplicates() throws {
+        let store = try open()
+        _ = try write(store, [event("first", text: "first caption", peer: 10), event("metadata-only", peer: 10), event("second", text: "second caption", peer: 20, kind: .edited)])
+        for slot in 0..<2 {
+            XCTAssertTrue(try awaitResult { store.recordMedia(eventKey: "first", slot: slot, kind: "photo", mimeType: "image/jpeg", data: Data([UInt8(slot + 1)]), generation: 0, completion: $0) })
+        }
+        XCTAssertTrue(try awaitResult { store.recordMedia(eventKey: "second", slot: 0, kind: "video", mimeType: "video/mp4", data: Data([3]), generation: 0, completion: $0) })
+        let page = try awaitResult { store.mediaItems(limit: 2, completion: $0) }
+        XCTAssertEqual(page.map(\.eventKey), ["second", "first"])
+        XCTAssertEqual(page.map(\.slot), [0, 1])
+        let cursor = try XCTUnwrap(page.last)
+        let next = try awaitResult { store.mediaItems(beforeSequence: cursor.sequence, beforeSlot: cursor.slot, limit: 2, completion: $0) }
+        XCTAssertEqual(next.map(\.eventKey), ["first"])
+        XCTAssertEqual(next.map(\.slot), [0])
+        XCTAssertEqual(try awaitResult { store.mediaItems(peerId: 10, completion: $0) }.count, 2)
+        let videos = try awaitResult { store.mediaItems(kind: "video", completion: $0) }
+        XCTAssertEqual(videos.first?.eventKind, .edited)
+        XCTAssertEqual(videos.first?.byteCount, 1)
+        XCTAssertEqual(videos.first?.caption, "second caption")
+        let other = try open(account: 2, keys: Keys(0x75))
+        XCTAssertTrue(try awaitResult { other.mediaItems(completion: $0) }.isEmpty)
+        close(store)
+        let reopened = try open()
+        XCTAssertEqual(try awaitResult { reopened.mediaItems(completion: $0) }.count, 3)
+        _ = try purge(reopened, to: 1)
+        XCTAssertTrue(try awaitResult { reopened.mediaItems(completion: $0) }.isEmpty)
+    }
+
+    func testGalleryMigrationBackfillsExistingMediaAndRejectsInvalidCursors() throws {
+        let store = try open()
+        _ = try write(store, [event("legacy-gallery")])
+        XCTAssertTrue(try awaitResult { store.recordMedia(eventKey: "legacy-gallery", slot: 3, kind: "voice", mimeType: "audio/ogg", data: Data([5]), generation: 0, completion: $0) })
+        let url = store.databaseURL
+        close(store)
+        try rawDatabase(url, statements: ["DROP TRIGGER archive_gallery_insert", "DROP TRIGGER archive_gallery_delete", "DROP TABLE media_gallery", "PRAGMA user_version=7"])
+        let reopened = try open()
+        let entries = try awaitResult { reopened.mediaItems(completion: $0) }
+        XCTAssertEqual(entries.first?.slot, 3)
+        XCTAssertEqual(entries.first?.kind, "voice")
+        XCTAssertEqual(try rawInteger(url, query: "PRAGMA user_version"), 8)
+        assertError(.invalidInput) { try awaitResult { reopened.mediaItems(beforeSequence: 1, completion: $0) } }
+        assertError(.invalidInput) { try awaitResult { reopened.mediaItems(beforeSlot: 1, completion: $0) } }
+        assertError(.invalidInput) { try awaitResult { reopened.mediaItems(kind: "bad\0type", completion: $0) } }
+    }
+
+    func testGalleryMigrationFailureRollsBackAndCanRecover() throws {
+        let store = try open()
+        _ = try write(store, [event("rollback-gallery")])
+        XCTAssertTrue(try awaitResult { store.recordMedia(eventKey: "rollback-gallery", slot: 0, kind: "photo", mimeType: "image/jpeg", data: Data([1, 2]), generation: 0, completion: $0) })
+        let url = store.databaseURL
+        close(store)
+        try rawDatabase(url, statements: ["DROP TRIGGER archive_gallery_insert", "DROP TRIGGER archive_gallery_delete", "DROP TABLE media_gallery", "CREATE TABLE media_gallery(unexpected INTEGER)", "PRAGMA user_version=7"])
+        XCTAssertThrowsError(try open())
+        XCTAssertEqual(try rawInteger(url, query: "PRAGMA user_version"), 7)
+        XCTAssertEqual(try rawInteger(url, query: "SELECT COUNT(*) FROM event_media"), 1)
+        try rawDatabase(url, statements: ["DROP TABLE media_gallery"])
+        let recovered = try open()
+        XCTAssertEqual(try awaitResult { recovered.mediaItems(completion: $0) }.count, 1)
+        XCTAssertEqual(try awaitResult { recovered.media(eventKey: "rollback-gallery", slot: 0, completion: $0) }?.data, Data([1, 2]))
+    }
+
+    func testGalleryRetentionAndFailedMediaWriteLeaveNoStaleEntries() throws {
+        let store = try open()
+        _ = try write(store, [event("old-gallery", observed: 900), event("new-gallery", observed: 990)])
+        for key in ["old-gallery", "new-gallery"] {
+            XCTAssertTrue(try awaitResult { store.recordMedia(eventKey: key, slot: 0, kind: "photo", mimeType: "image/jpeg", data: Data([1]), generation: 0, completion: $0) })
+        }
+        assertError(.eventConflict) {
+            try awaitResult { store.recordMedia(eventKey: "new-gallery", slot: 0, kind: "video", mimeType: "video/mp4", data: Data([2]), generation: 0, completion: $0) }
+        }
+        _ = try awaitResult { store.setRetention(ArchiveRetentionPolicy(maxAgeSeconds: 50), completion: $0) }
+        let entries = try awaitResult { store.mediaItems(completion: $0) }
+        XCTAssertEqual(entries.map(\.eventKey), ["new-gallery"])
+        XCTAssertEqual(entries.first?.kind, "photo")
+        XCTAssertEqual(try rawInteger(store.databaseURL, query: "SELECT COUNT(*) FROM media_gallery"), 1)
+        XCTAssertEqual(try rawInteger(store.databaseURL, query: "SELECT COUNT(*) FROM media_gallery g LEFT JOIN event_media m ON m.event_key=g.event_key AND m.slot=g.slot WHERE m.event_key IS NULL"), 0)
+    }
+
     func testVersionSixMediaMigrationPreservesBytesCountersAndCascade() throws {
         let store = try open()
         _ = try write(store, [event("migrate-media")])
@@ -298,9 +376,9 @@ final class ArchiveStoreTests: XCTestCase {
         let originalUsage = try usage(store).logicalPayloadBytes
         let url = store.databaseURL
         close(store)
-        try rawDatabase(url, statements: ["PRAGMA user_version=6"])
+        try rawDatabase(url, statements: ["DROP TRIGGER archive_gallery_insert", "DROP TRIGGER archive_gallery_delete", "DROP TABLE media_gallery", "PRAGMA user_version=6"])
         let reopened = try open()
-        XCTAssertEqual(try rawInteger(url, query: "PRAGMA user_version"), 7)
+        XCTAssertEqual(try rawInteger(url, query: "PRAGMA user_version"), 8)
         XCTAssertEqual(try usage(reopened).logicalPayloadBytes, originalUsage)
         XCTAssertEqual(try awaitResult { reopened.media(eventKey: "migrate-media", slot: 0, completion: $0) }?.data, Data([1, 2, 3]))
         _ = try purge(reopened, to: 1)
@@ -534,9 +612,9 @@ final class ArchiveStoreTests: XCTestCase {
 
     func testFutureSchemaIsRejectedWithoutMigration() throws {
         let store = try open(); close(store)
-        try rawDatabase(store.databaseURL, statements: ["PRAGMA user_version=8"])
+        try rawDatabase(store.databaseURL, statements: ["PRAGMA user_version=9"])
         let before = try Data(contentsOf: store.databaseURL)
-        assertError(.unsupportedSchema(8)) { try open() }
+        assertError(.unsupportedSchema(9)) { try open() }
         XCTAssertEqual(try Data(contentsOf: store.databaseURL), before)
     }
 
@@ -587,7 +665,7 @@ final class ArchiveStoreTests: XCTestCase {
         XCTAssertEqual(timeline.map(\.event), expected)
         XCTAssertEqual(timeline.map(\.sequence), [7, 9])
         XCTAssertEqual(try usage(store), ArchiveUsage(records: 2, logicalPayloadBytes: 167))
-        XCTAssertEqual(try rawInteger(url, query: "PRAGMA user_version"), 7)
+        XCTAssertEqual(try rawInteger(url, query: "PRAGMA user_version"), 8)
         _ = try write(store, [event("after-migration")])
         XCTAssertEqual(try usage(store).records, 3)
         close(store)
@@ -713,7 +791,7 @@ final class ArchiveStoreTests: XCTestCase {
         let store = try open()
         XCTAssertEqual(try generation(store), 0)
         XCTAssertEqual(try usage(store), ArchiveUsage(records: 2, logicalPayloadBytes: 167))
-        XCTAssertEqual(try rawInteger(url, query: "PRAGMA user_version"), 7)
+        XCTAssertEqual(try rawInteger(url, query: "PRAGMA user_version"), 8)
         XCTAssertEqual(try records(store).first?.event.eventKey, "legacy-delete")
         _ = try write(store, [event("generation-zero")], generation: 0)
         close(store)
@@ -838,7 +916,7 @@ final class ArchiveStoreTests: XCTestCase {
         let url = try legacyV3Database(extraStatements: ["UPDATE archive_meta SET capture_generation=7"])
         let store = try open()
         XCTAssertEqual(try generation(store), 7)
-        XCTAssertEqual(try rawInteger(url, query: "PRAGMA user_version"), 7)
+        XCTAssertEqual(try rawInteger(url, query: "PRAGMA user_version"), 8)
         XCTAssertEqual(try rawInteger(url, query: "SELECT outbox_high_water FROM archive_meta"), -1)
         XCTAssertEqual(try usage(store), ArchiveUsage(records: 2, logicalPayloadBytes: 167))
         XCTAssertEqual(try writeOutbox(store, event("new-receipt"), index: 24, generation: 7).inserted, 1)
@@ -860,7 +938,7 @@ final class ArchiveStoreTests: XCTestCase {
         XCTAssertEqual(try rawInteger(url, query: "SELECT COUNT(*) FROM events"), 2)
         try rawDatabase(url, statements: ["ALTER TABLE archive_meta DROP COLUMN outbox_last_event_key"])
         XCTAssertEqual(try usage(open()).records, 2)
-        XCTAssertEqual(try rawInteger(url, query: "PRAGMA user_version"), 7)
+        XCTAssertEqual(try rawInteger(url, query: "PRAGMA user_version"), 8)
     }
 
     func testOutboxReplayAfterQuotaAndAgeRetentionDoesNotResurrectMessages() throws {
