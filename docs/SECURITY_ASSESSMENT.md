@@ -59,3 +59,28 @@ A Sideloadly re-sign changes the artifact; record its identity/hash separately w
 ## Evidence required to close this assessment
 
 The present evidence is source inspection and the official API/license pages captured by the license audit. Future releases need passing, named test results tied to a revision; a successful full build; device tests of the installed signing variant; reviewed dependency/source/license manifests; and runtime disclosure/retention checks using synthetic accounts and canary content. Report failed, skipped and unavailable checks separately. Until then every feature and control above remains unverified.
+
+
+## Standalone archive draft (not integrated)
+
+The feature branch introduces `LocalMessageArchive` without altering Telegram's
+application core. It uses only vendored SQLCipher, Foundation and Security, has no
+networking or logging capability, and does not receive live messages yet. Its
+Keychain adapter rejects missing existing-archive keys, inaccessible items,
+malformed keys and weaker-than-requested protection. Security calls are mocked in
+unit tests; real Keychain/entitlement and locked-device behavior need device tests.
+
+Postbox sets a process-global SQLCipher plaintext-header default of 32 bytes.
+The independent archive must explicitly select a fully encrypted header after
+key initialization, and its tests must exercise coexistence with that default.
+No process-global SQLCipher setting may be changed by the archive module.
+
+This draft does not close the risks above. A Postbox outbox, purge/replay barrier,
+protected archive-owned media, physical disk quota, corruption/disk-full recovery,
+real device protection tests and measured performance remain necessary before
+archive integration can be described as reliable. An already-open SQLCipher
+connection can retain keys/pages in memory after device lock; Keychain access
+control and file protection do not themselves close that connection. App lifecycle
+integration must gate archive access and close/reopen safely on protected-data
+transitions. Retaining a supplied snapshot in
+a native unit test is not evidence of preserving a live deletion event.

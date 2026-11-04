@@ -12,8 +12,9 @@ from pathlib import Path
 BASELINE = "279f89e4d4f63f17227bf877dc3d8990f22ecd58"
 REFERENCE = "7013145676d36d82ee13c02a89f72097b7490dcd"
 MANIFESTS = ("versions.json", ".gitmodules", "MODULE.bazel", "MODULE.bazel.lock", ".bazelrc")
-ADDED_PREFIXES = ("docs/fork/", "tools/fork_audit/", "tools/fork_baseline/")
+ADDED_PREFIXES = ("docs/fork/", "tools/fork_audit/", "tools/fork_baseline/", "submodules/LocalMessageArchive/")
 ADDED_FILES = {
+    ".github/workflows/archive-tests.yml",
     ".github/workflows/fork-baseline.yml", "COPYING",
     "docs/AYUGRAM_FEATURE_MATRIX.md", "docs/WINDOWS_INSTALL.md", "docs/SECURITY_ASSESSMENT.md",
 }
