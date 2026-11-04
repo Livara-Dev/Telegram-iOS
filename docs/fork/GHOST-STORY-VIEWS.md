@@ -61,7 +61,7 @@ Downgrading to an older binary without this policy does not preserve protection.
 
 ## Verification and limitations
 
-The 26 authored story-specific tests use the real on-disk Postbox schema, producer, synchronization
+The 27 authored story-specific tests use the real on-disk Postbox schema, producer, synchronization
 worker and replay path. Only the final transport is replaced by a typed recorder.
 They cover enabled/disabled defaults, ordinary/pinned behavior, local read state,
 per-account settings, legacy operations, generation persistence, rapid toggles,
@@ -84,3 +84,18 @@ perfect invisibility or API-policy compliance is claimed. The existing
 [Telegram API-terms conflict](LICENSE-AND-SUPPLY-CHAIN.md#separate-api-contract-conflict)
 remains unresolved. Existing [upstream telemetry](TELEMETRY-REVIEW.md) also remains
 outside this narrow change.
+
+## Current native evidence
+
+Revision `cc9f99df` passed 54 macOS archive-library tests and iOS archive-module
+compilation; those results do not exercise story behavior. Its application
+integration run failed compiling the new story dispatcher: `ignoreValues`
+changed `Signal<Void, NoError>` into `Signal<Never, NoError>` before a `then`
+operation requiring `Void`. No story or projection test executed.
+[Retained compiler evidence](evidence/story-integration-cc9f99df.json) records
+that failure.
+
+The corrected chain discards intermediate values while preserving the `Void`
+type and emits its completion only after transport completion. A new regression
+checks that a transport value alone cannot retire the durable receipt. This
+brings the authored story suite to 27 cases; native retesting remains required.

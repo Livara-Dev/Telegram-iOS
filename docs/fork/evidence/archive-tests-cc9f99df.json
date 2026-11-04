@@ -1,0 +1,47 @@
+{
+  "run": 41821121430,
+  "head": "cc9f99df3020223edfb0f5ccc568e9acaa7ad640",
+  "artifact_id": 13319507444,
+  "zip_sha256": "70da0c5ab8c062945dd7856c0595d2df8620d2afb499fa61ead910e6499cd0bf",
+  "entries": [
+    {
+      "name": "SHA256SUMS",
+      "bytes": 238
+    },
+    {
+      "name": "ios-compile.log",
+      "bytes": 113268
+    },
+    {
+      "name": "swift-test.log",
+      "bytes": 130718
+    },
+    {
+      "name": "host.txt",
+      "bytes": 238
+    }
+  ],
+  "signals": {
+    "ios-compile.log": [],
+    "swift-test.log": [
+      "\t Executed 43 tests, with 0 failures (0 unexpected) in 1.485 (1.494) seconds",
+      "\t Executed 11 tests, with 0 failures (0 unexpected) in 0.003 (0.005) seconds",
+      "\t Executed 54 tests, with 0 failures (0 unexpected) in 1.488 (1.499) seconds",
+      "\t Executed 54 tests, with 0 failures (0 unexpected) in 1.488 (1.502) seconds"
+    ],
+    "host.txt": []
+  },
+  "verified_inner_hashes": [
+    "host.txt",
+    "ios-compile.log",
+    "swift-test.log"
+  ],
+  "ios_compile_tail": [
+    "\u001b[0m\u001b[1m/Users/runner/work/Telegram-iOS/Telegram-iOS/submodules/sqlcipher/Sources/sqlite3.c:15915:10: \u001b[0m\u001b[0;1;36mnote: \u001b[0mother definition of 'MIN'\u001b[0m",
+    " 15915 | # define MIN(A,B) ((A)<(B)?(A):(B))\u001b[0m",
+    "       | \u001b[0;1;32m         ^",
+    "\u001b[0m189 warnings generated.",
+    "Build complete! (9.73 sec)"
+  ],
+  "scope": "Archive library only:54 macOS cases and iOS module compilation; not story/filter behavior or full application"
+}

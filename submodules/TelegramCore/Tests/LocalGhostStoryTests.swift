@@ -70,6 +70,18 @@ private final class StoryReceiptRecorder {
         }
     }
 
+    func emitValueWithoutCompleting(_ index: Int) {
+        self.lock.lock()
+        guard self.recorded.indices.contains(index) else {
+            self.lock.unlock()
+            XCTFail("transport value index does not exist")
+            return
+        }
+        let subscriber = self.recorded[index].1
+        self.lock.unlock()
+        subscriber.putNext(())
+    }
+
     func injectReadUpdate(_ peerId: PeerId, _ storyId: Int32) {
         let _ = self.readUpdates.modify { $0 + [StoryTestReadUpdate(peerId: peerId, storyId: storyId)] }
     }
@@ -338,6 +350,20 @@ final class LocalGhostStoryTests: XCTestCase {
         try self.settle(queue)
         XCTAssertEqual(try self.pending().map(\.storyId), [9])
         recorder.finish(1)
+        try self.settle(queue)
+        XCTAssertTrue(try self.pending().isEmpty)
+    }
+
+    func testTransportValueAloneDoesNotRetireDurableReceipt() throws {
+        try self.view(7)
+        let recorder = StoryReceiptRecorder(completeImmediately: false)
+        let queue = self.startWorker(recorder)
+        try self.settle(queue)
+        XCTAssertEqual(recorder.requests.count, 1)
+        recorder.emitValueWithoutCompleting(0)
+        try self.settle(queue)
+        XCTAssertEqual(try self.pending().map(\.storyId), [7])
+        recorder.finish(0)
         try self.settle(queue)
         XCTAssertTrue(try self.pending().isEmpty)
     }

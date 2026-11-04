@@ -55,7 +55,9 @@ func dispatchLocalStoryViewReceipt(postbox: Postbox, request: LocalStoryViewRece
             // a Telegram success/pts and do not create a new retry queue.
             return send(request)
             |> `catch` { _ -> Signal<Void, NoError> in .complete() }
-            |> ignoreValues
+            // Drop transport values while keeping the Void signal type. The
+            // durable operation retires only when transport completes.
+            |> filter { _ in false }
             |> then(Signal<Void, NoError>.single(()))
         }
     }
