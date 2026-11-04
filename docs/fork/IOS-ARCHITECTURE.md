@@ -93,7 +93,12 @@ Required incremental acceptance includes:
 
 Build pin at this revision: app 13.1.2, Xcode 27.1, macOS 27, Bazel 9.2.0 with SHA-256 `dd466352a3e4d3581b8898740ee1ff208866ccbe25f8d367c5dcb950219587e6` (`versions.json`). A macOS machine, the matching Apple toolchain/runtime, own bundle/team identifiers, own Telegram API credentials and signing material remain necessary. No IPA or successful baseline build is asserted by this document.
 
-## Follow-up: durable archive handoff seam (unimplemented)
+## Historical handoff design (implementation now under integration testing)
+
+The following records the pre-implementation review. The experimental coordinator,
+transactional outbox and server/local capture seams now exist; current coverage,
+tests and remaining gaps are tracked in [ARCHIVE-INTEGRATION.md](ARCHIVE-INTEGRATION.md).
+It must not be read as evidence that the application integration has passed.
 
 Inspected against the same pinned source on 2026-11-04. This is an implementation
 handoff, **not a validated integration design or a claim of reliable capture**.

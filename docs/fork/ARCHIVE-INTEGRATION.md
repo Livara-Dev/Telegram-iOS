@@ -2,9 +2,10 @@
 
 This increment connects the native storage library to TelegramCore and SettingsUI.
 It is **default off and not yet verified in the running Telegram application**.
-The previous exact PR head `663d6ab5` passed 46 macOS library tests and an iOS
-module compile in [run 41797053561](https://github.com/Livara-Dev/Telegram-iOS/actions/runs/41797053561).
-Those results do not cover the new integration or schema-4 receipt.
+Commit `1b7dfc3b` passed 54 macOS library tests and an iOS module compile in
+[run 41811248751](https://github.com/Livara-Dev/Telegram-iOS/actions/runs/41811248751).
+Those results cover the standalone schema-4 store, not the new application hooks
+or native screens. Every subsequent source revision needs its own CI result.
 
 ## Capture and delivery
 
@@ -16,6 +17,26 @@ view-once messages, expired/service content and copy-protected content are
 excluded. Unknown conversation peers are excluded. Media files are not copied;
 media-only edits are not text versions. Pure reaction/count/edit-date changes
 do not create a version.
+
+The user-initiated message-delete helper also captures after expanding message
+groups but before canonical removal. Its owner comes from the same Postbox's
+authorized account state; missing authorization never guesses an archive owner.
+The four edit-RPC acknowledgement branches use a common replacement helper that
+captures before the old text disappears. The existing incoming flag, live-location
+tag and unlocked-media merge rules remain unchanged. Subsequent server replay
+sees the deletion/replacement and must not create a duplicate version. These hooks
+do not change or suppress outgoing edit/delete requests.
+
+Structured `RichTextMessageAttribute` content is not supported by this text-only
+archive. Telegram can keep that content outside the flat message text, so saving
+the empty flat field would misrepresent successful capture. Eligible rich-content
+deletions and changed rich prior versions are skipped and increment the visible
+missed-capture count. Unchanged rich content and deliberate policy exclusions do
+not increment it. A normal-text to rich-content edit can still preserve its normal
+previous version. Sender exclusions also fail closed when the author is unavailable.
+The counter reports missed capture attempts, not a count of unique lost messages.
+Changes to metadata inside an unsupported rich payload can also increment it;
+the client-only cached full page is excluded from that comparison.
 
 The adapter appends to Postbox's existing operation log in the same transaction
 as the canonical mutation. Tag 240 is reserved for this local worker, under the
@@ -74,9 +95,11 @@ The archive has no new network or diagnostic producer.
 - The existing release-mode Postbox commit error path is not a proven durable
   acknowledgement under disk-full/I/O failure. This patch does not change
   authentication, MTProto, Postbox encryption or global commit policy.
-- Range/history-validation/local deletions, removal from groups, notification
-  extension processing and every other mutation path are not covered by these
-  three hooks. Never describe capture as complete or lossless.
+- Range/history-clear and history-validation deletions, validated history
+  replacements, removal from groups, notification extension processing and other
+  mutation paths remain uncovered. The named user-initiated message-delete path
+  is not coverage of every local deletion. Never describe capture as complete or
+  lossless.
 - Already-started writes may finish after a settings change or lock transition.
   Purge's generation protocol removes older work; disabling capture pauses future
   capture and does not erase stored history.
@@ -114,6 +137,16 @@ replay through the coordinator to real SQLCipher and the read facade. They do
 not exercise Telegram servers, actual process kill, real Keychain lock
 enforcement, native UI frames or physical installation.
 Until the workflow passes, these are **authored tests, not passing evidence**.
+
+The follow-up suite contains 52 archive integration tests: 25 capture/policy,
+14 local-mutation/replay, five acknowledged-edit merge and eight coordinator
+tests. Added regressions cover user deletion followed by duplicate server replay,
+acknowledged own edits, group expansion, rich-content gaps and unknown-author
+exclusions. The cache-removal test uses the actual `MediaBox.removeCachedResources`
+endpoint with the production directory layout, verifies that cached bytes were
+removed, then reopens both databases and checks archived/canonical records. It
+does not test the Settings UI's cache-selection flow. These additional tests
+also require a fresh native result; they do not inherit the earlier commit's result.
 
 ## First runtime failures and corrections
 

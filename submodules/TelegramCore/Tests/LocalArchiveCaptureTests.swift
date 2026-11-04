@@ -69,6 +69,15 @@ final class LocalArchiveCaptureTests: XCTestCase {
         })
     }
 
+    private func richMessage(_ text: String) -> RichTextMessageAttribute {
+        return RichTextMessageAttribute(instantPage: InstantPage(blocks: [.paragraph(.plain(text))],
+            media: [:], isComplete: true, rtl: false, url: "", views: nil), fullInstantPage: nil)
+    }
+
+    private func missedCaptures() throws -> Int64 {
+        return try self.localArchiveValue(self.fixture.postbox.transaction { localArchiveSettings(transaction: $0).droppedCaptures })
+    }
+
     func testDisabledByDefaultStillAppliesCanonicalDeletion() throws {
         let id = self.id(1)
         try self.store([localArchiveTestMessage(id)])
@@ -210,6 +219,121 @@ final class LocalArchiveCaptureTests: XCTestCase {
         XCTAssertEqual(operation.text, "text")
         XCTAssertFalse(operation.entities.isEmpty)
         XCTAssertEqual(try self.pending().count, 1)
+    }
+
+    func testRichDeletionRecordsOneMissInsteadOfAnEmptySuccessfulArchive() throws {
+        try self.settings { $0.enabled = true }
+        let id = self.id(1)
+        try self.store([localArchiveTestMessage(id, text: "", attributes: [self.richMessage("content is in the page")])])
+        try self.captureAndDelete([id, id])
+        XCTAssertTrue(try self.pending().isEmpty)
+        XCTAssertEqual(try self.missedCaptures(), 1)
+        XCTAssertNil(try self.localArchiveValue(self.fixture.postbox.transaction { $0.getMessage(id) }))
+        try self.fixture.reopen()
+        try self.captureAndDelete([id])
+        XCTAssertTrue(try self.pending().isEmpty)
+        XCTAssertEqual(try self.missedCaptures(), 1)
+    }
+
+    func testChangedRichEditRecordsOneMissAndDuplicateEditDoesNot() throws {
+        try self.settings { $0.enabled = true }
+        let id = self.id(1)
+        try self.store([localArchiveTestMessage(id, text: "", attributes: [self.richMessage("old page")])])
+        let updatedRich = self.richMessage("new page")
+        let updated = localArchiveTestMessage(id, text: "", attributes: [updatedRich, EditedMessageAttribute(date: 190, isHidden: false)])
+        try self.captureAndEdit(id, updated: updated)
+        XCTAssertTrue(try self.pending().isEmpty)
+        XCTAssertEqual(try self.missedCaptures(), 1)
+        try self.fixture.reopen()
+        try self.captureAndEdit(id, updated: updated)
+        XCTAssertEqual(try self.missedCaptures(), 1)
+        let currentRich = try self.localArchiveValue(self.fixture.postbox.transaction {
+            $0.getMessage(id)?.attributes.first(where: { $0 is RichTextMessageAttribute }) as? RichTextMessageAttribute
+        })
+        XCTAssertEqual(currentRich, updatedRich)
+    }
+
+    func testUnchangedRichPageWithMetadataOnlyEditDoesNotCountAsMiss() throws {
+        try self.settings { $0.enabled = true }
+        let id = self.id(1)
+        try self.store([localArchiveTestMessage(id, text: "", attributes: [self.richMessage("unchanged page")])])
+        try self.captureAndEdit(id, updated: localArchiveTestMessage(id, text: "", attributes: [
+            self.richMessage("unchanged page"), EditedMessageAttribute(date: 190, isHidden: false)
+        ]))
+        XCTAssertTrue(try self.pending().isEmpty)
+        XCTAssertEqual(try self.missedCaptures(), 0)
+        XCTAssertEqual(try self.localArchiveValue(self.fixture.postbox.transaction { $0.getMessage(id)?.editedTime }), 190)
+    }
+
+    func testRepeatedRichPrimaryPageWithoutLocalFullPageCacheDoesNotCountAsMiss() throws {
+        try self.settings { $0.enabled = true }
+        let id = self.id(1)
+        let primary = self.richMessage("primary page").instantPage
+        let cachedFull = self.richMessage("locally fetched full page").instantPage
+        try self.store([localArchiveTestMessage(id, text: "", attributes: [
+            RichTextMessageAttribute(instantPage: primary, fullInstantPage: cachedFull)
+        ])])
+        try self.captureAndEdit(id, updated: localArchiveTestMessage(id, text: "", attributes: [
+            RichTextMessageAttribute(instantPage: primary, fullInstantPage: nil),
+            EditedMessageAttribute(date: 190, isHidden: false)
+        ]))
+        XCTAssertTrue(try self.pending().isEmpty)
+        XCTAssertEqual(try self.missedCaptures(), 0)
+        let currentRich = try self.localArchiveValue(self.fixture.postbox.transaction {
+            $0.getMessage(id)?.attributes.first(where: { $0 is RichTextMessageAttribute }) as? RichTextMessageAttribute
+        })
+        XCTAssertEqual(currentRich?.instantPage, primary)
+        XCTAssertEqual(currentRich?.fullInstantPage, cachedFull, "normal Postbox seed merge preserves the fetched full page")
+    }
+
+    func testNormalToRichSavesNormalVersionAndRichToNormalReportsMiss() throws {
+        try self.settings { $0.enabled = true }
+        let id = self.id(1)
+        try self.store([localArchiveTestMessage(id, text: "available plain version")])
+        try self.captureAndEdit(id, updated: localArchiveTestMessage(id, text: "", attributes: [self.richMessage("structured replacement")]))
+        XCTAssertEqual(try self.pending().compactMap { $0.operation?.text }, ["available plain version"])
+        XCTAssertEqual(try self.missedCaptures(), 0)
+        try self.captureAndEdit(id, updated: localArchiveTestMessage(id, text: "plain again"))
+        XCTAssertEqual(try self.pending().compactMap { $0.operation?.text }, ["available plain version"])
+        XCTAssertEqual(try self.missedCaptures(), 1)
+        XCTAssertEqual(try self.localArchiveValue(self.fixture.postbox.transaction { $0.getMessage(id)?.text }), "plain again")
+    }
+
+    func testPolicyExcludedRichContentDoesNotCountAsMissedCapture() throws {
+        let peerId = self.chatPeerId.toInt64()
+        try self.settings { $0.enabled = true; $0.excludedPeerIds = [peerId] }
+        try self.store([localArchiveTestMessage(self.id(1), text: "", attributes: [self.richMessage("excluded chat")])])
+        try self.captureAndDelete([self.id(1)])
+        try self.settings { $0.excludedPeerIds = [] }
+        let expiring = self.id(2)
+        let viewOnce = self.id(3)
+        let protected = self.id(4)
+        try self.store([
+            localArchiveTestMessage(expiring, text: "", attributes: [self.richMessage("expiring"), AutoremoveTimeoutMessageAttribute(timeout: 30, countdownBeginTime: nil)]),
+            localArchiveTestMessage(viewOnce, text: "", attributes: [self.richMessage("view once"), AutoclearTimeoutMessageAttribute(timeout: viewOnceTimeout, countdownBeginTime: nil)]),
+            localArchiveTestMessage(protected, text: "", attributes: [self.richMessage("copy protected")]).withUpdatedFlags([.Incoming, .CopyProtected])
+        ])
+        try self.captureAndDelete([expiring, viewOnce, protected])
+        XCTAssertTrue(try self.pending().isEmpty)
+        XCTAssertEqual(try self.missedCaptures(), 0)
+    }
+
+    func testSenderExclusionsFailClosedWhenAuthorPeerIsUnavailable() throws {
+        let unknownAuthor = PeerId(namespace: Namespaces.Peer.CloudUser, id: PeerId.Id._internalFromInt64Value(9999))
+        let plain = self.id(1)
+        let rich = self.id(2)
+        try self.settings { $0.enabled = true; $0.excludedSenderIds = [unknownAuthor.toInt64()] }
+        try self.store([
+            localArchiveTestMessage(plain, text: "unknown author", authorId: unknownAuthor),
+            localArchiveTestMessage(rich, text: "", authorId: unknownAuthor, attributes: [self.richMessage("unknown rich author")])
+        ])
+        let before = try XCTUnwrap(self.localArchiveValue(self.fixture.postbox.transaction { $0.getMessage(plain) }))
+        XCTAssertNil(before.author, "fixture must exercise an unavailable author peer")
+        try self.captureAndDelete([plain, rich])
+        XCTAssertTrue(try self.pending().isEmpty)
+        XCTAssertEqual(try self.missedCaptures(), 0)
+        XCTAssertNil(try self.localArchiveValue(self.fixture.postbox.transaction { $0.getMessage(plain) }))
+        XCTAssertNil(try self.localArchiveValue(self.fixture.postbox.transaction { $0.getMessage(rich) }))
     }
 
     func testPeerAndSenderExclusionsLeaveCanonicalDeletionUnchanged() throws {

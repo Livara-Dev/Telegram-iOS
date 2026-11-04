@@ -181,6 +181,113 @@ final class LocalArchiveCoordinatorTests: XCTestCase {
         XCTAssertTrue(page.records.first?.isDeleted ?? false)
     }
 
+    func testMediaBoxCacheRemovalPreservesSiblingArchiveAcrossReopen() throws {
+        // Match the production layout: account/postbox/media and
+        // account/local-message-archive/account-<recordId>/archive.sqlite.
+        // This calls the actual MediaBox endpoint used by clearCachedMediaResources;
+        // it does not exercise the Settings UI or its selection/usage collection.
+        let accountDirectory = FileManager.default.temporaryDirectory.appendingPathComponent("archive-cache-account-" + UUID().uuidString)
+        let postboxDirectory = accountDirectory.appendingPathComponent("postbox")
+        let previousArchiveDirectory = self.archiveDirectory
+        self.archiveDirectory = accountDirectory.appendingPathComponent("local-message-archive")
+        var layoutPostbox: Postbox?
+        var first: Running?
+        var recovered: Running?
+
+        func openLayoutPostbox(firstOpen: Bool) throws -> Postbox {
+            let encryption = ValueBoxEncryptionParameters(forceEncryptionIfNoSet: true,
+                key: try XCTUnwrap(.init(data: Data(repeating: 0x62, count: 32))),
+                salt: try XCTUnwrap(.init(data: Data(repeating: 0x28, count: 16))))
+            let result = try self.localArchiveValue(openPostbox(basePath: postboxDirectory.path,
+                seedConfiguration: telegramPostboxSeedConfiguration, encryptionParameters: encryption,
+                timestampForAbsoluteTimeBasedOperations: Int32(Date().timeIntervalSince1970),
+                isMainProcess: true, isTemporary: false, isReadOnly: false,
+                useCopy: false, useCaches: true, removeDatabaseOnError: firstOpen)
+                |> filter { result in
+                    if case .upgrading = result { return false }
+                    return true
+                })
+            guard case let .postbox(postbox) = result else {
+                throw NSError(domain: "LocalArchiveCacheRemovalTest", code: 1)
+            }
+            return postbox
+        }
+
+        func closeLayoutPostbox() throws {
+            if let postbox = layoutPostbox {
+                let _ = try self.localArchiveValue(postbox.transaction { _ in })
+                let _ = try self.localArchiveValue(postbox.mediaBox.storageBox.all())
+                let _ = try self.localArchiveValue(postbox.mediaBox.cacheStorageBox.all())
+                postbox.mediaBox.dataQueue.sync {}
+            }
+            layoutPostbox = nil
+            Postbox.sharedQueue.sync {}
+        }
+
+        defer {
+            if let first { try? self.stop(first) }
+            if let recovered { try? self.stop(recovered) }
+            try? closeLayoutPostbox()
+            try? FileManager.default.removeItem(at: accountDirectory)
+            self.archiveDirectory = previousArchiveDirectory
+        }
+        layoutPostbox = try openLayoutPostbox(firstOpen: true)
+        let deletedId = MessageId(peerId: self.chatPeerId, namespace: Namespaces.Message.Cloud, id: 81)
+        let retainedId = MessageId(peerId: self.chatPeerId, namespace: Namespaces.Message.Cloud, id: 82)
+        let accountPeerId = self.accountPeerId
+        let peers = [localArchiveTestUser(self.accountPeerId), localArchiveTestUser(self.chatPeerId)]
+        let _ = try self.localArchiveValue(try XCTUnwrap(layoutPostbox).transaction { transaction in
+            transaction.updatePeersInternal(peers, update: { _, peer in peer })
+            setLocalArchiveSettings(transaction: transaction, settings: LocalArchiveSettings(enabled: true))
+            let _ = transaction.addMessages([
+                localArchiveTestMessage(deletedId, text: "Archive survives cache removal"),
+                localArchiveTestMessage(retainedId, text: "Canonical message remains")
+            ], location: .Random)
+            captureDeletedLocalArchiveMessages(transaction: transaction, accountPeerId: accountPeerId, ids: [deletedId], observedAt: 200)
+            transaction.deleteMessages([deletedId], forEachMedia: nil)
+        })
+        let started = self.start(postbox: try XCTUnwrap(layoutPostbox))
+        first = started
+        try self.awaitStatus(.ready, in: started)
+        let before = try self.localArchiveValue(try XCTUnwrap(started.coordinator).deletedMessages())
+        XCTAssertEqual(before.records.map { $0.text }, ["Archive survives cache removal"])
+        let archiveFile = self.archiveDirectory.appendingPathComponent("account-17/archive.sqlite")
+        XCTAssertTrue(FileManager.default.fileExists(atPath: archiveFile.path))
+
+        do {
+            let mediaBox = try XCTUnwrap(layoutPostbox).mediaBox
+            let resourceId = MediaResourceId("archive-cache-removal-fixture")
+            let bytes = Data("Synthetic cached resource".utf8)
+            mediaBox.storeResourceData(resourceId, data: bytes, synchronous: true)
+            let stored = try self.localArchiveValue(mediaBox.resourceData(id: resourceId))
+            XCTAssertTrue(stored.complete)
+            XCTAssertEqual(try Data(contentsOf: URL(fileURLWithPath: stored.path)), bytes)
+
+            let cleared = expectation(description: "actual MediaBox cache removal completed")
+            let removal = mediaBox.removeCachedResources([resourceId]).start(completed: { cleared.fulfill() })
+            defer { removal.dispose() }
+            wait(for: [cleared], timeout: 15)
+            XCTAssertFalse(FileManager.default.fileExists(atPath: stored.path))
+            XCTAssertTrue(FileManager.default.fileExists(atPath: archiveFile.path))
+        }
+
+        try self.stop(started)
+        try closeLayoutPostbox()
+        layoutPostbox = try openLayoutPostbox(firstOpen: false)
+        let restarted = self.start(postbox: try XCTUnwrap(layoutPostbox))
+        recovered = restarted
+        try self.awaitStatus(.ready, in: restarted)
+        let after = try self.localArchiveValue(try XCTUnwrap(restarted.coordinator).deletedMessages())
+        XCTAssertFalse(after.unavailable)
+        XCTAssertEqual(after.records.map { $0.text }, before.records.map { $0.text })
+        XCTAssertEqual(after.records.map { $0.sequence }, before.records.map { $0.sequence })
+        XCTAssertNil(try self.localArchiveValue(try XCTUnwrap(layoutPostbox).transaction { $0.getMessage(deletedId) }))
+        XCTAssertEqual(try self.localArchiveValue(try XCTUnwrap(layoutPostbox).transaction { $0.getMessage(retainedId)?.text }), "Canonical message remains")
+        XCTAssertTrue(try self.localArchiveValue(try XCTUnwrap(layoutPostbox).transaction {
+            localArchivePendingCaptures(transaction: $0, accountPeerId: accountPeerId).isEmpty
+        }))
+    }
+
     func testWriteFailureKeepsOutboxUntilSuccessfulRestart() throws {
         let _ = try self.queueDeletion()
         let failing = self.start(behavior: .fail)

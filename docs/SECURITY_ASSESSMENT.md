@@ -66,9 +66,10 @@ The present evidence is source inspection and the official API/license pages cap
 The new TelegramCore outbox, account worker and native archive screens are
 described in [ARCHIVE-INTEGRATION.md](fork/ARCHIVE-INTEGRATION.md). They are
 default off. Schema 4 introduces a durable ordered replay receipt that survives
-retention; its new tests and the real Postbox integration tests must pass on the
-new revision before they count as evidence. Earlier library results do not
-validate these changes.
+retention. Commit `1b7dfc3b` passed 54 macOS tests (43 storage, 11 mocked Keychain)
+and iOS module compilation; see [exact evidence](fork/evidence/archive-tests-1b7dfc3b.json).
+The application hooks and real Postbox integration tests require their own
+revision-specific results. Standalone library results do not validate them.
 
 The transient outbox is protected by Postbox's existing encryption/key policy,
 not the archive's independent Keychain key or complete file protection. The
@@ -76,6 +77,15 @@ worker does not change Postbox commit-error handling. Release-mode disk-full
 durability, abrupt termination, actual device lock behavior, notification
 extensions and every deletion path remain unverified. An in-flight write can
 finish after a settings change; purge uses a separate generation barrier.
+
+The capture review found that user-initiated deletion and acknowledged edits
+can consume prior content before server replay. Narrow hooks now cover those
+paths; tests check duplicate replay and preservation of existing canonical
+operations. They still need native CI verification. History revalidation,
+range/history clearing and structured rich-content preservation remain gaps.
+Unsupported rich content is reported through the missed-capture counter, not an
+empty successful snapshot. Sender exclusions fail closed if author identity
+is unavailable. No broad hook was added to expiry or cache-maintenance deletion.
 
 The archive directory sits outside the media cache but inside the account's
 root. Upstream account cleanup removes that directory on account removal;

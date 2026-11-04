@@ -1,0 +1,63 @@
+{
+  "schema": 1,
+  "repository": "Livara-Dev/Telegram-iOS",
+  "commit": "1b7dfc3bb07b3f876d20989368ebcbb932d2f8da",
+  "run_id": 41811248751,
+  "run_url": "https://github.com/Livara-Dev/Telegram-iOS/actions/runs/41811248751",
+  "job_id": 126510767052,
+  "conclusion": "success",
+  "run_created_at": "2026-11-04T10:00:04Z",
+  "run_started_at": "2026-11-04T10:00:04Z",
+  "run_updated_at": "2026-11-04T10:02:48Z",
+  "job_started_at": "2026-11-04T10:00:09Z",
+  "job_completed_at": "2026-11-04T10:02:47Z",
+  "tests": {
+    "platform": "macOS host via Swift Package Manager XCTest",
+    "total": 54,
+    "failures": 0,
+    "unexpected_failures": 0,
+    "suites": [
+      {
+        "name": "ArchiveStoreTests",
+        "tests": 43,
+        "failures": 0,
+        "includes_benchmark": true,
+        "reported_execution_seconds": 2.085
+      },
+      {
+        "name": "KeychainArchiveKeyStoreTests",
+        "tests": 11,
+        "failures": 0,
+        "security_calls": "injected mocks",
+        "reported_execution_seconds": 0.003
+      }
+    ],
+    "reported_total_execution_seconds": 2.087,
+    "step_started_at": "2026-11-04T10:00:56Z",
+    "step_completed_at": "2026-11-04T10:02:16Z"
+  },
+  "ios_simulator_module_compile": {
+    "conclusion": "success",
+    "target": "LocalMessageArchive",
+    "triple": "arm64-apple-ios15.0-simulator",
+    "runtime_test": false,
+    "started_at": "2026-11-04T10:02:16Z",
+    "completed_at": "2026-11-04T10:02:41Z"
+  },
+  "artifact": {
+    "id": 13311593690,
+    "name": "archive-draft-1b7dfc3bb07b3f876d20989368ebcbb932d2f8da",
+    "url": "https://github.com/Livara-Dev/Telegram-iOS/actions/runs/41811248751/artifacts/13311593690",
+    "sha256": "d1975650a7f56ff9d855f1e6f5e0fbcdf4ec02b5e342181be5054978796ff82e",
+    "size_bytes": 22257,
+    "created_at": "2026-11-04T10:02:44Z",
+    "expires_at": "2026-11-11T10:02:42Z",
+    "contents": "test logs, host metadata and SHA256SUMS; no application or IPA"
+  },
+  "scope_limits": [
+    "Does not verify Telegram application integration or UI",
+    "Keychain tests use mocked Security responses",
+    "No physical iPhone installation or Data Protection validation",
+    "No full simulator app or unsigned device IPA produced by this workflow"
+  ]
+}

@@ -17,15 +17,25 @@ private func textEntities(_ attributes: [MessageAttribute]) -> [MessageTextEntit
     return attributes.compactMap { $0 as? TextEntitiesMessageAttribute }.first?.entities ?? []
 }
 
+private func richText(_ attributes: [MessageAttribute]) -> RichTextMessageAttribute? {
+    return attributes.first(where: { $0 is RichTextMessageAttribute }) as? RichTextMessageAttribute
+}
+
 private func containsExpiringAttribute(_ attributes: [MessageAttribute]) -> Bool {
     return attributes.contains { $0 is AutoremoveTimeoutMessageAttribute || $0 is AutoclearTimeoutMessageAttribute }
 }
 
-private func eligibleMessage(transaction: Transaction, message: Message, settings: LocalArchiveSettings) -> (botConversation: Bool, entities: Data)? {
+private enum LocalArchiveEligibleContent {
+    case text(botConversation: Bool, entities: Data)
+    case unsupportedRichText
+}
+
+private func eligibleMessage(transaction: Transaction, message: Message, settings: LocalArchiveSettings) -> LocalArchiveEligibleContent? {
     let peerNamespace = message.id.peerId.namespace
     guard message.id.namespace == Namespaces.Message.Cloud, message.id.id > 0,
           peerNamespace == Namespaces.Peer.CloudUser || peerNamespace == Namespaces.Peer.CloudGroup || peerNamespace == Namespaces.Peer.CloudChannel,
           !settings.excludedPeerIds.contains(message.id.peerId.toInt64()),
+          settings.excludedSenderIds.isEmpty || message.author != nil,
           !(message.author.map { settings.excludedSenderIds.contains($0.id.toInt64()) } ?? false),
           !message.flags.contains(.CopyProtected), !containsExpiringAttribute(message.attributes),
           !message.media.contains(where: { $0 is TelegramMediaExpiredContent || $0 is TelegramMediaAction }),
@@ -34,12 +44,18 @@ private func eligibleMessage(transaction: Transaction, message: Message, setting
     }
     let botConversation = (conversationPeer as? TelegramUser)?.botInfo != nil
     guard !(settings.excludeBots && botConversation) else { return nil }
+    // Rich messages carry content in an InstantPage and commonly have text == "".
+    // The text-only archive cannot represent them faithfully. Classify this only
+    // after exclusions so deliberate privacy exclusions are not reported as misses.
+    if richText(message.attributes) != nil {
+        return .unsupportedRichText
+    }
     let encoder = JSONEncoder()
     encoder.outputFormatting = [.sortedKeys]
     guard let entities = try? encoder.encode(LocalArchiveEntities(version: 1, entities: textEntities(message.attributes))) else {
         return nil
     }
-    return (botConversation, entities)
+    return .text(botConversation: botConversation, entities: entities)
 }
 
 private struct LocalArchiveOutboxBudget {
@@ -95,11 +111,15 @@ func captureDeletedLocalArchiveMessages(transaction: Transaction, accountPeerId:
     for id in ids {
         guard seen.insert(id).inserted, let message = transaction.getMessage(id),
               let eligible = eligibleMessage(transaction: transaction, message: message, settings: settings) else { continue }
+        guard case let .text(botConversation, entities) = eligible else {
+            recordCaptureGap(&settings)
+            continue
+        }
         let operation = LocalArchiveCaptureOperation(
             generation: settings.generation, messageId: message.id, kindRawValue: ArchiveEventKind.deleted.rawValue,
-            text: message.text, entities: eligible.entities, authorId: message.author?.id.toInt64(),
+            text: message.text, entities: entities, authorId: message.author?.id.toInt64(),
             sentAt: Int64(message.timestamp), observedAt: observedAt, serverEditAt: message.attributes.compactMap { ($0 as? EditedMessageAttribute).map { Int64($0.date) } }.first,
-            botConversation: eligible.botConversation
+            botConversation: botConversation
         )
         if !budget.insert(operation, transaction: transaction, accountPeerId: accountPeerId) {
             recordCaptureGap(&settings)
@@ -111,21 +131,29 @@ func captureDeletedLocalArchiveMessages(transaction: Transaction, accountPeerId:
 }
 
 /// Must be called from the updateMessage closure before replacing the old value.
-/// Reaction, view-count, pin-state and edit-timestamp-only changes are not versions.
+/// Ordinary reaction, view-count, pin-state and edit-date attributes alone are not
+/// versions. A rich message's primary page uses its existing Equatable semantics;
+/// its metadata changes can count as misses, but its locally cached full page does
+/// not. The seed merge preserves that cache when the server repeats the primary page.
 func captureEditedLocalArchiveMessage(transaction: Transaction, accountPeerId: PeerId, previous: Message, updated: StoreMessage, observedAt: Int64 = Int64(Date().timeIntervalSince1970)) {
     var settings = localArchiveSettings(transaction: transaction)
     guard settings.enabled, !settings.pendingPurge, settings.generation >= 0,
-          previous.text != updated.text || textEntities(previous.attributes) != textEntities(updated.attributes),
+          previous.text != updated.text || textEntities(previous.attributes) != textEntities(updated.attributes) || richText(previous.attributes)?.instantPage != richText(updated.attributes)?.instantPage,
           !updated.flags.contains(.CopyProtected), !containsExpiringAttribute(updated.attributes),
           !updated.media.contains(where: { $0 is TelegramMediaExpiredContent || $0 is TelegramMediaAction }),
           let eligible = eligibleMessage(transaction: transaction, message: previous, settings: settings) else { return }
+    guard case let .text(botConversation, entities) = eligible else {
+        recordCaptureGap(&settings)
+        setLocalArchiveSettings(transaction: transaction, settings: settings)
+        return
+    }
     var budget = LocalArchiveOutboxBudget(transaction: transaction, accountPeerId: accountPeerId)
     let operation = LocalArchiveCaptureOperation(
         generation: settings.generation, messageId: previous.id, kindRawValue: ArchiveEventKind.edited.rawValue,
-        text: previous.text, entities: eligible.entities, authorId: previous.author?.id.toInt64(),
+        text: previous.text, entities: entities, authorId: previous.author?.id.toInt64(),
         sentAt: Int64(previous.timestamp), observedAt: observedAt,
         serverEditAt: previous.attributes.compactMap { ($0 as? EditedMessageAttribute).map { Int64($0.date) } }.first,
-        botConversation: eligible.botConversation
+        botConversation: botConversation
     )
     if !budget.insert(operation, transaction: transaction, accountPeerId: accountPeerId) {
         recordCaptureGap(&settings)
