@@ -3,8 +3,8 @@
 This native Swift module stores supplied text and entity metadata in a separate
 SQLCipher database. It is **not connected to Telegram update processing**. It does
 not yet archive real incoming messages, preserve media, modify search, show UI,
-export/import records, or synchronize anything. Compilation and tests must be
-confirmed by the hosted macOS workflow before reporting this increment as tested.
+export/import records, or synchronize anything. Commit `86fcf189` passed 31 native macOS tests (20 storage, 11 mocked Keychain)
+and iOS simulator compilation in [run 41794635275](https://github.com/Livara-Dev/Telegram-iOS/actions/runs/41794635275). This does not establish iOS runtime or Telegram integration behavior.
 
 ## Storage and security contract
 

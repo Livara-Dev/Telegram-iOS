@@ -84,3 +84,11 @@ control and file protection do not themselves close that connection. App lifecyc
 integration must gate archive access and close/reopen safely on protected-data
 transitions. Retaining a supplied snapshot in
 a native unit test is not evidence of preserving a live deletion event.
+
+
+Commit `86fcf189` passed 20 native macOS database tests and 11 mocked Keychain
+tests in hosted run 41794635275; the iOS simulator module also compiled. Database
+checks include encryption/header configuration, wrong-key rejection, account
+isolation, transaction rollback, retention and unsafe paths. This is useful
+storage-boundary evidence, not a cryptographic audit or proof of live capture,
+iOS file protection, actual Keychain policy enforcement or no-telemetry behavior.
