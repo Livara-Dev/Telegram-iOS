@@ -270,3 +270,18 @@ changes in the same transaction as history changes. Temporary SQLite storage
 is forced to memory. The index consumes extra encrypted disk space, and the
 logical quota does not describe that physical overhead. Native tests and UI
 verification of this increment remain pending.
+
+## Large-file archive path review
+
+The schema-7 file API uses O_NOFOLLOW on the final source component, requires a
+regular file, verifies the advertised size when present, and checks size/mtime
+after streaming. Sources are resolved only from validated MediaBox resource
+identifiers. It writes encrypted SQLite pages transactionally with a 64 KiB
+buffer; no decrypted staging copy is made. Reads are bounded to 1 MiB per range;
+the old in-memory preview checks length before selecting the BLOB. A storage
+error rolls back the row and its usage-counter trigger. Quota is logical and
+does not guarantee sufficient free disk for a large WAL/migration transaction.
+Concurrent changes which preserve both size and nanosecond mtime are not
+cryptographically detectable; this is a local completed-file consistency check,
+not a hostile-filesystem integrity guarantee. These new paths need native CI
+and device storage-pressure tests; no new network dependency is introduced.

@@ -118,7 +118,7 @@ final class ArchiveStoreTests: XCTestCase {
         try rawDatabase(url, statements: ["DROP TRIGGER archive_search_insert", "DROP TRIGGER archive_search_delete", "DROP TABLE events_search", "PRAGMA user_version=5"])
         let reopened = try open()
         XCTAssertEqual(try awaitResult { reopened.searchMessages(query: "historical archive", completion: $0) }.map(\.event.eventKey), ["migrated"])
-        XCTAssertEqual(try rawInteger(url, query: "PRAGMA user_version"), 6)
+        XCTAssertEqual(try rawInteger(url, query: "PRAGMA user_version"), 7)
     }
 
     func testSearchMigrationFailureRollsBackEarlierSchemaChanges() throws {
@@ -173,6 +173,109 @@ final class ArchiveStoreTests: XCTestCase {
         }
         assertError(.eventConflict) { try awaitResult { store.recordMedia(eventKey: "retry", slot: 0, kind: "voice", mimeType: "audio/ogg", data: Data([3]), generation: 0, completion: $0) } }
         XCTAssertEqual(try awaitResult { store.media(eventKey: "retry", slot: 0, completion: $0) }?.data, Data([1, 2]))
+    }
+
+    private func mediaFile(name: String = "source", chunks: Int = 1) throws -> URL {
+        let url = directory.appendingPathComponent(name)
+        XCTAssertTrue(FileManager.default.createFile(atPath: url.path, contents: nil))
+        let handle = try FileHandle(forWritingTo: url)
+        defer { try? handle.close() }
+        let chunk = Data(repeating: 0x5b, count: 64 * 1024)
+        for _ in 0..<chunks { try handle.write(contentsOf: chunk) }
+        return url
+    }
+
+    func testStreamedLargeMediaSurvivesSourceRemovalAndReopenWithBoundedReads() throws {
+        let store = try open()
+        _ = try write(store, [event("large")])
+        let source = try mediaFile(chunks: 320) // 20 MiB, never allocated as one buffer.
+        XCTAssertTrue(try awaitResult { store.recordMediaFile(eventKey: "large", slot: 0, kind: "video", mimeType: "video/mp4", source: source, expectedSize: 20 * 1024 * 1024, generation: 0, completion: $0) })
+        XCTAssertTrue(try awaitResult { store.recordMediaFile(eventKey: "large", slot: 0, kind: "video", mimeType: "video/mp4", source: source, generation: 0, completion: $0) })
+        try FileManager.default.removeItem(at: source)
+        close(store)
+        let reopened = try open()
+        let info = try XCTUnwrap(try awaitResult { reopened.mediaInfo(eventKey: "large", slot: 0, completion: $0) })
+        XCTAssertEqual(info.byteCount, 20 * 1024 * 1024)
+        XCTAssertEqual(info.kind, "video")
+        for offset in [Int64(0), 64 * 1024 - 1, 17 * 1024 * 1024, 20 * 1024 * 1024 - 7] {
+            let bytes = try XCTUnwrap(try awaitResult { reopened.mediaRange(eventKey: "large", slot: 0, offset: offset, count: 64 * 1024, completion: $0) })
+            XCTAssertEqual(bytes, Data(repeating: 0x5b, count: min(64 * 1024, 20 * 1024 * 1024 - Int(offset))))
+        }
+        XCTAssertEqual(try awaitResult { reopened.mediaRange(eventKey: "large", slot: 0, offset: 20 * 1024 * 1024, count: 10, completion: $0) }, Data())
+        assertError(.invalidInput) { try awaitResult { reopened.media(eventKey: "large", slot: 0, completion: $0) } }
+        assertError(.invalidInput) { try awaitResult { reopened.mediaRange(eventKey: "large", slot: 0, offset: -1, count: 10, completion: $0) } }
+        assertError(.invalidInput) { try awaitResult { reopened.mediaRange(eventKey: "large", slot: 0, offset: 0, count: 1024 * 1024 + 1, completion: $0) } }
+        _ = try purge(reopened, to: 1)
+        XCTAssertNil(try awaitResult { reopened.mediaInfo(eventKey: "large", slot: 0, completion: $0) })
+        XCTAssertNil(try awaitResult { reopened.mediaRange(eventKey: "large", slot: 0, offset: 0, count: 10, completion: $0) })
+        XCTAssertEqual(try usage(reopened).logicalPayloadBytes, 0)
+    }
+
+    func testStreamedMediaRejectsIncompleteUnsafeOversizeAndConflictingSources() throws {
+        let store = try open()
+        _ = try write(store, [event("file")])
+        let source = try mediaFile()
+        let link = directory.appendingPathComponent("link")
+        try FileManager.default.createSymbolicLink(at: link, withDestinationURL: source)
+        for candidate in [link, directory, directory.appendingPathComponent("absent")] {
+            XCTAssertFalse(try awaitResult { store.recordMediaFile(eventKey: "file", slot: 0, kind: "document", mimeType: "application/octet-stream", source: candidate, generation: 0, completion: $0) })
+        }
+        XCTAssertFalse(try awaitResult { store.recordMediaFile(eventKey: "file", slot: 0, kind: "document", mimeType: "application/octet-stream", source: source, expectedSize: 1, generation: 0, completion: $0) })
+        XCTAssertTrue(try awaitResult { store.recordMediaFile(eventKey: "file", slot: 0, kind: "document", mimeType: "application/octet-stream", source: source, generation: 0, completion: $0) })
+        let writer = try FileHandle(forWritingTo: source)
+        try writer.write(contentsOf: Data([0]))
+        try writer.close()
+        assertError(.eventConflict) { try awaitResult { store.recordMediaFile(eventKey: "file", slot: 0, kind: "document", mimeType: "application/octet-stream", source: source, generation: 0, completion: $0) } }
+        let oversized = try mediaFile(name: "oversized", chunks: 0)
+        let sparse = try FileHandle(forWritingTo: oversized)
+        try sparse.truncate(atOffset: 512 * 1024 * 1024 + 1)
+        try sparse.close()
+        XCTAssertFalse(try awaitResult { store.recordMediaFile(eventKey: "file", slot: 1, kind: "document", mimeType: "application/octet-stream", source: oversized, generation: 0, completion: $0) })
+        XCTAssertEqual(try awaitResult { store.mediaRange(eventKey: "file", slot: 0, offset: 0, count: 1, completion: $0) }, Data([0x5b]))
+    }
+
+    func testStreamedMediaFailureRollsBackZeroBlobAndUsageBeforeRetry() throws {
+        let store = try open()
+        _ = try write(store, [event("rollback")])
+        let source = try mediaFile()
+        let originalUsage = try usage(store).logicalPayloadBytes
+        // SQLite forbids incremental BLOB writes to an indexed column. Force a
+        // failure after INSERT but before copying, then remove the obstruction.
+        try rawDatabase(store.databaseURL, statements: ["CREATE INDEX reject_incremental ON event_media(payload)"])
+        XCTAssertThrowsError(try awaitResult { store.recordMediaFile(eventKey: "rollback", slot: 0, kind: "document", mimeType: "application/octet-stream", source: source, generation: 0, completion: $0) })
+        XCTAssertEqual(try usage(store).logicalPayloadBytes, originalUsage)
+        XCTAssertNil(try awaitResult { store.mediaInfo(eventKey: "rollback", slot: 0, completion: $0) })
+        try rawDatabase(store.databaseURL, statements: ["DROP INDEX reject_incremental"])
+        XCTAssertTrue(try awaitResult { store.recordMediaFile(eventKey: "rollback", slot: 0, kind: "document", mimeType: "application/octet-stream", source: source, generation: 0, completion: $0) })
+        XCTAssertEqual(try usage(store).logicalPayloadBytes, originalUsage + 64 * 1024 + 64 + 8 + 24)
+    }
+
+    func testStreamedMediaQuotaAndAccountGenerationAreEnforced() throws {
+        let store = try open(retention: ArchiveRetentionPolicy(maxPayloadBytes: 1024))
+        let other = try open(account: 2, keys: Keys(0x74))
+        _ = try write(store, [event("scoped")])
+        let source = try mediaFile()
+        XCTAssertFalse(try awaitResult { store.recordMediaFile(eventKey: "scoped", slot: 0, kind: "document", mimeType: "application/octet-stream", source: source, generation: 0, completion: $0) })
+        XCTAssertEqual(try records(store).count, 1) // Keep text when the file cannot fit.
+        XCTAssertNil(try awaitResult { other.mediaInfo(eventKey: "scoped", slot: 0, completion: $0) })
+        _ = try purge(store, to: 1)
+        assertError(.generationMismatch(expected: 1, received: 0)) { try awaitResult { store.recordMediaFile(eventKey: "scoped", slot: 0, kind: "document", mimeType: "application/octet-stream", source: source, generation: 0, completion: $0) } }
+    }
+
+    func testVersionSixMediaMigrationPreservesBytesCountersAndCascade() throws {
+        let store = try open()
+        _ = try write(store, [event("migrate-media")])
+        XCTAssertTrue(try awaitResult { store.recordMedia(eventKey: "migrate-media", slot: 0, kind: "photo", mimeType: "image/jpeg", data: Data([1, 2, 3]), generation: 0, completion: $0) })
+        let originalUsage = try usage(store).logicalPayloadBytes
+        let url = store.databaseURL
+        close(store)
+        try rawDatabase(url, statements: ["PRAGMA user_version=6"])
+        let reopened = try open()
+        XCTAssertEqual(try rawInteger(url, query: "PRAGMA user_version"), 7)
+        XCTAssertEqual(try usage(reopened).logicalPayloadBytes, originalUsage)
+        XCTAssertEqual(try awaitResult { reopened.media(eventKey: "migrate-media", slot: 0, completion: $0) }?.data, Data([1, 2, 3]))
+        _ = try purge(reopened, to: 1)
+        XCTAssertEqual(try usage(reopened).logicalPayloadBytes, 0)
     }
 
     private func close(_ store: ArchiveStore) {
@@ -402,9 +505,9 @@ final class ArchiveStoreTests: XCTestCase {
 
     func testFutureSchemaIsRejectedWithoutMigration() throws {
         let store = try open(); close(store)
-        try rawDatabase(store.databaseURL, statements: ["PRAGMA user_version=7"])
+        try rawDatabase(store.databaseURL, statements: ["PRAGMA user_version=8"])
         let before = try Data(contentsOf: store.databaseURL)
-        assertError(.unsupportedSchema(7)) { try open() }
+        assertError(.unsupportedSchema(8)) { try open() }
         XCTAssertEqual(try Data(contentsOf: store.databaseURL), before)
     }
 
@@ -455,7 +558,7 @@ final class ArchiveStoreTests: XCTestCase {
         XCTAssertEqual(timeline.map(\.event), expected)
         XCTAssertEqual(timeline.map(\.sequence), [7, 9])
         XCTAssertEqual(try usage(store), ArchiveUsage(records: 2, logicalPayloadBytes: 167))
-        XCTAssertEqual(try rawInteger(url, query: "PRAGMA user_version"), 6)
+        XCTAssertEqual(try rawInteger(url, query: "PRAGMA user_version"), 7)
         _ = try write(store, [event("after-migration")])
         XCTAssertEqual(try usage(store).records, 3)
         close(store)
@@ -581,7 +684,7 @@ final class ArchiveStoreTests: XCTestCase {
         let store = try open()
         XCTAssertEqual(try generation(store), 0)
         XCTAssertEqual(try usage(store), ArchiveUsage(records: 2, logicalPayloadBytes: 167))
-        XCTAssertEqual(try rawInteger(url, query: "PRAGMA user_version"), 6)
+        XCTAssertEqual(try rawInteger(url, query: "PRAGMA user_version"), 7)
         XCTAssertEqual(try records(store).first?.event.eventKey, "legacy-delete")
         _ = try write(store, [event("generation-zero")], generation: 0)
         close(store)
@@ -706,7 +809,7 @@ final class ArchiveStoreTests: XCTestCase {
         let url = try legacyV3Database(extraStatements: ["UPDATE archive_meta SET capture_generation=7"])
         let store = try open()
         XCTAssertEqual(try generation(store), 7)
-        XCTAssertEqual(try rawInteger(url, query: "PRAGMA user_version"), 6)
+        XCTAssertEqual(try rawInteger(url, query: "PRAGMA user_version"), 7)
         XCTAssertEqual(try rawInteger(url, query: "SELECT outbox_high_water FROM archive_meta"), -1)
         XCTAssertEqual(try usage(store), ArchiveUsage(records: 2, logicalPayloadBytes: 167))
         XCTAssertEqual(try writeOutbox(store, event("new-receipt"), index: 24, generation: 7).inserted, 1)
@@ -728,7 +831,7 @@ final class ArchiveStoreTests: XCTestCase {
         XCTAssertEqual(try rawInteger(url, query: "SELECT COUNT(*) FROM events"), 2)
         try rawDatabase(url, statements: ["ALTER TABLE archive_meta DROP COLUMN outbox_last_event_key"])
         XCTAssertEqual(try usage(open()).records, 2)
-        XCTAssertEqual(try rawInteger(url, query: "PRAGMA user_version"), 6)
+        XCTAssertEqual(try rawInteger(url, query: "PRAGMA user_version"), 7)
     }
 
     func testOutboxReplayAfterQuotaAndAgeRetentionDoesNotResurrectMessages() throws {

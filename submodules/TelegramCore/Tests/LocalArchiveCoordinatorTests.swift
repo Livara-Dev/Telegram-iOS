@@ -57,6 +57,19 @@ private final class LocalArchiveInterceptingStorage: LocalArchiveStorage {
             completion(result)
         }
     }
+    func recordMediaFile(eventKey: String, slot: Int, kind: String, mimeType: String, source: URL, expectedSize: Int64?, generation: Int64, completion: @escaping (Result<Bool, ArchiveError>) -> Void) {
+        self.store.recordMediaFile(eventKey: eventKey, slot: slot, kind: kind, mimeType: mimeType, source: source, expectedSize: expectedSize, generation: generation) { result in
+            self.mediaWritten.set(true)
+            if case .withholdMediaAcknowledgement = self.behavior { return }
+            completion(result)
+        }
+    }
+    func mediaInfo(eventKey: String, slot: Int, completion: @escaping (Result<ArchivedMediaInfo?, ArchiveError>) -> Void) {
+        self.store.mediaInfo(eventKey: eventKey, slot: slot, completion: completion)
+    }
+    func mediaRange(eventKey: String, slot: Int, offset: Int64, count: Int, completion: @escaping (Result<Data?, ArchiveError>) -> Void) {
+        self.store.mediaRange(eventKey: eventKey, slot: slot, offset: offset, count: count, completion: completion)
+    }
     func containsMedia(eventKey: String, slot: Int, completion: @escaping (Result<Bool, ArchiveError>) -> Void) {
         self.store.containsMedia(eventKey: eventKey, slot: slot, completion: completion)
     }
@@ -383,7 +396,7 @@ final class LocalArchiveCoordinatorTests: XCTestCase {
         XCTAssertEqual(media.data, bytes)
     }
 
-    func testMediaQuotaEvictionReportsGapWithoutResurrectingEvent() throws {
+    func testOversizedMediaReportsGapWithoutDiscardingText() throws {
         _ = try self.localArchiveValue(self.fixture.postbox.transaction { transaction in
             var settings = localArchiveSettings(transaction: transaction)
             settings.maxPayloadBytes = 1024 * 1024
@@ -398,14 +411,17 @@ final class LocalArchiveCoordinatorTests: XCTestCase {
         try self.awaitStatus(.ready, in: instance)
         XCTAssertTrue(try self.pending().isEmpty)
         let coordinator = try XCTUnwrap(instance.coordinator)
-        XCTAssertTrue(try self.localArchiveValue(coordinator.deletedMessages()).records.isEmpty)
+        let page = try self.localArchiveValue(coordinator.deletedMessages())
+        XCTAssertEqual(page.records.count, 1)
+        XCTAssertEqual(page.records.first?.storedMediaCount, 0)
+        XCTAssertEqual(page.records.first?.unavailableMediaCount, 1)
         let settings = try self.localArchiveValue(coordinator.settings)
         XCTAssertEqual(settings.droppedCaptures, 1)
         try self.stop(instance)
         try self.fixture.reopen()
         let recovered = self.start()
         try self.awaitStatus(.ready, in: recovered)
-        XCTAssertTrue(try self.localArchiveValue(try XCTUnwrap(recovered.coordinator).deletedMessages()).records.isEmpty)
+        XCTAssertEqual(try self.localArchiveValue(try XCTUnwrap(recovered.coordinator).deletedMessages()).records.count, 1)
         XCTAssertEqual(try self.localArchiveValue(try XCTUnwrap(recovered.coordinator).settings).droppedCaptures, 1)
     }
 
@@ -471,6 +487,37 @@ final class LocalArchiveCoordinatorTests: XCTestCase {
             XCTAssertEqual(archived.kind, item.1)
             XCTAssertEqual(archived.data, item.2)
         }
+    }
+
+    func testLargeDocumentStreamsFromRealPostboxAndSurvivesCacheRemoval() throws {
+        let size: Int64 = 20 * 1024 * 1024
+        let resource = CloudDocumentMediaResource(datacenterId: 1, fileId: 9600, accessHash: 0, size: size, fileReference: nil, fileName: nil)
+        let path = self.fixture.postbox.mediaBox.storePathsForId(resource.id).complete
+        XCTAssertTrue(FileManager.default.createFile(atPath: path, contents: nil))
+        let writer = try FileHandle(forWritingTo: URL(fileURLWithPath: path))
+        let chunk = Data(repeating: 0x69, count: 64 * 1024)
+        for _ in 0..<320 { try writer.write(contentsOf: chunk) }
+        try writer.close()
+        let file = TelegramMediaFile(fileId: MediaId(namespace: Namespaces.Media.CloudFile, id: 9600), partialReference: nil, resource: resource, previewRepresentations: [], videoThumbnails: [], immediateThumbnailData: nil, mimeType: "application/octet-stream", size: size, attributes: [.FileName(fileName: "large.bin")], alternativeRepresentations: [])
+        _ = try self.queueDeletion(96, media: [file])
+        let key = try XCTUnwrap(self.pending().first?.operation?.eventKey)
+        let first = self.start()
+        try self.awaitStatus(.ready, in: first)
+        XCTAssertTrue(try self.pending().isEmpty)
+        let coordinator = try XCTUnwrap(first.coordinator)
+        XCTAssertEqual(try self.localArchiveValue(coordinator.deletedMessages()).records.first?.storedMediaCount, 1)
+        XCTAssertEqual(try self.localArchiveValue(coordinator.mediaInfo(eventKey: key, slot: 0))?.byteCount, size)
+        let cleared = expectation(description: "remove large document cache")
+        let removal = self.fixture.postbox.mediaBox.removeCachedResources([resource.id], force: true).start(completed: { cleared.fulfill() })
+        wait(for: [cleared], timeout: 15)
+        removal.dispose()
+        try self.stop(first)
+        try self.fixture.reopen()
+        let second = self.start()
+        try self.awaitStatus(.ready, in: second)
+        let reopened = try XCTUnwrap(second.coordinator)
+        XCTAssertEqual(try self.localArchiveValue(reopened.mediaInfo(eventKey: key, slot: 0))?.byteCount, size)
+        XCTAssertEqual(try self.localArchiveValue(reopened.mediaRange(eventKey: key, slot: 0, offset: size - 7, count: 64)), Data(repeating: 0x69, count: 7))
     }
 
     func testMediaCommitBeforeOutboxAckSurvivesRestartAndSourceRemoval() throws {

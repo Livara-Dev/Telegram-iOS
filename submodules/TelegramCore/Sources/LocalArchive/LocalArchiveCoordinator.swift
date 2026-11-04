@@ -65,6 +65,9 @@ protocol LocalArchiveStorage: AnyObject {
     func recordFromOutbox(_ capture: ArchiveCapture, index: Int64, generation: Int64, policy: ArchiveCapturePolicy,
                           completion: @escaping (Result<ArchiveWriteResult, ArchiveError>) -> Void)
     func recordMedia(eventKey: String, slot: Int, kind: String, mimeType: String, data: Data, generation: Int64, completion: @escaping (Result<Bool, ArchiveError>) -> Void)
+    func recordMediaFile(eventKey: String, slot: Int, kind: String, mimeType: String, source: URL, expectedSize: Int64?, generation: Int64, completion: @escaping (Result<Bool, ArchiveError>) -> Void)
+    func mediaInfo(eventKey: String, slot: Int, completion: @escaping (Result<ArchivedMediaInfo?, ArchiveError>) -> Void)
+    func mediaRange(eventKey: String, slot: Int, offset: Int64, count: Int, completion: @escaping (Result<Data?, ArchiveError>) -> Void)
     func containsMedia(eventKey: String, slot: Int, completion: @escaping (Result<Bool, ArchiveError>) -> Void)
     func media(eventKey: String, slot: Int, completion: @escaping (Result<ArchivedMedia?, ArchiveError>) -> Void)
     func currentGeneration(completion: @escaping (Result<Int64, ArchiveError>) -> Void)
@@ -287,6 +290,20 @@ public final class LocalArchiveCoordinator {
             }
             return EmptyDisposable
         }
+    }
+
+    public func mediaInfo(eventKey: String, slot: Int) -> Signal<ArchivedMediaInfo?, NoError> {
+        let value: Signal<ArchivedMediaInfo??, NoError> = self.readValue { storage, completion in
+            storage.mediaInfo(eventKey: eventKey, slot: slot, completion: completion)
+        }
+        return value |> map { $0 ?? nil }
+    }
+
+    public func mediaRange(eventKey: String, slot: Int, offset: Int64, count: Int) -> Signal<Data?, NoError> {
+        let value: Signal<Data??, NoError> = self.readValue { storage, completion in
+            storage.mediaRange(eventKey: eventKey, slot: slot, offset: offset, count: count, completion: completion)
+        }
+        return value |> map { $0 ?? nil }
     }
 
     public func timeline(peerId: Int64, namespace: Int32, messageId: Int32,
@@ -557,35 +574,27 @@ public final class LocalArchiveCoordinator {
     }
 
     private func copyMediaFile(storage: LocalArchiveStorage, operation: LocalArchiveCaptureOperation, item: LocalArchiveMediaMetadata,
-                               slot: Int, epoch: Int64, missing: Bool, completion: @escaping (Bool) -> Void) {
-        let keys = [item.resourceKey].compactMap { $0 } + (item.alternativeResourceKeys ?? [])
-        var data: Data?
-        do {
-            for key in keys where localArchiveSafeResourceKey(key) {
-                let path = self.postbox.mediaBox.storePathsForId(MediaResourceId(key)).complete
-                if let available = try localArchiveReadCompletedMedia(path) {
-                    if let expectedSize = item.byteSize, expectedSize != Int64(available.count) {
-                        continue
-                    }
-                    data = available
-                    break
-                }
-            }
-        } catch {
-            // Lock/I/O failures keep the durable outbox pending for recovery.
-            self.failed(.unavailable, epoch: epoch)
-            return
-        }
-        guard let data else {
+                               slot: Int, epoch: Int64, missing: Bool, candidate: Int = 0, completion: @escaping (Bool) -> Void) {
+        guard self.isCurrent(epoch) else { return }
+        let keys = ([item.resourceKey].compactMap { $0 } + (item.alternativeResourceKeys ?? [])).filter(localArchiveSafeResourceKey)
+        guard candidate < keys.count else {
             self.copyCachedMedia(storage: storage, operation: operation, slot: slot + 1, epoch: epoch, missing: true, completion: completion)
             return
         }
-        storage.recordMedia(eventKey: operation.eventKey, slot: slot, kind: item.kind.rawValue,
-                            mimeType: item.mimeType ?? "application/octet-stream", data: data, generation: operation.generation) { [weak self] result in
+        let path = self.postbox.mediaBox.storePathsForId(MediaResourceId(keys[candidate])).complete
+        // ArchiveStore opens and streams the completed file on its own worker. Never
+        // materialize a video or document as a full Data buffer on this account queue.
+        storage.recordMediaFile(eventKey: operation.eventKey, slot: slot, kind: item.kind.rawValue,
+                                mimeType: item.mimeType ?? "application/octet-stream", source: URL(fileURLWithPath: path),
+                                expectedSize: item.byteSize, generation: operation.generation) { [weak self] result in
             self?.queue.justDispatch { [weak self] in
                 guard let self, self.isCurrent(epoch) else { return }
                 guard case let .success(retained) = result else { self.failed(.unavailable, epoch: epoch); return }
-                self.copyCachedMedia(storage: storage, operation: operation, slot: slot + 1, epoch: epoch, missing: missing || !retained, completion: completion)
+                if retained {
+                    self.copyCachedMedia(storage: storage, operation: operation, slot: slot + 1, epoch: epoch, missing: missing, completion: completion)
+                } else {
+                    self.copyMediaFile(storage: storage, operation: operation, item: item, slot: slot, epoch: epoch, missing: missing, candidate: candidate + 1, completion: completion)
+                }
             }
         }
     }

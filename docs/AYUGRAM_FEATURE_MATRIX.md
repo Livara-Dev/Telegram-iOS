@@ -196,3 +196,13 @@ successfully queued eligible media, and media retention eviction is reported
 as unavailable. Real replay tests are authored for global deletion and a media replacement
 followed by deletion; native execution is pending. This does not extend support
 to timed/view-once media or guarantee capture before a simultaneous cache purge.
+
+### Large attachment follow-up (native verification pending)
+
+The archive coordinator now submits completed cloud files to chunked SQLCipher
+storage (512 MiB source cap, configured quota, 64 KiB buffer), instead of reading
+an entire attachment into memory. Schema 7 migrates existing media rows and
+usage accounting transactionally. Tests cover a 20 MiB source, range reads,
+rollback, retry, account isolation and real Postbox/cache restart. These new
+cases are awaiting macOS CI. Full video/document playback and a verified app
+build remain open; this is not an additional parity-complete feature claim.

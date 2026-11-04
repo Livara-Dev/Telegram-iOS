@@ -119,6 +119,13 @@ public struct ArchivedMedia: Equatable {
     public let data: Data
 }
 
+public struct ArchivedMediaInfo: Equatable {
+    public let slot: Int
+    public let kind: String
+    public let mimeType: String
+    public let byteCount: Int64
+}
+
 public struct ArchiveWriteResult: Equatable {
     public let inserted: Int
     public let duplicates: Int

@@ -7,7 +7,7 @@ its native tests and running application have not yet been verified.
 | Content/event | Current scope | Evidence |
 | --- | --- | --- |
 | Ordinary cloud text deletion and edited text | Encrypted independent archive, covered server/local delete and edit paths | 56 earlier archive integration cases passed at 387177fd. |
-| Completed local photos, videos, voice, GIF/animation, documents | Utility-queue copy into encrypted SQLite BLOBs; maximum 16 MiB/file and 10 items/event, within configured retention quota | New native storage/coordinator tests authored; not yet passed. |
+| Completed local photos, videos, voice, GIF/animation, documents | Utility-queue copy into encrypted SQLite BLOBs; streaming path capped at 512 MiB/file and 10 items/event; in-memory image preview capped at 16 MiB, within configured retention quota | Small-file storage and real coordinator cases passed at 92f6d752; new large-file streaming cases await native CI. |
 | Photo variants | Tries up to ten bounded, largest-first resource candidates already in the cache | May preserve a smaller available rendition; no original-resolution guarantee. |
 | Incomplete/missing/oversized media | Metadata and caption can survive; missing-file indicator, no silent success | File reads do not start a download. |
 | Timed, view-once, Secret Chat or copy-protected content | Excluded | No expiry/encryption/server-access bypass. |
@@ -101,3 +101,27 @@ cases passed. [Exact evidence](evidence/archive-media-integration-92f6d752.json)
 limits this to local integration: the projection host did not launch, and no
 full Telegram app, physical device or codec playback was verified. Later
 search/usage changes require their own native results.
+
+## Bounded large-file storage
+
+The schema-7 path streams completed MediaBox files directly into SQLCipher BLOBs
+in 64 KiB chunks, with one transaction per attachment. No plaintext archive
+staging file or network fetch is created. File type, expected byte count and
+modification time are checked. Missing, incomplete, symlink and over-limit files
+remain reported gaps. Files that cannot fit the configured quota are skipped
+without discarding the message text. I/O errors roll back the attachment and
+leave its durable outbox entry pending. Account generation checks and existing
+commit-before-ack recovery apply to this path.
+
+The hard source limit is 512 MiB per attachment, still subject to the account's
+quota and available disk space; encryption and WAL can temporarily consume more
+disk than the logical quota. Metadata lookup and reads of up to 1 MiB support
+future players/exporters without loading the whole attachment. The existing
+image preview accepts at most 16 MiB and is not a video/document player.
+New 20 MiB storage and real Postbox coordinator tests are authored, including
+cache removal and reopen. They have not yet passed native CI. No device
+performance or physical-iPhone playback result is claimed.
+
+The schema-6 search revision e690da94 passed 64 macOS archive tests and iOS
+simulator module compilation in run 41849015889. That is not full application
+qualification and does not qualify subsequent source revisions automatically.
