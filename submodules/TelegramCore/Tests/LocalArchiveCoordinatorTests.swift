@@ -334,6 +334,16 @@ final class LocalArchiveCoordinatorTests: XCTestCase {
         XCTAssertEqual(settings.maxPayloadBytes, 1024 * 1024 * 1024)
     }
 
+    func testUsageFacadeReportsSnapshotAndPayloadCounts() throws {
+        _ = try self.queueDeletion(text: "usage fixture")
+        let instance = self.start()
+        try self.awaitStatus(.ready, in: instance)
+        let coordinator = try XCTUnwrap(instance.coordinator)
+        let usage = try XCTUnwrap(self.localArchiveValue(coordinator.usage()))
+        XCTAssertEqual(usage.snapshots, 1)
+        XCTAssertGreaterThan(usage.payloadBytes, Int64("usage fixture".utf8.count))
+    }
+
     func testCommittedDeletionIsSearchableThroughAccountFacade() throws {
         _ = try self.queueDeletion(text: "Local searchable evidence")
         let instance = self.start()

@@ -175,8 +175,12 @@ func localArchiveSettingsController(context: AccountContext, peerId: Int64? = ni
 
     let settings = archive?.settings ?? .single(LocalArchiveSettings())
     let status: Signal<LocalArchiveStatus, NoError> = archive?.status ?? .single(.unavailable)
-    let signal = combineLatest(queue: .mainQueue(), context.sharedContext.presentationData, settings, status, actionState.get())
-    |> map { presentationData, settings, status, actionState -> (ItemListControllerState, (ItemListNodeState, Any)) in
+    let usage: Signal<LocalArchiveUsage?, NoError> = combineLatest(queue: .mainQueue(), status, settings) |> mapToSignal { status, _ in
+        guard let archive, localArchiveCanRead(status) else { return .single(nil) }
+        return archive.usage()
+    }
+    let signal = combineLatest(queue: .mainQueue(), context.sharedContext.presentationData, settings, status, actionState.get(), usage)
+    |> map { presentationData, settings, status, actionState, usage -> (ItemListControllerState, (ItemListNodeState, Any)) in
         currentSettings = settings
         let canChange = archive != nil && settings.isSupported && !actionState.0 && !settings.pendingPurge
         let statusText = settings.isSupported ? localArchiveStatusText(status) : "This version cannot read the saved archive settings. They have been kept unchanged. Use a compatible app version to manage the archive."
@@ -191,20 +195,21 @@ func localArchiveSettingsController(context: AccountContext, peerId: Int64? = ni
             LocalArchiveRow(stableId: .fixed(10), order: 7, section: 2, content: .action("Archive payload limit", "\(settings.maxPayloadBytes / (1024 * 1024)) MiB", canChange)),
             LocalArchiveRow(stableId: .fixed(8), order: 8, section: 2, content: .toggle("Exclude bot conversations", settings.excludeBots, canChange)),
             LocalArchiveRow(stableId: .fixed(12), order: 9, section: 2, content: .text("Oldest records are removed as archive activity runs. The storage limit counts text, metadata and retained media; database files can use more disk space. Lowering either limit may permanently remove records.")),
-            LocalArchiveRow(stableId: .fixed(13), order: 10, section: 3, content: .action("Clear This Account’s Archive", "Permanent local deletion", canChange)),
-            LocalArchiveRow(stableId: .fixed(5), order: 11, section: 4, content: .heading("CURRENT LIMITS")),
-            LocalArchiveRow(stableId: .fixed(6), order: 12, section: 4, content: .text("This preview captures supported deletion and edit updates for messages already received while capture is enabled. It cannot recover earlier deletions and does not cover every deletion path. Completed local cloud files up to 16 MiB are attempted; missing or incomplete files are not downloaded. Structured rich messages, secret chats and disappearing content are excluded. Storage failures or a locked device can leave gaps."))
+            LocalArchiveRow(stableId: .fixed(18), order: 10, section: 3, content: .text(usage.map { "Archived snapshots: \($0.snapshots)\nStored payload: \(ByteCountFormatter.string(fromByteCount: $0.payloadBytes, countStyle: .file))\nDatabase and search-index overhead are additional." } ?? "Storage usage is available when the archive is unlocked and enabled.")),
+            LocalArchiveRow(stableId: .fixed(13), order: 11, section: 3, content: .action("Clear This Account’s Archive", "Permanent local deletion", canChange)),
+            LocalArchiveRow(stableId: .fixed(5), order: 12, section: 4, content: .heading("CURRENT LIMITS")),
+            LocalArchiveRow(stableId: .fixed(6), order: 13, section: 4, content: .text("This preview captures supported deletion and edit updates for messages already received while capture is enabled. It cannot recover earlier deletions and does not cover every deletion path. Completed local cloud files up to 16 MiB are attempted; missing or incomplete files are not downloaded. Structured rich messages, secret chats and disappearing content are excluded. Storage failures or a locked device can leave gaps."))
         ]
         if actionState.1 {
-            entries.append(LocalArchiveRow(stableId: .fixed(7), order: 13, section: 4, content: .text("The setting could not be changed. Unlock the device and try again.")))
+            entries.append(LocalArchiveRow(stableId: .fixed(7), order: 14, section: 4, content: .text("The setting could not be changed. Unlock the device and try again.")))
         }
         if settings.droppedCaptures > 0 {
-            entries.append(LocalArchiveRow(stableId: .fixed(14), order: 14, section: 4, content: .text("Missed captures: \(settings.droppedCaptures). Some updates could not be archived.")))
+            entries.append(LocalArchiveRow(stableId: .fixed(14), order: 15, section: 4, content: .text("Missed captures: \(settings.droppedCaptures). Some updates could not be archived.")))
         }
         if let peerId {
-            entries.append(LocalArchiveRow(stableId: .fixed(16), order: 15, section: 5, content: .heading("THIS CHAT")))
-            entries.append(LocalArchiveRow(stableId: .fixed(15), order: 16, section: 5, content: .toggle("Exclude this chat", settings.excludedPeerIds.contains(peerId), canChange)))
-            entries.append(LocalArchiveRow(stableId: .fixed(17), order: 17, section: 5, content: .text("Stops new captures from this chat. Previously archived content is kept until retention or Clear Archive removes it.")))
+            entries.append(LocalArchiveRow(stableId: .fixed(16), order: 16, section: 5, content: .heading("THIS CHAT")))
+            entries.append(LocalArchiveRow(stableId: .fixed(15), order: 17, section: 5, content: .toggle("Exclude this chat", settings.excludedPeerIds.contains(peerId), canChange)))
+            entries.append(LocalArchiveRow(stableId: .fixed(17), order: 18, section: 5, content: .text("Stops new captures from this chat. Previously archived content is kept until retention or Clear Archive removes it.")))
         }
         let data = ItemListPresentationData(presentationData)
         let controller = ItemListControllerState(presentationData: data, title: .text("Local Message Archive"), leftNavigationButton: nil, rightNavigationButton: nil, backNavigationButton: ItemListBackButton(title: presentationData.strings.Common_Back), animateChanges: false)

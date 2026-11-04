@@ -50,6 +50,11 @@ public struct LocalArchivedMessage {
     }
 }
 
+public struct LocalArchiveUsage {
+    public let snapshots: Int64
+    public let payloadBytes: Int64
+}
+
 public struct LocalArchivePage {
     public let records: [LocalArchivedMessage]
     public let unavailable: Bool
@@ -292,39 +297,55 @@ public final class LocalArchiveCoordinator {
         }
     }
 
+    public func usage() -> Signal<LocalArchiveUsage?, NoError> {
+        let result: Signal<ArchiveUsage?, NoError> = self.readValue { storage, completion in
+            storage.usage(completion: completion)
+        }
+        return result |> map { value in
+            value.map { LocalArchiveUsage(snapshots: $0.records, payloadBytes: $0.logicalPayloadBytes) }
+        }
+    }
+
     private func readPage(_ read: @escaping (LocalArchiveStorage, @escaping (Result<[ArchivedRecord], ArchiveError>) -> Void) -> Void) -> Signal<LocalArchivePage, NoError> {
+        return self.readValue(read) |> map { records in
+            guard let records else { return LocalArchivePage(records: [], unavailable: true) }
+            return LocalArchivePage(records: records.map(LocalArchivedMessage.init), unavailable: false)
+        }
+    }
+
+    private func readValue<Value>(_ read: @escaping (LocalArchiveStorage, @escaping (Result<Value, ArchiveError>) -> Void) -> Void) -> Signal<Value?, NoError> {
         return Signal { [weak self] subscriber in
             guard let self else {
-                subscriber.putNext(LocalArchivePage(records: [], unavailable: true))
+                subscriber.putNext(nil)
                 subscriber.putCompletion()
                 return EmptyDisposable
             }
             self.queue.justDispatch { [weak self] in
                 guard let self, !self.stopped, self.mayAccessProtectedData, self.activeSettings.enabled,
                       !self.activeSettings.pendingPurge, let storage = self.storage else {
-                    subscriber.putNext(LocalArchivePage(records: [], unavailable: true))
+                    subscriber.putNext(nil)
                     subscriber.putCompletion()
                     return
                 }
                 let epoch = self.epoch
-                let receive: (Result<[ArchivedRecord], ArchiveError>) -> Void = { [weak self] result in
+                let receive: (Result<Value, ArchiveError>) -> Void = { [weak self] result in
                     guard let self else {
-                        subscriber.putNext(LocalArchivePage(records: [], unavailable: true))
+                        subscriber.putNext(nil)
                         subscriber.putCompletion()
                         return
                     }
                     self.queue.justDispatch { [weak self] in
                         guard let self, self.isCurrent(epoch), self.activeSettings.enabled,
                               !self.activeSettings.pendingPurge else {
-                            subscriber.putNext(LocalArchivePage(records: [], unavailable: true))
+                            subscriber.putNext(nil)
                             subscriber.putCompletion()
                             return
                         }
                         switch result {
-                        case let .success(records):
-                            subscriber.putNext(LocalArchivePage(records: records.map(LocalArchivedMessage.init), unavailable: false))
+                        case let .success(value):
+                            subscriber.putNext(value)
                         case .failure:
-                            subscriber.putNext(LocalArchivePage(records: [], unavailable: true))
+                            subscriber.putNext(nil)
                         }
                         subscriber.putCompletion()
                     }

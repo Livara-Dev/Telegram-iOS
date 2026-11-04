@@ -86,3 +86,9 @@ cleanup are transactional; temporary query storage is forced to memory. Index
 allocation adds physical disk overhead beyond the logical payload quota.
 Storage, migration, account-scope and facade tests are authored for this
 increment; native execution and recorded UI validation are pending.
+
+The account's archive settings now show snapshot count and logical stored payload
+bytes from the database counters. The read uses the same protected, account-scoped
+queue and retention gate as browsing. Settings changes refresh usage. These
+figures deliberately exclude SQLite/index allocation overhead and must not be
+presented as exact disk usage. Native facade and UI verification remain pending.
