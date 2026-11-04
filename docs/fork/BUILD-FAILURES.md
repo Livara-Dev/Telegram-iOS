@@ -77,3 +77,14 @@ shared dependency; no cases in those three targets executed. The explicit weak
 outer capture now follows the existing page-reader pattern and returns a nil
 result with completion when the coordinator is released. A lifetime regression
 is included. [Verified failure evidence](evidence/archive-media-integration-aba9fae9.json) records the exact revision and checksum; the fix still requires native validation.
+
+## Hosted tokenizer timing failure
+
+Run `41840002193` at `cf7cdaa9` stopped before native tests: the upstream
+`test_stripping_is_fast_on_large_sources` measured 1.274349834 seconds against
+a one-second wall-clock threshold. The test now uses process CPU time and keeps
+the same one-second budget and input/output assertions. This excludes host
+descheduling without skipping the test or increasing its algorithm budget.
+The changed upstream test is explicitly recorded in the source-scope guard.
+No application tokenizer implementation or dependency changed. The latest
+macOS run must still demonstrate that the CPU budget passes.
