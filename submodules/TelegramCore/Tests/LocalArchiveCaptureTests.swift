@@ -77,6 +77,35 @@ final class LocalArchiveCaptureTests: XCTestCase {
         XCTAssertNil(try self.localArchiveValue(self.fixture.postbox.transaction { $0.getMessage(id) }))
     }
 
+    func testPreferencesCodecRoundTripPreservesNonemptySettingsAfterReopen() throws {
+        var configured = LocalArchiveSettings(
+            enabled: true, excludeBots: false,
+            excludedPeerIds: [Int64.max - 1, -4_294_967_300],
+            excludedSenderIds: [4_294_967_301, 7],
+            maxAgeSeconds: 4_294_967_302, maxPayloadBytes: 512 * 1024 * 1024
+        )
+        configured.generation = 4_294_967_303
+        configured.pendingPurge = true
+        configured.droppedCaptures = 4_294_967_304
+
+        for expected in [LocalArchiveSettings(), configured] {
+            // Exercise the actual adapted Postbox codec, which rejects Swift Int.
+            // JSONEncoder alone cannot catch that failure. Fresh data also avoids
+            // mistaking the preference cache for a successful persistence round-trip.
+            let encoded = try XCTUnwrap(PreferencesEntry(expected))
+            let decodedEntry = PreferencesEntry(data: encoded.data)
+            XCTAssertEqual(try XCTUnwrap(decodedEntry.get(LocalArchiveSettings.self)), expected)
+            let _ = try self.localArchiveValue(self.fixture.postbox.transaction { transaction in
+                transaction.setPreferencesEntry(key: localArchiveSettingsKey, value: decodedEntry)
+            })
+            try self.fixture.reopen()
+            let actual = try self.localArchiveValue(self.fixture.postbox.transaction { transaction in
+                localArchiveSettings(transaction: transaction)
+            })
+            XCTAssertEqual(actual, expected)
+        }
+    }
+
     func testUnknownSettingsSchemaFailsClosedAfterReopen() throws {
         let encoded = try JSONEncoder().encode(LocalArchiveSettings(enabled: true))
         var object = try XCTUnwrap(JSONSerialization.jsonObject(with: encoded) as? [String: Any])

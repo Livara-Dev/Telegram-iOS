@@ -7,7 +7,9 @@ public let localArchiveSettingsKey = ValueBoxKey("ayugram.archive1")
 
 /// Experimental, local-only preferences. Enabling this does not enable media capture.
 public struct LocalArchiveSettings: Codable, Equatable {
-    let schemaVersion: Int
+    // Postbox's adapted Codable format supports fixed-width integers; encoding an
+    // Int deliberately asserts. Int32 also preserves the existing version-1 wire type.
+    let schemaVersion: Int32
     public var enabled: Bool
     public var excludeBots: Bool
     public var excludedPeerIds: Set<Int64>
@@ -31,6 +33,42 @@ public struct LocalArchiveSettings: Codable, Equatable {
         self.generation = 0
         self.pendingPurge = false
         self.droppedCaptures = 0
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case schemaVersion, enabled, excludeBots, excludedPeerIds, excludedSenderIds
+        case maxAgeSeconds, maxPayloadBytes, generation, pendingPurge, droppedCaptures
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        self.schemaVersion = try container.decode(Int32.self, forKey: .schemaVersion)
+        self.enabled = try container.decode(Bool.self, forKey: .enabled)
+        self.excludeBots = try container.decode(Bool.self, forKey: .excludeBots)
+        self.excludedPeerIds = Set(try container.decode([Int64].self, forKey: .excludedPeerIds))
+        self.excludedSenderIds = Set(try container.decode([Int64].self, forKey: .excludedSenderIds))
+        self.maxAgeSeconds = try container.decode(Int64.self, forKey: .maxAgeSeconds)
+        self.maxPayloadBytes = try container.decode(Int64.self, forKey: .maxPayloadBytes)
+        self.generation = try container.decode(Int64.self, forKey: .generation)
+        self.pendingPurge = try container.decode(Bool.self, forKey: .pendingPurge)
+        self.droppedCaptures = try container.decode(Int64.self, forKey: .droppedCaptures)
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(self.schemaVersion, forKey: .schemaVersion)
+        try container.encode(self.enabled, forKey: .enabled)
+        try container.encode(self.excludeBots, forKey: .excludeBots)
+        // Sets use the same primitive-array representation as the first draft.
+        // Explicit sorted arrays give deterministic bytes and use Postbox's
+        // supported Int64-array codec without changing the public preference API.
+        try container.encode(self.excludedPeerIds.sorted(), forKey: .excludedPeerIds)
+        try container.encode(self.excludedSenderIds.sorted(), forKey: .excludedSenderIds)
+        try container.encode(self.maxAgeSeconds, forKey: .maxAgeSeconds)
+        try container.encode(self.maxPayloadBytes, forKey: .maxPayloadBytes)
+        try container.encode(self.generation, forKey: .generation)
+        try container.encode(self.pendingPurge, forKey: .pendingPurge)
+        try container.encode(self.droppedCaptures, forKey: .droppedCaptures)
     }
 }
 
