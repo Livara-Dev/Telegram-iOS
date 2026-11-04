@@ -135,8 +135,9 @@ jobs:
           include-hidden-files: false
 
   unsigned-device-build:
-    needs: integration-tests
-    if: success() && (github.event_name == 'push' || inputs.unsigned_device)
+    # Compilation must not wait for an unrelated simulator to boot. Passing
+    # same-commit integration tests remains a separate release requirement.
+    if: github.event_name == 'push' || inputs.unsigned_device
     concurrency:
       # Device compilation has its own queue; it never cancels or waits for
       # the simulator application job running for the same branch.

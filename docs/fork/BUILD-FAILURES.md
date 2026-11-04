@@ -95,3 +95,21 @@ the unresolved path. The comparison now uses the canonical path. Diagnostics
 also redact both aliases and physical source/build paths, with a symlink-based
 regression that can run on Linux as well as macOS. No path-containment check was
 removed.
+
+## Hosted test startup after runtime alignment
+
+Run 41836794169 at `10c5dd6c` compiled the hosted projection target, but all three
+launch attempts ended before XCTest began. The new simulator reported booted,
+then failed readiness within 60 seconds; xcodebuild hit its 150-second startup
+limit three times. No completed xcresult existed. This is not a test pass.
+
+The wrapper now uses the existing pinned rules_apple `REUSE_GLOBAL_SIMULATOR`
+and `SIMULATOR_REUSE_SIMULATOR` path for simulator test commands. That creator
+waits for `simctl bootstatus` and reuses one simulator across sequential suites
+on the disposable job runner. The dependency commit and signing flags remain
+unchanged. Native verification of this startup change is still required.
+
+Unsigned device compilation now runs alongside integration tests. Artifacts
+remain explicitly unsigned and integration-unqualified until same-commit tests
+pass; this exposes device compiler errors without waiting for simulator startup.
+The simulator application build retains its integration gate.

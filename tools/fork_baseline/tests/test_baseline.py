@@ -121,6 +121,15 @@ class PreflightTests(unittest.TestCase):
                     self.assertEqual("--features=disable_legacy_signing" in command, mode == "unsigned-device")
                     self.assertNotIn("--features=apple.skip_codesign_simulator_bundles", command)
 
+    def test_warm_simulator_is_scoped_to_simulator_tests(self):
+        flags = {"--test_env=REUSE_GLOBAL_SIMULATOR=1", "--test_env=SIMULATOR_REUSE_SIMULATOR=1"}
+        for mode in ("simulator", "unsigned-device", "device"):
+            for action in ("test", "build"):
+                args = baseline.proxy_arguments(Path("/bazel"), Path("/repo"), mode, [action])
+                expected = flags if mode == "simulator" and action == "test" else set()
+                self.assertEqual(flags.intersection(args), expected)
+                self.assertNotIn("--features=apple.skip_codesign_simulator_bundles", args)
+
     def test_device_signing_not_disabled_and_version_clean(self):
         command = baseline.proxy_arguments(Path("/bazel"), Path("/repo"), "device", ["build"])
         self.assertNotIn("--features=disable_legacy_signing", command)
@@ -546,6 +555,7 @@ class PrivacyAndArtifactsTests(unittest.TestCase):
             self.assertFalse(manifest["runtime_verified"])
             self.assertFalse(manifest["signature_verified"])
             self.assertEqual(manifest["signing"], "disabled")
+            self.assertEqual(manifest["integration_qualification"], "not_evaluated_by_this_job")
             self.assertEqual(manifest["sha256"], hashlib.sha256(source.read_bytes()).hexdigest())
             self.assertEqual(manifest["tests"][baseline.TEST_TARGET], "not_run")
             with self.assertRaises(FileExistsError):

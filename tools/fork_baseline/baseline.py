@@ -154,6 +154,11 @@ def proxy_arguments(bazel, root, mode, arguments):
             # suites. A second, disposable disk cache retains redundant artifacts
             # on the same hosted runner and is never reused by a later job.
             command.extend(["--lockfile_mode=error", "--disk_cache=", "--remote_cache=", "--remote_executor=", "--bes_backend=", "--noremote_accept_cached", "--noremote_upload_local_results"])
+            if argument == "test" and mode == "simulator":
+                # Use the pinned rules_apple simulator creator. It waits for
+                # simctl bootstatus and reuses the private runner's simulator,
+                # rather than cold-booting a new device for every test target.
+                command.extend(["--test_env=REUSE_GLOBAL_SIMULATOR=1", "--test_env=SIMULATOR_REUSE_SIMULATOR=1"])
             if mode in ("simulator", "unsigned-device"):
                 command.append("--//Telegram:disableProvisioningProfiles=true")
             if mode == "unsigned-device":
@@ -369,6 +374,7 @@ def publish_artifact(source, destination, mode, bundle_id, build_number, test_re
         "tests": (dict(test_results) if test_results is not None else
                   {TEST_TARGET: "passed" if mode == "simulator" else "not_run"}),
         "runtime_verified": False, "signature_verified": False,
+        "integration_qualification": "not_evaluated_by_this_job" if mode == "unsigned-device" else "see_tests",
         "signing": "disabled" if mode == "unsigned-device" else "not_verified",
     }
     destination.parent.mkdir(parents=True, exist_ok=True)

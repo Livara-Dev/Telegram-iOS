@@ -8,9 +8,10 @@ how to obtain and test a device build after the application workflow succeeds.
 Use **Archive application integration (hosted macOS)** for the archive,
 Ghost activity, story-view privacy and literal-filter branches. Pushes run it automatically;
 `ci/parallel-device-build` also runs it to verify the build-job split. The
-`integration-tests` job must pass for the exact commit before application jobs
-become eligible to start. The `application-build` simulator job and the
-`unsigned-device-build` job then run independently, subject to runner capacity.
+`integration-tests` job must pass for the exact commit before the simulator
+`application-build` starts. The `unsigned-device-build` job compiles independently
+of simulator startup, subject to runner capacity. Its output is unverified until
+the same commit's integration tests pass; inspect both jobs before installation.
 Each has its own 360-minute limit and branch-specific queue. A slow simulator
 build no longer consumes the device build's time budget or prevents it starting.
 The device job uses Xcode's device SDK and does not download a simulator runtime.
@@ -54,8 +55,11 @@ layout. A successful run of one branch does not validate another branch.
    `fork-baseline-unsigned-device/manifest.json`; confirm `source_commit` and
    `mode: unsigned-device`. `signing: disabled` and unverified signature/runtime
    fields are expected at this stage. The device manifest does not claim that
-   tests ran in the device job: inspect the same run's successful
-   `integration-tests` job and its separate evidence artifact.
+   tests ran in the device job: inspect the same run's
+   `integration-tests` job and its separate evidence artifact. The device manifest
+   explicitly records `integration_qualification: not_evaluated_by_this_job`;
+   a device build can exist even when simulator tests failed. It is not a release
+   qualification or a functional-app claim.
 4. Compare the IPA to its SHA-256 checksum in Windows PowerShell:
    `Get-FileHash .\Telegram.ipa -Algorithm SHA256`, from the extracted
    `fork-baseline-unsigned-device` directory. Compare with its `SHA256SUMS` and
