@@ -15,7 +15,7 @@ MANIFESTS = ("versions.json", ".gitmodules", "MODULE.bazel", "MODULE.bazel.lock"
 ADDED_PREFIXES = (
     "docs/fork/", "tools/fork_audit/", "tools/fork_baseline/", "submodules/LocalMessageArchive/",
     "submodules/TelegramCore/Sources/LocalArchive/", "submodules/TelegramCore/Tests/LocalArchive",
-    "submodules/TelegramCore/Sources/LocalPrivacy/", "submodules/TelegramCore/Tests/LocalGhost",
+    "submodules/TelegramCore/Sources/LocalPrivacy/", "submodules/TelegramCore/Tests/LocalGhost", "submodules/TelegramCore/Tests/LocalTelemetry",
     "submodules/TelegramCore/Sources/LocalMessageFilter/", "submodules/TelegramCore/Tests/LocalMessageFilter",
     "submodules/TelegramUI/Components/Chat/ChatHistoryEntry/Tests/",
     "submodules/TelegramUI/Components/Chat/ChatMessageLocalFilterBubbleContentNode/",
@@ -37,6 +37,20 @@ ADDED_FILES = {
 # gitlinks, stays pinned. An allowlist is a scope tripwire, not a semantic audit of
 # every change within these files; reviewers must inspect their Git diffs.
 REVIEWED_MODIFICATIONS = {
+    'submodules/TelegramCore/Sources/TelegramEngine/Calls/RateCall.swift': 'remove automatic diagnostic RPC and file upload sinks while preserving explicit rating',
+    'submodules/TelegramCore/Sources/TelegramEngine/Messages/TelegramEngineMessages.swift': 'disable optional viewport and listening analytics facades',
+    'submodules/TelegramUI/Sources/MediaManager.swift': 'stop collecting optional music-listening analytics',
+    'submodules/TelegramUI/Sources/AppDelegate.swift': 'remove AppCenter startup',
+    'submodules/TelegramUI/BUILD': 'remove optional AppCenter dependencies',
+    'submodules/TelegramCallsUI/Sources/CallRatingController.swift': 'explicit rating without diagnostic attachments or support-account messages',
+    'submodules/TelegramCallsUI/Sources/CallFeedbackController.swift': 'remove diagnostic attachment controls',
+
+    'submodules/TelegramCore/Sources/State/SynchronizeAppLogEventsOperation.swift': 'disable optional app-event producers',
+    'submodules/TelegramCore/Sources/State/ManagedSynchronizeAppLogEventsOperations.swift': 'retire legacy app-event records locally without Network access',
+    'submodules/TelegramCore/Sources/State/AccountTaskManager.swift': 'start local legacy telemetry cleanup',
+    'submodules/TelegramCore/Sources/Network/NetworkTelemetry.swift': 'permanently disable production telemetry recording',
+    'submodules/TelegramCore/Tests/NetworkTelemetryTests.swift': 'verify remote configuration cannot enable production recording',
+
     "submodules/SettingsUI/BUILD": "link native archive media reader and gallery tests; use the installed iOS 27.0 test runtime",
     "build-system/Make/tests/test_postbox_import_check.py": "measure tokenizer CPU budget independently of hosted runner descheduling",
     "submodules/Postbox/BUILD": "pin simulator test runner to installed iOS 27.0",
@@ -45,7 +59,7 @@ REVIEWED_MODIFICATIONS = {
     "submodules/TelegramUI/Components/Chat/ChatHistoryEntry/BUILD": "isolated local text-filter projection test target and host",
     "submodules/TelegramUI/Components/Chat/ChatHistoryEntry/Sources/ChatHistoryEntry.swift": "presentation-only filter state preserving row identity",
     "submodules/TelegramUI/Components/ChatControllerInteraction/Sources/ChatControllerInteraction.swift": "controller-scoped temporary reveal state",
-    "submodules/TelegramUI/Sources/ChatHistoryListNode.swift": "off-main literal evaluation and identity-preserving projection",
+    "submodules/TelegramUI/Sources/ChatHistoryListNode.swift": "off-main literal projection and removal of optional viewport analytics",
     "submodules/TelegramUI/Sources/ChatInterfaceStateContextMenus.swift": "create local literal rule from eligible message text",
     "submodules/TelegramUI/Components/Chat/ChatMessageBubbleItemNode/Sources/ChatMessageBubbleItemNode.swift": "render local text placeholder and guard hidden-message actions",
     "submodules/TelegramUI/Components/Chat/ChatMessageItemView/Sources/ChatMessageItemView.swift": "redact hidden message accessibility data",

@@ -43,17 +43,6 @@ filegroup(
 #    ], exclude = ["Telegram-iOS/Icons.xcassets/**/.*"]),
 #)
 
-internal_bundle_ids = [
-    "org.telegram.Telegram-iOS",
-]
-
-available_appcenter_targets = [
-    "@appcenter_sdk//:AppCenter",
-    "@appcenter_sdk//:AppCenterCrashes",
-]
-
-appcenter_targets = available_appcenter_targets if telegram_bundle_id in internal_bundle_ids else []
-
 swift_library(
     name = "TelegramUI",
     module_name = "TelegramUI",
@@ -587,10 +576,7 @@ swift_library(
         "//submodules/WalletContext",
         "//submodules/PasscodeCore",
         "//submodules/MTProtoRustEngine:MTProtoRustEngine",
-    ] + select({
-        "@build_bazel_rules_apple//apple:ios_arm64": appcenter_targets,
-        "//build-system:ios_sim_arm64": [],
-    }),
+    ],
     visibility = [
         "//visibility:public",
     ],
