@@ -1,0 +1,50 @@
+{
+  "run": 41816366729,
+  "head": "cd1effefe8516e3e4347ad7ad02d235b043bebd5",
+  "artifact_id": 13320155322,
+  "zip_sha256": "f55704d05dd21a99770de7a8cc089504b86ec837264cfc342183a241ae2eca13",
+  "entries": [
+    {
+      "name": "fork-evidence/SHA256SUMS",
+      "bytes": 394
+    },
+    {
+      "name": "fork-evidence/portable-tests.log",
+      "bytes": 9466
+    },
+    {
+      "name": "fork-evidence/host.json",
+      "bytes": 481
+    },
+    {
+      "name": "fork-evidence/host.log",
+      "bytes": 84
+    },
+    {
+      "name": "fork-evidence/runtime.log",
+      "bytes": 11628
+    },
+    {
+      "name": "fork-evidence/simulator.log",
+      "bytes": 866317
+    }
+  ],
+  "signals": {
+    "fork-evidence/portable-tests.log": [],
+    "fork-evidence/host.json": [],
+    "fork-evidence/host.log": [],
+    "fork-evidence/runtime.log": [],
+    "fork-evidence/simulator.log": [
+      "bazel-out/ios_sim_arm64-dbg-ios-sim_arm64-min15.0-ST-8f99be897b7e/bin/Telegram/Telegram_archive-root/Payload/Telegram.app/Frameworks/TelegramUIFramework.framework: internal error in Code Signing subsystem",
+      "Baseline blocked: Upstream build/test failed; no successful baseline is recorded"
+    ]
+  },
+  "verified_inner_hashes": [
+    "fork-evidence/host.json",
+    "fork-evidence/host.log",
+    "fork-evidence/portable-tests.log",
+    "fork-evidence/runtime.log",
+    "fork-evidence/simulator.log"
+  ],
+  "scope": "Full simulator source compilation reached packaging; no successful full-app artifact or device IPA"
+}

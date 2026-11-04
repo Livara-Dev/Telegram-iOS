@@ -32,14 +32,14 @@ TEST_TARGET_PATHS = {
         "local-text-filter-projection", ("submodules", "TelegramUI", "Components", "Chat",
                                          "ChatHistoryEntry", "ChatLocalTextFilterProjectionTests")),
 }
-# Exercise the new host first: malformed host resources must fail before the
-# longer regression runs. Every target still runs before any app-build claim.
+# Collect core/capture results before the hosted UI suite. The tests-only job
+# attempts all targets, and every target must pass before any app-build claim.
 INTEGRATION_TEST_TARGETS = (
-    "//submodules/TelegramUI/Components/Chat/ChatHistoryEntry:ChatLocalTextFilterProjectionTests",
     "//submodules/Postbox:PostboxTests",
     "//submodules/LocalMessageArchive:LocalMessageArchiveTests",
     "//submodules/TelegramCore:TelegramCoreTests",
     TEST_TARGET,
+    "//submodules/TelegramUI/Components/Chat/ChatHistoryEntry:ChatLocalTextFilterProjectionTests",
 )
 TEST_EVIDENCE_LIMIT = 2 * 1024 * 1024
 
@@ -136,15 +136,48 @@ def proxy_arguments(bazel, root, mode, arguments):
     command = [str(bazel), "--nosystem_rc", "--nohome_rc", "--noworkspace_rc", "--bazelrc=" + str(root / ".bazelrc")]
     # Make.py's --bazelArguments is currently unused. Inject only build/test flags
     # here, preserving startup arguments such as --output_user_root.
+    in_build_command = False
+    skip_cache_value = False
     for argument in arguments:
+        if skip_cache_value:
+            skip_cache_value = False
+            continue
+        if in_build_command and argument == "--disk_cache":
+            skip_cache_value = True
+            continue
+        if in_build_command and argument.startswith("--disk_cache="):
+            continue
         command.append(argument)
         if argument in ("build", "test"):
-            command.extend(["--lockfile_mode=error", "--remote_cache=", "--remote_executor=", "--bes_backend=", "--noremote_accept_cached", "--noremote_upload_local_results"])
+            in_build_command = True
+            # This invocation already reuses its private output_user_root across
+            # suites. A second, disposable disk cache retains redundant artifacts
+            # on the same hosted runner and is never reused by a later job.
+            command.extend(["--lockfile_mode=error", "--disk_cache=", "--remote_cache=", "--remote_executor=", "--bes_backend=", "--noremote_accept_cached", "--noremote_upload_local_results"])
             if mode in ("simulator", "unsigned-device"):
                 command.append("--//Telegram:disableProvisioningProfiles=true")
             if mode == "unsigned-device":
                 command.append("--features=disable_legacy_signing")
     return command
+
+
+def report_build_storage(path, phase):
+    """Best-effort scratch-volume diagnostics containing no paths or file names."""
+    try:
+        usage = shutil.disk_usage(path)
+        values = (usage.total, usage.used, usage.free)
+        if any(type(value) is not int or not 0 <= value <= (1 << 64) - 1 for value in values):
+            raise ValueError("Invalid disk usage counters")
+        message = (f"Build storage {phase}: total_bytes={values[0]} "
+                   f"used_bytes={values[1]} free_bytes={values[2]}")
+    except (OSError, ValueError, TypeError, OverflowError):
+        # A failed diagnostic must not replace the original build/test outcome,
+        # and OS errors can contain paths or command arguments: do not print them.
+        message = f"Build storage {phase}: unavailable"
+    try:
+        print(message, flush=True)
+    except OSError:
+        pass
 
 
 @contextlib.contextmanager
@@ -307,18 +340,27 @@ def build(mode, env, build_number, integration_tests=False, tests_only=False):
         child_env = dict(env)
         for name in ("TELEGRAM_API_ID", "TELEGRAM_API_HASH"):
             child_env.pop(name, None)
-        common = [sys.executable, "build-system/Make/Make.py", "--bazel=" + str(proxy), "--bazelUserRoot=" + str(temporary / "bazel-root"), "--cacheDir=" + str(temporary / "cache")]
+        common = [sys.executable, "build-system/Make/Make.py", "--bazel=" + str(proxy), "--bazelUserRoot=" + str(temporary / "bazel-root")]
         signing_arguments = ["--codesigningInformationPath=" + str(signing)] if signing else ["--xcodeManagedCodesigning"]
         base = ["--configurationPath=" + str(configuration_path)] + signing_arguments
         secret_values = (config["api_hash"], config["api_id"])
         test_results = {}
 
-        def run_tests(targets):
+        def run_tests(targets, continue_after_failure=False):
+            first_failure = None
             for target in targets:
                 test_outcome = "failed"
                 try:
                     run_redacted(common + ["test"] + base + ["--target=" + target], child_env, secret_values)
                     test_outcome = "passed"
+                except InvalidSetup as error:
+                    if not continue_after_failure:
+                        raise
+                    # A failed target must not hide results for independent
+                    # suites. Keep the first failure and re-raise only after
+                    # every fixed target's invocation/evidence is attempted.
+                    if first_failure is None:
+                        first_failure = error
                 finally:
                     test_results[target] = test_outcome
                     try:
@@ -328,14 +370,17 @@ def build(mode, env, build_number, integration_tests=False, tests_only=False):
                             retain_test_evidence(temporary / "bazel-root", secret_values, test_outcome, target)
                     except (OSError, InvalidSetup):
                         print("Test evidence could not be retained; console output remains available.", flush=True)
+            if first_failure is not None:
+                raise first_failure
 
         try:
+            report_build_storage(temporary, "before")
             # Run the real iOS integration suites first to surface errors before
             # the much larger full-application build. This is not a substitute
             # for that build; no package is published until both have succeeded.
             if integration_tests:
                 try:
-                    run_tests(INTEGRATION_TEST_TARGETS)
+                    run_tests(INTEGRATION_TEST_TARGETS, continue_after_failure=tests_only)
                 finally:
                     if tests_only:
                         retain_integration_test_summary(test_results)
@@ -349,6 +394,9 @@ def build(mode, env, build_number, integration_tests=False, tests_only=False):
                 publish_artifact(captured_ipa, destination, mode, config["bundle_id"], build_number,
                                  test_results if mode == "simulator" else None)
         finally:
+            # Measure while build products and diagnostics still exist. Cleanup
+            # would otherwise hide pressure at the point of a packaging failure.
+            report_build_storage(temporary, "after")
             try:
                 subprocess.run([str(bazel), "--nosystem_rc", "--nohome_rc", "--noworkspace_rc", "--output_user_root=" + str(temporary / "bazel-root"), "shutdown"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=60, check=False)
             except (OSError, subprocess.SubprocessError):

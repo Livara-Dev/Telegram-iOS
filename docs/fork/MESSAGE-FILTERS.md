@@ -109,17 +109,24 @@ The branch is `feature/message-filter-draft`, [PR #4](https://github.com/Livara-
 There are 18 real-Postbox core tests and 12 production projection tests. The
 projection target has a separate test-only UIKit host bundling the existing
 Telegram presentation strings; it creates no Telegram account or connection.
-The hosted integration workflow runs that target first, then the inherited
-Postbox, archive, TelegramCore and TextFormat suites before the full app build.
-Running the new host first catches setup errors before the longer regressions.
+The hosted integration workflow runs the Postbox, archive, TelegramCore and
+TextFormat suites before the projection target. The tests-only job collects all
+suite results even after one fails; every suite must pass before the full app
+build becomes eligible. Core tests therefore do not depend on UI host startup.
 
 Portable tooling, source-scope/credential and Postbox-import checks are separate
 from native verification. At `6eba37ff`, the first four targets passed all 1,011 XCTest cases, including
 18 filter-core, 15 Ghost and 56 archive integration cases. The fifth target
 failed to build because the test host lacked `CFBundleVersion`; **zero projection
 tests ran**. [Recorded evidence](evidence/filter-integration-6eba37ff.json) separates
-the passed cases from that build failure. The host now declares both bundle
-version fields and requires a fresh native run. No successful full application
-build, projection-test pass, iPhone performance measurement or working UI is
-claimed by this source checkpoint. Consult PR #4 for revision-specific CI evidence. No synthetic
+the passed cases from that build failure. At `f295948a`, the corrected host and
+projection module compiled and packaged, but hosted simulator startup stalled.
+Bazel's 300-second timeout interrupted the first of the pinned runner's three
+startup attempts. No actual XCTest case executed, and the former wrapper did
+not attempt the remaining suites after that failure. [Recorded timeout evidence](evidence/filter-integration-f295948a.json)
+includes the verified artifact digest. The retry gives this host a bounded
+900-second allowance and lets the tests-only job collect every fixed suite's
+result before returning failure. Any failing suite still blocks application
+builds. No successful full application build, projection-test pass, iPhone
+performance measurement or working UI is claimed by this source checkpoint. Consult PR #4 for revision-specific CI evidence. No synthetic
 benchmark is represented as an iPhone 15 Pro measurement.

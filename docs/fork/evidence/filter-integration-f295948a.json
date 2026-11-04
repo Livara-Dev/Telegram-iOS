@@ -1,0 +1,28 @@
+{
+  "schema": 1,
+  "repository": "Livara-Dev/Telegram-iOS",
+  "commit": "f295948ad9ba8fb1cb668dc0b645c486d1f2ec74",
+  "run_id": 41819900429,
+  "job_id": 126540077832,
+  "run_url": "https://github.com/Livara-Dev/Telegram-iOS/actions/runs/41819900429",
+  "integration_job_conclusion": "failure",
+  "test_host_compilation": "passed",
+  "projection_module_compilation": "passed",
+  "projection_xctest_cases_executed": 0,
+  "failure": "Hosted simulator/xcodebuild startup stalled; Bazel moderate 300-second timeout interrupted first of three upstream startup attempts. No XCTest case started.",
+  "bazel_result": "TIMEOUT",
+  "target_seconds": 312.5,
+  "remaining_targets": "not_run because the previous wrapper aborted at the first failure",
+  "artifact": {
+    "id": 13318616551,
+    "sha256": "b3462eebaf928a3b2fff4e90ed5a783ff9df4eb9a723e37290b927e8245f5d60",
+    "size_bytes": 52222,
+    "url": "https://github.com/Livara-Dev/Telegram-iOS/actions/runs/41819900429/artifacts/13318616551"
+  },
+  "inner_checksums_verified": 9,
+  "scope_limits": [
+    "Bazel emitted a synthetic one-case timeout XML; this is not an executed projection test",
+    "No full application build or IPA was produced",
+    "Core tests on prior6eba passed but were not re-executed in this run"
+  ]
+}
