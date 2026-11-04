@@ -133,3 +133,26 @@ build, and native device compilation must still verify the compatibility patch.
 
 The derived rule sources retain their upstream Apache-2.0 license and copyright
 files; the patch implementation is included in this source repository.
+
+## Warm simulator follow-up at 9190be8c
+
+Run 41849293725 still failed overall. Its archive suite passed 64 iOS tests and
+TelegramCore passed, but the first Postbox invocation hit the default 300-second
+Bazel test limit. The log includes 75 seconds of first-boot data migration before
+XCTest launch. Later suites reused the booted simulator. Host setup now boots the
+same `BAZEL_TEST_iPhone 17_27.0` device before compilation, with a separate
+240-second setup bound; Postbox has the same bounded `long` test category already
+used by the hosted projection target. No test assertion is removed or relaxed.
+
+The projection test's three 150-second launch attempts again failed before any
+XCTest case began. Its custom host used the old app-delegate window lifecycle;
+the pinned Telegram app already supplies a scene manifest and scene delegate.
+The host now uses that scene lifecycle too. This is a candidate startup fix,
+not a verified diagnosis of every cause. The OS-build parser warning and missing
+xcresult remain evidence to investigate if the next host still cannot launch.
+Native verification and a full application build remain outstanding.
+
+On a further projection failure, CI now records a bounded, redacted launch probe
+for only the synthetic test host: whether it is installed, its signature check,
+and a standalone launch attempt. The probe never creates a Telegram account or
+opens the real Telegram application. A successful probe is not an XCTest pass.

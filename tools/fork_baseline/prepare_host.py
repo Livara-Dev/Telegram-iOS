@@ -50,6 +50,32 @@ def prepare_simulator():
     devices = json.loads(command("xcrun", "simctl", "list", "devices", "available", "--json"))["devices"]
     if not any(d["name"] == "iPhone 17" for d in devices.get(runtime["identifier"], [])):
         command("xcrun", "simctl", "create", "iPhone 17", "com.apple.CoreSimulator.SimDeviceType.iPhone-17", runtime["identifier"])
+    return runtime["identifier"]
+
+
+def warm_test_simulator(runtime):
+    # Match the existing pinned rules_apple creator's name exactly. Cold iOS
+    # data migration belongs to host setup, not a test's execution budget.
+    name = "BAZEL_TEST_iPhone 17_27.0"
+    devices = json.loads(command("xcrun", "simctl", "list", "devices", "available", "--json"))["devices"]
+    existing = next((item for item in devices.get(runtime, []) if item.get("name") == name), None)
+    identifier = existing["udid"] if existing else command("xcrun", "simctl", "create", name, "com.apple.CoreSimulator.SimDeviceType.iPhone-17", runtime)
+    if re.fullmatch(r"[0-9A-Fa-f-]{36}", identifier) is None:
+        raise RuntimeError("Simulator creation returned an invalid identifier")
+    try:
+        result = subprocess.run(["xcrun", "simctl", "bootstatus", identifier, "-b"],
+                                stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
+                                timeout=240, check=False)
+    except subprocess.TimeoutExpired:
+        raise RuntimeError("Simulator data migration did not finish within the host setup budget") from None
+    if result.returncode == 149:
+        # simctl may report already booted; accept only a fresh state check.
+        current = json.loads(command("xcrun", "simctl", "list", "devices", "available", "--json"))["devices"]
+        if not any(d.get("udid") == identifier and d.get("state") == "Booted" for d in current.get(runtime, [])):
+            raise RuntimeError("Simulator did not reach the booted state")
+    elif result.returncode != 0:
+        raise RuntimeError("Simulator warm-up failed")
+    print("Pinned simulator completed host warm-up before test compilation.")
 
 
 def main():
@@ -59,7 +85,8 @@ def main():
     if platform.system() != "Darwin" or platform.machine() != "arm64":
         raise RuntimeError("Requires an Apple Silicon macOS host")
     if args.simulator:
-        prepare_simulator()
+        runtime = prepare_simulator()
+        warm_test_simulator(runtime)
         return
     pins = json.loads((ROOT / "versions.json").read_text())
     os_version = command("sw_vers", "-productVersion")

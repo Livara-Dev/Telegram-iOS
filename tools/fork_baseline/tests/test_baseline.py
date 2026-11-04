@@ -247,6 +247,9 @@ class PrivacyAndArtifactsTests(unittest.TestCase):
         inspection = patch.object(baseline, "inspect_ipa", return_value={"test_fixture": True})
         inspection.start()
         self.addCleanup(inspection.stop)
+        probe = patch.object(baseline, "capture_projection_launch")
+        probe.start()
+        self.addCleanup(probe.stop)
 
     def test_rejected_ipa_is_not_published_after_successful_compilation(self):
         with tempfile.TemporaryDirectory() as directory:

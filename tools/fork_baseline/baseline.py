@@ -20,6 +20,7 @@ import tempfile
 
 from unsigned_rules import prepare_unsigned_rules
 from ipa_inspect import inspect_ipa, InvalidIPA
+from simulator_probe import capture as capture_projection_launch
 
 ROOT = Path(__file__).resolve().parents[2]
 TEST_TARGET = "//submodules/TextFormat:TextFormatTests"
@@ -450,6 +451,8 @@ def build(mode, env, build_number, integration_tests=False, tests_only=False):
                     run_redacted(common + ["test"] + base + ["--target=" + target], child_env, secret_values)
                     test_outcome = "passed"
                 except InvalidSetup as error:
+                    if target == "//submodules/TelegramUI/Components/Chat/ChatHistoryEntry:ChatLocalTextFilterProjectionTests":
+                        capture_projection_launch(ROOT, secret_values)
                     if not continue_after_failure:
                         raise
                     # A failed target must not hide results for independent
