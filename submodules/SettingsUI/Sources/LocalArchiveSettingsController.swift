@@ -705,7 +705,7 @@ private final class LocalArchivedPlaybackController: ViewController {
 }
 
 
-private func localArchiveGalleryImage(_ data: Data, maximumDimension: Int) -> UIImage? {
+func localArchiveGalleryImage(_ data: Data, maximumDimension: Int) -> UIImage? {
     guard data.count <= 16 * 1024 * 1024,
           let source = CGImageSourceCreateWithData(data as CFData, [kCGImageSourceShouldCache: false] as CFDictionary),
           let properties = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [String: Any],
@@ -719,7 +719,7 @@ private func localArchiveGalleryImage(_ data: Data, maximumDimension: Int) -> UI
 
 /// Start the next read only after the previous thumbnail has been decoded.
 /// A page of large photos must not queue a page of decrypted full-size blobs.
-private final class LocalArchiveThumbnailLoader {
+final class LocalArchiveThumbnailLoader {
     private final class Request {
         let key: String
         let slot: Int
@@ -729,12 +729,12 @@ private final class LocalArchiveThumbnailLoader {
             self.key = key; self.slot = slot; self.receive = receive
         }
     }
-    private let archive: LocalArchiveCoordinator
+    private let load: (String, Int) -> Signal<Data?, NoError>
     private let queue = Queue(name: "LocalArchive.thumbnails", qos: .utility)
     private var pending: [Request] = []
     private var active: Request?
 
-    init(archive: LocalArchiveCoordinator) { self.archive = archive }
+    init(load: @escaping (String, Int) -> Signal<Data?, NoError>) { self.load = load }
 
     func image(eventKey: String, slot: Int) -> Signal<UIImage?, NoError> {
         return Signal { [weak self] subscriber in
@@ -762,7 +762,7 @@ private final class LocalArchiveThumbnailLoader {
         guard self.active == nil, !self.pending.isEmpty else { return }
         let request = self.pending.removeFirst()
         self.active = request
-        request.disposable.set((self.archive.mediaData(eventKey: request.key, slot: request.slot)
+        request.disposable.set((self.load(request.key, request.slot)
             |> deliverOn(self.queue)).start(next: { [weak self, weak request] data in
                 guard let self, let request, self.active === request else { return }
                 let image = autoreleasepool { data.flatMap { localArchiveGalleryImage($0, maximumDimension: 320) } }
@@ -852,7 +852,7 @@ private final class LocalArchiveGalleryController: ViewController, UICollectionV
 
     init(context: AccountContext, archive: LocalArchiveCoordinator, peerId: Int64?) {
         self.context = context; self.archive = archive; self.peerId = peerId
-        self.thumbnails = LocalArchiveThumbnailLoader(archive: archive)
+        self.thumbnails = LocalArchiveThumbnailLoader(load: { archive.mediaData(eventKey: $0, slot: $1) })
         let presentation = context.sharedContext.currentPresentationData.with { $0 }
         self.theme = presentation.theme
         let flow = UICollectionViewFlowLayout()

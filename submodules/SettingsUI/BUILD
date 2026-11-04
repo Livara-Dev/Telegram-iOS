@@ -164,17 +164,19 @@ swift_library(
     deps = [
         ":SettingsUI",
         "//submodules/TelegramCore:TelegramCore",
+        "//submodules/SwiftSignalKit:SwiftSignalKit",
     ],
 )
 
 ios_test_runner(
     name = "SettingsUITestRunner",
     device_type = "iPhone 17",
-    os_version = "26.5",
+    os_version = "27.0",
 )
 
 ios_unit_test(
     name = "SettingsUITests",
+    timeout = "long",
     minimum_os_version = "15.0",
     runner = ":SettingsUITestRunner",
     deps = [

@@ -172,3 +172,9 @@ and rollback, retention, conflicting writes, real Postbox gallery projection,
 and refusal of locked-account queries. These tests are authored, not yet
 reported as passed. Linux source/tooling checks cannot validate Swift UI or
 substitute for recorded simulator frames and device testing.
+
+The SettingsUI test target now includes ImageIO thumbnail sizing/rejection and
+serial-read/cell-reuse cancellation cases against the actual thumbnail loader.
+It uses the installed iOS 27.0 runtime and joins the exact-commit integration
+suite. These checks do not render or verify the whole gallery screen; recorded
+light/dark, pagination, accessibility and lock/background frames remain required.
