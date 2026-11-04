@@ -46,9 +46,10 @@ preserved. A configured payload quota still evicts the oldest records and their
 media, and explicit Clear Archive remains destructive. No unbounded or eternal
 retention guarantee is made. The native control supports quotas through 1 GiB.
 
-The new tests use synthetic bytes in actual Telegram media objects to check
-byte-for-byte storage, not codec playback. Cases include photos, videos, round
-video, voice, animation and documents; encrypted store reopening, real MediaBox
+Photo cases use a generated valid JPEG with Telegram's CloudPhotoSizeMediaResource,
+including a missing-large/downloaded-small rendition case. Other file types use
+synthetic bytes in actual Telegram media objects to check byte-for-byte storage,
+not codec playback. Cases include photos, videos, round video, voice, animation and documents; encrypted store reopening, real MediaBox
 cache removal, quota eviction, account separation, and the media-commit/outbox-
 acknowledgement recovery window. Actual app termination and physical iPhone
 installation are not established by these fixtures.

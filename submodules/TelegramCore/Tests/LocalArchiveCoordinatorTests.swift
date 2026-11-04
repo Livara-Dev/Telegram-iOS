@@ -452,8 +452,8 @@ final class LocalArchiveCoordinatorTests: XCTestCase {
     }
 
     func testMediaCommitBeforeOutboxAckSurvivesRestartAndSourceRemoval() throws {
-        let resource = CloudDocumentMediaResource(datacenterId: 1, fileId: 9200, accessHash: 0, size: 3, fileReference: nil, fileName: nil)
-        let bytes = Data([2, 4, 6])
+        let bytes = localArchiveTestPhotoData()
+        let resource = CloudPhotoSizeMediaResource(datacenterId: 1, photoId: 9200, accessHash: 0, sizeSpec: "x", size: Int64(bytes.count), fileReference: nil)
         self.fixture.postbox.mediaBox.storeResourceData(resource.id, data: bytes, synchronous: true)
         let image = TelegramMediaImage(imageId: MediaId(namespace: Namespaces.Media.CloudImage, id: 9200), representations: [TelegramMediaImageRepresentation(dimensions: PixelDimensions(width: 16, height: 16), resource: resource, progressiveSizes: [], immediateThumbnailData: nil)], immediateThumbnailData: nil, reference: nil, partialReference: nil, flags: [])
         _ = try self.queueDeletion(91, media: [image])
@@ -477,9 +477,31 @@ final class LocalArchiveCoordinatorTests: XCTestCase {
         XCTAssertEqual(try XCTUnwrap(result).get()?.data, bytes)
     }
 
+    func testPhotoFallbackPreservesOnlyTheCompletedLocalVariant() throws {
+        let bytes = localArchiveTestPhotoData()
+        let missing = CloudPhotoSizeMediaResource(datacenterId: 1, photoId: 9700, accessHash: 0, sizeSpec: "x", size: nil, fileReference: nil)
+        let cached = CloudPhotoSizeMediaResource(datacenterId: 1, photoId: 9700, accessHash: 0, sizeSpec: "m", size: Int64(bytes.count), fileReference: nil)
+        self.fixture.postbox.mediaBox.storeResourceData(cached.id, data: bytes, synchronous: true)
+        let photo = TelegramMediaImage(imageId: MediaId(namespace: Namespaces.Media.CloudImage, id: 9700), representations: [
+            TelegramMediaImageRepresentation(dimensions: PixelDimensions(width: 1024, height: 1024), resource: missing, progressiveSizes: [], immediateThumbnailData: nil),
+            TelegramMediaImageRepresentation(dimensions: PixelDimensions(width: 16, height: 16), resource: cached, progressiveSizes: [], immediateThumbnailData: nil)
+        ], immediateThumbnailData: nil, reference: nil, partialReference: nil, flags: [])
+        _ = try self.queueDeletion(97, media: [photo])
+        let key = try XCTUnwrap(self.pending().first?.operation?.eventKey)
+        let instance = self.start()
+        try self.awaitStatus(.ready, in: instance)
+        let store = try XCTUnwrap(instance.storage.with { $0?.store })
+        let done = expectation(description: "read available photo rendition")
+        var result: Result<ArchivedMedia?, ArchiveError>?
+        store.media(eventKey: key, slot: 0) { result = $0; done.fulfill() }
+        wait(for: [done], timeout: 15)
+        XCTAssertEqual(try XCTUnwrap(result).get()?.data, bytes)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: self.fixture.postbox.mediaBox.storePathsForId(missing.id).complete))
+    }
+
     func testCompletedPhotoBytesSurviveCacheRemovalAndRestart() throws {
-        let resource = CloudDocumentMediaResource(datacenterId: 1, fileId: 9001, accessHash: 0, size: 4, fileReference: nil, fileName: nil)
-        let bytes = Data([11, 22, 33, 44])
+        let bytes = localArchiveTestPhotoData()
+        let resource = CloudPhotoSizeMediaResource(datacenterId: 1, photoId: 9001, accessHash: 0, sizeSpec: "x", size: Int64(bytes.count), fileReference: nil)
         self.fixture.postbox.mediaBox.storeResourceData(resource.id, data: bytes, synchronous: true)
         let image = TelegramMediaImage(imageId: MediaId(namespace: Namespaces.Media.CloudImage, id: 9001),
             representations: [TelegramMediaImageRepresentation(dimensions: PixelDimensions(width: 16, height: 16), resource: resource, progressiveSizes: [], immediateThumbnailData: nil)],

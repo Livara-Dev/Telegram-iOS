@@ -229,9 +229,9 @@ final class LocalArchiveReplayTests: XCTestCase {
     }
 
     func testGlobalDeleteDefersEagerMediaRemovalUntilArchiveCanCopy() throws {
-        let bytes = Data([7, 9, 13, 21])
-        let resource = CloudDocumentMediaResource(datacenterId: 1, fileId: 501, accessHash: 0, size: Int64(bytes.count), fileReference: nil, fileName: nil)
-        let file = TelegramMediaFile(fileId: MediaId(namespace: Namespaces.Media.CloudFile, id: 501), partialReference: nil, resource: resource, previewRepresentations: [], videoThumbnails: [], immediateThumbnailData: nil, mimeType: "application/pdf", size: Int64(bytes.count), attributes: [], alternativeRepresentations: [])
+        let bytes = localArchiveTestPhotoData()
+        let resource = CloudPhotoSizeMediaResource(datacenterId: 1, photoId: 501, accessHash: 0, sizeSpec: "x", size: Int64(bytes.count), fileReference: nil)
+        let file = TelegramMediaImage(imageId: MediaId(namespace: Namespaces.Media.CloudImage, id: 501), representations: [TelegramMediaImageRepresentation(dimensions: PixelDimensions(width: 16, height: 16), resource: resource, progressiveSizes: [], immediateThumbnailData: nil)], immediateThumbnailData: nil, reference: nil, partialReference: nil, flags: [])
         self.fixture.postbox.mediaBox.storeResourceData(resource.id, data: bytes, synchronous: true)
         let id = self.id(501)
         try self.store([localArchiveTestMessage(id, media: [file])])
