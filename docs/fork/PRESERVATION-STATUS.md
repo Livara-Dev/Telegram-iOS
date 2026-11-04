@@ -71,3 +71,8 @@ The same `aba9fae9` revision passed 201 Postbox and 59 archive tests on the iOS
 simulator, then failed compiling the TelegramCore media-read signal. No new
 TelegramCore media-capture/replay case executed. The explicit weak-capture fix
 and release-completion regression are pending a new native run.
+
+Direct media reads now apply configured age retention before returning bytes,
+even when the store has stayed open without writes or a list refresh. A
+clock-controlled storage test checks deletion of the expired parent and blob
+and their usage counters. This follow-up still awaits its native test run.

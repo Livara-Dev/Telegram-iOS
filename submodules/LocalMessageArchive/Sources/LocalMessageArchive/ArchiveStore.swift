@@ -426,7 +426,11 @@ public final class ArchiveStore {
 
     public func media(eventKey: String, slot: Int, completion: @escaping (Result<ArchivedMedia?, ArchiveError>) -> Void) {
         submit(completion) {
-            guard (0..<10).contains(slot), !eventKey.isEmpty, eventKey.utf8.count <= 128, !eventKey.contains("\0") else { throw ArchiveError.invalidInput }
+            let now = self.clock()
+            guard now >= 0, (0..<10).contains(slot), !eventKey.isEmpty, eventKey.utf8.count <= 128, !eventKey.contains("\0") else { throw ArchiveError.invalidInput }
+            // A direct preview can outlive the page that opened it. Enforce age
+            // retention even when no writes or list refresh have happened.
+            _ = try self.transaction { try self.prune(now: now, policy: self.retention) }
             let row = try self.statement("SELECT kind,mime,payload FROM event_media WHERE event_key=? AND slot=?", [.text(eventKey), .integer(Int64(slot))])
             defer { sqlite3_finalize(row) }
             let code = sqlite3_step(row)

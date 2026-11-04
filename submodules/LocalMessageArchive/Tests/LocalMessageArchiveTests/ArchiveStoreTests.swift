@@ -33,10 +33,10 @@ final class ArchiveStoreTests: XCTestCase {
         return try XCTUnwrap(result).get()
     }
     private func open(account: Int64 = 1, keys: Keys = Keys(), now: Int64 = 1000,
-                      retention: ArchiveRetentionPolicy = ArchiveRetentionPolicy()) throws -> ArchiveStore {
+                      retention: ArchiveRetentionPolicy = ArchiveRetentionPolicy(), clock: (() -> Int64)? = nil) throws -> ArchiveStore {
         let store: ArchiveStore = try awaitResult {
             ArchiveStore.open(baseDirectory: directory, accountId: account, keyProvider: keys,
-                              retention: retention, callbackQueue: .main, clock: { now }, completion: $0)
+                              retention: retention, callbackQueue: .main, clock: clock ?? { now }, completion: $0)
         }
         stores.append(store)
         return store
@@ -66,6 +66,26 @@ final class ArchiveStoreTests: XCTestCase {
         XCTAssertNil(try awaitResult { reopened.media(eventKey: "media", slot: 0, completion: $0) })
         XCTAssertEqual(try usage(reopened).logicalPayloadBytes, 0)
         XCTAssertFalse(try Data(contentsOf: reopened.databaseURL).range(of: bytes) != nil)
+    }
+
+    func testDirectMediaReadEnforcesAgeRetentionWhileStoreStaysOpen() throws {
+        final class Clock {
+            private let lock = NSLock()
+            private var value: Int64 = 1000
+            func read() -> Int64 { lock.lock(); defer { lock.unlock() }; return value }
+            func advance() { lock.lock(); value = 2000; lock.unlock() }
+        }
+        let clock = Clock()
+        let store = try open(retention: ArchiveRetentionPolicy(maxAgeSeconds: 50), clock: { clock.read() })
+        _ = try write(store, [event("expires", observed: 990)])
+        XCTAssertTrue(try awaitResult { store.recordMedia(eventKey: "expires", slot: 0, kind: "photo", mimeType: "image/jpeg", data: Data([1, 2, 3]), generation: 0, completion: $0) })
+        XCTAssertNotNil(try awaitResult { store.media(eventKey: "expires", slot: 0, completion: $0) })
+        clock.advance()
+        // No intervening write, list refresh, close, or reopen is needed.
+        XCTAssertNil(try awaitResult { store.media(eventKey: "expires", slot: 0, completion: $0) })
+        XCTAssertEqual(try usage(store).records, 0)
+        XCTAssertEqual(try usage(store).logicalPayloadBytes, 0)
+        XCTAssertTrue(try records(store).isEmpty)
     }
 
     func testMediaCannotCrossAccountOrPurgeGeneration() throws {
