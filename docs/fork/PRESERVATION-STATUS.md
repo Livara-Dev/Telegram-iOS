@@ -59,3 +59,9 @@ bytes after explicitly clearing the cache. These tests are newly authored and
 await native execution; they must not be presented as passing. A retention
 eviction during media insertion is counted as an unavailable capture rather
 than reported as preserved.
+
+Schema-5 storage validation: revision `aba9fae9` passed 59 macOS XCTest cases
+and standalone iOS simulator module compilation. [Verified artifact details](evidence/archive-media-aba9fae9.json) identify the revision, workflow, artifact
+and SHA-256 digest. This result predates the global-delete handoff and truncated-
+file fixes, and does not validate TelegramCore integration, SettingsUI, codec
+playback, an application package or physical iPhone behavior.

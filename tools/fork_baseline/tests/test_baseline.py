@@ -129,6 +129,77 @@ class PreflightTests(unittest.TestCase):
         self.assertEqual(command, ["/bazel", "--version"])
 
 
+class BundleDiagnosticsTests(unittest.TestCase):
+    def make_bundle(self, root, private):
+        app = private / "output/Telegram_archive-root/Payload/Telegram.app"
+        framework = app / "Frameworks/TelegramUIFramework.framework"
+        framework.mkdir(parents=True)
+        (app / "Telegram").write_bytes(b"test application binary")
+        (framework / "TelegramUIFramework").write_bytes(b"test framework binary")
+        link = root / "bazel-bin/Telegram"
+        link.parent.mkdir(parents=True)
+        link.symlink_to(private / "output", target_is_directory=True)
+        return app
+
+    def test_diagnostics_are_read_only_bounded_redacted_and_inside_build(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory) / "source"
+            private = Path(directory) / "private"
+            root.mkdir()
+            self.make_bundle(root, private)
+            secret = "private-api-value"
+            diagnostic = (secret + " " + str(private) + " " + str(root) + "\n").encode() + b"x" * 70000
+            with patch.object(baseline, "ROOT", root), patch.object(baseline.subprocess, "run", return_value=SimpleNamespace(returncode=1, stdout=diagnostic)) as command:
+                baseline.retain_bundle_diagnostics(private, (secret,))
+            self.assertEqual(command.call_count, 6)
+            allowed = {"--display", "--verify"}
+            for call in command.call_args_list:
+                args = call.args[0]
+                self.assertEqual(call.kwargs["timeout"], 8)
+                self.assertTrue(args[0] == "/usr/bin/xattr" or args[1] in allowed)
+                self.assertNotIn("--sign", args)
+                self.assertNotIn("--remove-signature", args)
+                self.assertTrue(Path(args[-1]).is_relative_to(private))
+            text = (root / "build/fork-evidence/bundle-diagnostics.json").read_text()
+            self.assertNotIn(secret, text)
+            self.assertNotIn(str(private), text)
+            self.assertNotIn(str(root), text)
+            report = json.loads(text)
+            self.assertTrue(report["read_only"])
+            self.assertFalse(report["signature_or_installation_verified"])
+            self.assertEqual(set(report["bundles"]), {"application", "ui_framework"})
+            self.assertLess(len(text), 400000)
+
+    def test_build_output_escape_is_rejected_without_running_commands(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory) / "source"
+            private = Path(directory) / "private"
+            unrelated = Path(directory) / "unrelated"
+            root.mkdir()
+            private.mkdir()
+            self.make_bundle(root, unrelated)
+            with patch.object(baseline, "ROOT", root), patch.object(baseline.subprocess, "run") as command:
+                baseline.retain_bundle_diagnostics(private, ())
+            command.assert_not_called()
+            self.assertFalse((root / "build/fork-evidence/bundle-diagnostics.json").exists())
+
+    def test_timeouts_do_not_hide_failure_or_overwrite_existing_evidence(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory) / "source"
+            private = Path(directory) / "private"
+            root.mkdir()
+            self.make_bundle(root, private)
+            with patch.object(baseline, "ROOT", root), patch.object(baseline.subprocess, "run", side_effect=subprocess.TimeoutExpired("codesign", 8)):
+                baseline.retain_bundle_diagnostics(private, ())
+                evidence = root / "build/fork-evidence/bundle-diagnostics.json"
+                before = evidence.read_bytes()
+                baseline.retain_bundle_diagnostics(private, ())
+                self.assertEqual(evidence.read_bytes(), before)
+            report = json.loads(before)
+            for bundle in report["bundles"].values():
+                self.assertTrue(all(command == {"state": "unavailable"} for command in bundle["commands"].values()))
+
+
 class PrivacyAndArtifactsTests(unittest.TestCase):
     def test_storage_diagnostics_precede_cleanup_and_suites_reuse_output_root(self):
         with tempfile.TemporaryDirectory() as directory:

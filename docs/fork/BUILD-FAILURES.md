@@ -49,3 +49,20 @@ The archive branch now explicitly pins all five test runners and preflight to
 the installed iOS 27.0 runtime, without downloading 26.5. Xcode 27.1, source and
 dependency pins remain unchanged. Runtime availability is checked before tests;
 no fallback or successful native result is assumed.
+
+## Original baseline completion and bundle diagnostics
+
+Original run `41792955476`, job `126450334711`, is now reported by GitHub as
+`cancelled` (updated 2026-11-04 13:37:22 UTC). This agent did not cancel it. No
+artifact was retained and the completed-log endpoint returned `BlobNotFound`;
+no specific compiler, timeout or cancellation cause is established. New archive
+integration jobs remain independent of this original run.
+
+A failed full-app build now attempts bounded, read-only diagnostics for the
+application and embedded TelegramUIFramework before the private build directory
+is removed. `bundle-diagnostics.json` includes executable size/mode, codesign
+display/verification output and extended-attribute names only. It excludes
+configuration files, credential values, signing keys, and bundle contents; paths
+and API secrets are redacted. Unsafe paths and diagnostic failures are ignored
+without changing the original build result. This is evidence collection, not a
+signing workaround or an asserted fix for Apple's code-signing error.

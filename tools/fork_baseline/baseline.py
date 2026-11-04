@@ -212,6 +212,71 @@ def run_redacted(args, env, secrets):
             raise InvalidSetup("Upstream build/test failed; no successful baseline is recorded")
 
 
+def retain_bundle_diagnostics(bazel_root, secrets):
+    """Read-only diagnostics for the exact private build's two known bundles.
+
+    Do not copy bundle contents, signing material, generated configuration, or
+    process environment. Diagnostic failure must never mask the build failure.
+    """
+    destination = ROOT / "build/fork-evidence"
+    try:
+        for directory in (ROOT / "build", destination):
+            if directory.is_symlink():
+                return
+        destination.mkdir(parents=True, exist_ok=True)
+        report = {"read_only": True, "signature_or_installation_verified": False, "bundles": {}}
+        try:
+            private_root = Path(bazel_root).resolve(strict=True)
+            app = (ROOT / "bazel-bin/Telegram/Telegram_archive-root/Payload/Telegram.app").resolve(strict=True)
+            if not app.is_relative_to(private_root) or not app.is_dir():
+                return
+        except (OSError, RuntimeError):
+            return
+        for name, bundle, executable in (
+            ("application", app, "Telegram"),
+            ("ui_framework", app / "Frameworks/TelegramUIFramework.framework", "TelegramUIFramework"),
+        ):
+            entry = {"commands": {}}
+            report["bundles"][name] = entry
+            try:
+                resolved = bundle.resolve(strict=True)
+                binary = (resolved / executable).resolve(strict=True)
+                if not resolved.is_relative_to(app) or not binary.is_relative_to(app):
+                    entry["state"] = "unsafe_path"
+                    continue
+                info = binary.stat()
+                if not stat.S_ISREG(info.st_mode):
+                    entry["state"] = "not_regular"
+                    continue
+                entry.update(state="available", executable_bytes=info.st_size, executable_mode=stat.S_IMODE(info.st_mode))
+            except (OSError, RuntimeError):
+                entry["state"] = "unavailable"
+                continue
+            for label, command in (
+                ("signature_details", ["/usr/bin/codesign", "--display", "--verbose=2", str(resolved)]),
+                ("signature_check", ["/usr/bin/codesign", "--verify", "--strict", "--verbose=2", str(resolved)]),
+                ("attribute_names", ["/usr/bin/xattr", str(resolved)]),
+            ):
+                try:
+                    result = subprocess.run(command, cwd=ROOT, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                                            timeout=8, check=False)
+                    diagnostic = result.stdout[:65536].decode("utf-8", errors="replace")
+                    # Remove private credentials and machine-specific paths, even
+                    # if an external tool unexpectedly echoes them in an error.
+                    for value in secrets:
+                        if value:
+                            diagnostic = diagnostic.replace(value, "[REDACTED]")
+                    diagnostic = diagnostic.replace(str(private_root), "[PRIVATE_BUILD]").replace(str(ROOT), "[SOURCE]")
+                    entry["commands"][label] = {"exit_code": result.returncode, "output": diagnostic}
+                except (OSError, subprocess.SubprocessError):
+                    entry["commands"][label] = {"state": "unavailable"}
+        # Exclusive creation avoids following a destination file symlink.
+        with (destination / "bundle-diagnostics.json").open("x", encoding="utf-8") as target:
+            target.write(json.dumps(report, indent=2) + "\n")
+    except (OSError, ValueError, TypeError):
+        pass
+
+
 def retain_test_evidence(bazel_root, secrets, outcome, test_target=TEST_TARGET, prebuild=False):
     """Copy only this target's bounded, redacted text outputs before Bazel cleanup."""
     if test_target not in TEST_TARGET_PATHS:
@@ -385,7 +450,11 @@ def build(mode, env, build_number, integration_tests=False, tests_only=False):
                     if tests_only:
                         retain_integration_test_summary(test_results)
             if not tests_only:
-                run_redacted(common + ["build"] + base + ["--buildNumber=" + str(build_number), "--configuration=" + ("debug_sim_arm64" if mode == "simulator" else "release_arm64"), "--lock"], child_env, secret_values)
+                try:
+                    run_redacted(common + ["build"] + base + ["--buildNumber=" + str(build_number), "--configuration=" + ("debug_sim_arm64" if mode == "simulator" else "release_arm64"), "--lock"], child_env, secret_values)
+                except InvalidSetup:
+                    retain_bundle_diagnostics(temporary / "bazel-root", secret_values)
+                    raise
                 # The test invocation may repoint bazel-bin at a different configuration.
                 captured_ipa = temporary / "Telegram.ipa"
                 shutil.copyfile(ROOT / "bazel-bin/Telegram/Telegram.ipa", captured_ipa)
