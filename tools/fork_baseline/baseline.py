@@ -108,6 +108,10 @@ def preflight(env, simulator=False):
 
 
 def proxy_arguments(bazel, root, mode, arguments):
+    # Bazel's --version fast path must be the sole argument. Prepending startup
+    # flags makes the upstream get_bazel_version probe fail before any build.
+    if arguments == ["--version"]:
+        return [str(bazel), "--version"]
     command = [str(bazel), "--nosystem_rc", "--nohome_rc", "--noworkspace_rc", "--bazelrc=" + str(root / ".bazelrc")]
     # Make.py's --bazelArguments is currently unused. Inject only build/test flags
     # here, preserving startup arguments such as --output_user_root.

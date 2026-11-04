@@ -111,7 +111,7 @@ class PreflightTests(unittest.TestCase):
         self.assertNotIn("--features=disable_legacy_signing", command)
         self.assertNotIn("--//Telegram:disableProvisioningProfiles=true", command)
         command = baseline.proxy_arguments(Path("/bazel"), Path("/repo"), "simulator", ["--version"])
-        self.assertNotIn("--lockfile_mode=error", command)
+        self.assertEqual(command, ["/bazel", "--version"])
 
 
 class PrivacyAndArtifactsTests(unittest.TestCase):

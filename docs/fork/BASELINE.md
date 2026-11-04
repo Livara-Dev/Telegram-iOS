@@ -25,6 +25,12 @@ Bazel path against an unresolved `/var` alias; macOS resolves that alias through
 symlink explicitly. No application compile ran in that job. Superseded branch
 runs are now canceled when a new fix is pushed, avoiding redundant cold builds.
 
+That same run passed API Secrets validation, pinned toolchain verification and
+iOS 26.5 runtime installation. Its build invocation stopped at the upstream Bazel
+version probe, before application compilation: the wrapper prepended startup
+options to `--version`. The wrapper now preserves the executable's exact version
+fast path; binary hash/version verification remains enabled.
+
 ## Current result
 
 The current checkpoint is **not a working iOS baseline**. The local executor is
