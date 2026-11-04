@@ -1,6 +1,9 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 import Foundation
 import XCTest
+#if os(iOS)
+import UIKit
+#endif
 import Postbox
 import SwiftSignalKit
 import LocalMessageArchive
@@ -144,7 +147,7 @@ final class LocalArchiveCoordinatorTests: XCTestCase {
 
     private func start(postbox: Postbox? = nil, accountId: Int64 = 17,
                        behavior: LocalArchiveInterceptingStorage.WriteBehavior = .normal,
-                       protectedData: Signal<Bool, NoError> = .single(true),
+                       protectedData: Signal<Bool, NoError>? = .single(true),
                        didWrite: ((Result<ArchiveWriteResult, ArchiveError>) -> Void)? = nil) -> Running {
         let instance = Running()
         instance.coordinator = LocalArchiveCoordinator(postbox: postbox ?? self.fixture.postbox, accountPeerId: self.accountPeerId,
@@ -760,6 +763,24 @@ final class LocalArchiveCoordinatorTests: XCTestCase {
         XCTAssertEqual(after.records.first?.sequence, before.records.first?.sequence)
         XCTAssertEqual(after.records.first?.text, before.records.first?.text)
     }
+
+    #if os(iOS)
+    func testUIKitProtectionNotificationsCloseAndReopenTheProductionArchiveGate() throws {
+        _ = try self.queueDeletion(text: "retained across lock")
+        // nil uses the production notification bridge, not the injected signal.
+        let instance = self.start(protectedData: nil)
+        try self.awaitStatus(.ready, in: instance)
+        let coordinator = try XCTUnwrap(instance.coordinator)
+        let originalStorage = try XCTUnwrap(instance.storage.with { $0 })
+        NotificationCenter.default.post(name: UIApplication.protectedDataWillBecomeUnavailableNotification, object: nil)
+        try self.awaitStatus(.locked, in: instance)
+        XCTAssertTrue(try self.localArchiveValue(coordinator.deletedMessages()).unavailable)
+        let _ = try self.localArchiveValue(originalStorage.closed.get() |> filter { $0 })
+        NotificationCenter.default.post(name: UIApplication.protectedDataDidBecomeAvailableNotification, object: nil)
+        try self.awaitStatus(.ready, in: instance)
+        XCTAssertEqual(try self.localArchiveValue(coordinator.deletedMessages()).records.first?.text, "retained across lock")
+    }
+    #endif
 
     func testProtectedDataGateDefersOpeningAndPreventsLockedReads() throws {
         let _ = try self.queueDeletion()
