@@ -8,7 +8,7 @@ func fetchSecretFileResource(
     postbox: Postbox,
     network: Network,
     mediaReferenceRevalidationContext: MediaReferenceRevalidationContext,
-    networkStatsContext: NetworkStatsContext,
+    networkStatsContext: NetworkStatsContext?,
     resource: SecretFileMediaResource,
     intervals: Signal<[(Range<Int64>, MediaBoxFetchPriority)], NoError>,
     parameters: MediaResourceFetchParameters?

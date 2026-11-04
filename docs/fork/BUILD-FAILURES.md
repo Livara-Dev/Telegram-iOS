@@ -182,3 +182,18 @@ Assertions and fixture coverage are preserved. The corrected module still
 requires a native rerun. Postbox startup and the zero-case hosted projection
 also failed on this earlier revision; the later warm-up/scene changes remain
 pending. [Checksummed evidence](evidence/archive-streaming-115f83bf.json).
+
+
+## Optional statistics context at b2b52ab9
+
+Run 41869376874 reached the full device compile but failed in `Account.swift:1907`
+and `State/Fetch.swift:70`. Telemetry containment intentionally left the account's
+`NetworkStatsContext` nil, while three higher-level fetch parameters still
+required a nonoptional collector. `multipartFetch` and its manager already
+accept an optional context and use optional chaining for statistics.
+
+The resource, cloud-location and secret-file helpers now pass that optional
+value through unchanged. No collector is created, force-unwrapped or substituted;
+resource routing, secret-file keys and decryption arguments are unchanged.
+The source fix requires full native qualification at the corrected commit.
+The failed run produced no IPA; its integration job was canceled before running.

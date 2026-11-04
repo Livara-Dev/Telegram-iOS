@@ -37,6 +37,8 @@ ADDED_FILES = {
 # gitlinks, stays pinned. An allowlist is a scope tripwire, not a semantic audit of
 # every change within these files; reviewers must inspect their Git diffs.
 REVIEWED_MODIFICATIONS = {
+    "submodules/TelegramCore/Sources/State/Fetch.swift": "pass an optional, disabled statistics collector through existing fetch routing",
+    "submodules/TelegramCore/Sources/State/FetchSecretFileResource.swift": "preserve secret-file fetch behavior with optional statistics collection",
     "submodules/Postbox/Sources/Postbox.swift": "optional transaction-scoped range-removal snapshot callback; existing callers unchanged",
     "submodules/Postbox/Sources/MessageHistoryTable.swift": "deliver existing bodies before range-removal operations are applied",
     'submodules/TelegramCore/Sources/TelegramEngine/Calls/RateCall.swift': 'remove automatic diagnostic RPC and file upload sinks while preserving explicit rating',
