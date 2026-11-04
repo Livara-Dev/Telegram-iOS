@@ -18,6 +18,7 @@ public enum LocalArchiveStatus: Equatable {
 
 public struct LocalArchivedMessage {
     public let sequence: Int64
+    public let eventKey: String
     public let peerId: Int64
     public let namespace: Int32
     public let messageId: Int32
@@ -27,10 +28,13 @@ public struct LocalArchivedMessage {
     public let observedAt: Int64
     public let serverEditAt: Int64?
     public let isDeleted: Bool
+    public let storedMediaCount: Int
+    public let mediaKinds: [String]
     public let unavailableMediaCount: Int
 
     init(_ record: ArchivedRecord) {
         self.sequence = record.sequence
+        self.eventKey = record.event.eventKey
         self.peerId = record.event.message.peerId
         self.namespace = record.event.message.namespace
         self.messageId = record.event.message.messageId
@@ -40,7 +44,9 @@ public struct LocalArchivedMessage {
         self.observedAt = record.event.observedAt
         self.serverEditAt = record.event.serverEditAt
         self.isDeleted = record.event.kind == .deleted
-        self.unavailableMediaCount = localArchiveDecodedMediaMetadata(record.event.content.entities)?.count ?? 0
+        self.storedMediaCount = record.storedMediaCount
+        self.mediaKinds = (localArchiveDecodedMediaMetadata(record.event.content.entities) ?? []).map { $0.kind.rawValue }
+        self.unavailableMediaCount = max(0, (localArchiveDecodedMediaMetadata(record.event.content.entities)?.count ?? 0) - record.storedMediaCount)
     }
 }
 
@@ -53,6 +59,9 @@ public struct LocalArchivePage {
 protocol LocalArchiveStorage: AnyObject {
     func recordFromOutbox(_ capture: ArchiveCapture, index: Int64, generation: Int64, policy: ArchiveCapturePolicy,
                           completion: @escaping (Result<ArchiveWriteResult, ArchiveError>) -> Void)
+    func recordMedia(eventKey: String, slot: Int, kind: String, mimeType: String, data: Data, generation: Int64, completion: @escaping (Result<Bool, ArchiveError>) -> Void)
+    func containsMedia(eventKey: String, slot: Int, completion: @escaping (Result<Bool, ArchiveError>) -> Void)
+    func media(eventKey: String, slot: Int, completion: @escaping (Result<ArchivedMedia?, ArchiveError>) -> Void)
     func currentGeneration(completion: @escaping (Result<Int64, ArchiveError>) -> Void)
     func purge(advancingToGeneration: Int64, completion: @escaping (Result<ArchivePurgeResult, ArchiveError>) -> Void)
     func setRetention(_ policy: ArchiveRetentionPolicy, completion: @escaping (Result<Int, ArchiveError>) -> Void)
@@ -163,8 +172,8 @@ public final class LocalArchiveCoordinator {
 
     /// Limits are for logical archived payload bytes, not total SQLite/WAL allocation.
     public func setRetention(maxAgeSeconds: Int64, maxPayloadBytes: Int64) -> Signal<Bool, NoError> {
-        guard maxAgeSeconds >= 86400, maxAgeSeconds <= 365 * 86400,
-              maxPayloadBytes >= 1024 * 1024, maxPayloadBytes <= 256 * 1024 * 1024 else {
+        guard maxAgeSeconds >= 86400, (maxAgeSeconds <= 365 * 86400 || maxAgeSeconds == Int64.max),
+              maxPayloadBytes >= 1024 * 1024, maxPayloadBytes <= 1024 * 1024 * 1024 else {
             return .single(false)
         }
         return self.postbox.transaction { transaction in
@@ -235,6 +244,26 @@ public final class LocalArchiveCoordinator {
     public func deletedMessages(peerId: Int64? = nil, beforeSequence: Int64? = nil, limit: Int = 100) -> Signal<LocalArchivePage, NoError> {
         return self.readPage { storage, completion in
             storage.deletedMessages(peerId: peerId, beforeSequence: beforeSequence, limit: limit, completion: completion)
+        }
+    }
+
+    public func mediaData(eventKey: String, slot: Int) -> Signal<Data?, NoError> {
+        return Signal { subscriber in
+            self.queue.justDispatch { [weak self] in
+                guard let self, !self.stopped, self.mayAccessProtectedData, self.activeSettings.enabled,
+                      !self.activeSettings.pendingPurge, let storage = self.storage else {
+                    subscriber.putNext(nil); subscriber.putCompletion(); return
+                }
+                let epoch = self.epoch
+                storage.media(eventKey: eventKey, slot: slot) { [weak self] result in
+                    self?.queue.justDispatch { [weak self] in
+                        guard let self, self.isCurrent(epoch) else { subscriber.putNext(nil); subscriber.putCompletion(); return }
+                        subscriber.putNext((try? result.get())?.data)
+                        subscriber.putCompletion()
+                    }
+                }
+            }
+            return EmptyDisposable
         }
     }
 
@@ -434,23 +463,88 @@ public final class LocalArchiveCoordinator {
                 storage.recordFromOutbox(capture, index: Int64(entry.index), generation: generation, policy: policy) { [weak self] result in
                     self?.queue.justDispatch { [weak self] in
                         guard let self, self.isCurrent(epoch) else { return }
-                        guard case .success = result else {
+                        guard case let .success(written) = result else {
                             self.failed(.unavailable, epoch: epoch)
                             return
                         }
+                        let acknowledge: (Bool) -> Void = { [weak self] missing in
+                            guard let self, self.isCurrent(epoch) else { return }
                         // Archive commit precedes acknowledgement. A crash here replays
                         // identical event keys, timestamps and a durable outbox high-water
                         // mark. The mark also prevents replay after retention evicts a row.
                         self.transactionDisposable.set((self.postbox.transaction { [accountPeerId = self.accountPeerId] transaction in
-                            _ = acknowledgeLocalArchiveCapture(transaction: transaction, accountPeerId: accountPeerId,
+                            let acknowledged = acknowledgeLocalArchiveCapture(transaction: transaction, accountPeerId: accountPeerId,
                                                                index: entry.index, eventKey: operation.eventKey)
+                            if acknowledged && missing {
+                                var current = localArchiveSettings(transaction: transaction)
+                                if current.isSupported && current.generation == operation.generation && current.droppedCaptures < Int64.max {
+                                    current.droppedCaptures += 1
+                                    setLocalArchiveSettings(transaction: transaction, settings: current)
+                                }
+                            }
                         } |> deliverOn(self.queue)).start(next: { [weak self] _ in
                             guard let self, self.isCurrent(epoch) else { return }
                             self.needsDrain = true
                             self.finished(epoch: epoch)
                         }))
+                        }
+                        if written.excluded > 0 {
+                            acknowledge(false)
+                        } else {
+                            self.copyCachedMedia(storage: storage, operation: operation, slot: 0, epoch: epoch, completion: acknowledge)
+                        }
                     }
                 }
+            }
+        }
+    }
+
+    private func copyCachedMedia(storage: LocalArchiveStorage, operation: LocalArchiveCaptureOperation,
+                                 slot: Int, epoch: Int64, missing: Bool = false, completion: @escaping (Bool) -> Void) {
+        guard self.isCurrent(epoch) else { return }
+        let media = localArchiveDecodedMediaMetadata(operation.entities) ?? []
+        guard slot < media.count else { completion(missing); return }
+        let item = media[slot]
+        storage.containsMedia(eventKey: operation.eventKey, slot: slot) { [weak self] result in
+            self?.queue.justDispatch { [weak self] in
+                guard let self, self.isCurrent(epoch) else { return }
+                guard case let .success(exists) = result else { self.failed(.unavailable, epoch: epoch); return }
+                if exists {
+                    self.copyCachedMedia(storage: storage, operation: operation, slot: slot + 1, epoch: epoch, missing: missing, completion: completion)
+                } else {
+                    self.copyMediaFile(storage: storage, operation: operation, item: item, slot: slot, epoch: epoch, missing: missing, completion: completion)
+                }
+            }
+        }
+    }
+
+    private func copyMediaFile(storage: LocalArchiveStorage, operation: LocalArchiveCaptureOperation, item: LocalArchiveMediaMetadata,
+                               slot: Int, epoch: Int64, missing: Bool, completion: @escaping (Bool) -> Void) {
+        let keys = [item.resourceKey].compactMap { $0 } + (item.alternativeResourceKeys ?? [])
+        var data: Data?
+        do {
+            for key in keys where localArchiveSafeResourceKey(key) {
+                let path = self.postbox.mediaBox.storePathsForId(MediaResourceId(key)).complete
+                if let available = try localArchiveReadCompletedMedia(path) {
+                    data = available
+                    break
+                }
+            }
+        } catch {
+            // Lock/I/O failures keep the durable outbox pending for recovery.
+            self.failed(.unavailable, epoch: epoch)
+            return
+        }
+        guard let data else {
+            self.copyCachedMedia(storage: storage, operation: operation, slot: slot + 1, epoch: epoch, missing: true, completion: completion)
+            return
+        }
+        storage.recordMedia(eventKey: operation.eventKey, slot: slot, kind: item.kind.rawValue,
+                            mimeType: item.mimeType ?? "application/octet-stream", data: data, generation: operation.generation) { [weak self] result in
+            self?.queue.justDispatch { [weak self] in
+                guard let self, self.isCurrent(epoch) else { return }
+                guard case .success = result else { self.failed(.unavailable, epoch: epoch); return }
+                self.copyCachedMedia(storage: storage, operation: operation, slot: slot + 1, epoch: epoch, missing: missing, completion: completion)
             }
         }
     }

@@ -40,7 +40,7 @@ public struct LocalArchiveSettings: Codable, Equatable {
 
     public init(enabled: Bool = false, excludeBots: Bool = true,
                 excludedPeerIds: Set<Int64> = [], excludedSenderIds: Set<Int64> = [],
-                maxAgeSeconds: Int64 = 30 * 86400, maxPayloadBytes: Int64 = 32 * 1024 * 1024) {
+                maxAgeSeconds: Int64 = Int64.max, maxPayloadBytes: Int64 = 32 * 1024 * 1024) {
         self.schemaVersion = 1
         self.enabled = enabled
         self.excludeBots = excludeBots

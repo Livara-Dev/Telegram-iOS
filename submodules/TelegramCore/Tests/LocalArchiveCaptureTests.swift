@@ -96,7 +96,7 @@ final class LocalArchiveCaptureTests: XCTestCase {
         XCTAssertEqual(metadata.map(\.kind), [.photo])
         XCTAssertEqual(metadata.map(\.id), [701])
         XCTAssertFalse(try XCTUnwrap(metadata.first).bytesPreserved)
-        XCTAssertEqual(try self.missedCaptures(), 1)
+        XCTAssertEqual(try self.missedCaptures(), 0) // File availability is resolved by the worker.
         XCTAssertNil(try self.localArchiveValue(self.fixture.postbox.transaction { $0.getMessage(id) }))
     }
 

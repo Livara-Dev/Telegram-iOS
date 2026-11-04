@@ -20,9 +20,10 @@ private struct LocalArchiveMalformedPreference: Codable {
 /// Keeps all SQLCipher behavior real. Only the delivery of one write result is
 /// intercepted to reproduce the archive-commit / Postbox-acknowledgement crash window.
 private final class LocalArchiveInterceptingStorage: LocalArchiveStorage {
-    enum WriteBehavior { case normal, fail, withholdAcknowledgement }
+    enum WriteBehavior { case normal, fail, withholdAcknowledgement, withholdMediaAcknowledgement }
     let store: ArchiveStore
     let closed = ValuePromise<Bool>(false, ignoreRepeated: true)
+    let mediaWritten = ValuePromise<Bool>(false, ignoreRepeated: true)
     private let behavior: WriteBehavior
     private let didWrite: ((Result<ArchiveWriteResult, ArchiveError>) -> Void)?
 
@@ -44,12 +45,24 @@ private final class LocalArchiveInterceptingStorage: LocalArchiveStorage {
         }
         self.store.recordFromOutbox(capture, index: index, generation: generation, policy: policy) { result in
             self.didWrite?(result)
-            if case .normal = self.behavior {
-                completion(result)
-            }
+            if case .withholdAcknowledgement = self.behavior { return }
+            completion(result)
         }
     }
 
+    func recordMedia(eventKey: String, slot: Int, kind: String, mimeType: String, data: Data, generation: Int64, completion: @escaping (Result<Bool, ArchiveError>) -> Void) {
+        self.store.recordMedia(eventKey: eventKey, slot: slot, kind: kind, mimeType: mimeType, data: data, generation: generation) { result in
+            self.mediaWritten.set(true)
+            if case .withholdMediaAcknowledgement = self.behavior { return }
+            completion(result)
+        }
+    }
+    func containsMedia(eventKey: String, slot: Int, completion: @escaping (Result<Bool, ArchiveError>) -> Void) {
+        self.store.containsMedia(eventKey: eventKey, slot: slot, completion: completion)
+    }
+    func media(eventKey: String, slot: Int, completion: @escaping (Result<ArchivedMedia?, ArchiveError>) -> Void) {
+        self.store.media(eventKey: eventKey, slot: slot, completion: completion)
+    }
     func currentGeneration(completion: @escaping (Result<Int64, ArchiveError>) -> Void) {
         self.store.currentGeneration(completion: completion)
     }
@@ -289,6 +302,135 @@ final class LocalArchiveCoordinatorTests: XCTestCase {
         XCTAssertEqual(after.records.first?.messageId, id.id)
         XCTAssertEqual(after.records.first?.text, "photo caption")
         XCTAssertEqual(after.records.first?.unavailableMediaCount, 1)
+    }
+
+    func testMediaReaderRejectsSymlinksDirectoriesAndOversizedFiles() throws {
+        let directory = self.fixture.directory.appendingPathComponent("media-reader")
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let file = directory.appendingPathComponent("file")
+        try Data([1, 2, 3]).write(to: file)
+        XCTAssertEqual(try localArchiveReadCompletedMedia(file.path), Data([1, 2, 3]))
+        let link = directory.appendingPathComponent("link")
+        try FileManager.default.createSymbolicLink(at: link, withDestinationURL: file)
+        XCTAssertNil(try localArchiveReadCompletedMedia(link.path))
+        XCTAssertNil(try localArchiveReadCompletedMedia(directory.path))
+        let handle = try FileHandle(forWritingTo: file)
+        try handle.truncate(atOffset: 16 * 1024 * 1024 + 1)
+        try handle.close()
+        XCTAssertNil(try localArchiveReadCompletedMedia(file.path))
+    }
+
+    func testNoAgeExpiryAndMediaQuotaPersistInAccountPreferences() throws {
+        let instance = self.start()
+        try self.awaitStatus(.ready, in: instance)
+        XCTAssertTrue(try self.localArchiveValue(try XCTUnwrap(instance.coordinator).setRetention(maxAgeSeconds: Int64.max, maxPayloadBytes: 1024 * 1024 * 1024)))
+        try self.stop(instance)
+        try self.fixture.reopen()
+        let settings = try self.localArchiveValue(self.fixture.postbox.transaction { localArchiveSettings(transaction: $0) })
+        XCTAssertEqual(settings.maxAgeSeconds, Int64.max)
+        XCTAssertEqual(settings.maxPayloadBytes, 1024 * 1024 * 1024)
+    }
+
+    func testTypedCloudFileBytesSurviveDeletionCacheClearAndRestart() throws {
+        let video: TelegramMediaFileAttribute = .Video(duration: 1, size: PixelDimensions(width: 16, height: 16), flags: [], preloadSize: nil, coverTime: nil, videoCodec: nil)
+        let round: TelegramMediaFileAttribute = .Video(duration: 1, size: PixelDimensions(width: 16, height: 16), flags: [.instantRoundVideo], preloadSize: nil, coverTime: nil, videoCodec: nil)
+        let cases: [(String, String, [TelegramMediaFileAttribute])] = [
+            ("video", "video/mp4", [video]),
+            ("videoMessage", "video/mp4", [round]),
+            ("voice", "audio/ogg", [.Audio(isVoice: true, duration: 1, title: nil, performer: nil, waveform: nil)]),
+            ("animation", "image/gif", [.Animated]),
+            ("document", "application/pdf", [.FileName(fileName: "document.pdf")])
+        ]
+        var resources: [MediaResourceId] = []
+        var expected: [(String, String, Data)] = []
+        for (index, item) in cases.enumerated() {
+            let bytes = Data([UInt8(index), 5, 9, 11])
+            let resource = CloudDocumentMediaResource(datacenterId: 1, fileId: Int64(9100 + index), accessHash: 0, size: Int64(bytes.count), fileReference: nil, fileName: nil)
+            resources.append(resource.id)
+            self.fixture.postbox.mediaBox.storeResourceData(resource.id, data: bytes, synchronous: true)
+            let file = TelegramMediaFile(fileId: MediaId(namespace: Namespaces.Media.CloudFile, id: Int64(9100 + index)), partialReference: nil, resource: resource, previewRepresentations: [], videoThumbnails: [], immediateThumbnailData: nil, mimeType: item.1, size: Int64(bytes.count), attributes: item.2, alternativeRepresentations: [])
+            let id = try self.queueDeletion(Int32(70 + index), media: [file])
+            let key = try XCTUnwrap(self.pending().first(where: { $0.operation?.messageId == id })?.operation?.eventKey)
+            expected.append((key, item.0, bytes))
+        }
+        let first = self.start()
+        try self.awaitStatus(.ready, in: first)
+        XCTAssertTrue(try self.pending().isEmpty)
+        let cleared = expectation(description: "clear typed media cache")
+        let removal = self.fixture.postbox.mediaBox.removeCachedResources(resources, force: true).start(completed: { cleared.fulfill() })
+        wait(for: [cleared], timeout: 15)
+        removal.dispose()
+        try self.stop(first)
+        try self.fixture.reopen()
+        let second = self.start()
+        try self.awaitStatus(.ready, in: second)
+        let store = try XCTUnwrap(second.storage.with { $0?.store })
+        for item in expected {
+            let done = expectation(description: "read retained typed media")
+            var result: Result<ArchivedMedia?, ArchiveError>?
+            store.media(eventKey: item.0, slot: 0) { result = $0; done.fulfill() }
+            wait(for: [done], timeout: 15)
+            let archived = try XCTUnwrap(try XCTUnwrap(result).get())
+            XCTAssertEqual(archived.kind, item.1)
+            XCTAssertEqual(archived.data, item.2)
+        }
+    }
+
+    func testMediaCommitBeforeOutboxAckSurvivesRestartAndSourceRemoval() throws {
+        let resource = CloudDocumentMediaResource(datacenterId: 1, fileId: 9200, accessHash: 0, size: 3, fileReference: nil, fileName: nil)
+        let bytes = Data([2, 4, 6])
+        self.fixture.postbox.mediaBox.storeResourceData(resource.id, data: bytes, synchronous: true)
+        let image = TelegramMediaImage(imageId: MediaId(namespace: Namespaces.Media.CloudImage, id: 9200), representations: [TelegramMediaImageRepresentation(dimensions: PixelDimensions(width: 16, height: 16), resource: resource, progressiveSizes: [], immediateThumbnailData: nil)], immediateThumbnailData: nil, reference: nil, partialReference: nil, flags: [])
+        _ = try self.queueDeletion(91, media: [image])
+        let key = try XCTUnwrap(self.pending().first?.operation?.eventKey)
+        let first = self.start(behavior: .withholdMediaAcknowledgement)
+        try self.awaitStatus(.writing, in: first)
+        let initialStore = try XCTUnwrap(first.storage.with { $0 })
+        XCTAssertTrue(try self.localArchiveValue(initialStore.mediaWritten.get() |> filter { $0 }))
+        XCTAssertEqual(try self.pending().count, 1)
+        try self.stop(first)
+        try FileManager.default.removeItem(atPath: self.fixture.postbox.mediaBox.storePathsForId(resource.id).complete)
+        try self.fixture.reopen()
+        let recovered = self.start()
+        try self.awaitStatus(.ready, in: recovered)
+        XCTAssertTrue(try self.pending().isEmpty)
+        let store = try XCTUnwrap(recovered.storage.with { $0?.store })
+        let done = expectation(description: "read media after ack recovery")
+        var result: Result<ArchivedMedia?, ArchiveError>?
+        store.media(eventKey: key, slot: 0) { result = $0; done.fulfill() }
+        wait(for: [done], timeout: 15)
+        XCTAssertEqual(try XCTUnwrap(result).get()?.data, bytes)
+    }
+
+    func testCompletedPhotoBytesSurviveCacheRemovalAndRestart() throws {
+        let resource = CloudDocumentMediaResource(datacenterId: 1, fileId: 9001, accessHash: 0, size: 4, fileReference: nil, fileName: nil)
+        let bytes = Data([11, 22, 33, 44])
+        self.fixture.postbox.mediaBox.storeResourceData(resource.id, data: bytes, synchronous: true)
+        let image = TelegramMediaImage(imageId: MediaId(namespace: Namespaces.Media.CloudImage, id: 9001),
+            representations: [TelegramMediaImageRepresentation(dimensions: PixelDimensions(width: 16, height: 16), resource: resource, progressiveSizes: [], immediateThumbnailData: nil)],
+            immediateThumbnailData: nil, reference: nil, partialReference: nil, flags: [])
+        _ = try self.queueDeletion(61, media: [image])
+        let eventKey = try XCTUnwrap(self.pending().first?.operation?.eventKey)
+        let first = self.start()
+        try self.awaitStatus(.ready, in: first)
+        let page = try self.localArchiveValue(try XCTUnwrap(first.coordinator).deletedMessages())
+        XCTAssertEqual(page.records.first?.storedMediaCount, 1)
+        XCTAssertEqual(page.records.first?.unavailableMediaCount, 0)
+        let cleared = expectation(description: "clear original media cache")
+        let removal = self.fixture.postbox.mediaBox.removeCachedResources([resource.id], force: true).start(completed: { cleared.fulfill() })
+        wait(for: [cleared], timeout: 15)
+        removal.dispose()
+        try self.stop(first)
+        try self.fixture.reopen()
+        let second = self.start()
+        try self.awaitStatus(.ready, in: second)
+        let store = try XCTUnwrap(second.storage.with { $0?.store })
+        let read = expectation(description: "read archived bytes")
+        var value: Result<ArchivedMedia?, ArchiveError>?
+        store.media(eventKey: eventKey, slot: 0) { value = $0; read.fulfill() }
+        wait(for: [read], timeout: 15)
+        XCTAssertEqual(try XCTUnwrap(value).get()?.data, bytes)
+        XCTAssertTrue(try self.pending().isEmpty)
     }
 
     func testCommittedDeletionDrainsIntoRealEncryptedArchiveAndReadsThroughFacade() throws {

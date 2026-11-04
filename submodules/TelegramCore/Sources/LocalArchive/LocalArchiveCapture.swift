@@ -13,6 +13,7 @@ struct LocalArchiveMediaMetadata: Codable, Equatable {
     let byteSize: Int64?
     // Descriptive metadata only. A record is never evidence of retained bytes.
     let bytesPreserved: Bool
+    var alternativeResourceKeys: [String]? = nil
 }
 
 private struct LocalArchiveEntities: Codable {
@@ -21,11 +22,22 @@ private struct LocalArchiveEntities: Codable {
     let media: [LocalArchiveMediaMetadata]?
 }
 
+func localArchiveSafeResourceKey(_ key: String) -> Bool {
+    guard key.utf8.count <= 1024, key.hasPrefix("telegram-cloud-") else { return false }
+    return key.utf8.allSatisfy { (48...57).contains($0) || (65...90).contains($0) || (97...122).contains($0) || $0 == 45 || $0 == 95 }
+}
+
 func localArchiveMediaMetadata(_ media: [Media]) -> [LocalArchiveMediaMetadata] {
     return media.prefix(10).map { item in
         if let photo = item as? TelegramMediaImage {
-            return LocalArchiveMediaMetadata(kind: .photo, namespace: photo.imageId.namespace, id: photo.imageId.id,
-                resourceKey: nil, mimeType: nil, byteSize: nil, bytesPreserved: false)
+            let representations = Array(photo.representations.prefix(32)).sorted { lhs, rhs in
+                Int64(max(0, lhs.dimensions.width)) * Int64(max(0, lhs.dimensions.height)) > Int64(max(0, rhs.dimensions.width)) * Int64(max(0, rhs.dimensions.height))
+            }
+            let keys = representations.prefix(10).map { $0.resource.id.stringRepresentation }.filter(localArchiveSafeResourceKey)
+            var result = LocalArchiveMediaMetadata(kind: .photo, namespace: photo.imageId.namespace, id: photo.imageId.id,
+                resourceKey: keys.first, mimeType: "image/jpeg", byteSize: nil, bytesPreserved: false)
+            result.alternativeResourceKeys = Array(keys.dropFirst())
+            return result
         }
         if let file = item as? TelegramMediaFile {
             let kind: LocalArchiveMediaMetadata.Kind
@@ -36,7 +48,7 @@ func localArchiveMediaMetadata(_ media: [Media]) -> [LocalArchiveMediaMetadata] 
             else { kind = .document }
             let resource = file.resource.id.stringRepresentation
             return LocalArchiveMediaMetadata(kind: kind, namespace: file.fileId.namespace, id: file.fileId.id,
-                resourceKey: resource.utf8.count <= 1024 ? resource : nil,
+                resourceKey: localArchiveSafeResourceKey(resource) ? resource : nil,
                 mimeType: file.mimeType.utf8.count <= 256 ? file.mimeType : nil,
                 byteSize: file.size.flatMap { $0 >= 0 ? $0 : nil }, bytesPreserved: false)
         }
@@ -55,7 +67,7 @@ func localArchiveEntityMetadataIsValid(_ data: Data) -> Bool {
     guard value.version == 1 || value.version == 2 else { return false }
     if value.version == 1 { return value.media == nil }
     guard let media = value.media, media.count <= 10 else { return false }
-    return media.allSatisfy { !$0.bytesPreserved && ($0.resourceKey?.utf8.count ?? 0) <= 1024 && ($0.mimeType?.utf8.count ?? 0) <= 256 && ($0.byteSize.map { $0 >= 0 } ?? true) }
+    return media.allSatisfy { !$0.bytesPreserved && ($0.resourceKey.map(localArchiveSafeResourceKey) ?? true) && ($0.mimeType?.utf8.count ?? 0) <= 256 && ($0.byteSize.map { $0 >= 0 } ?? true) && ($0.alternativeResourceKeys?.count ?? 0) <= 9 && ($0.alternativeResourceKeys?.allSatisfy(localArchiveSafeResourceKey) ?? true) }
 }
 
 private func textEntities(_ attributes: [MessageAttribute]) -> [MessageTextEntity] {
@@ -167,7 +179,7 @@ func captureDeletedLocalArchiveMessages(transaction: Transaction, accountPeerId:
             botConversation: botConversation
         )
         let inserted = budget.insert(operation, transaction: transaction, accountPeerId: accountPeerId)
-        if !inserted || !message.media.isEmpty {
+        if !inserted {
             recordCaptureGap(&settings)
         }
     }
@@ -203,7 +215,7 @@ func captureEditedLocalArchiveMessage(transaction: Transaction, accountPeerId: P
         botConversation: botConversation
     )
     let inserted = budget.insert(operation, transaction: transaction, accountPeerId: accountPeerId)
-    if !inserted || !previous.media.isEmpty {
+    if !inserted {
         recordCaptureGap(&settings)
     }
     if previousDropped != settings.droppedCaptures {

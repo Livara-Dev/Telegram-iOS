@@ -244,12 +244,14 @@ public final class ArchiveStore {
         let cipher = try textScalar("PRAGMA cipher_version")
         guard !cipher.isEmpty, try scalar("PRAGMA cipher_plaintext_header_size") == 0 else { throw ArchiveError.invalidKey }
         _ = try scalar("SELECT COUNT(*) FROM sqlite_master") // Authenticate existing pages before mutation.
+        try execute("PRAGMA foreign_keys=ON")
+        guard try scalar("PRAGMA foreign_keys") == 1 else { throw ArchiveError.protectionUnavailable }
         let version = try scalar("PRAGMA user_version")
-        guard (0...4).contains(version) else { throw ArchiveError.unsupportedSchema(Int(version)) }
+        guard (0...5).contains(version) else { throw ArchiveError.unsupportedSchema(Int(version)) }
         try transaction {
             // Another connection may have migrated while this one waited for the writer lock.
             let lockedVersion = try scalar("PRAGMA user_version")
-            guard (0...4).contains(lockedVersion) else { throw ArchiveError.unsupportedSchema(Int(lockedVersion)) }
+            guard (0...5).contains(lockedVersion) else { throw ArchiveError.unsupportedSchema(Int(lockedVersion)) }
             if lockedVersion == 0 {
                 guard try scalar("SELECT COUNT(*) FROM sqlite_master WHERE name NOT LIKE 'sqlite_%'") == 0 else {
                     throw ArchiveError.unsupportedSchema(0)
@@ -262,6 +264,7 @@ public final class ArchiveStore {
             if lockedVersion < 2 { try migrateUsageToVersion2() }
             if lockedVersion < 3 { try migrateGenerationToVersion3() }
             if lockedVersion < 4 { try migrateOutboxReceiptToVersion4() }
+            if lockedVersion < 5 { try migrateMediaToVersion5() }
             _ = try currentUsage()
             _ = try captureGeneration()
             _ = try outboxReceipt()
@@ -366,6 +369,76 @@ public final class ArchiveStore {
         try execute("PRAGMA user_version=4")
     }
 
+    private func migrateMediaToVersion5() throws {
+        try execute("""
+            CREATE TABLE event_media(event_key TEXT NOT NULL REFERENCES events(event_key) ON DELETE CASCADE,
+            slot INTEGER NOT NULL CHECK(slot>=0 AND slot<10), kind TEXT NOT NULL CHECK(length(CAST(kind AS BLOB))<=32), mime TEXT NOT NULL CHECK(length(CAST(mime AS BLOB))<=256),
+            payload BLOB NOT NULL CHECK(length(payload)<=16777216), byte_cost INTEGER NOT NULL CHECK(byte_cost=length(payload)+length(CAST(kind AS BLOB))+length(CAST(mime AS BLOB))+64),
+            PRIMARY KEY(event_key,slot))
+            """)
+        try execute("""
+            CREATE TRIGGER archive_media_insert_usage AFTER INSERT ON event_media BEGIN
+            UPDATE archive_usage SET payload_bytes=payload_bytes+NEW.byte_cost WHERE id=1;
+            END
+            """)
+        try execute("""
+            CREATE TRIGGER archive_media_delete_usage AFTER DELETE ON event_media BEGIN
+            UPDATE archive_usage SET payload_bytes=payload_bytes-OLD.byte_cost WHERE id=1;
+            END
+            """)
+        // Also clean up on an older open connection whose foreign_keys pragma
+        // predates this migration; duplicate cascade deletion is harmless.
+        try execute("CREATE TRIGGER archive_event_media_delete AFTER DELETE ON events BEGIN DELETE FROM event_media WHERE event_key=OLD.event_key; END")
+        try execute("CREATE TRIGGER archive_media_immutable BEFORE UPDATE ON event_media BEGIN SELECT RAISE(ABORT,'Archive media is immutable'); END")
+        try execute("PRAGMA user_version=5")
+    }
+
+    /// Bounded bytes copied from an already completed local file. No network or plaintext temporary file.
+    public func recordMedia(eventKey: String, slot: Int, kind: String, mimeType: String, data: Data,
+                            generation: Int64, completion: @escaping (Result<Bool, ArchiveError>) -> Void) {
+        submit(completion) {
+            guard !eventKey.isEmpty, eventKey.utf8.count <= 128, !eventKey.contains("\0"),
+                  self.clock() >= 0, (0..<10).contains(slot), data.count <= 16 * 1024 * 1024,
+                  kind.utf8.count <= 32, mimeType.utf8.count <= 256,
+                  !kind.contains("\0"), !mimeType.contains("\0") else { throw ArchiveError.invalidInput }
+            return try self.transaction {
+                let current = try self.captureGeneration()
+                guard current == generation else { throw ArchiveError.generationMismatch(expected: current, received: generation) }
+                guard try self.scalar("SELECT COUNT(*) FROM events WHERE event_key=?", [.text(eventKey)]) == 1 else { return false }
+                if try self.scalar("SELECT COUNT(*) FROM event_media WHERE event_key=? AND slot=?", [.text(eventKey), .integer(Int64(slot))]) != 0 {
+                    guard try self.scalar("SELECT COUNT(*) FROM event_media WHERE event_key=? AND slot=? AND kind=? AND mime=? AND payload=?", [.text(eventKey), .integer(Int64(slot)), .text(kind), .text(mimeType), .blob(data)]) == 1 else { throw ArchiveError.eventConflict }
+                    return true
+                }
+                let cost = Int64(data.count + kind.utf8.count + mimeType.utf8.count + 64)
+                try self.execute("INSERT INTO event_media VALUES(?,?,?,?,?,?)", [.text(eventKey), .integer(Int64(slot)), .text(kind), .text(mimeType), .blob(data), .integer(cost)])
+                _ = try self.prune(now: self.clock(), policy: self.retention)
+                return try self.scalar("SELECT COUNT(*) FROM event_media WHERE event_key=? AND slot=?", [.text(eventKey), .integer(Int64(slot))]) == 1
+            }
+        }
+    }
+
+    public func containsMedia(eventKey: String, slot: Int, completion: @escaping (Result<Bool, ArchiveError>) -> Void) {
+        submit(completion) {
+            guard (0..<10).contains(slot), eventKey.utf8.count <= 128 else { throw ArchiveError.invalidInput }
+            return try self.scalar("SELECT COUNT(*) FROM event_media WHERE event_key=? AND slot=?", [.text(eventKey), .integer(Int64(slot))]) == 1
+        }
+    }
+
+    public func media(eventKey: String, slot: Int, completion: @escaping (Result<ArchivedMedia?, ArchiveError>) -> Void) {
+        submit(completion) {
+            guard (0..<10).contains(slot), !eventKey.isEmpty, eventKey.utf8.count <= 128, !eventKey.contains("\0") else { throw ArchiveError.invalidInput }
+            let row = try self.statement("SELECT kind,mime,payload FROM event_media WHERE event_key=? AND slot=?", [.text(eventKey), .integer(Int64(slot))])
+            defer { sqlite3_finalize(row) }
+            let code = sqlite3_step(row)
+            if code == SQLITE_DONE { return nil }
+            guard code == SQLITE_ROW else { throw ArchiveError.unavailable(code) }
+            let count = Int(sqlite3_column_bytes(row, 2))
+            guard count <= 16 * 1024 * 1024 else { throw ArchiveError.invalidInput }
+            let bytes = sqlite3_column_blob(row, 2).map { Data(bytes: $0, count: count) } ?? Data()
+            return ArchivedMedia(slot: slot, kind: try self.text(row, 0), mimeType: try self.text(row, 1), data: bytes)
+        }
+    }
+
     private func outboxReceipt() throws -> (index: Int64, eventKey: String) {
         let prepared = try statement("SELECT outbox_high_water,outbox_last_event_key FROM archive_meta WHERE id=1", [])
         defer { sqlite3_finalize(prepared) }
@@ -466,7 +539,8 @@ public final class ArchiveStore {
             let event = ArchiveEvent(eventKey: try text(prepared, 1), message: message, kind: kind,
                                      observedAt: sqlite3_column_int64(prepared, 7), serverEditAt: optional(8),
                                      content: ArchiveContent(text: try text(prepared, 9), authorId: optional(10), sentAt: sqlite3_column_int64(prepared, 11), entities: entities))
-            result.append(ArchivedRecord(sequence: sqlite3_column_int64(prepared, 0), event: event))
+            let mediaCount = try scalar("SELECT COUNT(*) FROM event_media WHERE event_key=?", [.text(event.eventKey)])
+            result.append(ArchivedRecord(sequence: sqlite3_column_int64(prepared, 0), event: event, storedMediaCount: Int(mediaCount)))
             code = sqlite3_step(prepared)
         }
         guard code == SQLITE_DONE else { throw ArchiveError.unavailable(code) }
@@ -509,7 +583,7 @@ public final class ArchiveStore {
     }
 
     private func oldestPayloads() throws -> [(sequence: Int64, bytes: Int64)] {
-        let prepared = try statement("SELECT sequence,payload_bytes FROM events ORDER BY observed_at,sequence LIMIT 256", [])
+        let prepared = try statement("SELECT sequence,payload_bytes+(SELECT COALESCE(SUM(byte_cost),0) FROM event_media WHERE event_key=events.event_key) FROM events ORDER BY observed_at,sequence LIMIT 256", [])
         defer { sqlite3_finalize(prepared) }
         var result: [(sequence: Int64, bytes: Int64)] = []
         var code = sqlite3_step(prepared)

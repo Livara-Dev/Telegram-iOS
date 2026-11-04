@@ -175,3 +175,10 @@ account/generation isolation and malformed cursor/boundary input. These tests
 require a new native CI result; the schema-3 result cited above does not validate
 these later changes. Library receipt tests do not establish the Postbox caller's
 commit durability or application lifecycle behavior.
+
+
+Schema-5 draft adds bounded event-linked media BLOBs under the same SQLCipher
+key. Media-byte costs participate in retention counters, deletion cascades and
+purge. Maximum individual payload is 16 MiB. New media/restart/isolation/quota
+tests are authored but not yet verified on macOS; existing schema-4 test results
+do not establish this new behavior.

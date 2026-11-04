@@ -41,6 +41,66 @@ final class ArchiveStoreTests: XCTestCase {
         stores.append(store)
         return store
     }
+    func testNoAgeExpiryRetainsOldRecordAcrossLaterReopen() throws {
+        let store = try open()
+        _ = try write(store, [event("old-record", observed: 0)])
+        close(store)
+        let reopened = try open(now: 100_000_000)
+        XCTAssertEqual(try records(reopened).map(\.event.eventKey), ["old-record"])
+    }
+
+    func testMediaBytesSurviveReopenAndAreRemovedWithEvent() throws {
+        let store = try open()
+        _ = try write(store, [event("media")])
+        let bytes = Data("synthetic-private-media-canary".utf8)
+        XCTAssertTrue(try awaitResult { store.recordMedia(eventKey: "media", slot: 0, kind: "photo", mimeType: "image/jpeg", data: bytes, generation: 0, completion: $0) })
+        XCTAssertEqual(try awaitResult { store.media(eventKey: "media", slot: 0, completion: $0) }?.data, bytes)
+        for path in [store.databaseURL.path, store.databaseURL.path + "-wal", store.databaseURL.path + "-shm"] where FileManager.default.fileExists(atPath: path) {
+            XCTAssertNil(try Data(contentsOf: URL(fileURLWithPath: path)).range(of: bytes))
+        }
+        close(store)
+        let reopened = try open()
+        XCTAssertEqual(try awaitResult { reopened.media(eventKey: "media", slot: 0, completion: $0) }?.data, bytes)
+        XCTAssertEqual(try records(reopened).first?.storedMediaCount, 1)
+        _ = try awaitResult { reopened.purge(advancingToGeneration: 1, completion: $0) }
+        XCTAssertNil(try awaitResult { reopened.media(eventKey: "media", slot: 0, completion: $0) })
+        XCTAssertEqual(try usage(reopened).logicalPayloadBytes, 0)
+        XCTAssertFalse(try Data(contentsOf: reopened.databaseURL).range(of: bytes) != nil)
+    }
+
+    func testMediaCannotCrossAccountOrPurgeGeneration() throws {
+        let first = try open()
+        let second = try open(account: 2, keys: Keys(0x74))
+        _ = try write(first, [event("same-key")])
+        _ = try write(second, [event("same-key", account: 2)])
+        XCTAssertTrue(try awaitResult { first.recordMedia(eventKey: "same-key", slot: 0, kind: "video", mimeType: "video/mp4", data: Data([7]), generation: 0, completion: $0) })
+        XCTAssertNil(try awaitResult { second.media(eventKey: "same-key", slot: 0, completion: $0) })
+        _ = try awaitResult { first.purge(advancingToGeneration: 1, completion: $0) }
+        assertError(.generationMismatch(expected: 1, received: 0)) {
+            try awaitResult { first.recordMedia(eventKey: "same-key", slot: 0, kind: "video", mimeType: "video/mp4", data: Data([7]), generation: 0, completion: $0) }
+        }
+        XCTAssertEqual(try usage(second).records, 1)
+    }
+
+    func testMediaQuotaEvictsParentAndDoesNotResurrectIt() throws {
+        let store = try open(retention: ArchiveRetentionPolicy(maxPayloadBytes: 512))
+        _ = try write(store, [event("limited")])
+        XCTAssertFalse(try awaitResult { store.recordMedia(eventKey: "limited", slot: 0, kind: "document", mimeType: "application/octet-stream", data: Data(repeating: 9, count: 1024), generation: 0, completion: $0) })
+        XCTAssertEqual(try usage(store).records, 0)
+        XCTAssertEqual(try usage(store).logicalPayloadBytes, 0)
+        XCTAssertFalse(try awaitResult { store.recordMedia(eventKey: "limited", slot: 0, kind: "document", mimeType: "application/octet-stream", data: Data([9]), generation: 0, completion: $0) })
+    }
+
+    func testMediaRetryIsIdempotentAndRejectsDifferentBytes() throws {
+        let store = try open()
+        _ = try write(store, [event("retry")])
+        for _ in 0..<2 {
+            XCTAssertTrue(try awaitResult { store.recordMedia(eventKey: "retry", slot: 0, kind: "voice", mimeType: "audio/ogg", data: Data([1, 2]), generation: 0, completion: $0) })
+        }
+        assertError(.eventConflict) { try awaitResult { store.recordMedia(eventKey: "retry", slot: 0, kind: "voice", mimeType: "audio/ogg", data: Data([3]), generation: 0, completion: $0) } }
+        XCTAssertEqual(try awaitResult { store.media(eventKey: "retry", slot: 0, completion: $0) }?.data, Data([1, 2]))
+    }
+
     private func close(_ store: ArchiveStore) {
         let done = expectation(description: "close")
         store.close { done.fulfill() }
@@ -268,9 +328,9 @@ final class ArchiveStoreTests: XCTestCase {
 
     func testFutureSchemaIsRejectedWithoutMigration() throws {
         let store = try open(); close(store)
-        try rawDatabase(store.databaseURL, statements: ["PRAGMA user_version=5"])
+        try rawDatabase(store.databaseURL, statements: ["PRAGMA user_version=6"])
         let before = try Data(contentsOf: store.databaseURL)
-        assertError(.unsupportedSchema(5)) { try open() }
+        assertError(.unsupportedSchema(6)) { try open() }
         XCTAssertEqual(try Data(contentsOf: store.databaseURL), before)
     }
 
@@ -321,7 +381,7 @@ final class ArchiveStoreTests: XCTestCase {
         XCTAssertEqual(timeline.map(\.event), expected)
         XCTAssertEqual(timeline.map(\.sequence), [7, 9])
         XCTAssertEqual(try usage(store), ArchiveUsage(records: 2, logicalPayloadBytes: 167))
-        XCTAssertEqual(try rawInteger(url, query: "PRAGMA user_version"), 4)
+        XCTAssertEqual(try rawInteger(url, query: "PRAGMA user_version"), 5)
         _ = try write(store, [event("after-migration")])
         XCTAssertEqual(try usage(store).records, 3)
         close(store)
@@ -447,7 +507,7 @@ final class ArchiveStoreTests: XCTestCase {
         let store = try open()
         XCTAssertEqual(try generation(store), 0)
         XCTAssertEqual(try usage(store), ArchiveUsage(records: 2, logicalPayloadBytes: 167))
-        XCTAssertEqual(try rawInteger(url, query: "PRAGMA user_version"), 4)
+        XCTAssertEqual(try rawInteger(url, query: "PRAGMA user_version"), 5)
         XCTAssertEqual(try records(store).first?.event.eventKey, "legacy-delete")
         _ = try write(store, [event("generation-zero")], generation: 0)
         close(store)
@@ -572,7 +632,7 @@ final class ArchiveStoreTests: XCTestCase {
         let url = try legacyV3Database(extraStatements: ["UPDATE archive_meta SET capture_generation=7"])
         let store = try open()
         XCTAssertEqual(try generation(store), 7)
-        XCTAssertEqual(try rawInteger(url, query: "PRAGMA user_version"), 4)
+        XCTAssertEqual(try rawInteger(url, query: "PRAGMA user_version"), 5)
         XCTAssertEqual(try rawInteger(url, query: "SELECT outbox_high_water FROM archive_meta"), -1)
         XCTAssertEqual(try usage(store), ArchiveUsage(records: 2, logicalPayloadBytes: 167))
         XCTAssertEqual(try writeOutbox(store, event("new-receipt"), index: 24, generation: 7).inserted, 1)
@@ -594,7 +654,7 @@ final class ArchiveStoreTests: XCTestCase {
         XCTAssertEqual(try rawInteger(url, query: "SELECT COUNT(*) FROM events"), 2)
         try rawDatabase(url, statements: ["ALTER TABLE archive_meta DROP COLUMN outbox_last_event_key"])
         XCTAssertEqual(try usage(open()).records, 2)
-        XCTAssertEqual(try rawInteger(url, query: "PRAGMA user_version"), 4)
+        XCTAssertEqual(try rawInteger(url, query: "PRAGMA user_version"), 5)
     }
 
     func testOutboxReplayAfterQuotaAndAgeRetentionDoesNotResurrectMessages() throws {

@@ -235,3 +235,14 @@ is established yet. In-flight requests, other clients, later cumulative reads,
 reactions and replies remain observable. Message-read suppression is a separate
 unimplemented feature; [the read-state audit](fork/GHOST-RECEIPTS-AUDIT.md) explains
 why a generic RPC no-op would break persistent synchronization assumptions.
+
+
+## Bounded local media-copy draft
+
+Schema 5 source adds event-linked encrypted media BLOBs and quota/deletion
+accounting. The account worker reads only completed local cloud-resource paths
+with bounded size and no-follow file opens, before acknowledging its outbox
+item. It performs no download and writes no plaintext media temporary file.
+This code and its new native tests await execution; cache removal before the
+file is opened, incomplete downloads, physical termination/disk pressure and
+real Keychain protection remain unverified. Do not claim lossless retention.
