@@ -1,9 +1,20 @@
 # Experimental outgoing activity controls
 
-Status: source implementation and tests are being prepared. This document does
-not record a passing build, a completed settings UI, or verified behavior in a
-running Telegram application. Results must identify the tested commit and remain
-separate from the archive module's earlier test results.
+Status: source implementation, native settings and tests are authored. Full
+application compilation and running UI behavior remain unverified. Results must
+identify the tested commit and remain separate from the archive module's earlier
+test results.
+
+The first iOS integration run at `3a164860`,
+[run 41813786252](https://github.com/Livara-Dev/Telegram-iOS/actions/runs/41813786252),
+compiled TelegramCore and executed all 15 Ghost tests: 14 passed and one failed.
+The failing emoji-preservation assertion compared `EmojiInteraction` values whose
+synthesized equality includes distinct internal `NSDecimalNumberHandler` objects.
+The test now compares animation values, emoji/message identity and the exact JSON
+payload instead. Production emoji behavior is unchanged. This correction needs a
+fresh passing native run; the failed run is not a successful Ghost verification.
+All 56 inherited archive integration cases passed in that run. The later TextFormat
+target and full application build were skipped after the Core test failure.
 
 This increment covers five outgoing activity categories, with settings stored
 independently in each account's Postbox. The master switch defaults **off**. Each

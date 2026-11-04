@@ -217,7 +217,20 @@ final class LocalGhostActivityTests: XCTestCase {
         guard case let .cloud(_, _, _, action) = request, case let .sendMessageEmojiInteraction(data) = action else {
             return XCTFail("expected preserved emoji interaction")
         }
-        XCTAssertEqual(EmojiInteraction(apiDataJson: data.interaction), interaction)
+        let decoded = try XCTUnwrap(EmojiInteraction(apiDataJson: data.interaction))
+        // The model's synthesized equality also compares its private decimal
+        // formatter instance. Assert the wire contents rather than that identity.
+        XCTAssertEqual(decoded.animations, interaction.animations)
+        XCTAssertEqual(data.emoticon, "🙂")
+        XCTAssertEqual(data.msgId, 7)
+        guard case let .dataJSON(wire) = data.interaction, case let .dataJSON(roundTrip) = decoded.apiDataJson else {
+            return XCTFail("expected JSON interaction payload")
+        }
+        let wireObject = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(wire.data.utf8)) as? NSDictionary)
+        let roundTripObject = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(roundTrip.data.utf8)) as? NSDictionary)
+        let expectedObject = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(#"{"v":1,"a":[{"i":1,"t":0.25}]}"#.utf8)) as? NSDictionary)
+        XCTAssertEqual(wireObject, expectedObject)
+        XCTAssertEqual(roundTripObject, wireObject)
     }
 
     func testEachSuppressionSwitchIsIndependentAtTheRequestBoundary() throws {
