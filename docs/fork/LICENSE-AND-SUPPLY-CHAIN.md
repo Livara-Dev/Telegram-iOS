@@ -61,7 +61,7 @@ API terms §2.1 and iOS `README.md:8` require the application's own `api_id`. Ay
 
 ## Release verification still open
 
-- Root GPL text/provenance notice and complete dependency notice inventory.
+- The fork now includes root `COPYING` and [license provenance](LICENSE-NOTICE.md). The complete dependency notice/source inventory and binary distribution clearance remain open.
 - Exact recursive submodule and resolved dependency verification plus source availability review.
 - Privacy hardening and runtime network/telemetry tests.
 - Distribution-channel contract review and resolution of the explicit ghost-mode API-terms conflict.

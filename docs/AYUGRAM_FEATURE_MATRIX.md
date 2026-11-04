@@ -12,6 +12,7 @@ The separate Ghost activity draft adds per-account activity controls and native
 settings. All 15 worker/dispatch tests passed at `cd1effef` within a 993-case
 iOS run; [evidence](fork/evidence/ghost-activity-cd1effef.json). Full application
 behavior remains unverified.
+A further story-view draft adds independent per-account suppression, durable queued-receipt generations and native controls; its tests are authored but have no native result yet. See [story scope](fork/GHOST-STORY-VIEWS.md).
 See [integration scope and verification gates](fork/ARCHIVE-INTEGRATION.md). Portable tooling tests do not
 prove iOS app behavior. Phase A is being exercised through the hosted workflow
 on `Livara-Dev/Telegram-iOS`, with the owner's API credentials read from Secrets.
@@ -35,7 +36,7 @@ technical claim of impossibility. All entries require actual integration tests.
 | Feature | Android/reference implementation and evidence | Proposed iOS equivalent and limitations | iOS status |
 | --- | --- | --- | --- |
 | Suppress message read receipts | `shared/ghost.md:9`; historical Android `ConnectionsManager.java:327` covers history, encrypted history, discussion and content read methods. Docs name speech-to-text as an exception. | Inventory every read operation, including media content, threads, notifications/extensions and retries. Preserve local state independently and prove no prohibited RPC is emitted under each policy. Explain actions that still reveal reading. | Not implemented; API-policy conflict |
-| Suppress story views | `shared/ghost.md:15`; reactions/replies may mark a story viewed server-side. Not in the 2023 source audit. | Separate story policy from chat read policy. Test ordinary opening, next story, retry, background, reaction and reply; never claim invisible interaction. | Not implemented; API-policy conflict |
+| Suppress story views | `shared/ghost.md:15`; current Desktop skips local marking and gates ordinary/pinned dispatch. Not in the 2023 Android source audit. | Independent per-account native policy; ordinary/pinned producer gates plus durable queue generations. Suppressed views remain locally unread; later allowed cumulative reads can reveal earlier stories. | [Source and tests authored](fork/GHOST-STORY-VIEWS.md); native/app verification pending; API-policy conflict |
 | Warn before opening stories | `shared/ghost.md:61`; cancellation must leave story unopened. | Gate story viewer startup before receipt work is queued; explicit cancellation test. | Not implemented |
 | Suppress online status | `shared/ghost.md:21`; sending can still expose online presence. Historical request hook rewrites updateStatus offline. | Gate application-level presence operations, preserving transport/auth; document server inference and other-session limits. | Not implemented; API-policy conflict |
 | Suppress typing, sticker choice, upload, recording indicators | `shared/ghost.md:27` lists typing/sticker/game; old Android drops both ordinary/encrypted typing constructors. | Per-account typed activity suppression before existing cloud/secret typing dispatch; preserve calls, emoji interactions and explicit draft stop. Already sent requests cannot be recalled. | 15 worker/dispatch tests passed at `cd1effef`; native controls authored; full application verification pending; API-policy conflict |
@@ -82,7 +83,7 @@ technical claim of impossibility. All entries require actual integration tests.
 | Photos/video/documents/voice archive | Android saved attachment path; Desktop archive currently text-only | Protected archive-owned bytes plus typed metadata and missing/partial states; no guaranteed redownload after deletion | Not implemented |
 | Encrypted database and Keychain keys | Historical Android Room and Desktop SQLite do not establish encryption | Independent SQLCipher, per-account random keys, Keychain this-device-only, Data Protection and backup exclusion | SQLCipher tests pass on macOS; Keychain mocked; device checks pending |
 | Import/export and optional sync | October import/export options; E2E format/protocol unverified | Authenticated versioned encrypted files; sync only after protocol review and explicit user endpoint choice | Not implemented; [legacy protocol review](fork/AYUSYNC-REVIEW.md) found no E2E archive format and unavailable backend source |
-| No telemetry / no archive upload | Both upstreams contain telemetry; Android sync exists | Separate reviewed telemetry-removal diff and request-canary tests, no archive networking capability | Not satisfied; upstream telemetry remains unresolved |
+| No telemetry / no archive upload | Both upstreams contain telemetry; Android sync exists | Separate reviewed telemetry-removal diff and request-canary tests, no archive networking capability | Not satisfied; [expanded inventory](fork/TELEMETRY-REVIEW.md) includes app/call logs, channel-reading metrics and music-listening reports |
 | iPhone 15 Pro performance | No relevant iOS measurements available | Measure cold start, scroll frames, RSS, DB p95, disk pressure and battery with fixed datasets | Not measured |
 
 ## Storage library and experimental integration
@@ -151,7 +152,7 @@ commit, test counts, benchmark samples and downloadable artifact identity.
 | --- | --- | --- |
 | Existing source retained | Preserved with explicit feature changes | Source guard pins dependencies and all upstream files except named capture/lifecycle/UI seams; allowlisted diffs require review |
 | Android/Desktop/October feature audit | Source/document review | Reference docs distinguish inspected code from release claims and missing proprietary source |
-| Hosted macOS workflow | Published; baseline not passed | `xcode-27` runner starts after workflow-context fix; see execution record for results |
+| Hosted macOS workflow | Published; baseline not passed | [PR #5](https://github.com/Livara-Dev/Telegram-iOS/pull/5) adds independent integration-gated simulator/device jobs, checksums and artifacts; active earlier runs retain their original workflow |
 | Portable tooling tests | Executed locally | Final counts and commands in [baseline evidence](fork/BASELINE.md) |
 | Working iOS baseline | Not demonstrated | GitHub fork and Actions are accessible; hosted compilation and iOS tests still must pass |
 | Installable independently signed IPA | Not produced | Unsigned mode is separate; signing, all entitlements and device installation still need verification |
@@ -172,8 +173,9 @@ Unknown settings remain read-only and block only the covered activity categories
 The 15 authored tests exercise real preferences and the actual worker/resolver
 with a typed request recorder; they do not contact Telegram servers. Native
 settings and an account-wide chat-menu toggle expose which categories are
-configured. Message/story receipts, online presence, automatic offline and
-read-on-interaction remain unimplemented. See [scope, reference evidence and
+configured. Message-read receipts, online presence, automatic offline and
+read-on-interaction remain unimplemented. The subsequent story-only increment
+has separate settings and is not covered by the activity-test results. See [scope, reference evidence and
 verification limits](fork/GHOST-ACTIVITY.md). No full Ghost Mode claim is made.
 
 Desktop inspection confirms typed request suppression, per-chat/global filters

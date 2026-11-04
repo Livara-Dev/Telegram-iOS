@@ -459,4 +459,36 @@ final class LocalArchiveReplayTests: XCTestCase {
         XCTAssertEqual(stored.text, "sent replacement")
         XCTAssertFalse(stored.flags.contains(.Incoming))
     }
+
+    func testStoryPrivacyPreservesIncomingServerReadReplayWithoutOutgoingEcho() throws {
+        let peerId = self.chatPeerId
+        let _ = try self.localArchiveValue(self.fixture.postbox.transaction { transaction in
+            transaction.setPeerStoryState(peerId: peerId, state: Stories.PeerState(maxReadId: 3).postboxRepresentation)
+        })
+        XCTAssertTrue(try self.localArchiveValue(LocalStoryPrivacyContext(postbox: self.fixture.postbox).setSuppressed(true)))
+        let policy = try self.localArchiveValue(LocalStoryPrivacyContext(postbox: self.fixture.postbox).settings)
+        for serverMax in [Int32(12), 8] {
+            let result = try XCTUnwrap(self.replay([.UpdateReadStories(peerId: peerId, maxId: serverMax)]))
+            XCTAssertEqual(result.storyUpdates.count, 1)
+            let update = try XCTUnwrap(result.storyUpdates.first)
+            guard case let .read(updatedPeer, updatedMax) = update else {
+                return XCTFail("expected the genuine server read update")
+            }
+            XCTAssertEqual(updatedPeer, peerId)
+            XCTAssertEqual(updatedMax, serverMax)
+        }
+        try self.fixture.reopen()
+        let persisted = try self.localArchiveValue(self.fixture.postbox.transaction { transaction -> (Int32?, Int) in
+            var outgoingCount = 0
+            transaction.operationLogEnumerateEntries(peerId: peerId, tag: OperationLogTags.SynchronizeViewStories) { _ in
+                outgoingCount += 1
+                return true
+            }
+            return (transaction.getPeerStoryState(peerId: peerId)?.entry.get(Stories.PeerState.self)?.maxReadId, outgoingCount)
+        })
+        XCTAssertEqual(persisted.0, 12)
+        XCTAssertEqual(persisted.1, 0)
+        XCTAssertEqual(try self.localArchiveValue(LocalStoryPrivacyContext(postbox: self.fixture.postbox).settings), policy)
+        XCTAssertTrue(try self.pending().isEmpty)
+    }
 }

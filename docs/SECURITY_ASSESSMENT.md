@@ -214,3 +214,16 @@ version-field fix is a test-host change and still needs a new native run. It doe
 not establish that the UI or projection has passed. The next run executes the
 new host first so setup failures are visible sooner; all other regressions remain
 required before the application build.
+
+## Story-view receipt draft
+
+The [story-only increment](fork/GHOST-STORY-VIEWS.md) adds a separate default-off
+per-account preference and a durable generation to ordinary queued story
+receipts. Its producer gates both ordinary and pinned views; suppressed views
+do not advance the local story read marker. The queue consumer rejects obsolete
+generations and rechecks persisted policy at dispatch. Its tests are authored;
+no native result, live server visibility check or complete application behavior
+is established yet. In-flight requests, other clients, later cumulative reads,
+reactions and replies remain observable. Message-read suppression is a separate
+unimplemented feature; [the read-state audit](fork/GHOST-RECEIPTS-AUDIT.md) explains
+why a generic RPC no-op would break persistent synchronization assumptions.

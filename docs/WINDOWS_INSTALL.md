@@ -6,7 +6,7 @@ ZIP files do not contain an installable application. These instructions describe
 how to obtain and test a device build after the application workflow succeeds.
 
 Use **Archive application integration (hosted macOS)** for the archive,
-Ghost activity and literal-filter branches. Pushes run it automatically;
+Ghost activity, story-view privacy and literal-filter branches. Pushes run it automatically;
 `ci/parallel-device-build` also runs it to verify the build-job split. The
 `integration-tests` job must pass for the exact commit before application jobs
 become eligible to start. The `application-build` simulator job and the

@@ -1,3 +1,5 @@
+// Modified for AyuGram iOS on 2026-11-04: route story-view receipts through the
+// account-local policy while preserving the existing Telegram network adapter.
 import Foundation
 import SwiftSignalKit
 import Postbox
@@ -2071,48 +2073,11 @@ func _internal_deleteStories(account: Account, peerId: PeerId, ids: [Int32]) -> 
 }
 
 func _internal_markStoryAsSeen(account: Account, peerId: PeerId, id: Int32, asPinned: Bool) -> Signal<Never, NoError> {
-    if asPinned {
-        return account.postbox.transaction { transaction -> Api.InputPeer? in
-            return transaction.getPeer(peerId).flatMap(apiInputPeer)
-        }
-        |> mapToSignal { inputPeer -> Signal<Never, NoError> in
-            guard let inputPeer = inputPeer else {
-                return .complete()
-            }
-            
-            #if DEBUG && false
-            if "".isEmpty {
-                return .complete()
-            }
-            #endif
-            
-            return account.network.request(Api.functions.stories.incrementStoryViews(peer: inputPeer, id: [id]))
-            |> `catch` { _ -> Signal<Api.Bool, NoError> in
-                return .single(.boolFalse)
-            }
-            |> ignoreValues
-        }
-    } else {
-        return account.postbox.transaction { transaction -> Api.InputUser? in
-            if let peerStoryState = transaction.getPeerStoryState(peerId: peerId)?.entry.get(Stories.PeerState.self) {
-                transaction.setPeerStoryState(peerId: peerId, state: Stories.PeerState(
-                    maxReadId: max(peerStoryState.maxReadId, id)
-                ).postboxRepresentation)
-            }
-            
-            #if DEBUG && false
-            #else
-            _internal_addSynchronizeViewStoriesOperation(peerId: peerId, storyId: id, transaction: transaction)
-            #endif
-            
-            return transaction.getPeer(peerId).flatMap(apiInputUser)
-        }
-        |> mapToSignal { _ -> Signal<Never, NoError> in
-            account.stateManager.injectStoryUpdates(updates: [.read(peerId: peerId, maxId: id)])
-            
-            return .complete()
-        }
-    }
+    return markStoryAsSeen(postbox: account.postbox, peerId: peerId, id: id, asPinned: asPinned, send: { request in
+        sendLocalStoryViewReceipt(network: account.network, request: request)
+    }, injectReadUpdate: { peerId, id in
+        account.stateManager.injectStoryUpdates(updates: [.read(peerId: peerId, maxId: id)])
+    })
 }
 
 func _internal_updateStoriesArePinned(account: Account, peerId: PeerId, ids: [Int32: EngineStoryItem], isPinned: Bool) -> Signal<Never, NoError> {

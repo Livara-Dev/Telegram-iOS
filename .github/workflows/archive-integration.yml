@@ -2,7 +2,7 @@ name: Archive application integration (hosted macOS)
 
 on:
   push:
-    branches: [feature/archive-engine-draft, feature/ghost-activity-draft, feature/message-filter-draft, ci/parallel-device-build]
+    branches: [feature/archive-engine-draft, feature/ghost-activity-draft, feature/message-filter-draft, feature/ghost-story-draft, ci/parallel-device-build]
   workflow_dispatch:
     inputs:
       unsigned_device:
