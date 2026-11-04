@@ -32,6 +32,13 @@ version probe, before application compilation: the wrapper prepended startup
 options to `--version`. The wrapper now preserves the executable's exact version
 fast path; binary hash/version verification remains enabled.
 
+As of 2026-11-04 08:06 UTC, [run 41792955476](https://github.com/Livara-Dev/Telegram-iOS/actions/runs/41792955476)
+at `1bcc959b` has passed its 95 portable tests, API configuration validation,
+pinned toolchain checks and simulator-runtime setup. Its full simulator build /
+iOS test step is still running. No completed app build or IPA is recorded. The
+separate archive branch has passing native library tests; those do not establish
+this application baseline.
+
 ## Current result
 
 The current checkpoint is **not a working iOS baseline**. The local executor is
@@ -44,7 +51,7 @@ Baseline blocked: An Apple Silicon macOS runner is required; Linux cannot build 
 
 No application compile, simulator launch, account login, iOS unit/integration test,
 signed build, iPhone installation or performance benchmark has passed in this
-session. No IPA/download URL exists. Portable Python tooling tests and source
+session. No IPA download is available; diagnostic/test artifacts are published separately. Portable Python tooling tests and source
 integrity checks are recorded separately below.
 
 Executed on Linux: **96 passing portable Python tests** (30 build-tooling,

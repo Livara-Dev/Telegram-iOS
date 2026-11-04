@@ -3,11 +3,10 @@
 This native Swift module stores supplied text and entity metadata in a separate
 SQLCipher database. It is **not connected to Telegram update processing**. It does
 not yet archive real incoming messages, preserve media, modify search, show UI,
-export/import records, or synchronize anything. Schema-2 commit `9bfc4c87` passed
-39 native macOS tests (28 storage, 11 mocked Keychain) and iOS simulator compilation
-in [run 41795912590](https://github.com/Livara-Dev/Telegram-iOS/actions/runs/41795912590).
-This does not establish iOS runtime or Telegram integration behavior. The schema-3
-generation/purge increment below is pending its own hosted test run.
+export/import records, or synchronize anything. Schema-3 commit `c326364b` passed
+46 native macOS tests (35 storage including the benchmark, 11 mocked Keychain)
+and iOS simulator compilation in [run 41796701379](https://github.com/Livara-Dev/Telegram-iOS/actions/runs/41796701379).
+This does not establish iOS runtime or Telegram integration behavior.
 
 ## Storage and security contract
 
@@ -119,7 +118,7 @@ total work or disk allocation. Other writers can encounter SQLite busy errors.
 The test suite records monotonic async single-append timings after 10,000 synthetic
 snapshots, including XCTest expectation/wait overhead. It has no latency threshold.
 See [measurement evidence](../../docs/fork/PERFORMANCE.md) for schema-1/schema-2
-hosted runs; schema-3 timing is pending. Memory, battery, physical disk
+hosted runs; schema 3 measured 0.394 ms mean in the same synthetic append workload. Memory, battery, physical disk
 behavior and iPhone 15 Pro performance remain unmeasured.
 
 ## Validation

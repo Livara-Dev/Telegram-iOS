@@ -144,7 +144,8 @@ account drain, persist a new capture generation/pending-purge marker, atomically
 advance the archive's accepted generation and delete prior records, then retire
 old outbox entries and resume. The archive must reject in-flight old-generation
 writes across restart. The schema-3 library draft now adds a local generation
-barrier, pending its own test run; the Postbox coordinator is still absent. Bound outbox
+barrier verified by native library tests at `c326364b`; the Postbox coordinator
+and application-level purge tests are still absent. Bound outbox
 bytes and report capture gaps when storage is unavailable; never silently claim
 lossless capture while allowing unbounded backlog. Existing operation-log removal
 uses `secure: false` (`PeerOperationLogTable.swift:195`), so it is not forensic

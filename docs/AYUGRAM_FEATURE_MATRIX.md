@@ -109,8 +109,12 @@ these are separate host measurements, not iPhone results. See
 
 The schema-3 draft adds the local half of that purge protocol: required capture
 generations, transactional generation advances and idempotent purge retries.
-Seven new tests are awaiting execution. This does not implement the Postbox
-coordinator, and it must not be described as application-level purge safety yet.
+Commit `c326364b` passed 46 native macOS tests and iOS simulator compilation in
+[run 41796701379](https://github.com/Livara-Dev/Telegram-iOS/actions/runs/41796701379).
+The new tests cover the local generation boundary, rollback, retry and migration.
+This does not implement the Postbox coordinator or prove application-level purge
+safety. [Exact evidence](fork/evidence/archive-tests-c326364b.json) records the
+commit, test counts, benchmark samples and downloadable artifact identity.
 
 ## Delivery status
 
@@ -123,7 +127,7 @@ coordinator, and it must not be described as application-level purge safety yet.
 | Working iOS baseline | Not demonstrated | GitHub fork and Actions are accessible; hosted compilation and iOS tests still must pass |
 | Installable independently signed IPA | Not produced | Unsigned mode is separate; signing, all entitlements and device installation still need verification |
 | GPL review | Obligations identified; incomplete release clearance | [license audit](fork/LICENSE-AND-SUPPLY-CHAIN.md); full dependency/source bundle required |
-| Standalone archive module | 39 macOS tests and iOS simulator compilation pass | Commit `9bfc4c87`; no app integration or device validation |
+| Standalone archive module | 46 macOS tests and iOS simulator compilation pass | Commit `c326364b`; no app integration or device validation |
 | Security verification | Source review plus storage boundary tests | [risk register](SECURITY_ASSESSMENT.md); no runtime privacy attestation |
 
 Update each feature row with a commit and concrete test evidence when implemented.

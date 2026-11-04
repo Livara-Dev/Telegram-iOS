@@ -42,3 +42,17 @@ disk consumption and simultaneous writer contention still require measurement.
 [Exact samples and artifact metadata](evidence/archive-tests-9bfc4c87.json) and
 [downloadable logs](https://github.com/Livara-Dev/Telegram-iOS/actions/runs/41795912590/artifacts/13304894197)
 record the result. The logs expire on 2026-11-11.
+
+
+## Schema-3 generation check
+
+Commit `c326364b` passed 46 native tests and iOS simulator compilation in
+[run 41796701379](https://github.com/Livara-Dev/Telegram-iOS/actions/runs/41796701379).
+The same workload, now passing generation zero explicitly, measured **0.394 ms**
+mean (ten samples: **0.351–0.464 ms**). This remains a hosted Mac measurement of
+an asynchronous API call including test overhead, not a device benchmark. Do not
+interpret the small difference from schema 2 as an isolated cost measurement;
+these were separate hosted runs.
+
+[Exact samples and artifact metadata](evidence/archive-tests-c326364b.json) retain
+the evidence. The logs expire on 2026-11-11.

@@ -101,3 +101,13 @@ counters across two live connections, and bounded retention boundaries. The
 connection test uses sequential operations; simultaneous writer/migration races
 and real I/O failures are not established by these results. Evidence is in
 [fork/evidence/archive-tests-9bfc4c87.json](fork/evidence/archive-tests-9bfc4c87.json).
+
+
+Schema-3 commit `c326364b` passed 46 native macOS tests and iOS simulator
+compilation. Its storage-side generation barrier rejects stale/future batches,
+advances purge generations atomically, and makes same-generation retries preserve
+newer records. Tests cover migration, reopening, sequential live handles, a FIFO
+writer/purge boundary and an injected SQL failure after deletion. These are not
+process-termination, disk-full or live Postbox handoff tests; the application-level
+purge/capture protocol remains unimplemented. The 11 Keychain tests still use
+injected Security responses. See [exact evidence](fork/evidence/archive-tests-c326364b.json).
