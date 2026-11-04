@@ -22,6 +22,7 @@ ADDED_PREFIXES = (
 )
 ADDED_FILES = {
     ".github/workflows/archive-integration.yml",
+    ".github/workflows/archive-compatibility.yml",
     ".github/workflows/archive-tests.yml",
     ".github/workflows/fork-baseline.yml", "COPYING",
     "docs/AYUGRAM_FEATURE_MATRIX.md", "docs/WINDOWS_INSTALL.md", "docs/SECURITY_ASSESSMENT.md",

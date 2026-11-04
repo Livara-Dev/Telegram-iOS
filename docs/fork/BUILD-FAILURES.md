@@ -156,3 +156,15 @@ On a further projection failure, CI now records a bounded, redacted launch probe
 for only the synthetic test host: whether it is installed, its signature check,
 and a standalone launch attempt. The probe never creates a Telegram account or
 opens the real Telegram application. A successful probe is not an XCTest pass.
+
+## Independent archive compatibility lane
+
+The archive/playback Swift package supports macOS 12 and iOS 15 independently
+of the full app's Xcode 27.1 requirement. `archive-compatibility.yml` therefore
+runs its native storage and AVFoundation tests on the standard `macos-15` image
+with Xcode 16.4 selected and checked explicitly (documented as installed in the
+GitHub runner-image manifest). It also compiles both modules against that
+installation's iOS simulator SDK. This supplies earlier compatibility feedback
+while the full app's pinned runner queue is busy. It cannot qualify the complete
+Telegram app, its Xcode 27.1 build or a physical-device installation. Artifacts
+record the exact compatibility toolchain and this limited scope.

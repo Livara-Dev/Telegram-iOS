@@ -1,0 +1,99 @@
+name: Archive native compatibility tests
+
+on:
+  push:
+    branches: [feature/archive-media-capture, feature/privacy-telemetry-off]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: archive-compatibility-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  archive-compatibility:
+    runs-on: macos-15
+    timeout-minutes: 30
+    steps:
+      - name: Check out exact source and audit baseline
+        env:
+          CHECKOUT_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import base64, os, re, subprocess
+          sha, repo = os.environ['GITHUB_SHA'], os.environ['GITHUB_REPOSITORY']
+          if not re.fullmatch(r'[0-9a-f]{40}', sha) or not re.fullmatch(r'[\w.-]+/[\w.-]+', repo):
+              raise SystemExit('Invalid checkout coordinates')
+          subprocess.run(['git', 'init', '-q'], check=True)
+          subprocess.run(['git', 'remote', 'add', 'origin', 'https://github.com/' + repo + '.git'], check=True)
+          env = os.environ.copy()
+          token = env.pop('CHECKOUT_TOKEN')
+          env.update(GIT_CONFIG_COUNT='1', GIT_CONFIG_KEY_0='http.https://github.com/.extraheader',
+                     GIT_CONFIG_VALUE_0='AUTHORIZATION: basic ' + base64.b64encode(('x-access-token:' + token).encode()).decode())
+          subprocess.run(['git', 'fetch', '--no-tags', '--depth=1', 'origin', sha,
+                          '279f89e4d4f63f17227bf877dc3d8990f22ecd58'], env=env, check=True)
+          subprocess.run(['git', 'checkout', '--detach', sha], check=True)
+          PY
+
+      - name: Select and record compatibility toolchain
+        run: |
+          set -euo pipefail
+          sudo xcode-select -s /Applications/Xcode_16.4.app/Contents/Developer
+          mkdir -p build/archive-compatibility-evidence
+          python3 - <<'PY'
+          import json, os, platform, subprocess
+          from pathlib import Path
+          xcode = subprocess.check_output(['xcodebuild', '-version'], text=True).strip()
+          if xcode.splitlines()[0] != 'Xcode 16.4':
+              raise SystemExit('Unexpected compatibility Xcode version')
+          evidence = {'source_commit': subprocess.check_output(['git', 'rev-parse', 'HEAD'], text=True).strip(),
+                      'xcode': xcode, 'swift': subprocess.check_output(['swift', '--version'], text=True).strip(),
+                      'macos': platform.mac_ver()[0], 'architecture': platform.machine(),
+                      'image_version': os.environ.get('ImageVersion'),
+                      'scope': 'Native archive/playback compatibility tests only; not full Telegram-iOS qualification',
+                      'full_application_built': False, 'physical_device_verified': False}
+          Path('build/archive-compatibility-evidence/host.json').write_text(json.dumps(evidence, indent=2) + '\n')
+          PY
+          python3 tools/fork_audit/check.py
+          python3 -m unittest discover -s tools/fork_audit/tests
+
+      - name: Run encrypted storage and AVFoundation tests
+        run: |
+          set -euo pipefail
+          swift test --package-path submodules/LocalMessageArchive 2>&1 | tee build/archive-compatibility-evidence/swift-test.log
+
+      - name: Compile both modules for the compatibility iOS simulator SDK
+        run: |
+          set -euo pipefail
+          archive_sdk="$(xcrun --sdk iphonesimulator --show-sdk-path)"
+          for archive_target in LocalMessageArchive LocalArchivePlayback; do
+            xcrun swift build --package-path submodules/LocalMessageArchive --target "$archive_target" \
+              --triple arm64-apple-ios15.0-simulator --sdk "$archive_sdk" \
+              --scratch-path "$RUNNER_TEMP/archive-compatibility-ios" \
+              2>&1 | tee "build/archive-compatibility-evidence/ios-$archive_target.log"
+          done
+
+      - name: Checksum compatibility evidence
+        if: always()
+        run: |
+          python3 - <<'PY'
+          import hashlib
+          from pathlib import Path
+          root = Path('build/archive-compatibility-evidence')
+          root.mkdir(parents=True, exist_ok=True)
+          files = sorted(p for p in root.iterdir() if p.is_file() and p.name != 'SHA256SUMS')
+          (root / 'SHA256SUMS').write_text(''.join(hashlib.sha256(p.read_bytes()).hexdigest() + '  ' + p.name + '\n' for p in files))
+          PY
+
+      - name: Upload compatibility evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: archive-compatibility-${{ github.sha }}
+          path: build/archive-compatibility-evidence/
+          if-no-files-found: warn
+          retention-days: 7
+          include-hidden-files: false
