@@ -170,9 +170,11 @@ class FocusedValidationTests(unittest.TestCase):
 
 
 class FocusedWorkflowRoutingTests(unittest.TestCase):
+    def section(self, job):
+        return re.search(r'(?ms)^  ' + re.escape(job) + r':\n(.*?)(?=^  [a-z-]+:\n|\Z)', WORKFLOW.read_text()).group(1)
+
     def condition(self, job, event, scope, device):
-        source = WORKFLOW.read_text()
-        section = re.search(r'(?ms)^  ' + re.escape(job) + r':\n(.*?)(?=^  [a-z-]+:\n|\Z)', source).group(1)
+        section = self.section(job)
         match = re.search(r'^    if: (.+)$', section, re.M)
         if not match:
             return True
@@ -223,7 +225,7 @@ class FocusedWorkflowRoutingTests(unittest.TestCase):
                 self.assertTrue(self.condition('integration-tests', 'workflow_dispatch', 'projection', device))
                 for job in ('application-build', 'unsigned-device-build', 'native-api-probe', 'startup-artifact-replay'):
                     self.assertFalse(self.condition(job, 'workflow_dispatch', 'projection', device))
-        self.assertIn('options: [full, focused, projection, projection-only, probe, startup]', WORKFLOW.read_text())
+        self.assertIn('options: [full, focused, projection, projection-only, custom-options-ui, probe, startup]', WORKFLOW.read_text())
         self.assertIn('projection) repair_options+=(--projection-tests)', WORKFLOW.read_text())
 
     def test_projection_only_dispatch_skips_every_other_build_or_probe(self):
@@ -252,7 +254,7 @@ class FocusedWorkflowRoutingTests(unittest.TestCase):
         self.assertIn('cancel-in-progress: false', block)
 
     def test_startup_job_reuses_existing_artifact_without_submodules_or_api_credentials(self):
-        source = WORKFLOW.read_text().split('  startup-artifact-replay:\n', 1)[1]
+        source = self.section('startup-artifact-replay')
         self.assertIn('      actions: read', source)
         self.assertNotIn('secrets.TELEGRAM_', source)
         self.assertNotIn('secrets.APPLE_', source)
@@ -279,7 +281,7 @@ class FocusedWorkflowRoutingTests(unittest.TestCase):
         self.assertIn('        options: [original, main-app-only]\n        default: original', workflow)
         self.assertIn('      startup_private_only:\n', workflow)
         self.assertIn('        description: Run only a fresh explicitly pinned private-storage main-app control\n        type: boolean\n        default: false', workflow)
-        source = workflow.split('  startup-artifact-replay:\n', 1)[1]
+        source = self.section('startup-artifact-replay')
         self.assertIn("STARTUP_PRIVATE_ONLY: ${{ inputs.startup_private_only && 'true' || 'false' }}", source)
         self.assertIn('startup_args=(--startup-variant "$STARTUP_VARIANT")', source)
         self.assertIn('startup_args+=(--private-control-only)', source)
@@ -312,7 +314,7 @@ class FocusedWorkflowRoutingTests(unittest.TestCase):
                 self.assertFalse(self.condition('native-api-probe', event, scope, True))
 
     def test_host_probe_has_no_submodule_api_secret_or_bazel_build_path(self):
-        source = WORKFLOW.read_text().split('  native-api-probe:\n', 1)[1]
+        source = self.section('native-api-probe')
         self.assertNotIn('secrets.TELEGRAM_', source)
         self.assertNotIn('secrets.APPLE_', source)
         self.assertNotIn('submodule', source.split('    steps:\n', 1)[1].split('      - name: Select', 1)[0].replace('without submodules', ''))
@@ -325,6 +327,38 @@ class FocusedWorkflowRoutingTests(unittest.TestCase):
         self.assertIn('build/native-api-probe/Probe.app/Contents/MacOS/Probe build/native-api-probe/fixture.mp4 > build/fork-evidence/native-api-probe-bundle.json', source)
         self.assertIn('build/fork-evidence/native-api-probe-bundle.json', source)
         self.assertIn('build/fork-evidence/native-api-probe-SHA256SUMS', source)
+
+    def test_custom_options_scope_starts_only_the_small_renderer_job(self):
+        jobs = ('integration-tests', 'application-build', 'unsigned-device-build', 'native-api-probe', 'startup-artifact-replay')
+        for device in (False, True):
+            self.assertTrue(self.condition('custom-options-ui', 'workflow_dispatch', 'custom-options-ui', device))
+            for job in jobs:
+                self.assertFalse(self.condition(job, 'workflow_dispatch', 'custom-options-ui', device))
+        for event, scope in [('push', 'custom-options-ui'), ('push', ''), ('workflow_dispatch', 'full'),
+                             ('workflow_dispatch', 'focused'), ('workflow_dispatch', 'projection'),
+                             ('workflow_dispatch', 'projection-only'), ('workflow_dispatch', 'probe'),
+                             ('workflow_dispatch', 'startup'), ('workflow_dispatch', '')]:
+            self.assertFalse(self.condition('custom-options-ui', event, scope, True))
+
+    def test_small_renderer_job_uses_fixed_wrapper_and_has_no_signing_credentials(self):
+        section = self.section('custom-options-ui')
+        self.assertIn('custom_options_ui.py', section)
+        self.assertIn('secrets.TELEGRAM_API_ID', section)
+        self.assertIn('secrets.TELEGRAM_API_HASH', section)
+        self.assertNotIn('secrets.APPLE_', section)
+        self.assertNotIn('startup_replay.py', section)
+        self.assertNotIn('baseline.py simulator', section)
+        self.assertNotIn('baseline.py unsigned-device', section)
+
+    def test_branding_guard_applies_only_to_new_full_app_artifacts(self):
+        for job, mode in [('unsigned-device-build', 'unsigned-device'), ('application-build', 'simulator')]:
+            section = self.section(job)
+            command = 'branding.py --ipa build/fork-baseline-' + mode + '/Telegram.ipa --bundle org.livara.ayugram --output build/fork-evidence/branding.json'
+            self.assertIn(command, section)
+            self.assertLess(section.index('baseline.py ' + mode), section.index(command))
+            self.assertLess(section.index(command), section.index('      - name: Publish'))
+        for job in ('integration-tests', 'native-api-probe', 'startup-artifact-replay', 'custom-options-ui'):
+            self.assertNotIn('branding.py', self.section(job))
 
     def test_full_push_and_legacy_dispatch_keep_existing_build_behavior(self):
         for event, scope, device, expected_device in [('push', 'focused', False, True), ('push', '', False, True), ('workflow_dispatch', 'full', True, True), ('workflow_dispatch', '', True, True), ('workflow_dispatch', 'full', False, False)]:

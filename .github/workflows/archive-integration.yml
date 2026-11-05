@@ -8,7 +8,7 @@ on:
       validation_scope:
         description: Startup replay, host API probe, targeted iOS tests, or full qualification
         type: choice
-        options: [full, focused, projection, projection-only, probe, startup]
+        options: [full, focused, projection, projection-only, custom-options-ui, probe, startup]
         default: full
       replay_run:
         description: Required for startup scope; simulator artifact run ID
@@ -45,7 +45,7 @@ concurrency:
 
 jobs:
   integration-tests:
-    if: github.event_name == 'push' || (inputs.validation_scope != 'probe' && inputs.validation_scope != 'startup')
+    if: github.event_name == 'push' || (inputs.validation_scope != 'probe' && inputs.validation_scope != 'startup' && inputs.validation_scope != 'custom-options-ui')
     # macos-latest does not satisfy versions.json. This preview image does;
     # prepare_host.py additionally verifies the actual OS/Xcode versions.
     runs-on: xcode-27
@@ -319,6 +319,9 @@ jobs:
           umask 077
           python3 tools/fork_baseline/baseline.py unsigned-device --build-number "${{ github.run_number }}" 2>&1 | tee build/fork-evidence/unsigned-device.log
 
+      - name: Verify active fork branding in the unsigned device IPA
+        run: python3 tools/fork_baseline/branding.py --ipa build/fork-baseline-unsigned-device/Telegram.ipa --bundle org.livara.ayugram --output build/fork-evidence/branding.json
+
       - name: Export verified public dependency downloads
         continue-on-error: true
         if: always() && github.repository == 'Livara-Dev/Telegram-iOS' && github.ref == 'refs/heads/ci/verify-latest'
@@ -482,6 +485,9 @@ jobs:
           set -euo pipefail
           umask 077
           python3 tools/fork_baseline/baseline.py simulator --build-number "${{ github.run_number }}" 2>&1 | tee build/fork-evidence/simulator.log
+
+      - name: Verify active fork branding in the full simulator IPA
+        run: python3 tools/fork_baseline/branding.py --ipa build/fork-baseline-simulator/Telegram.ipa --bundle org.livara.ayugram --output build/fork-evidence/branding.json
 
       - name: Export verified public dependency downloads
         continue-on-error: true
@@ -842,6 +848,101 @@ jobs:
             ${{ github.workspace }}/fork-source/build/fork-evidence/startup-replay/replay-controls/main-app-only-automatic/launch-smoke/launch-1.png
             ${{ github.workspace }}/fork-source/build/fork-evidence/startup-replay/replay-controls/main-app-only-automatic/launch-smoke/launch-2.png
             ${{ github.workspace }}/fork-source/build/fork-evidence/startup-replay/SHA256SUMS
+          if-no-files-found: warn
+          retention-days: 7
+          include-hidden-files: false
+
+  custom-options-ui:
+    if: github.event_name == 'workflow_dispatch' && inputs.validation_scope == 'custom-options-ui'
+    runs-on: xcode-27
+    timeout-minutes: 120
+    defaults:
+      run:
+        shell: bash
+        working-directory: ./fork-source
+    steps:
+      - name: Check out the exact requested revision
+        working-directory: ${{ github.workspace }}
+        env:
+          CHECKOUT_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import base64, os, pathlib, re, subprocess
+          destination = pathlib.Path(os.environ['GITHUB_WORKSPACE']) / 'fork-source'
+          destination.mkdir(mode=0o700)  # Requires a fresh, disposable runner.
+          sha = os.environ['GITHUB_SHA']
+          repo = os.environ['GITHUB_REPOSITORY']
+          if not re.fullmatch(r'[0-9a-f]{40}', sha) or not re.fullmatch(r'[\w.-]+/[\w.-]+', repo):
+              raise SystemExit('Invalid checkout coordinates')
+          def run(args, env=None):
+              subprocess.run(args, cwd=destination, env=env, check=True)
+          run(['git', 'init', '-q'])
+          run(['git', 'remote', 'add', 'origin', 'https://github.com/' + repo + '.git'])
+          auth_env = os.environ.copy()
+          token = auth_env.pop('CHECKOUT_TOKEN')
+          auth_env.update(GIT_CONFIG_COUNT='1', GIT_CONFIG_KEY_0='http.https://github.com/.extraheader',
+                          GIT_CONFIG_VALUE_0='AUTHORIZATION: basic ' + base64.b64encode(('x-access-token:' + token).encode()).decode())
+          # Both exact trees are needed by the source guard; full history is not.
+          run(['git', 'fetch', '--no-tags', '--depth=1', 'origin', sha,
+               '279f89e4d4f63f17227bf877dc3d8990f22ecd58'], auth_env)
+          run(['git', 'checkout', '--detach', sha])
+          # Relative upstream submodule URLs otherwise resolve under Livara-Dev.
+          run(['git', 'submodule', 'init'])
+          run(['git', 'config', 'submodule.submodules/rlottie/rlottie.url', 'https://github.com/TelegramMessenger/rlottie.git'])
+          run(['git', 'config', 'submodule.submodules/TgVoipWebrtc/tgcalls.url', 'https://github.com/TelegramMessenger/tgcalls.git'])
+          run(['git', 'submodule', 'update', '--init', '--recursive', '--depth', '1', '--jobs', '8'])
+          (destination / 'build/fork-evidence').mkdir(parents=True)
+          PY
+
+      - name: Run portable renderer tooling contracts and source guard
+        run: |
+          set -euo pipefail
+          python3 -m unittest discover -s tools/fork_baseline/tests -v
+          python3 tools/fork_audit/check.py
+          python3 tools/fork_audit/telemetry.py
+
+      - name: Select pinned Apple toolchain and verify Bazel
+        run: |
+          set -euo pipefail
+          sudo xcode-select -s /Applications/Xcode_27.1.app/Contents/Developer
+          python3 tools/fork_baseline/prepare_host.py 2>&1 | tee build/fork-evidence/host.log
+
+      - name: Build exact renderer host, run native controls and record real navigation
+        env:
+          TELEGRAM_API_ID: ${{ secrets.TELEGRAM_API_ID }}
+          TELEGRAM_API_HASH: ${{ secrets.TELEGRAM_API_HASH }}
+          IOS_BUNDLE_ID: org.livara.ayugram
+        run: |
+          set -euo pipefail
+          umask 077
+          python3 tools/fork_baseline/custom_options_ui.py 2>&1 | tee build/fork-evidence/custom-options-ui.log
+
+      - name: Hash synthetic renderer evidence
+        if: always()
+        run: |
+          python3 - <<'PYTHON'
+          import hashlib
+          from pathlib import Path
+          root = Path('build/fork-evidence')
+          root.mkdir(parents=True, exist_ok=True)
+          lines = []
+          for path in sorted(root.rglob('*')):
+              if path.is_file() and path.name != 'SHA256SUMS':
+                  digest = hashlib.sha256()
+                  with path.open('rb') as source:
+                      for chunk in iter(lambda: source.read(1024 * 1024), b''):
+                          digest.update(chunk)
+                  lines.append(digest.hexdigest() + '  ' + str(path.relative_to(root)) + '\n')
+          (root / 'SHA256SUMS').write_text(''.join(lines))
+          PYTHON
+
+      - name: Publish synthetic renderer tests, source hashes, screenshots and variable-rate video
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: custom-options-ui-${{ github.sha }}
+          path: ${{ github.workspace }}/fork-source/build/fork-evidence/
           if-no-files-found: warn
           retention-days: 7
           include-hidden-files: false

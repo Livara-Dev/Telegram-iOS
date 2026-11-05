@@ -186,3 +186,10 @@ ios_unit_test(
         "//visibility:public",
     ],
 )
+
+# The native renderer harness compiles exactly these production sources.
+filegroup(
+    name = "CustomeOptionsRendererSources",
+    srcs = ["Sources/CustomeOptionsCatalog.swift", "Sources/CustomeOptionsController.swift", "Sources/LocalClientCosmeticsController.swift"],
+    visibility = ["//Tests/CustomeOptionsHost:__pkg__"],
+)
