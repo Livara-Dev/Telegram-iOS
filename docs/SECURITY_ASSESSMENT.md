@@ -66,6 +66,40 @@ available historical Android transport, no active archive replication or E2E
 key lifecycle, and unavailable backend source. The Desktop namespace with the
 same name is a forwarding helper. No sync client or archive upload was added.
 
+## Later candidate review: local chat projections and persisted identities
+
+Source candidates `2b9f003d`, `f3a12c6f` and `dafe9004` add committed archive
+mutation notifications, saved-edit status actions, separate local deleted rows
+and safe raw-peer decoding. This is source review and authored-test evidence;
+their native execution, complete application behavior and recordings remain
+pending. No authentication, MTProto, archive encryption algorithm, dependency
+version or network destination changes accompany these additions.
+
+The SQLCipher observer publishes metadata-only invalidations after successful
+commits. No-op reads and rolled-back transactions do not create notification
+loops. It observes its own database connection; it is not a cross-process
+change service. The production coordinator registers it on a serial callback
+queue and rejects old account epochs and replaced stores. Distinct archive
+rows do not become canonical messages or remote read/pagination targets.
+Visible bodies share revocable tokens, and retention expiration, lock and
+visibility changes clear renderer labels, accessibility text and actions.
+Swift strings do not provide forensic memory zeroization.
+
+Raw persisted peer IDs are checked before Telegram's assertion-bearing decoder.
+Malformed preferences remain read-only; invalid outbox records remain queued
+and visibly block draining. Generic imported archive identities retain local
+timeline/media access without creating a live Telegram peer/message lookup.
+This hardening does not authenticate otherwise valid-looking imported names
+or message contents.
+
+Media preservation is still conditional on a completed source being available
+when the archive worker opens it. Cache eviction or termination before that
+open can leave retained metadata without a captured payload. Tests that drain
+the outbox before clearing the cache cannot establish that this race is absent.
+Captured encrypted payloads are independent of later cache cleanup. Actual
+OS termination, low-storage races, live two-client events, network egress and
+physical-device protection remain separate verification requirements.
+
 ## Assets and trust boundaries
 
 Protect Telegram authorization/session material; message text, metadata and media; archive/history records; archive encryption and recovery keys; sync credentials; filter rules; signing keys and CI secrets. Retained versions and deleted messages are especially sensitive because another party may reasonably expect them to have disappeared.
