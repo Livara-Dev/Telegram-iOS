@@ -9,9 +9,26 @@ public enum LocalMessageFilterLimits {
     public static let maximumRuleIdUTF8Length = 64
     public static let maximumExcludedPeers = 4096
     public static let maximumInputUTF16Length = 32768
+    public static let maximumRegularExpressionSteps = 1_000_000
+    public static let maximumObservedAuthors = 512
     // A maximum-sized version-1 document fits below this bound, including
     // three-byte BMP characters and every excluded peer's Int64 representation.
     static let maximumEncodedSettingsBytes = 128 * 1024
+}
+
+public enum LocalMessageFilterMatchingMode: Int32, Codable {
+    case literal = 0
+    /// Finite-state subset: no backreferences, groups, look-around or recursion.
+    case regularExpression = 1
+}
+
+public enum LocalMessageFilterMediaType: Int32, Codable, CaseIterable {
+    case photo = 0
+    case video = 1
+    case gif = 2
+    case voiceMessage = 3
+    case videoMessage = 4
+    case document = 5
 }
 
 public struct LocalMessageFilterRule: Codable, Equatable {
@@ -20,12 +37,43 @@ public struct LocalMessageFilterRule: Codable, Equatable {
     public let caseSensitive: Bool
     /// Nil applies globally. Otherwise the rule applies only to this local peer ID.
     public let peerId: Int64?
+    public let matchingMode: LocalMessageFilterMatchingMode
+    /// A media-only rule. Text/case/regex fields must be empty/default so a
+    /// stored rule never silently changes between caption and type semantics.
+    public let mediaType: LocalMessageFilterMediaType?
 
-    public init(id: String = UUID().uuidString, text: String, caseSensitive: Bool = false, peerId: Int64? = nil) {
+    public var isSupported: Bool { validLocalMessageFilterRule(self) }
+
+    public init(id: String = UUID().uuidString, text: String, caseSensitive: Bool = false, peerId: Int64? = nil, matchingMode: LocalMessageFilterMatchingMode = .literal, mediaType: LocalMessageFilterMediaType? = nil) {
         self.id = id
         self.text = text
         self.caseSensitive = caseSensitive
         self.peerId = peerId
+        self.matchingMode = matchingMode
+        self.mediaType = mediaType
+    }
+
+    private enum CodingKeys: String, CodingKey { case id, text, caseSensitive, peerId, matchingMode, mediaType }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        self.id = try container.decode(String.self, forKey: .id)
+        self.text = try container.decode(String.self, forKey: .text)
+        self.caseSensitive = try container.decode(Bool.self, forKey: .caseSensitive)
+        self.peerId = try container.decodeIfPresent(Int64.self, forKey: .peerId)
+        self.matchingMode = try container.decodeIfPresent(LocalMessageFilterMatchingMode.self, forKey: .matchingMode) ?? .literal
+        self.mediaType = try container.decodeIfPresent(LocalMessageFilterMediaType.self, forKey: .mediaType)
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(self.id, forKey: .id)
+        try container.encode(self.text, forKey: .text)
+        try container.encode(self.caseSensitive, forKey: .caseSensitive)
+        try container.encodeIfPresent(self.peerId, forKey: .peerId)
+        // Preserve the literal-rule representation and its persistence budget.
+        if self.matchingMode != .literal { try container.encode(self.matchingMode, forKey: .matchingMode) }
+        try container.encodeIfPresent(self.mediaType, forKey: .mediaType)
     }
 }
 
@@ -37,24 +85,33 @@ public struct LocalMessageFilterSettings: Codable, Equatable {
     public let rules: [LocalMessageFilterRule]
     /// Skip global rules in these chats. Explicit rules for the chat still apply.
     public let excludedPeerIds: Set<Int64>
+    public let hideBlockedSenders: Bool
 
-    public init(enabled: Bool = false, rules: [LocalMessageFilterRule] = [], excludedPeerIds: Set<Int64> = []) {
-        self.schemaVersion = 1
+    public init(enabled: Bool = false, rules: [LocalMessageFilterRule] = [], excludedPeerIds: Set<Int64> = [], hideBlockedSenders: Bool = false) {
+        self.schemaVersion = 2
         self.enabled = enabled
         self.rules = rules
         self.excludedPeerIds = excludedPeerIds
+        self.hideBlockedSenders = hideBlockedSenders
     }
 
     private enum CodingKeys: String, CodingKey {
-        case schemaVersion, enabled, rules, excludedPeerIds
+        case schemaVersion, enabled, rules, excludedPeerIds, hideBlockedSenders
     }
 
     public init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
-        self.schemaVersion = try container.decode(Int32.self, forKey: .schemaVersion)
+        let version = try container.decode(Int32.self, forKey: .schemaVersion)
         self.enabled = try container.decode(Bool.self, forKey: .enabled)
         self.rules = try container.decode([LocalMessageFilterRule].self, forKey: .rules)
         self.excludedPeerIds = Set(try container.decode([Int64].self, forKey: .excludedPeerIds))
+        self.hideBlockedSenders = try container.decodeIfPresent(Bool.self, forKey: .hideBlockedSenders) ?? false
+        if version == 1 && (self.hideBlockedSenders || self.rules.contains(where: { $0.matchingMode != .literal || $0.mediaType != nil })) {
+            throw DecodingError.dataCorruptedError(forKey: .schemaVersion, in: container, debugDescription: "Version-1 rules must remain literal")
+        }
+        // Read old policies without rewriting their bytes. The next explicit
+        // change writes version 2, which older clients treat as read-only.
+        self.schemaVersion = version == 1 ? 2 : version
     }
 
     public func encode(to encoder: Encoder) throws {
@@ -63,6 +120,7 @@ public struct LocalMessageFilterSettings: Codable, Equatable {
         try container.encode(self.enabled, forKey: .enabled)
         try container.encode(self.rules, forKey: .rules)
         try container.encode(self.excludedPeerIds.sorted(), forKey: .excludedPeerIds)
+        if self.hideBlockedSenders { try container.encode(true, forKey: .hideBlockedSenders) }
     }
 }
 
@@ -78,12 +136,19 @@ let localMessageFilterSettingsKey = ValueBoxKey("ayugram.message-filter.v1")
 func validLocalMessageFilterRule(_ rule: LocalMessageFilterRule) -> Bool {
     let idLength = rule.id.utf8.prefix(LocalMessageFilterLimits.maximumRuleIdUTF8Length + 1).count
     guard idLength > 0, idLength <= LocalMessageFilterLimits.maximumRuleIdUTF8Length, !rule.id.contains("\0") else { return false }
+    if rule.mediaType != nil {
+        return rule.text.isEmpty && !rule.caseSensitive && rule.matchingMode == .literal
+    }
     let textLength = rule.text.utf16.prefix(LocalMessageFilterLimits.maximumLiteralUTF16Length + 1).count
-    return textLength > 0 && textLength <= LocalMessageFilterLimits.maximumLiteralUTF16Length
+    guard textLength > 0 && textLength <= LocalMessageFilterLimits.maximumLiteralUTF16Length else { return false }
+    if rule.matchingMode == .regularExpression {
+        return LocalMessageFilterRegularExpression(pattern: rule.text, caseSensitive: rule.caseSensitive) != nil
+    }
+    return true
 }
 
 func validLocalMessageFilterSettings(_ settings: LocalMessageFilterSettings) -> Bool {
-    guard settings.schemaVersion == 1, settings.rules.count <= LocalMessageFilterLimits.maximumRules,
+    guard settings.schemaVersion == 2, settings.rules.count <= LocalMessageFilterLimits.maximumRules,
           settings.excludedPeerIds.count <= LocalMessageFilterLimits.maximumExcludedPeers else { return false }
     var seenIds = Set<String>()
     for rule in settings.rules {

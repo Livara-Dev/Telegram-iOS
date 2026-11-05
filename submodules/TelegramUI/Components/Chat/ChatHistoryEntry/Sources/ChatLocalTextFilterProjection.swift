@@ -1,39 +1,46 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 import TelegramCore
 
-/// Immutable text handed to the background evaluator. Matching is valid only
-/// for this exact message revision; a newer edit must never inherit its result.
+/// Immutable filtering inputs handed to the background evaluator. A different
+/// message revision, author, caption or media classification cannot inherit it.
 public struct ChatLocalTextFilterSnapshot {
     public let id: EngineMessage.Id
     public let stableVersion: UInt32
     public let text: String
+    public let authorId: EnginePeer.Id?
+    public let mediaType: LocalMessageFilterMediaType?
 
     public init(message: EngineRawMessage) {
         self.id = message.id
         self.stableVersion = message.stableVersion
         self.text = message.text
+        self.authorId = message.author?.id
+        self.mediaType = localMessageFilterMediaType(message)
     }
 
     public func matches(_ message: EngineRawMessage) -> Bool {
         return self.id == message.id && self.stableVersion == message.stableVersion && self.text == message.text
+            && self.authorId == message.author?.id && self.mediaType == localMessageFilterMediaType(message)
     }
 }
 
-/// Initial rendering support is deliberately limited to ordinary incoming text.
-/// Unknown attributes remain visible rather than accidentally hiding controls,
-/// rich content, a quote, a service action, or an unsupported media node class.
+/// Ordinary incoming text and single generic-bubble media are supported. Keep
+/// secret, protected, timed, grouped, rich and unknown content visible. This
+/// projection never suppresses expiry, consumes media or changes message data.
 public func chatHistoryMessageSupportsLocalTextFiltering(_ message: EngineRawMessage) -> Bool {
     let peerNamespace = message.id.peerId.namespace
     guard message.id.namespace == Namespaces.Message.Cloud, message.id.id > 0,
           peerNamespace == Namespaces.Peer.CloudUser || peerNamespace == Namespaces.Peer.CloudGroup || peerNamespace == Namespaces.Peer.CloudChannel,
           message.flags.contains(.Incoming), !message.flags.contains(.CopyProtected),
-          !message.text.isEmpty, message.media.isEmpty, message.forwardInfo == nil,
+          (!message.text.isEmpty || localMessageFilterMediaType(message) != nil),
+          (message.media.isEmpty || localMessageFilterMediaType(message) != nil), message.forwardInfo == nil,
           message.groupingKey == nil, message.groupInfo == nil else { return false }
     return message.attributes.allSatisfy { attribute in
         attribute is TextEntitiesMessageAttribute || attribute is EditedMessageAttribute
             || attribute is ViewCountMessageAttribute || attribute is ForwardCountMessageAttribute
             || attribute is AuthorSignatureMessageAttribute || attribute is NotificationInfoMessageAttribute
             || attribute is ConsumablePersonalMentionMessageAttribute || attribute is ReportDeliveryMessageAttribute
+            || attribute is ConsumableContentMessageAttribute
     }
 }
 

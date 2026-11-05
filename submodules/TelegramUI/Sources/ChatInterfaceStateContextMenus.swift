@@ -1351,12 +1351,13 @@ func contextMenuForChatPresentationInterfaceState(chatPresentationInterfaceState
         let isCopyProtected = chatPresentationInterfaceState.copyProtectionEnabled || message.isCopyProtected()
         if messages.count == 1, !isScheduled, !isEmbeddedMode, !isCopyProtected,
            chatHistoryMessageSupportsLocalTextFiltering(message) {
-            actions.append(.action(ContextMenuActionItem(text: "Create Text Filter…", icon: { theme in
+            let filterMediaType = localMessageFilterMediaType(message)
+            actions.append(.action(ContextMenuActionItem(text: filterMediaType == nil ? "Create Text Filter…" : "Create Media Filter…", icon: { theme in
                 return generateTintedImage(image: UIImage(bundleImageName: "Chat/Context Menu/Search"), color: theme.actionSheet.primaryTextColor)
             }, action: { _, completion in
                 completion(.dismissWithoutContent)
                 controllerInteraction.navigationController()?.pushViewController(
-                    localMessageFilterRuleEditorController(context: context, peerId: message.id.peerId.toInt64(), initialText: message.text)
+                    localMessageFilterRuleEditorController(context: context, peerId: message.id.peerId.toInt64(), initialText: message.text, initialMediaType: filterMediaType)
                 )
             })))
         }

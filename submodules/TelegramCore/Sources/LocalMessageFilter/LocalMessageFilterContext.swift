@@ -29,8 +29,39 @@ public final class LocalMessageFilterContext {
 
     public func setEnabled(_ enabled: Bool) -> Signal<Bool, NoError> {
         return self.update { current in
-            LocalMessageFilterSettings(enabled: enabled, rules: current.rules, excludedPeerIds: current.excludedPeerIds)
+            LocalMessageFilterSettings(enabled: enabled, rules: current.rules, excludedPeerIds: current.excludedPeerIds, hideBlockedSenders: current.hideBlockedSenders)
         }
+    }
+
+    public func reset() -> Signal<Bool, NoError> {
+        return self.update { _ in LocalMessageFilterSettings() }
+    }
+
+    public func setHideBlockedSenders(_ hide: Bool) -> Signal<Bool, NoError> {
+        return self.update { current in
+            LocalMessageFilterSettings(enabled: current.enabled, rules: current.rules, excludedPeerIds: current.excludedPeerIds, hideBlockedSenders: hide)
+        }
+    }
+
+    /// Observe only local cached block metadata for the current history window.
+    /// This makes no peer fetch/block request. Missing/oversized metadata remains
+    /// visible; block state from another Telegram session is known after sync.
+    public func locallyBlockedAuthors(_ peerIds: [EnginePeer.Id]) -> Signal<Set<EnginePeer.Id>, NoError> {
+        guard peerIds.count <= LocalMessageFilterLimits.maximumObservedAuthors else { return .single([]) }
+        let ids = Set(peerIds.filter { $0.namespace == Namespaces.Peer.CloudUser })
+        guard !ids.isEmpty else { return .single([]) }
+        let keys = ids.map { PostboxViewKey.cachedPeerData(peerId: $0) }
+        return self.postbox.combinedView(keys: keys)
+        |> map { view in
+            var blocked = Set<EnginePeer.Id>()
+            for id in ids {
+                if let cached = (view.views[.cachedPeerData(peerId: id)] as? CachedPeerDataView)?.cachedPeerData as? CachedUserData, cached.isBlocked {
+                    blocked.insert(id)
+                }
+            }
+            return blocked
+        }
+        |> distinctUntilChanged
     }
 
     public func upsertRule(_ rule: LocalMessageFilterRule) -> Signal<Bool, NoError> {
@@ -43,13 +74,13 @@ public final class LocalMessageFilterContext {
                 guard rules.count < LocalMessageFilterLimits.maximumRules else { return nil }
                 rules.append(rule)
             }
-            return LocalMessageFilterSettings(enabled: current.enabled, rules: rules, excludedPeerIds: current.excludedPeerIds)
+            return LocalMessageFilterSettings(enabled: current.enabled, rules: rules, excludedPeerIds: current.excludedPeerIds, hideBlockedSenders: current.hideBlockedSenders)
         }
     }
 
     public func removeRule(id: String) -> Signal<Bool, NoError> {
         return self.update { current in
-            LocalMessageFilterSettings(enabled: current.enabled, rules: current.rules.filter { $0.id != id }, excludedPeerIds: current.excludedPeerIds)
+            LocalMessageFilterSettings(enabled: current.enabled, rules: current.rules.filter { $0.id != id }, excludedPeerIds: current.excludedPeerIds, hideBlockedSenders: current.hideBlockedSenders)
         }
     }
 
@@ -62,7 +93,7 @@ public final class LocalMessageFilterContext {
             } else {
                 peers.remove(peerId)
             }
-            return LocalMessageFilterSettings(enabled: current.enabled, rules: current.rules, excludedPeerIds: peers)
+            return LocalMessageFilterSettings(enabled: current.enabled, rules: current.rules, excludedPeerIds: peers, hideBlockedSenders: current.hideBlockedSenders)
         }
     }
 }

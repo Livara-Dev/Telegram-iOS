@@ -31,13 +31,13 @@ final class ChatLocalTextFilterProjectionTests: XCTestCase {
                          flags: EngineMessage.Flags = [.Incoming], text: String = "an offer",
                          groupingKey: Int64? = nil, groupInfo: EngineMessage.GroupInfo? = nil,
                          forward: EngineMessage.ForwardInfo? = nil,
-                         attributes: [EngineMessage.Attribute] = [], media: [EngineRawMedia] = []) -> EngineRawMessage {
+                         attributes: [EngineMessage.Attribute] = [], media: [EngineRawMedia] = [], author: EngineRawPeer? = nil) -> EngineRawMessage {
         let peerId = EnginePeer.Id(namespace: peerNamespace, id: ._internalFromInt64Value(peerValue))
         return EngineRawMessage(stableId: stableId, stableVersion: 4,
             id: EngineMessage.Id(peerId: peerId, namespace: namespace, id: id ?? Int32(stableId)),
             globallyUniqueId: nil, groupingKey: groupingKey, groupInfo: groupInfo,
             threadId: nil, timestamp: 100 + Int32(stableId), flags: flags, tags: [],
-            globalTags: [], localTags: [], customTags: [], forwardInfo: forward, author: nil,
+            globalTags: [], localTags: [], customTags: [], forwardInfo: forward, author: author,
             text: text, attributes: attributes, media: media, peers: .init(),
             associatedMessages: .init(), associatedMessageIds: [], associatedMedia: [:],
             associatedThreadInfo: nil, associatedStories: [:])
@@ -87,6 +87,105 @@ final class ChatLocalTextFilterProjectionTests: XCTestCase {
         XCTAssertEqual(afterAttributes, expectedAttributes, file: file, line: line)
     }
 
+    private func media(_ type: LocalMessageFilterMediaType) -> EngineRawMedia {
+        if type == .photo {
+            return TelegramMediaImage(imageId: .init(namespace: Namespaces.Media.CloudImage, id: 7601), representations: [], immediateThumbnailData: nil, reference: nil, partialReference: nil, flags: [])
+        }
+        let attributes: [TelegramMediaFileAttribute]
+        let mime: String
+        switch type {
+        case .video: mime = "video/mp4"; attributes = [.Video(duration: 1, size: .init(width: 16, height: 16), flags: [], preloadSize: nil, coverTime: nil, videoCodec: nil)]
+        case .gif: mime = "image/gif"; attributes = [.Animated]
+        case .voiceMessage: mime = "audio/ogg"; attributes = [.Audio(isVoice: true, duration: 1, title: nil, performer: nil, waveform: nil)]
+        case .videoMessage: mime = "video/mp4"; attributes = [.Video(duration: 1, size: .init(width: 16, height: 16), flags: [.instantRoundVideo], preloadSize: nil, coverTime: nil, videoCodec: nil)]
+        case .document: mime = "application/pdf"; attributes = [.FileName(fileName: "fixture.pdf")]
+        case .photo: preconditionFailure("photo handled above")
+        }
+        return TelegramMediaFile(fileId: .init(namespace: Namespaces.Media.CloudFile, id: 7602), partialReference: nil, resource: CloudDocumentMediaResource(datacenterId: 1, fileId: 7602, accessHash: 0, size: 1, fileReference: nil, fileName: nil), previewRepresentations: [], videoThumbnails: [], immediateThumbnailData: nil, mimeType: mime, size: 1, attributes: attributes, alternativeRepresentations: [])
+    }
+
+    private func assertMediaCanHideAndReveal(_ type: LocalMessageFilterMediaType, file: StaticString = #filePath, line: UInt = #line) {
+        let media = self.media(type)
+        let attributes: [EngineMessage.Attribute] = type == .voiceMessage || type == .videoMessage ? [ConsumableContentMessageAttribute(consumed: false)] : []
+        let message = self.message(text: "", attributes: attributes, media: [media])
+        XCTAssertTrue(chatHistoryMessageSupportsLocalTextFiltering(message), String(describing: type), file: file, line: line)
+        XCTAssertEqual(ChatLocalTextFilterSnapshot(message: message).mediaType, type, file: file, line: line)
+        let row = self.row(message)
+        let hidden = chatHistoryApplyingLocalTextFilter([row], matches: self.snapshots([message]), revealed: false)
+        self.assertRow(hidden[0], preserves: row, state: .hidden, file: file, line: line)
+        let visible = chatHistoryApplyingLocalTextFilter(hidden, matches: self.snapshots([message]), revealed: true)
+        self.assertRow(visible[0], preserves: row, state: .revealed, file: file, line: line)
+        let selecting = chatHistoryApplyingLocalTextFilter(hidden, matches: self.snapshots([message]), revealed: false, selectionActive: true)
+        self.assertRow(selecting[0], preserves: row, state: .revealed, file: file, line: line)
+        XCTAssertTrue(message.media[0].isEqual(to: media), file: file, line: line)
+        XCTAssertEqual(message.text, "", file: file, line: line)
+    }
+
+    func testSingleOrdinaryPhotoCanHideAndRevealWithoutChangingItsMedia() { self.assertMediaCanHideAndReveal(.photo) }
+    func testSingleOrdinaryVideoCanHideAndRevealWithoutChangingItsMedia() { self.assertMediaCanHideAndReveal(.video) }
+    func testSingleOrdinaryGIFCanHideAndRevealWithoutChangingItsMedia() { self.assertMediaCanHideAndReveal(.gif) }
+    func testSingleOrdinaryVoiceCanHideAndRevealWithoutConsumingIt() { self.assertMediaCanHideAndReveal(.voiceMessage) }
+    func testSingleOrdinaryRoundVideoCanHideAndRevealWithoutConsumingIt() { self.assertMediaCanHideAndReveal(.videoMessage) }
+    func testSingleOrdinaryDocumentCanHideAndRevealWithoutChangingItsMedia() { self.assertMediaCanHideAndReveal(.document) }
+
+    func testMediaExpiryProtectionGroupingAndUnknownMetadataStayVisible() {
+        for type in LocalMessageFilterMediaType.allCases {
+            let media = self.media(type)
+            let cases = [
+                self.message(flags: [.Incoming, .CopyProtected], text: "", media: [media]),
+                self.message(text: "", attributes: [AutoclearTimeoutMessageAttribute(timeout: 30, countdownBeginTime: nil)], media: [media]),
+                self.message(text: "", attributes: [AutoclearTimeoutMessageAttribute(timeout: Int32.max, countdownBeginTime: nil)], media: [media]),
+                self.message(text: "", attributes: [AutoremoveTimeoutMessageAttribute(timeout: 60, countdownBeginTime: nil)], media: [media]),
+                self.message(text: "", attributes: [UnknownFilterTestAttribute()], media: [media]),
+                self.message(text: "", groupingKey: 71, media: [media]),
+                self.message(text: "", groupInfo: .init(stableId: 72), media: [media]),
+                self.message(peerNamespace: Namespaces.Peer.SecretChat, text: "", media: [media]),
+                self.message(text: "", media: [media, self.media(.photo)])
+            ]
+            for message in cases {
+                XCTAssertFalse(chatHistoryMessageSupportsLocalTextFiltering(message), String(describing: type))
+                let row = self.row(message)
+                let projected = chatHistoryApplyingLocalTextFilter([row], matches: self.snapshots([message]), revealed: false)
+                self.assertRow(projected[0], preserves: row, state: .none)
+            }
+        }
+    }
+
+    private func author(_ value: Int64) -> TelegramUser {
+        return TelegramUser(id: .init(namespace: Namespaces.Peer.CloudUser, id: ._internalFromInt64Value(value)), accessHash: nil, firstName: "Filter fixture", lastName: nil, username: nil, phone: nil, photo: [], botInfo: nil, restrictionInfo: nil, flags: [], emojiStatus: nil, usernames: [], storiesHidden: nil, nameColor: nil, backgroundEmojiId: nil, profileColor: nil, profileBackgroundEmojiId: nil, subscriberCount: nil, verificationIconFileId: nil)
+    }
+
+    func testChangingAuthorOrMediaClassificationInvalidatesAQueuedDecision() {
+        let original = self.message(text: "same caption", media: [self.media(.photo)], author: self.author(7611))
+        let snapshot = ChatLocalTextFilterSnapshot(message: original)
+        for changed in [
+            self.message(text: "same caption", media: [self.media(.video)], author: self.author(7611)),
+            self.message(text: "same caption", media: [self.media(.photo)], author: self.author(7612))
+        ] {
+            XCTAssertFalse(snapshot.matches(changed))
+            let row = self.row(changed)
+            let projected = chatHistoryApplyingLocalTextFilter([row], matches: [changed.id: snapshot], revealed: false)
+            self.assertRow(projected[0], preserves: row, state: .none)
+        }
+    }
+
+    func testStickerAndCustomEmojiNodesCannotBePromotedIntoFilterBubbles() throws {
+        let file = try XCTUnwrap(self.media(.document) as? TelegramMediaFile)
+        let cases: [[TelegramMediaFileAttribute]] = [
+            [.Sticker(displayText: "fixture", packReference: nil, maskData: nil)],
+            [.CustomEmoji(isPremium: false, isSingleColor: false, alt: "fixture", packReference: nil)]
+        ]
+        for attributes in cases {
+            let special = file.withUpdatedAttributes(attributes)
+            let message = self.message(media: [special])
+            XCTAssertNil(localMessageFilterMediaType(message))
+            XCTAssertFalse(chatHistoryMessageSupportsLocalTextFiltering(message))
+            let row = self.row(message)
+            let projected = chatHistoryApplyingLocalTextFilter([row], matches: self.snapshots([message]), revealed: false)
+            self.assertRow(projected[0], preserves: row, state: .none)
+        }
+    }
+
     func testOrdinaryIncomingCloudTextAndAllowedMetadataRemainEligible() {
         let allowed: [EngineMessage.Attribute] = [
             TextEntitiesMessageAttribute(entities: [MessageTextEntity(range: 3..<8, type: .Bold)]),
@@ -113,15 +212,12 @@ final class ChatLocalTextFilterProjectionTests: XCTestCase {
 
     func testUnsupportedContentIsNotHiddenEvenWhenSnapshotMatches() {
         let replyId = self.message().id
-        let image = TelegramMediaImage(imageId: .init(namespace: 0, id: 1), representations: [],
-            immediateThumbnailData: nil, reference: nil, partialReference: nil, flags: [])
         let rich = RichTextMessageAttribute(instantPage: InstantPage(blocks: [.paragraph(.plain("rich offer"))],
             media: [:], isComplete: true, rtl: false, url: "", views: nil), fullInstantPage: nil)
         let cases: [(String, EngineRawMessage)] = [
             ("outgoing", self.message(flags: [])),
             ("protected", self.message(flags: [.Incoming, .CopyProtected])),
             ("empty", self.message(text: "")),
-            ("photo", self.message(media: [image])),
             ("forward", self.message(forward: .init(author: nil, source: nil, sourceMessageId: nil,
                 date: 1, authorSignature: "Author", psaType: nil, flags: []))),
             ("reply", self.message(attributes: [ReplyMessageAttribute(messageId: replyId, threadMessageId: nil,

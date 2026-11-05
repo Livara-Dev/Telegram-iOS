@@ -1261,6 +1261,10 @@ public class Account {
     public var localMessageFilter: LocalMessageFilterContext {
         return LocalMessageFilterContext(postbox: self.postbox)
     }
+
+    public var localPrivacyAds: LocalPrivacyAdsContext {
+        return LocalPrivacyAdsContext(postbox: self.postbox)
+    }
     private(set) var contactSyncManager: ContactSyncManager!
     public private(set) var callSessionManager: CallSessionManager!
     

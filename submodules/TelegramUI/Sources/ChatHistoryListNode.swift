@@ -808,6 +808,7 @@ public final class ChatHistoryListNodeImpl: ASDisplayNode, ChatHistoryNode, Chat
 
     private let adMessagesContext: AdMessagesHistoryContext?
     private var adMessagesDisposable: Disposable?
+    private var localSponsoredMessagesHidden: Bool = false
     private var preloadAdPeerName: String?
     private let preloadAdPeerDisposable = MetaDisposable()
     private var didSetupRecommendedChannelsPreload = false
@@ -1463,9 +1464,24 @@ public final class ChatHistoryListNodeImpl: ASDisplayNode, ChatHistoryNode, Chat
     }
     
     private func beginAdMessageManagement(adMessages: Signal<(interPostInterval: Int32?, messages: [Message], startDelay: Int32?, betweenDelay: Int32?), NoError>) {
-        self.adMessagesDisposable = (adMessages
-        |> deliverOnMainQueue).startStrict(next: { [weak self] interPostInterval, messages, _, _ in
+        self.adMessagesDisposable = (combineLatest(adMessages, self.context.account.localPrivacyAds.settings)
+        |> deliverOnMainQueue).startStrict(next: { [weak self] adData, policy in
             guard let self else {
+                return
+            }
+            self.localSponsoredMessagesHidden = policy.hidesSponsoredMessages
+            let messages = locallyVisibleSponsoredMessages(adData.1, policy: policy)
+            let interPostInterval = adData.0
+            if self.localSponsoredMessagesHidden {
+                // Clear pending as well as visible advertisements: otherwise a
+                // scroll-distance callback could reinsert a hidden dynamic ad.
+                self.pendingDynamicAdMessages.removeAll()
+                self.pendingDynamicAdMessageInterval = nil
+                self.remainingDynamicAdMessageInterval = nil
+                self.remainingDynamicAdMessageDistance = nil
+                self.preloadAdPeerName = nil
+                self.preloadAdPeerDisposable.set(nil)
+                self.allAdMessages = (nil, [], self.allAdMessages.version &+ 1)
                 return
             }
             
@@ -2083,26 +2099,39 @@ public final class ChatHistoryListNodeImpl: ASDisplayNode, ChatHistoryNode, Chat
                 guard chatHistoryMessageSupportsLocalTextFiltering(entry.message) else { return nil }
                 return ChatLocalTextFilterSnapshot(message: entry.message)
             }
-            return Signal { subscriber in
-                let cancelled = Atomic<Bool>(value: false)
-                localFilterQueue.async {
-                    let evaluator = LocalMessageFilterEvaluator(settings: settings)
-                    var matches: [EngineMessage.Id: ChatLocalTextFilterSnapshot] = [:]
-                    for candidate in candidates {
-                        if cancelled.with({ $0 }) { return }
-                        if case .matched = evaluator.evaluate(text: candidate.text, peerId: candidate.id.peerId.toInt64()) {
-                            matches[candidate.id] = candidate
+            let blockedAuthors: Signal<Set<EnginePeer.Id>, NoError>
+            if settings.hideBlockedSenders {
+                let candidateAuthorIds = Array(Set(candidates.compactMap(\.authorId)))
+                blockedAuthors = context.account.localMessageFilter.locallyBlockedAuthors(candidateAuthorIds)
+            } else {
+                blockedAuthors = .single([])
+            }
+            return blockedAuthors
+            |> map { blocked -> Signal<ChatHistoryLocalTextFilterResult, NoError> in
+                return Signal { subscriber in
+                    let cancelled = Atomic<Bool>(value: false)
+                    localFilterQueue.async {
+                        guard !cancelled.with({ $0 }) else { return }
+                        let evaluator = LocalMessageFilterEvaluator(settings: settings)
+                        var matches: [EngineMessage.Id: ChatLocalTextFilterSnapshot] = [:]
+                        for candidate in candidates {
+                            if cancelled.with({ $0 }) { return }
+                            let senderIsBlocked = candidate.authorId.map { blocked.contains($0) } ?? false
+                            if case .matched = evaluator.evaluate(text: candidate.text, peerId: candidate.id.peerId.toInt64(), mediaType: candidate.mediaType, senderIsLocallyBlocked: senderIsBlocked) {
+                                matches[candidate.id] = candidate
+                            }
+                        }
+                        messageViewQueue.async {
+                            guard !cancelled.with({ $0 }), localFilterRevision.with({ $0 }) == revision else { return }
+                            pendingLocalFilterUpdate = nil
+                            subscriber.putNext(ChatHistoryLocalTextFilterResult(update: matchedUpdate, matches: matches, revealed: revealed))
+                            subscriber.putCompletion()
                         }
                     }
-                    messageViewQueue.async {
-                        guard !cancelled.with({ $0 }), localFilterRevision.with({ $0 }) == revision else { return }
-                        pendingLocalFilterUpdate = nil
-                        subscriber.putNext(ChatHistoryLocalTextFilterResult(update: matchedUpdate, matches: matches, revealed: revealed))
-                        subscriber.putCompletion()
-                    }
+                    return ActionDisposable { let _ = cancelled.swap(true) }
                 }
-                return ActionDisposable { let _ = cancelled.swap(true) }
             }
+            |> switchToLatest
         }
         |> switchToLatest
         let historyViewTransitionDisposable = (combineLatest(queue: messageViewQueue,
@@ -3160,6 +3189,7 @@ public final class ChatHistoryListNodeImpl: ASDisplayNode, ChatHistoryNode, Chat
     }
     
     func markAdAsSeen(opaqueId: Data) {
+        guard !self.localSponsoredMessagesHidden else { return }
         for i in 0 ..< self.pendingDynamicAdMessages.count {
             if let pendingAttribute = self.pendingDynamicAdMessages[i].adAttribute, pendingAttribute.opaqueId == opaqueId {
                 self.pendingDynamicAdMessages.remove(at: i)
