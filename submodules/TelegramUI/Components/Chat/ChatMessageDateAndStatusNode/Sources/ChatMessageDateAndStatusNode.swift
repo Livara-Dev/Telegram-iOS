@@ -206,7 +206,7 @@ func packReactionRows(_ itemSizes: [CGSize], width: CGFloat, topInset: CGFloat) 
     return (positions, CGSize(width: widestRow, height: totalHeight), currentRowWidth)
 }
 
-public class ChatMessageDateAndStatusNode: ASDisplayNode {
+public class ChatMessageDateAndStatusNode: ASDisplayNode, UIGestureRecognizerDelegate {
     public struct TrailingReactionSettings {
         public var displayInline: Bool
         public var preferAdditionalInset: Bool
@@ -248,6 +248,9 @@ public class ChatMessageDateAndStatusNode: ASDisplayNode {
         var context: AccountContext
         var presentationData: ChatPresentationData
         var edited: Bool
+        /// Presentation-only label after a local archive lookup proved a saved
+        /// edit exists. Never changes the Telegram message or server timestamp.
+        var localHistoryEditedLabel: String?
         var impressionCount: Int?
         var dateText: String
         var type: ChatMessageDateAndStatusType
@@ -274,6 +277,7 @@ public class ChatMessageDateAndStatusNode: ASDisplayNode {
             context: AccountContext,
             presentationData: ChatPresentationData,
             edited: Bool,
+            localHistoryEditedLabel: String? = nil,
             impressionCount: Int?,
             dateText: String,
             type: ChatMessageDateAndStatusType,
@@ -299,6 +303,7 @@ public class ChatMessageDateAndStatusNode: ASDisplayNode {
             self.context = context
             self.presentationData = presentationData
             self.edited = edited
+            self.localHistoryEditedLabel = localHistoryEditedLabel
             self.impressionCount = impressionCount == 0 ? nil : impressionCount
             self.dateText = dateText
             self.type = type
@@ -348,21 +353,57 @@ public class ChatMessageDateAndStatusNode: ASDisplayNode {
 
     public var openReplies: (() -> Void)?
     public var pressed: (() -> Void)? {
-        didSet {
-            if self.pressed != nil {
-                if self.tapGestureRecognizer == nil {
-                    let tapGestureRecognizer = UITapGestureRecognizer(target: self, action: #selector(self.tapGesture(_:)))
-                    self.tapGestureRecognizer = tapGestureRecognizer
-                    self.view.addGestureRecognizer(tapGestureRecognizer)
-                }
-            } else if let tapGestureRecognizer = self.tapGestureRecognizer{
-                self.tapGestureRecognizer = nil
-                self.view.removeGestureRecognizer(tapGestureRecognizer)
+        didSet { self.updateTapGestureRecognizer() }
+    }
+    /// Unlike the imported-message tooltip's whole-status action, saved history
+    /// owns only the date text. Reaction and reply affordances retain their hits.
+    public var localHistoryPressed: (() -> Void)? {
+        didSet { self.updateTapGestureRecognizer() }
+    }
+
+    private func updateTapGestureRecognizer() {
+        if self.pressed != nil || self.localHistoryPressed != nil {
+            if self.tapGestureRecognizer == nil {
+                let tapGestureRecognizer = UITapGestureRecognizer(target: self, action: #selector(self.tapGesture(_:)))
+                tapGestureRecognizer.delegate = self
+                self.tapGestureRecognizer = tapGestureRecognizer
+                self.view.addGestureRecognizer(tapGestureRecognizer)
             }
+        } else if let tapGestureRecognizer = self.tapGestureRecognizer {
+            self.tapGestureRecognizer = nil
+            self.view.removeGestureRecognizer(tapGestureRecognizer)
         }
+    }
+
+    public func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer, shouldReceive touch: UITouch) -> Bool {
+        // A recognizer on an ancestor receives reaction-button touches too,
+        // regardless of hitTest's result. Reject those before recognition so
+        // it cannot cancel the button's native touch-up action.
+        if self.pressed != nil { return true }
+        guard self.localHistoryPressed != nil, self.dateNode.frame.contains(touch.location(in: self.view)) else { return false }
+        for (_, button) in self.reactionButtonsContainer.buttons {
+            if let touchView = touch.view, touchView.isDescendant(of: button.view) { return false }
+        }
+        return true
     }
     public var reactionSelected: ((ReactionButtonAsyncNode, MessageReaction.Reaction, ContextExtractedContentContainingView?) -> Void)?
     public var openReactionPreview: ((ContextGesture?, ContextExtractedContentContainingView, MessageReaction.Reaction) -> Void)?
+
+    /// Attach the local action to the date text alone. Making the entire status
+    /// node one accessibility element would hide its reaction buttons.
+    public func setLocalHistoryAccessibility(label: String?, action: (() -> Void)?) {
+        self.dateNode.isAccessibilityElement = label != nil && action != nil
+        self.dateNode.accessibilityLabel = label.map { "\($0). Local edit history available" }
+        self.dateNode.accessibilityHint = label == nil ? nil : "Opens saved versions on this device"
+        if let action {
+            self.dateNode.view.accessibilityCustomActions = [UIAccessibilityCustomAction(name: "Open local edit history", actionHandler: { _ in
+                action()
+                return true
+            })]
+        } else {
+            self.dateNode.view.accessibilityCustomActions = nil
+        }
+    }
     
     override public init() {
         self.dateNode = TextNode()
@@ -378,7 +419,11 @@ public class ChatMessageDateAndStatusNode: ASDisplayNode {
     
     @objc private func tapGesture(_ recognizer: UITapGestureRecognizer) {
         if case .ended = recognizer.state {
-            self.pressed?()
+            if self.dateNode.frame.contains(recognizer.location(in: self.view)), let localHistoryPressed = self.localHistoryPressed {
+                localHistoryPressed()
+            } else {
+                self.pressed?()
+            }
         }
     }
     
@@ -604,7 +649,9 @@ public class ChatMessageDateAndStatusNode: ASDisplayNode {
             }
             
             var updatedDateText = arguments.dateText
-            if arguments.edited {
+            if let localHistoryEditedLabel = arguments.localHistoryEditedLabel {
+                updatedDateText = "\(localHistoryEditedLabel) ↶ \(updatedDateText)"
+            } else if arguments.edited {
                 if let useEditedTimestamp = arguments.context.getAppConfigValue("message_primary_edited_date") as? Bool, useEditedTimestamp {
                 } else {
                     updatedDateText = "\(arguments.presentationData.strings.Conversation_MessageEditedLabel) \(updatedDateText)"
@@ -1534,6 +1581,9 @@ public class ChatMessageDateAndStatusNode: ASDisplayNode {
                     return result
                 }
             }
+        }
+        if self.localHistoryPressed != nil, self.dateNode.frame.contains(point) {
+            return self.view
         }
         if self.pressed != nil {
             if self.bounds.contains(point) {

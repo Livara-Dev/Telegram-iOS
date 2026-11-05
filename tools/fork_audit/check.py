@@ -23,6 +23,8 @@ ADDED_PREFIXES = (
     "submodules/TelegramUI/Components/Chat/ChatMessageLocalFilterBubbleContentNode/",
 )
 ADDED_FILES = {
+    'docs/AYUGRAM_INLINE_HISTORY.md',
+    'submodules/SettingsUI/Tests/LocalArchiveInlineHistoryStatusTests.swift',
     'submodules/SettingsUI/Sources/LocalFolderAppearanceController.swift',
     'submodules/TelegramCore/Tests/LocalFolderAppearanceTests.swift',
     'submodules/SettingsUI/Sources/LocalArchiveMediaPreview.swift',
@@ -68,6 +70,8 @@ ADDED_FILES = {
 # gitlinks, stays pinned. An allowlist is a scope tripwire, not a semantic audit of
 # every change within these files; reviewers must inspect their Git diffs.
 REVIEWED_MODIFICATIONS = {
+    'submodules/TelegramUI/Components/Chat/ChatMessageDateAndStatusNode/Sources/ChatMessageDateAndStatusNode.swift': 'verified saved-edit presentation and a date-only archive action preserving reaction hit regions and imported tooltips',
+    'submodules/TelegramUI/Components/Chat/ChatMessageTextBubbleContentNode/Sources/ChatMessageTextBubbleContentNode.swift': 'foreground visible-cell saved-edit query with account/version identity and cancellation; no archived content enters Telegram messages',
     'submodules/ChatListUI/Sources/ChatListFilterPresetListController.swift': 'account-local folder title/color projection; canonical filters and Premium limits remain unchanged',
     'submodules/TelegramUI/Components/ChatList/ChatListFilterTabContainerNode/BUILD': 'direct dependency on the existing pinned SwiftSignalKit for account preference observation',
     'submodules/TelegramUI/Components/ChatList/ChatListFilterTabContainerNode/Sources/ChatListFilterTabContainerNode.swift': 'observe immutable account context and project local folder tags/colors without rewriting canonical titles or order',
@@ -133,14 +137,14 @@ REVIEWED_MODIFICATIONS = {
     'submodules/TelegramCore/Sources/Network/NetworkTelemetry.swift': 'permanently disable production telemetry recording',
     'submodules/TelegramCore/Tests/NetworkTelemetryTests.swift': 'verify remote configuration cannot enable production recording',
 
-    "submodules/SettingsUI/BUILD": "link native archive media reader and gallery tests; use the installed iOS 27.0 test runtime",
+    "submodules/SettingsUI/BUILD": "link native archive media reader, gallery and actual date/status-node tests; use the installed iOS 27.0 test runtime",
     "build-system/Make/tests/test_postbox_import_check.py": "measure tokenizer CPU budget independently of hosted runner descheduling",
     "submodules/Postbox/BUILD": "pin simulator test runner to installed iOS 27.0",
     "submodules/TextFormat/BUILD": "pin simulator test runner to installed iOS 27.0",
     "submodules/TelegramUI/Components/Chat/ChatMessageBubbleItemNode/BUILD": "link the local text-filter placeholder component",
     "submodules/TelegramUI/Components/Chat/ChatHistoryEntry/BUILD": "isolated local text-filter projection test target and host",
     "submodules/TelegramUI/Components/Chat/ChatHistoryEntry/Sources/ChatHistoryEntry.swift": "presentation-only filter state preserving row identity",
-    "submodules/TelegramUI/Components/ChatControllerInteraction/Sources/ChatControllerInteraction.swift": "controller-scoped temporary reveal state",
+    "submodules/TelegramUI/Components/ChatControllerInteraction/Sources/ChatControllerInteraction.swift": "controller-scoped temporary reveal state and separate read-only archive timeline action",
     "submodules/TelegramUI/Sources/ChatHistoryListNode.swift": "off-main literal projection and removal of optional viewport analytics",
     "submodules/TelegramUI/Sources/ChatInterfaceStateContextMenus.swift": "create local literal rule from eligible message text",
     "submodules/TelegramUI/Components/Chat/ChatMessageBubbleItemNode/Sources/ChatMessageBubbleItemNode.swift": "render local text placeholder and guard hidden-message actions",

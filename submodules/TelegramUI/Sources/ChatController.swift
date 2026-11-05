@@ -6053,6 +6053,13 @@ public final class ChatControllerImpl: TelegramBaseController, ChatController, G
         controllerInteraction.enableFullTranslucency = context.sharedContext.energyUsageSettings.fullTranslucency
         
         self.controllerInteraction = controllerInteraction
+        controllerInteraction.openLocalArchiveHistory = { [weak self] messageId in
+            guard let self, self.isNodeLoaded,
+                  self.chatLocation.peerId == messageId.peerId, localArchiveSupportsPeer(messageId.peerId),
+                  messageId.namespace == Namespaces.Message.Cloud, messageId.id > 0,
+                  self.context.account.localArchive != nil else { return }
+            self.push(localArchiveMessageHistoryController(context: self.context, messageId: messageId))
+        }
         controllerInteraction.requestWalletTransferArrival = { [weak self] message in
             self?.walletTransferAnimationCoordinator().requestArrival(message)
         }

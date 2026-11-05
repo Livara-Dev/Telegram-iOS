@@ -19,6 +19,12 @@ final class ArchiveTransferTests: XCTestCase {
             self.used = true; return true
         }
     }
+    private final class MutationLog {
+        private let lock = NSLock()
+        private var value = 0
+        var count: Int { self.lock.lock(); defer { self.lock.unlock() }; return self.value }
+        func record() { self.lock.lock(); self.value += 1; self.lock.unlock() }
+    }
     private var root: URL!
     private var stores: [ArchiveStore] = []
     private let password = "separate local backup passphrase"
@@ -71,6 +77,14 @@ final class ArchiveTransferTests: XCTestCase {
 
     private func records(_ store: ArchiveStore) throws -> [ArchivedRecord] {
         return try self.awaitResult { store.deletedMessages(completion: $0) }
+    }
+
+    private func observeMutations(_ store: ArchiveStore) -> MutationLog {
+        let log = MutationLog()
+        let installed = self.expectation(description: "transfer mutation observer installed")
+        store.setMutationObserver({ log.record() }, completion: { installed.fulfill() })
+        self.wait(for: [installed], timeout: 10)
+        return log
     }
 
     @discardableResult
@@ -134,10 +148,13 @@ final class ArchiveTransferTests: XCTestCase {
         let source = try self.open(1); try self.write(source, [self.event("one", account: 1)])
         let _: Bool = try self.awaitResult { source.recordMedia(eventKey: "one", slot: 0, kind: "photo", mimeType: "image/jpeg", data: Data([1, 2, 3]), generation: 0, completion: $0) }
         let url = try self.export(source), destination = try self.open(2, key: 0x72)
+        let mutations = self.observeMutations(destination)
         _ = try self.restore(destination, url: url)
+        XCTAssertEqual(mutations.count, 1, "transfer COMMIT invalidates before its completion on the serial callback queue")
         let again = try self.restore(destination, url: url)
         XCTAssertEqual(again.addedVersions, 0); XCTAssertEqual(again.duplicateVersions, 1); XCTAssertEqual(again.addedMedia, 0)
         XCTAssertEqual(try self.records(destination).count, 1)
+        XCTAssertEqual(mutations.count, 1, "a no-op repeated import does not invalidate its own readers")
     }
 
     func testWrongPasswordAndWrongTelegramOwnerNeverChangeExistingArchive() throws {
@@ -172,8 +189,12 @@ final class ArchiveTransferTests: XCTestCase {
         try self.write(source, [self.event("new-first", account: 1), self.event("conflict", account: 1, text: "source version")])
         let url = try self.export(source), destination = try self.open(2)
         try self.write(destination, [self.event("conflict", account: 2, text: "destination version")])
+        let mutations = self.observeMutations(destination)
         XCTAssertThrowsError(try self.restore(destination, url: url)) { XCTAssertEqual($0 as? ArchiveTransferError, .conflict) }
         XCTAssertEqual(try self.records(destination).map { $0.event.content.text }, ["destination version"])
+        XCTAssertEqual(mutations.count, 0, "transfer rollback is not a committed mutation")
+        XCTAssertEqual(try self.awaitResult { destination.setRetention(ArchiveRetentionPolicy(), completion: $0) }, 0)
+        XCTAssertEqual(mutations.count, 0, "rolled-back total_changes must not contaminate a later no-op transaction")
     }
 
     func testConflictingMediaRollsBackWholeImportWithBoundedBlobReads() throws {
@@ -352,6 +373,7 @@ final class ArchiveTransferTests: XCTestCase {
         }
         let url = try self.export(source), destination = try self.open(2)
         try self.write(destination, [self.event("keep", account: 2)])
+        let mutations = self.observeMutations(destination)
         let token = ArchiveTransferCancellation()
         let prepared: ArchivePreparedImport = try self.awaitResult {
             ArchiveStore.prepareImport(from: url, password: self.password, ownerId: self.owner,
@@ -367,6 +389,7 @@ final class ArchiveTransferTests: XCTestCase {
         XCTAssertEqual(try self.records(destination).map { $0.event.eventKey }, ["keep"])
         let media: ArchivedMedia? = try self.awaitResult { destination.media(eventKey: "source", slot: 0, completion: $0) }
         XCTAssertNil(media)
+        XCTAssertEqual(mutations.count, 0, "cancelling after a real blob write rolls back without notifying observers")
         let closed = self.expectation(description: "close after cancelled merge")
         destination.close { closed.fulfill() }; self.wait(for: [closed], timeout: 10)
         let reopened = try self.open(2)

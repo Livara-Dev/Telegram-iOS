@@ -17,6 +17,9 @@ public final class ArchiveStore {
     private let clock: () -> Int64
     private var handle: OpaquePointer?
     private var retention: ArchiveRetentionPolicy
+    // Installed/replaced on worker only. The owner supplies a weak, epoch-bound
+    // callback; no contents, identifiers or database handle leave this seam.
+    private var mutationObserver: (() -> Void)?
 
     private init(accountId: Int64, databasePath: String, worker: DispatchQueue,
                  callbackQueue: DispatchQueue, retention: ArchiveRetentionPolicy, clock: @escaping () -> Int64) {
@@ -90,9 +93,26 @@ public final class ArchiveStore {
 
     public func close(completion: @escaping () -> Void = {}) {
         worker.async {
+            self.mutationObserver = nil
             if let handle = self.handle { sqlite3_close_v2(handle); self.handle = nil }
             self.callbackQueue.async(execute: completion)
         }
+    }
+
+    /// One account owner, one observer. The registration acknowledgement is
+    /// queued after installation on the database worker, before subsequent
+    /// writes. Already queued notifications still require the owner's epoch
+    /// check after lock, close or account disposal.
+    public func setMutationObserver(_ observer: (() -> Void)?, completion: @escaping () -> Void = {}) {
+        self.worker.async {
+            self.mutationObserver = self.handle == nil ? nil : observer
+            self.callbackQueue.async(execute: completion)
+        }
+    }
+
+    private func notifyCommittedMutation(handle: OpaquePointer, changesBefore: Int64) {
+        guard sqlite3_total_changes64(handle) != changesBefore, let observer = self.mutationObserver else { return }
+        self.callbackQueue.async(execute: observer)
     }
 
     /// Exports this archive alone, including its encrypted media BLOBs. A fresh
@@ -283,11 +303,13 @@ public final class ArchiveStore {
 
     private func transferTransaction<Value>(handle: OpaquePointer, cancellation: ArchiveTransferCancellation,
                                              operation: () throws -> Value) throws -> Value {
+        let changesBefore = sqlite3_total_changes64(handle)
         try self.execute("BEGIN IMMEDIATE")
         do {
             let value = try operation()
             try cancellation.checkpoint(.beforeCommit)
             try self.execute("COMMIT")
+            self.notifyCommittedMutation(handle: handle, changesBefore: changesBefore)
             return value
         } catch {
             // A cancelled progress handler must not interrupt the rollback that
@@ -999,8 +1021,15 @@ public final class ArchiveStore {
     }
 
     private func transaction<T>(_ operation: () throws -> T) throws -> T {
+        guard let handle = self.handle else { throw ArchiveError.closed }
+        let changesBefore = sqlite3_total_changes64(handle)
         try execute("BEGIN IMMEDIATE")
-        do { let result = try operation(); try execute("COMMIT"); return result }
+        do {
+            let result = try operation()
+            try execute("COMMIT")
+            self.notifyCommittedMutation(handle: handle, changesBefore: changesBefore)
+            return result
+        }
         catch { try? execute("ROLLBACK"); throw error }
     }
 

@@ -90,6 +90,7 @@ public struct LocalArchivePage {
 
 // Injection is internal: production always uses the independently keyed SQLCipher store.
 protocol LocalArchiveStorage: AnyObject {
+    func setMutationObserver(_ observer: (() -> Void)?, completion: @escaping () -> Void)
     func recordFromOutbox(_ capture: ArchiveCapture, index: Int64, generation: Int64, policy: ArchiveCapturePolicy,
                           completion: @escaping (Result<ArchiveWriteResult, ArchiveError>) -> Void)
     func recordMedia(eventKey: String, slot: Int, kind: String, mimeType: String, data: Data, generation: Int64, completion: @escaping (Result<Bool, ArchiveError>) -> Void)
@@ -118,6 +119,9 @@ protocol LocalArchiveStorage: AnyObject {
 }
 
 extension LocalArchiveStorage {
+    // Existing test doubles retain conservative coordinator-side invalidation.
+    // Production ArchiveStore reports even a prune inside a read transaction.
+    func setMutationObserver(_ observer: (() -> Void)?, completion: @escaping () -> Void) { completion() }
     // Test/legacy storage doubles do not acquire real export capability merely
     // by conforming to the capture interface.
     func exportBackup(to destination: URL, password: String, ownerId: Int64?, testingEnvironment: Bool, cancellation: ArchiveTransferCancellation,
@@ -150,6 +154,8 @@ public final class LocalArchiveCoordinator {
     private let subscriptions = DisposableSet()
     private let transactionDisposable = MetaDisposable()
     private let statusValue = ValuePromise<LocalArchiveStatus>(.disabled, ignoreRepeated: true)
+    private let historyRevisionValue = ValuePromise<Int64>(0, ignoreRepeated: true)
+    private var currentHistoryRevision: Int64 = 0
     private var storage: LocalArchiveStorage?
     private var stopped = false
     // True permits a fresh Keychain probe, not an assertion that the device is unlocked.
@@ -164,6 +170,19 @@ public final class LocalArchiveCoordinator {
 
     public var status: Signal<LocalArchiveStatus, NoError> {
         return self.statusValue.get()
+    }
+
+    /// Account-scoped invalidation only: no message ids, contents or file paths.
+    /// Read-only chat projections can requery after a committed mutation even
+    /// when storage status remains browsing/ready (for example snapshot delete).
+    public var historyRevision: Signal<Int64, NoError> {
+        return self.historyRevisionValue.get()
+    }
+
+    private func historyDidChange() {
+        assert(self.queue.isCurrent())
+        self.currentHistoryRevision &+= 1
+        self.historyRevisionValue.set(self.currentHistoryRevision)
     }
 
     public var settings: Signal<LocalArchiveSettings, NoError> {
@@ -309,14 +328,16 @@ public final class LocalArchiveCoordinator {
                         let apply: (LocalArchiveStorage) -> Void = { [weak self] storage in
                             guard let self, self.isCurrent(epoch), !cancellation.isCancelled else { complete(.failed(.cancelled)); return }
                             self.storage = storage
-                            storage.importPreparedBackup(snapshot, ownerId: self.accountPeerId.toInt64(), testingEnvironment: self.testingEnvironment,
-                                expectedGeneration: settings.generation, cancellation: cancellation) { result in
-                                switch result {
-                                case let .success(report):
-                                    complete(.imported(addedVersions: report.addedVersions,
-                                        duplicateVersions: report.duplicateVersions, addedMedia: report.addedMedia,
-                                        removedByRetention: report.removedByRetention))
-                                case let .failure(error): complete(.failed(localArchiveTransferFailure(error)))
+                            self.observeStorage(storage, epoch: epoch) {
+                                storage.importPreparedBackup(snapshot, ownerId: self.accountPeerId.toInt64(), testingEnvironment: self.testingEnvironment,
+                                    expectedGeneration: settings.generation, cancellation: cancellation) { result in
+                                    switch result {
+                                    case let .success(report):
+                                        complete(.imported(addedVersions: report.addedVersions,
+                                            duplicateVersions: report.duplicateVersions, addedMedia: report.addedMedia,
+                                            removedByRetention: report.removedByRetention))
+                                    case let .failure(error): complete(.failed(localArchiveTransferFailure(error)))
+                                    }
                                 }
                             }
                         }
@@ -326,7 +347,7 @@ public final class LocalArchiveCoordinator {
                                                                   maxPayloadBytes: settings.maxPayloadBytes)
                             // Creating a destination is permitted only for this
                             // explicit import after password/owner/integrity checks.
-                            self.storageFactory(self.baseDirectory, self.accountId, retention, true, .global(qos: .utility)) { [weak self] opened in
+                            self.storageFactory(self.baseDirectory, self.accountId, retention, true, self.queue.queue) { [weak self] opened in
                                 self?.queue.justDispatch { [weak self] in
                                     guard let self, self.isCurrent(epoch), !cancellation.isCancelled else {
                                         if case let .success(storage) = opened { storage.close(completion: {}) }
@@ -369,6 +390,8 @@ public final class LocalArchiveCoordinator {
                             subscriber.putNext(.failed(.cancelled)); subscriber.putCompletion(); return
                         }
                         let valid = self.isCurrent(epoch) && self.activeTransfer === cancellation && !cancellation.isCancelled
+                        if valid, case let .imported(addedVersions, _, addedMedia, removedByRetention) = result,
+                           addedVersions > 0 || addedMedia > 0 || removedByRetention > 0 { self.historyDidChange() }
                         if self.activeTransfer === cancellation {
                             self.activeTransfer = nil
                             if valid && !self.activeSettings.enabled {
@@ -488,7 +511,15 @@ public final class LocalArchiveCoordinator {
     public func deleteSnapshot(eventKey: String) -> Signal<Bool, NoError> {
         let operation: Signal<Bool?, NoError> = self.readValue { [weak self] storage, completion in
             guard let self else { completion(.failure(.closed)); return }
-            storage.deleteSnapshot(eventKey: eventKey, generation: self.activeSettings.generation, completion: completion)
+            let epoch = self.epoch
+            storage.deleteSnapshot(eventKey: eventKey, generation: self.activeSettings.generation) { [weak self] result in
+                guard let self else { completion(.failure(.closed)); return }
+                self.queue.justDispatch { [weak self] in
+                    guard let self, self.isCurrent(epoch), self.canRead else { completion(.failure(.closed)); return }
+                    if case .success(true) = result { self.historyDidChange() }
+                    completion(result)
+                }
+            }
         }
         return operation |> map { $0 ?? false }
     }
@@ -508,30 +539,10 @@ public final class LocalArchiveCoordinator {
     }
 
     public func mediaData(eventKey: String, slot: Int) -> Signal<Data?, NoError> {
-        return Signal { [weak self] subscriber in
-            guard let self else {
-                subscriber.putNext(nil); subscriber.putCompletion()
-                return EmptyDisposable
-            }
-            self.queue.justDispatch { [weak self] in
-                guard let self, !self.stopped, self.mayAccessProtectedData, self.canRead, let storage = self.storage else {
-                    subscriber.putNext(nil); subscriber.putCompletion(); return
-                }
-                let epoch = self.epoch
-                storage.media(eventKey: eventKey, slot: slot) { [weak self] result in
-                    guard let self else {
-                        subscriber.putNext(nil); subscriber.putCompletion()
-                        return
-                    }
-                    self.queue.justDispatch { [weak self] in
-                        guard let self, self.isCurrent(epoch), self.canRead else { subscriber.putNext(nil); subscriber.putCompletion(); return }
-                        subscriber.putNext((try? result.get())?.data)
-                        subscriber.putCompletion()
-                    }
-                }
-            }
-            return EmptyDisposable
+        let value: Signal<ArchivedMedia??, NoError> = self.readValue { storage, completion in
+            storage.media(eventKey: eventKey, slot: slot, completion: completion)
         }
+        return value |> map { ($0 ?? nil)?.data }
     }
 
     public func mediaInfo(eventKey: String, slot: Int) -> Signal<ArchivedMediaInfo?, NoError> {
@@ -633,7 +644,9 @@ public final class LocalArchiveCoordinator {
                             return
                         }
                         switch result {
-                        case .success: read(storage, receive)
+                        case let .success(removed):
+                            if removed > 0 { self.historyDidChange() }
+                            read(storage, receive)
                         case let .failure(error): receive(.failure(error))
                         }
                     }
@@ -715,6 +728,20 @@ public final class LocalArchiveCoordinator {
         }))
     }
 
+    private func observeStorage(_ storage: LocalArchiveStorage, epoch: Int64, completion: @escaping () -> Void) {
+        storage.setMutationObserver({ [weak self, weak storage] in
+            self?.queue.justDispatch { [weak self, weak storage] in
+                guard let self, let storage, self.isCurrent(epoch), self.storage === storage else { return }
+                self.historyDidChange()
+            }
+        }, completion: { [weak self, weak storage] in
+            self?.queue.justDispatch { [weak self, weak storage] in
+                guard let self, let storage, self.isCurrent(epoch), self.storage === storage else { return }
+                completion()
+            }
+        })
+    }
+
     private func openIfNeeded(settings: LocalArchiveSettings, epoch: Int64,
                               completion: @escaping (LocalArchiveStorage) -> Void) {
         let retention = ArchiveRetentionPolicy(maxAgeSeconds: settings.maxAgeSeconds, maxPayloadBytes: settings.maxPayloadBytes)
@@ -724,7 +751,9 @@ public final class LocalArchiveCoordinator {
                 self?.queue.justDispatch { [weak self] in
                     guard let self, self.isCurrent(epoch) else { return }
                     switch result {
-                    case .success: completion(storage)
+                    case let .success(removed):
+                        if removed > 0 { self.historyDidChange() }
+                        completion(storage)
                     case .failure: self.failed(.unavailable, epoch: epoch)
                     }
                 }
@@ -748,7 +777,7 @@ public final class LocalArchiveCoordinator {
                 switch result {
                 case let .success(storage):
                     self.storage = storage
-                    applyRetention(storage)
+                    self.observeStorage(storage, epoch: epoch) { applyRetention(storage) }
                 case .failure(.missingArchive):
                     self.statusValue.set(.disabled)
                     self.finished(epoch: epoch)
@@ -789,6 +818,7 @@ public final class LocalArchiveCoordinator {
                             self.failed(.unavailable, epoch: epoch)
                             return
                         }
+                        if written.inserted > 0 || written.removedByRetention > 0 { self.historyDidChange() }
                         let acknowledge: (Bool) -> Void = { [weak self] missing in
                             guard let self, self.isCurrent(epoch) else { return }
                         // Archive commit precedes acknowledgement. A crash here replays
@@ -857,6 +887,9 @@ public final class LocalArchiveCoordinator {
             self?.queue.justDispatch { [weak self] in
                 guard let self, self.isCurrent(epoch) else { return }
                 guard case let .success(retained) = result else { self.failed(.unavailable, epoch: epoch); return }
+                // A successful file-write attempt may also have quota-pruned
+                // snapshots even when this particular attachment did not fit.
+                self.historyDidChange()
                 if retained {
                     self.copyCachedMedia(storage: storage, operation: operation, slot: slot + 1, epoch: epoch, missing: missing, completion: completion)
                 } else {
@@ -871,10 +904,11 @@ public final class LocalArchiveCoordinator {
         storage.purge(advancingToGeneration: settings.generation) { [weak self] result in
             self?.queue.justDispatch { [weak self] in
                 guard let self, self.isCurrent(epoch) else { return }
-                guard case .success = result else {
+                guard case let .success(report) = result else {
                     self.failed(.unavailable, epoch: epoch)
                     return
                 }
+                if report.didPurge { self.historyDidChange() }
                 self.transactionDisposable.set((self.postbox.transaction { [accountPeerId = self.accountPeerId] transaction in
                     var current = localArchiveSettings(transaction: transaction)
                     guard current.isSupported, current.pendingPurge, current.generation == settings.generation else { return }

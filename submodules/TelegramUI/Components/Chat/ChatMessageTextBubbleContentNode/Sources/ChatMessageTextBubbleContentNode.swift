@@ -84,6 +84,12 @@ private func findQuoteRange(string: String, quoteText: String, offset: Int?) -> 
     return currentRange
 }
 
+private func chatTextBubbleSupportsLocalHistory(_ item: ChatMessageBubbleContentItem) -> Bool {
+    guard case .message = item.content else { return false }
+    return !item.presentationData.isPreview && item.associatedData.subject == nil
+        && item.attributes.localTextFilter != .hidden && localArchiveInlineHistorySupportsMessage(EngineMessage(item.message))
+}
+
 public class ChatMessageTextBubbleContentNode: ChatMessageBubbleContentNode {
     public final class ContainerNode: ASDisplayNode {
     }
@@ -125,10 +131,16 @@ public class ChatMessageTextBubbleContentNode: ChatMessageBubbleContentNode {
     private var textRevealController: TextRevealController?
     
     private var relativeDateTimer: (timer: SwiftSignalKit.Timer, period: Int32)?
+
+    private var inlineHistory: (account: ObjectIdentifier, messageId: EngineMessage.Id, version: UInt32, loader: LocalArchiveInlineHistoryLoader)?
+    private var inlineHistoryLabel: String?
+    private var inlineHistoryForeground = false
+    private let inlineHistoryForegroundDisposable = MetaDisposable()
     
     override public var visibility: ListViewItemNodeVisibility {
         didSet {
             if oldValue != self.visibility {
+                self.updateInlineHistoryActivity()
                 switch self.visibility {
                 case .none:
                     self.textNode.visibilityRect = nil
@@ -212,10 +224,62 @@ public class ChatMessageTextBubbleContentNode: ChatMessageBubbleContentNode {
         self.linkProgressDisposable?.dispose()
         self.codeHighlightState?.disposable.dispose()
         self.relativeDateTimer?.timer.invalidate()
+        self.inlineHistoryForegroundDisposable.dispose()
+        // The loader's deinit cancels late work and releases its read lease.
+        self.inlineHistory = nil
+    }
+
+    private func updateInlineHistoryActivity() {
+        let visible: Bool
+        switch self.visibility {
+        case .none: visible = false
+        case .visible: visible = true
+        }
+        self.inlineHistory?.loader.setActive(visible && self.inlineHistoryForeground)
+    }
+
+    private func updateInlineHistory(item: ChatMessageBubbleContentItem) {
+        let message = EngineMessage(item.message)
+        // Album status belongs to a group of canonical messages. It needs a
+        // separate multi-message action rather than an ambiguous single id.
+        let eligible = self.statusNode != nil && chatTextBubbleSupportsLocalHistory(item)
+        let account = ObjectIdentifier(item.context.account)
+        if eligible, let current = self.inlineHistory, current.account == account,
+           current.messageId == message.id, current.version == message.stableVersion { return }
+        self.inlineHistoryForegroundDisposable.set(nil)
+        self.inlineHistory?.loader.dispose()
+        self.inlineHistory = nil
+        self.inlineHistoryLabel = nil
+        self.inlineHistoryForeground = false
+        guard eligible, let archive = item.context.account.localArchive,
+              item.controllerInteraction.openLocalArchiveHistory != nil else { return }
+        let messageId = message.id
+        let loader = LocalArchiveInlineHistoryLoader(archive: archive, presentation: item.context.account.localArchivePresentation,
+                                                    message: message, changed: { [weak self] label in
+            guard let self, let current = self.inlineHistory, current.account == account,
+                  current.messageId == messageId, self.inlineHistoryLabel != label else { return }
+            self.inlineHistoryLabel = label
+            if label == nil {
+                self.statusNode?.localHistoryPressed = nil
+                self.statusNode?.setLocalHistoryAccessibility(label: nil, action: nil)
+            }
+            self.item?.controllerInteraction.requestMessageUpdate(messageId, false, nil)
+        })
+        self.inlineHistory = (account, messageId, message.stableVersion, loader)
+        self.inlineHistoryForegroundDisposable.set((item.context.sharedContext.applicationBindings.applicationInForeground
+        |> distinctUntilChanged
+        |> deliverOnMainQueue).start(next: { [weak self] foreground in
+            guard let self, let current = self.inlineHistory, current.account == account,
+                  current.messageId == messageId else { return }
+            self.inlineHistoryForeground = foreground
+            self.updateInlineHistoryActivity()
+        }))
     }
     
     override public func asyncLayoutContent() -> (_ item: ChatMessageBubbleContentItem, _ layoutConstants: ChatMessageItemLayoutConstants, _ preparePosition: ChatMessageBubblePreparePosition, _ messageSelection: Bool?, _ constrainedSize: CGSize, _ avatarInset: CGFloat) -> (ChatMessageBubbleContentProperties, CGSize?, CGFloat, (CGSize, ChatMessageBubbleContentPosition) -> (CGFloat, (CGFloat) -> (CGSize, (ListViewItemUpdateAnimation, Bool, ListViewItemApply?) -> Void))) {
         let previousItem = self.item
+        let inlineHistory = self.inlineHistory
+        let inlineHistoryLabel = self.inlineHistoryLabel
         
         let textLayout = InteractiveTextNodeWithEntities.asyncLayout(self.textNode)
         let statusLayout = ChatMessageDateAndStatusNode.asyncLayout(self.statusNode)
@@ -709,6 +773,10 @@ public class ChatMessageTextBubbleContentNode: ChatMessageBubbleContentNode {
                         context: item.context,
                         presentationData: item.presentationData,
                         edited: edited && !item.presentationData.isPreview,
+                        localHistoryEditedLabel: inlineHistory?.account == ObjectIdentifier(item.context.account)
+                            && inlineHistory?.messageId == item.message.id
+                            && inlineHistory?.version == item.message.stableVersion
+                            && chatTextBubbleSupportsLocalHistory(item) ? inlineHistoryLabel : nil,
                         impressionCount: !item.presentationData.isPreview ? viewCount : nil,
                         dateText: dateText,
                         type: statusType,
@@ -929,6 +997,9 @@ public class ChatMessageTextBubbleContentNode: ChatMessageBubbleContentNode {
                                 statusNode.removeFromSupernode()
                             }
                             
+                            strongSelf.updateInlineHistory(item: item)
+                            strongSelf.statusNode?.localHistoryPressed = nil
+                            strongSelf.statusNode?.setLocalHistoryAccessibility(label: nil, action: nil)
                             if let forwardInfo = item.message.forwardInfo, forwardInfo.flags.contains(.isImported), let statusNode = strongSelf.statusNode {
                                 statusNode.pressed = {
                                     guard let strongSelf = self, let statusNode = strongSelf.statusNode else {
@@ -936,6 +1007,15 @@ public class ChatMessageTextBubbleContentNode: ChatMessageBubbleContentNode {
                                     }
                                     item.controllerInteraction.displayImportedMessageTooltip(statusNode)
                                 }
+                            } else if strongSelf.inlineHistoryLabel != nil, let statusNode = strongSelf.statusNode {
+                                statusNode.pressed = nil
+                                statusNode.localHistoryPressed = { [weak strongSelf] in
+                                    guard let strongSelf, strongSelf.inlineHistoryLabel != nil,
+                                          let current = strongSelf.item,
+                                          localArchiveInlineHistorySupportsMessage(EngineMessage(current.message)) else { return }
+                                    current.controllerInteraction.openLocalArchiveHistory?(current.message.id)
+                                }
+                                statusNode.setLocalHistoryAccessibility(label: strongSelf.inlineHistoryLabel, action: statusNode.localHistoryPressed)
                             } else {
                                 strongSelf.statusNode?.pressed = nil
                             }

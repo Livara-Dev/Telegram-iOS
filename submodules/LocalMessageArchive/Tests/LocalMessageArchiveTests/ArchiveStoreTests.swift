@@ -41,6 +41,110 @@ final class ArchiveStoreTests: XCTestCase {
         stores.append(store)
         return store
     }
+
+    private final class MutationLog {
+        private let lock = NSLock()
+        private var value = 0
+        var count: Int { self.lock.lock(); defer { self.lock.unlock() }; return self.value }
+        func record() { self.lock.lock(); self.value += 1; self.lock.unlock() }
+    }
+
+    private func observe(_ store: ArchiveStore, log: MutationLog?) {
+        let installed = expectation(description: "serial mutation observer installed")
+        store.setMutationObserver(log.map { log in { log.record() } }, completion: { installed.fulfill() })
+        wait(for: [installed], timeout: 10)
+    }
+
+    func testMutationObserverReportsCommitBeforeCompletionAndNoOpReadsDoNotLoop() throws {
+        let store = try open()
+        let log = MutationLog()
+        observe(store, log: log)
+        _ = try awaitResult { completion in
+            store.record([capture(event("observed"))], generation: 0, policy: enabled) { result in
+                XCTAssertEqual(log.count, 1, "serial callback queue receives committed invalidation before result")
+                completion(result)
+            }
+        }
+        _ = try records(store)
+        _ = try usage(store)
+        XCTAssertEqual(try awaitResult { store.setRetention(ArchiveRetentionPolicy(), completion: $0) }, 0)
+        XCTAssertNil(try awaitResult { store.mediaInfo(eventKey: "observed", slot: 0, completion: $0) })
+        _ = try write(store, [event("observed")])
+        XCTAssertEqual(log.count, 1, "no-op pruning and duplicate reads/writes cannot invalidate their own lookup forever")
+        observe(store, log: nil)
+        _ = try write(store, [event("unobserved")])
+        XCTAssertEqual(log.count, 1)
+    }
+
+    func testMutationObserverIgnoresRolledBackInsertAndResetsBaselineForLaterRead() throws {
+        let store = try open()
+        _ = try write(store, [event("existing")])
+        let log = MutationLog()
+        observe(store, log: log)
+        assertError(.eventConflict) { try write(store, [event("rolled-back"), event("existing", text: "conflict")]) }
+        XCTAssertEqual(log.count, 0)
+        XCTAssertEqual(try records(store).map(\.event.eventKey), ["existing"])
+        XCTAssertEqual(try awaitResult { store.setRetention(ArchiveRetentionPolicy(), completion: $0) }, 0)
+        XCTAssertEqual(log.count, 0, "SQLite total_changes includes rollback work; each new transaction needs its own baseline")
+        _ = try write(store, [event("committed")])
+        XCTAssertEqual(log.count, 1)
+    }
+
+    func testMutationObserverReportsPruneInsideMediaReadWithoutAnInterveningWrite() throws {
+        final class Clock {
+            private let lock = NSLock()
+            private var value: Int64 = 1000
+            func read() -> Int64 { self.lock.lock(); defer { self.lock.unlock() }; return self.value }
+            func advance() { self.lock.lock(); self.value = 2000; self.lock.unlock() }
+        }
+        let clock = Clock()
+        let store = try open(retention: ArchiveRetentionPolicy(maxAgeSeconds: 50), clock: { clock.read() })
+        _ = try write(store, [event("internal-prune", observed: 990)])
+        XCTAssertTrue(try awaitResult { store.recordMedia(eventKey: "internal-prune", slot: 0, kind: "photo", mimeType: "image/jpeg", data: Data([1, 2, 3]), generation: 0, completion: $0) })
+        let log = MutationLog()
+        observe(store, log: log)
+        clock.advance()
+        XCTAssertNil(try awaitResult { store.media(eventKey: "internal-prune", slot: 0, completion: $0) })
+        XCTAssertEqual(log.count, 1)
+        XCTAssertEqual(try usage(store).records, 0)
+        XCTAssertNil(try awaitResult { store.media(eventKey: "internal-prune", slot: 0, completion: $0) })
+        XCTAssertEqual(log.count, 1)
+    }
+
+    func testMutationObserverReportsMediaAndSnapshotDeleteButNotRepeatedNoOpDelete() throws {
+        let store = try open()
+        _ = try write(store, [event("media-delete")])
+        let log = MutationLog()
+        observe(store, log: log)
+        XCTAssertTrue(try awaitResult { store.recordMedia(eventKey: "media-delete", slot: 0, kind: "photo", mimeType: "image/jpeg", data: Data([1, 2, 3]), generation: 0, completion: $0) })
+        XCTAssertEqual(log.count, 1)
+        XCTAssertTrue(try awaitResult { store.deleteSnapshot(eventKey: "media-delete", generation: 0, completion: $0) })
+        XCTAssertEqual(log.count, 2)
+        XCTAssertTrue(try awaitResult { store.deleteSnapshot(eventKey: "media-delete", generation: 0, completion: $0) })
+        XCTAssertEqual(log.count, 2)
+    }
+
+    func testMutationObserverIsAccountScopedAndIsClearedOnClose() throws {
+        let first = try open()
+        let second = try open(account: 2, keys: Keys(0x74))
+        let firstLog = MutationLog()
+        let secondLog = MutationLog()
+        observe(first, log: firstLog)
+        observe(second, log: secondLog)
+        _ = try write(first, [event("same")])
+        XCTAssertEqual(firstLog.count, 1)
+        XCTAssertEqual(secondLog.count, 0)
+        _ = try write(second, [event("same", account: 2)])
+        XCTAssertEqual(firstLog.count, 1)
+        XCTAssertEqual(secondLog.count, 1)
+        close(first)
+        observe(first, log: firstLog)
+        assertError(.closed) { try write(first, [event("closed")]) }
+        XCTAssertEqual(firstLog.count, 1)
+        _ = try purge(second, to: 1)
+        XCTAssertEqual(secondLog.count, 2)
+    }
+
     func testNoAgeExpiryRetainsOldRecordAcrossLaterReopen() throws {
         let store = try open()
         _ = try write(store, [event("old-record", observed: 0)])
