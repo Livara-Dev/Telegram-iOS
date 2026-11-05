@@ -61,6 +61,11 @@ FOCUSED_TEST_TARGETS = (
     "//submodules/LocalMessageArchive:LocalMessageArchiveTests",
     "//submodules/LocalMessageArchive:LocalArchivePlaybackTests",
 )
+# Re-test the shared native hosts alongside the isolated projection host.
+# This is a targeted follow-up, not a full integration/application result.
+PROJECTION_TEST_TARGETS = FOCUSED_TEST_TARGETS + (
+    "//submodules/TelegramUI/Components/Chat/ChatHistoryEntry:ChatLocalTextFilterProjectionTests",
+)
 TEST_EVIDENCE_LIMIT = 2 * 1024 * 1024
 
 
@@ -378,7 +383,7 @@ def retain_integration_test_summary(test_results, targets=INTEGRATION_TEST_TARGE
         "source_commit": output(["git", "rev-parse", "HEAD"]),
         "toolchain": json.loads((ROOT / "versions.json").read_text()),
         "tests": {target: test_results.get(target, "not_run") for target in targets},
-        "validation_scope": "focused" if targets == FOCUSED_TEST_TARGETS else "full",
+        "validation_scope": "focused" if targets == FOCUSED_TEST_TARGETS else "projection" if targets == PROJECTION_TEST_TARGETS else "full",
         "full_integration_suite_requested": targets == INTEGRATION_TEST_TARGETS,
         "tests_only": True,
         "full_application_built": False,
@@ -417,14 +422,18 @@ def publish_artifact(source, destination, mode, bundle_id, build_number, test_re
         staging.rename(destination)
 
 
-def build(mode, env, build_number, integration_tests=False, tests_only=False, focused_tests=False):
+def build(mode, env, build_number, integration_tests=False, tests_only=False, focused_tests=False, projection_tests=False):
     if integration_tests and mode != "simulator":
         raise InvalidSetup("Integration tests require simulator mode")
     if tests_only and not (integration_tests and mode == "simulator"):
         raise InvalidSetup("Tests-only requires simulator mode with integration tests")
     if focused_tests and not (mode == "simulator" and integration_tests and tests_only):
         raise InvalidSetup("Focused tests require simulator --integration-tests --tests-only")
-    targets = FOCUSED_TEST_TARGETS if focused_tests else INTEGRATION_TEST_TARGETS
+    if focused_tests and projection_tests:
+        raise InvalidSetup("Focused and projection test scopes are mutually exclusive")
+    if projection_tests and not (mode == "simulator" and integration_tests and tests_only):
+        raise InvalidSetup("Projection tests require simulator --integration-tests --tests-only")
+    targets = PROJECTION_TEST_TARGETS if projection_tests else FOCUSED_TEST_TARGETS if focused_tests else INTEGRATION_TEST_TARGETS
     config = configuration(env, unsigned=mode != "device")
     bazel = preflight(env, simulator=mode == "simulator")
     destination = ROOT / "build" / ("fork-baseline-" + mode)
@@ -532,7 +541,7 @@ def build(mode, env, build_number, integration_tests=False, tests_only=False, fo
                 # contain command arguments, paths or output; never relay them.
                 print("Warning: Bazel shutdown did not complete; temporary build data cleanup will still run.", flush=True)
     if tests_only:
-        scope = "Focused repair" if focused_tests else "Explicit iOS integration"
+        scope = "Projection and shared-host" if projection_tests else "Focused repair" if focused_tests else "Explicit iOS integration"
         print(scope + " test targets passed. No full application build or IPA was produced.")
     else:
         print(f"Upstream {mode} build completed. IPA requires independent signature/runtime verification.")
@@ -549,8 +558,11 @@ def main():
                         help="Run the fixed Postbox/archive/TelegramCore/TextFormat iOS suites before the full simulator build")
     parser.add_argument("--tests-only", action="store_true",
                         help="With simulator --integration-tests, retain test evidence without building or publishing an app")
-    parser.add_argument("--focused-tests", action="store_true",
-                        help="With simulator --integration-tests --tests-only, run only fixed PasscodeCore/archive/playback repair targets")
+    scope = parser.add_mutually_exclusive_group()
+    scope.add_argument("--focused-tests", action="store_true",
+                       help="With simulator --integration-tests --tests-only, run only fixed PasscodeCore/archive/playback repair targets")
+    scope.add_argument("--projection-tests", action="store_true",
+                       help="With simulator --integration-tests --tests-only, run the fixed repair targets plus the isolated projection host")
     args = parser.parse_args()
     try:
         if args.build_number <= 0:
@@ -561,11 +573,13 @@ def main():
             raise InvalidSetup("Tests-only requires simulator mode with integration tests")
         if args.focused_tests and not (args.mode == "simulator" and args.integration_tests and args.tests_only):
             raise InvalidSetup("Focused tests require simulator --integration-tests --tests-only")
+        if args.projection_tests and not (args.mode == "simulator" and args.integration_tests and args.tests_only):
+            raise InvalidSetup("Projection tests require simulator --integration-tests --tests-only")
         if args.mode == "preflight":
             preflight(os.environ)
             print("Host, Bazel integrity and recursive checkout preflight passed; no iOS build has run.")
         else:
-            build(args.mode, os.environ, args.build_number, integration_tests=args.integration_tests, tests_only=args.tests_only, focused_tests=args.focused_tests)
+            build(args.mode, os.environ, args.build_number, integration_tests=args.integration_tests, tests_only=args.tests_only, focused_tests=args.focused_tests, projection_tests=args.projection_tests)
     except (InvalidSetup, OSError, subprocess.SubprocessError) as exc:
         print("Baseline blocked: " + str(exc), file=sys.stderr)
         return 1

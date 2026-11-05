@@ -103,7 +103,7 @@ ios_unit_test(
     linkopts = ["-framework", "MediaPlayer"],
     minimum_os_version = "15.0",
     runner = ":ChatLocalTextFilterProjectionTestRunner",
-    test_host = ":ChatLocalTextFilterTestHost",
+    test_host = "//Tests/NativeSecurityHost:ProjectionTestHost",
     deps = [":ChatLocalTextFilterProjectionTestsLib"],
     visibility = ["//visibility:public"],
 )

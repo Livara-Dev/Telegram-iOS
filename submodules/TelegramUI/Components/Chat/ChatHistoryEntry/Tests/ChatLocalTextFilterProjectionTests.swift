@@ -17,6 +17,14 @@ private final class UnknownFilterTestAttribute: EngineMessage.Attribute {
 final class ChatLocalTextFilterProjectionTests: XCTestCase {
     private lazy var presentation = ChatPresentationData(presentationData: defaultPresentationData())
 
+    func testProjectionRunsInIsolatedIOSHostWithPresentationResources() {
+        XCTAssertEqual(Bundle.main.bundleIdentifier, "org.livara.ayugram.tests.native-security.projection")
+        XCTAssertEqual(Bundle.main.bundleURL.pathExtension, "app")
+        XCTAssertEqual(Bundle.main.object(forInfoDictionaryKey: "AyuGramProjectionHostDiagnostics") as? Bool, true)
+        XCTAssertNotNil(Bundle.main.url(forResource: "PresentationStrings", withExtension: "data"))
+        XCTAssertNotNil(Bundle.main.path(forResource: "Localizable", ofType: "strings", inDirectory: nil, forLocalization: "en"))
+    }
+
     private func message(stableId: UInt32 = 1, id: Int32? = nil,
                          peerNamespace: EnginePeer.Id.Namespace = Namespaces.Peer.CloudUser, peerValue: Int64 = 1001,
                          namespace: Int32 = Namespaces.Message.Cloud,

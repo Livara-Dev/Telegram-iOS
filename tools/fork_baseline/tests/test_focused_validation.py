@@ -19,6 +19,9 @@ EXPECTED = (
     '//submodules/LocalMessageArchive:LocalMessageArchiveTests',
     '//submodules/LocalMessageArchive:LocalArchivePlaybackTests',
 )
+PROJECTION = EXPECTED + (
+    '//submodules/TelegramUI/Components/Chat/ChatHistoryEntry:ChatLocalTextFilterProjectionTests',
+)
 
 
 def fixture():
@@ -27,7 +30,7 @@ def fixture():
 
 
 class FocusedValidationTests(unittest.TestCase):
-    def run_focused(self, root, fail=None):
+    def run_focused(self, root, fail=None, projection=False):
         invoked = []
         def command(args, env, secrets):
             self.assertIn('test', args)
@@ -42,9 +45,9 @@ class FocusedValidationTests(unittest.TestCase):
         with patch.object(baseline, 'ROOT', root), patch.object(baseline, 'preflight', return_value=Path('/bazel')), patch.object(baseline, 'run_redacted', side_effect=command), patch.object(baseline.subprocess, 'run'), patch.object(baseline, 'output', return_value='c' * 40), patch.object(baseline, 'publish_artifact') as publish, contextlib.redirect_stdout(io.StringIO()):
             if fail:
                 with self.assertRaisesRegex(baseline.InvalidSetup, 'synthetic repair failure'):
-                    baseline.build('simulator', fixture(), 1, integration_tests=True, tests_only=True, focused_tests=True)
+                    baseline.build('simulator', fixture(), 1, integration_tests=True, tests_only=True, focused_tests=not projection, projection_tests=projection)
             else:
-                baseline.build('simulator', fixture(), 1, integration_tests=True, tests_only=True, focused_tests=True)
+                baseline.build('simulator', fixture(), 1, integration_tests=True, tests_only=True, focused_tests=not projection, projection_tests=projection)
             publish.assert_not_called()
         self.assertFalse((root / 'build/fork-baseline-simulator').exists())
         return invoked, json.loads((root / 'build/fork-evidence/integration-tests.json').read_text())
@@ -75,6 +78,43 @@ class FocusedValidationTests(unittest.TestCase):
                     baseline.build(mode, {}, 1, integration_tests=integration, tests_only=tests_only, focused_tests=True)
                 preflight.assert_not_called()
                 configuration.assert_not_called()
+
+    def test_projection_runs_only_fixed_four_targets_and_cannot_publish_an_app(self):
+        with tempfile.TemporaryDirectory() as directory:
+            invoked, summary = self.run_focused(Path(directory), projection=True)
+        self.assertEqual(tuple(invoked), PROJECTION)
+        self.assertEqual(tuple(baseline.PROJECTION_TEST_TARGETS), PROJECTION)
+        self.assertEqual(summary['tests'], dict.fromkeys(PROJECTION, 'passed'))
+        self.assertEqual(summary['validation_scope'], 'projection')
+        self.assertFalse(summary['full_integration_suite_requested'])
+        self.assertFalse(summary['full_application_built'])
+        self.assertFalse(summary['physical_device_verified'])
+
+    def test_projection_failure_still_retests_every_shared_host(self):
+        with tempfile.TemporaryDirectory() as directory:
+            invoked, summary = self.run_focused(Path(directory), fail=PROJECTION[-1], projection=True)
+        self.assertEqual(tuple(invoked), PROJECTION)
+        self.assertEqual(summary['tests'], {target: 'failed' if target == PROJECTION[-1] else 'passed' for target in PROJECTION})
+        self.assertEqual(summary['validation_scope'], 'projection')
+        self.assertFalse(summary['full_application_built'])
+
+    def test_projection_scope_rejects_invalid_modes_and_conflicting_flags_before_setup(self):
+        for mode, integration, tests_only, focused in [
+                ('simulator', False, False, False), ('simulator', True, False, False),
+                ('unsigned-device', False, False, False), ('device', True, True, False),
+                ('preflight', False, False, False), ('simulator', True, True, True)]:
+            with self.subTest(mode=mode, integration=integration, tests_only=tests_only, focused=focused), patch.object(baseline, 'preflight') as preflight, patch.object(baseline, 'configuration') as configuration:
+                with self.assertRaises(baseline.InvalidSetup):
+                    baseline.build(mode, {}, 1, integration_tests=integration, tests_only=tests_only, focused_tests=focused, projection_tests=True)
+                preflight.assert_not_called()
+                configuration.assert_not_called()
+
+    def test_cli_scopes_are_mutually_exclusive_before_preflight(self):
+        with patch.object(sys, 'argv', ['baseline.py', 'simulator', '--integration-tests', '--tests-only', '--focused-tests', '--projection-tests']), patch.object(baseline, 'preflight') as preflight, contextlib.redirect_stderr(io.StringIO()):
+            with self.assertRaises(SystemExit) as error:
+                baseline.main()
+            self.assertEqual(error.exception.code, 2)
+            preflight.assert_not_called()
 
     def test_full_summary_remains_all_requested_targets(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -138,6 +178,15 @@ class FocusedWorkflowRoutingTests(unittest.TestCase):
             self.assertFalse(self.condition('application-build', 'workflow_dispatch', 'focused', device))
             self.assertFalse(self.condition('unsigned-device-build', 'workflow_dispatch', 'focused', device))
 
+    def test_projection_dispatch_starts_only_fixed_native_test_job(self):
+        for device in (False, True):
+            with self.subTest(device=device):
+                self.assertTrue(self.condition('integration-tests', 'workflow_dispatch', 'projection', device))
+                for job in ('application-build', 'unsigned-device-build', 'native-api-probe', 'startup-artifact-replay'):
+                    self.assertFalse(self.condition(job, 'workflow_dispatch', 'projection', device))
+        self.assertIn('options: [full, focused, projection, probe, startup]', WORKFLOW.read_text())
+        self.assertIn('projection) repair_options+=(--projection-tests)', WORKFLOW.read_text())
+
     def test_startup_scope_runs_only_artifact_replay_without_any_compilation(self):
         for device in (False, True):
             with self.subTest(device=device):
@@ -150,7 +199,7 @@ class FocusedWorkflowRoutingTests(unittest.TestCase):
     def test_replay_concurrency_is_source_scoped_without_replacing_full_qualification(self):
         block = WORKFLOW.read_text().split('concurrency:\n', 1)[1].split('\njobs:', 1)[0]
         expression = re.search(r'^  group: \$\{\{ (.+) \}\}$', block, re.M).group(1)
-        for event, scope in [('push', 'startup'), ('push', ''), ('workflow_dispatch', 'full'), ('workflow_dispatch', 'focused'), ('workflow_dispatch', 'probe')]:
+        for event, scope in [('push', 'startup'), ('push', ''), ('workflow_dispatch', 'full'), ('workflow_dispatch', 'focused'), ('workflow_dispatch', 'projection'), ('workflow_dispatch', 'probe')]:
             self.assertEqual(self.expression(expression, event, scope, True), 'ayugram-qualification')
         self.assertEqual(self.expression(expression, 'workflow_dispatch', 'startup', False), 'ayugram-startup-replay-' + 'c' * 40)
         self.assertEqual(self.expression(expression, 'workflow_dispatch', 'startup', False, 'd' * 40), 'ayugram-startup-replay-' + 'd' * 40)

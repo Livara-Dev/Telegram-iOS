@@ -67,3 +67,28 @@ ios_application(
     deps = [":NativeSecurityTestHostLib"],
     visibility = ["//submodules/LocalMessageArchive:__pkg__"],
 )
+
+plist_fragment(
+    name = "ProjectionTestHostDiagnosticInfo",
+    extension = "plist",
+    template = """
+    <key>AyuGramProjectionHostDiagnostics</key><true/>
+    """,
+)
+
+# Run projection tests through the same verified UIKit entry point as the
+# security/media suites. PresentationData still reads genuine main-bundle data.
+ios_application(
+    name = "ProjectionTestHost",
+    testonly = True,
+    bundle_id = "org.livara.ayugram.tests.native-security.projection",
+    families = ["iphone"],
+    minimum_os_version = "15.0",
+    infoplists = [":NativeSecurityTestHostInfo", ":ProjectionTestHostDiagnosticInfo"],
+    resources = [
+        "//Telegram:AppStringResources",
+        "//Telegram:GeneratedPresentationStrings/Resources/PresentationStrings.data",
+    ],
+    deps = [":NativeSecurityTestHostLib"],
+    visibility = ["//submodules/TelegramUI/Components/Chat/ChatHistoryEntry:__pkg__"],
+)
