@@ -377,7 +377,7 @@ def retain_test_evidence(bazel_root, secrets, outcome, test_target=TEST_TARGET, 
     (destination / "collection.json").write_text(json.dumps(summary, indent=2) + "\n")
 
 
-def retain_integration_test_summary(test_results, targets=INTEGRATION_TEST_TARGETS):
+def retain_integration_test_summary(test_results, targets=INTEGRATION_TEST_TARGETS, tests_only=True):
     destination = ROOT / "build/fork-evidence"
     for directory in (ROOT / "build", destination):
         if directory.is_symlink():
@@ -389,7 +389,8 @@ def retain_integration_test_summary(test_results, targets=INTEGRATION_TEST_TARGE
         "tests": {target: test_results.get(target, "not_run") for target in targets},
         "validation_scope": "focused" if targets == FOCUSED_TEST_TARGETS else "projection" if targets == PROJECTION_TEST_TARGETS else "projection-only" if targets == PROJECTION_ONLY_TEST_TARGETS else "full",
         "full_integration_suite_requested": targets == INTEGRATION_TEST_TARGETS,
-        "tests_only": True,
+        "tests_only": tests_only,
+        "full_application_build_requested": not tests_only,
         "full_application_built": False,
         "physical_device_verified": False,
     }
@@ -518,7 +519,7 @@ def build(mode, env, build_number, integration_tests=False, tests_only=False, fo
                 finally:
                     test_results[target] = test_outcome
                     try:
-                        if tests_only:
+                        if integration_tests:
                             retain_test_evidence(temporary / "bazel-root", secret_values, test_outcome, target, prebuild=True)
                         else:
                             retain_test_evidence(temporary / "bazel-root", secret_values, test_outcome, target)
@@ -536,8 +537,16 @@ def build(mode, env, build_number, integration_tests=False, tests_only=False, fo
                 try:
                     run_tests(targets, continue_after_failure=tests_only)
                 finally:
-                    if tests_only:
-                        retain_integration_test_summary(test_results, targets=targets)
+                    # Persist the pre-build snapshot even when a native suite
+                    # fails. The IPA manifest separately records a completed app
+                    # build; this summary never claims one prematurely.
+                    native_failure = sys.exc_info()[0] is not None
+                    try:
+                        retain_integration_test_summary(test_results, targets=targets, tests_only=tests_only)
+                    except (OSError, InvalidSetup, ValueError, TypeError):
+                        if not native_failure:
+                            raise
+                        print("Integration summary could not be retained; original native failure is preserved.", flush=True)
             if not tests_only:
                 try:
                     run_redacted(common + ["build"] + base + ["--buildNumber=" + str(build_number), "--configuration=" + ("debug_sim_arm64" if mode == "simulator" else "release_arm64"), "--lock"], child_env, secret_values)

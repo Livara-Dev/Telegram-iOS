@@ -1,4 +1,5 @@
 """Prevent feature commits from multiplying expensive hosted Apple builds."""
+import ast
 from pathlib import Path
 import re
 import unittest
@@ -7,6 +8,36 @@ WORKFLOWS = Path(__file__).resolve().parents[3] / ".github/workflows"
 
 
 class CIRoutingTests(unittest.TestCase):
+    def job(self, name):
+        source = (WORKFLOWS / "archive-integration.yml").read_text()
+        match = re.search(r"(?ms)^  " + re.escape(name) + r":\n(.*?)(?=^  [a-z-]+:\n|\Z)", source)
+        self.assertIsNotNone(match, "Required qualification job is missing")
+        return match.group(1)
+
+    def step(self, job, name):
+        match = re.search(r"(?ms)^      - name: " + re.escape(name) + r"\n(.*?)(?=^      - name: |\Z)", job)
+        self.assertIsNotNone(match, "Required qualification step is missing")
+        return match.group(1)
+
+    def allows(self, job, event, scope):
+        condition = re.search(r"^    if: (.+)$", self.job(job), re.M)
+        self.assertIsNotNone(condition)
+        expression = condition.group(1).replace("github.event_name", "event").replace("inputs.validation_scope", "scope").replace("||", "or").replace("&&", "and")
+        values = {"event": event, "scope": scope}
+        def value(node):
+            if isinstance(node, ast.Name):
+                return values[node.id]
+            if isinstance(node, ast.Constant) and isinstance(node.value, str):
+                return node.value
+            if isinstance(node, ast.BoolOp) and isinstance(node.op, (ast.And, ast.Or)):
+                children = [bool(value(item)) for item in node.values]
+                return all(children) if isinstance(node.op, ast.And) else any(children)
+            if isinstance(node, ast.Compare) and len(node.ops) == 1 and isinstance(node.ops[0], (ast.Eq, ast.NotEq)):
+                equal = value(node.left) == value(node.comparators[0])
+                return equal if isinstance(node.ops[0], ast.Eq) else not equal
+            self.fail("Unsupported qualification routing condition")
+        return bool(value(ast.parse(expression, mode="eval").body))
+
     def test_only_verification_branch_automatically_starts_full_build(self):
         source = (WORKFLOWS / "archive-integration.yml").read_text()
         events = source.split("on:\n", 1)[1].split("\npermissions:", 1)[0]
@@ -29,11 +60,55 @@ class CIRoutingTests(unittest.TestCase):
                 self.assertEqual(re.findall(r"^  ([a-z_]+):", events, re.M), ["workflow_dispatch"])
                 self.assertNotIn("cancel-in-progress: true", source)
 
-    def test_startup_build_is_independent_of_unrelated_native_failures(self):
-        source = (WORKFLOWS / "archive-integration.yml").read_text()
-        application = source.split("  application-build:\n", 1)[1]
+    def test_full_qualification_runs_tests_and_app_in_one_private_build_root(self):
+        application = self.job("application-build")
         self.assertNotIn("needs: integration-tests", application)
-        self.assertIn("baseline.py simulator", application)
+        build = self.step(application, "Build the full simulator app and run TextFormat regression tests")
+        commands = re.findall(r"^          python3 tools/fork_baseline/baseline\.py simulator (.+)$", build, re.M)
+        self.assertEqual(len(commands), 1)
+        self.assertIn("--integration-tests", commands[0])
+        self.assertNotIn("--tests-only", commands[0])
+        self.assertNotIn("--focused-tests", commands[0])
+        self.assertNotIn("--projection-tests", commands[0])
+        self.assertEqual(application.count("python3 tools/fork_baseline/baseline.py simulator"), 1)
+
+    def test_full_and_targeted_dispatch_do_not_duplicate_simulator_compilation(self):
+        excluded = {"full", "", "probe", "startup", "custom-options-ui"}
+        for event in ("push", "workflow_dispatch"):
+            for scope in (*sorted(excluded), "native-only", "focused", "projection", "projection-only", "invalid"):
+                with self.subTest(event=event, scope=scope):
+                    self.assertEqual(self.allows("integration-tests", event, scope), event == "workflow_dispatch" and scope not in excluded)
+                    self.assertEqual(self.allows("application-build", event, scope), event == "push" or scope in {"full", ""})
+        native = self.job("integration-tests")
+        self.assertIn('case "$VALIDATION_SCOPE" in', native)
+        self.assertIn('*) echo "Invalid validation scope" >&2; exit 1', native)
+        self.assertIn('repair_options=(--integration-tests --tests-only)', native)
+
+    def test_full_branding_and_two_launch_smoke_require_successful_combined_build(self):
+        application = self.job("application-build")
+        build_name = "Build the full simulator app and run TextFormat regression tests"
+        for name, command in (
+                ("Verify active fork branding in the full simulator IPA", "branding.py --ipa build/fork-baseline-simulator/Telegram.ipa"),
+                ("Launch the real simulator application twice on a fresh device", "launch_smoke.py --ipa build/fork-baseline-simulator/Telegram.ipa")):
+            with self.subTest(step=name):
+                step = self.step(application, name)
+                self.assertIn(command, step)
+                self.assertGreater(application.index(name), application.index(build_name))
+                self.assertLess(application.index(name), application.index("Publish simulator build evidence and successful package"))
+                self.assertNotIn("continue-on-error:", step)
+                condition = re.search(r"^        if: (.+)$", step, re.M)
+                # Missing `if` has GitHub's success() behavior. Explicitly
+                # running after a failed native/build gate is not acceptable.
+                if condition:
+                    self.assertEqual(condition.group(1), "success()")
+        self.assertIn("name: archive-integration-${{ github.sha }}", application)
+
+    def test_full_job_always_retains_native_evidence_for_a_failure_before_app_build(self):
+        application = self.job("application-build")
+        artifact = re.search(r"(?ms)^      - name: [^\n]+\n(?:(?!^      - name: ).)*?name: archive-integration-tests-\$\{\{ github.sha \}\}.*?(?=^      - name: |\Z)", application)
+        self.assertIsNotNone(artifact, "A failed native suite must still publish its evidence")
+        self.assertIn("        if: always()\n", artifact.group(0))
+        self.assertIn("path: ${{ github.workspace }}/fork-source/build/fork-evidence/", artifact.group(0))
 
     def test_only_sanitized_public_downloads_enter_the_shared_cache(self):
         source = (WORKFLOWS / "archive-integration.yml").read_text()

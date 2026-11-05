@@ -17,11 +17,16 @@ branch to the exact reviewed source batch once; do not create a throwaway commit
 or retry a healthy run merely to get a different runner.
 
 `archive-integration.yml` uses the global `ayugram-qualification` concurrency group
-with `cancel-in-progress: false`. Its integration and unsigned device jobs may run
-alongside the simulator startup build on that one revision. The simulator job
-runs independently of unrelated suite failures; release qualification still
-requires all integration suites to pass. A newer pending batch supersedes an older pending
-batch while the active run is preserved. Standalone storage, compatibility and
+with `cancel-in-progress: false`. For full/push qualification, the existing
+`application-build` job runs all eight native integration targets before compiling
+the simulator app in the same private Bazel session. A native failure stops the
+simulator app build. The independent unsigned device job can run alongside it;
+its output alone is not a qualified release. The standalone `integration-tests`
+job is reserved for targeted/manual scopes, so full qualification does not
+compile the shared simulator modules on two separate runners. No private
+compiled cache leaves the ephemeral session, and no build-time claim of less
+than ten minutes is made without measurement. A newer pending batch supersedes
+an older pending batch while the active run is preserved. Standalone storage, compatibility and
 legacy baseline workflows remain available through explicit manual dispatch.
 These are diagnostic alternatives, not automatic duplicate runs.
 
@@ -80,14 +85,23 @@ native suite. Its separate source-scoped queue preserves native qualification.
 Run 42073979469 stopped at Bazel analysis because the diagnostic runner lacked
 `testonly = True` while depending on its test-only capture hook. The runner
 attribute was corrected without changing application code. Run 42075582797
-validates that revision in `projection-only` scope; it is active at this
-checkpoint. No full application rebuild was submitted for either tool repair.
+completed in `projection-only` scope with thirteen passing cases after two
+initial launch stalls/reboots. No full application rebuild was submitted for
+either tool repair.
 
 The `focused` scope selects only PasscodeCore, archive and encrypted playback.
 The `projection` scope retains those three suites plus Projection;
 `projection-only` selects the single Projection suite for diagnosing its host.
-All three scopes skip simulator/device application compilation. No throwaway
+`native-only` runs all eight native suites without building the complete app;
+`custom-options-ui` builds only the production-renderer fixture and its tests.
+All targeted scopes skip simulator/device application compilation. No throwaway
 canonical-branch push is needed to diagnose a test harness.
+
+The combined full-mode native summary is a pre-build checkpoint: it records
+`full_application_build_requested: true` and `full_application_built: false`.
+The separate IPA qualification manifest records completed compilation. Native
+logs and this checkpoint are retained even when the later app build fails;
+neither a checkpoint nor successful compilation establishes physical installation.
 
 An unsigned device artifact is build output only. Its source commit, device
 Mach-O platform and SHA-256 must match its manifest; same-commit integration,

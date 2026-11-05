@@ -389,20 +389,22 @@ class FocusedWorkflowRoutingTests(unittest.TestCase):
             command = 'branding.py --ipa build/fork-baseline-' + mode + '/Telegram.ipa --bundle org.livara.ayugram --output build/fork-evidence/branding.json'
             self.assertIn(command, section)
             self.assertLess(section.index('baseline.py ' + mode), section.index(command))
-            self.assertLess(section.index(command), section.index('      - name: Publish'))
+            package_step = 'Publish simulator build evidence and successful package' if mode == 'simulator' else 'Publish unsigned device package and build evidence'
+            self.assertLess(section.index(command), section.index('      - name: ' + package_step))
         for job in ('integration-tests', 'native-api-probe', 'startup-artifact-replay', 'custom-options-ui'):
             self.assertNotIn('branding.py', self.section(job))
 
     def test_full_push_and_legacy_dispatch_keep_existing_build_behavior(self):
         for event, scope, device, expected_device in [('push', 'focused', False, True), ('push', '', False, True), ('workflow_dispatch', 'full', True, True), ('workflow_dispatch', '', True, True), ('workflow_dispatch', 'full', False, False)]:
             with self.subTest(event=event, scope=scope, device=device):
-                self.assertTrue(self.condition('integration-tests', event, scope, device))
+                self.assertFalse(self.condition('integration-tests', event, scope, device))
                 self.assertTrue(self.condition('application-build', event, scope, device))
                 self.assertEqual(self.condition('unsigned-device-build', event, scope, device), expected_device)
 
     def test_unknown_scope_cannot_start_full_application_jobs(self):
         for job in ('application-build', 'unsigned-device-build'):
             self.assertFalse(self.condition(job, 'workflow_dispatch', 'invalid', True))
+        self.assertTrue(self.condition('integration-tests', 'workflow_dispatch', 'invalid', True))
         source = WORKFLOW.read_text()
         self.assertIn("          VALIDATION_SCOPE: ${{ inputs.validation_scope || 'full' }}", source)
         self.assertIn('case "$VALIDATION_SCOPE" in', source)

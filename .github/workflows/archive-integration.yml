@@ -45,7 +45,9 @@ concurrency:
 
 jobs:
   integration-tests:
-    if: github.event_name == 'push' || (inputs.validation_scope != 'probe' && inputs.validation_scope != 'startup' && inputs.validation_scope != 'custom-options-ui')
+    # Full qualification runs these suites in the app job's same private Bazel
+    # root. Unknown manual scopes still enter the strict shell case and fail.
+    if: github.event_name == 'workflow_dispatch' && inputs.validation_scope != 'full' && inputs.validation_scope != '' && inputs.validation_scope != 'probe' && inputs.validation_scope != 'startup' && inputs.validation_scope != 'custom-options-ui'
     # macos-latest does not satisfy versions.json. This preview image does;
     # prepare_host.py additionally verifies the actual OS/Xcode versions.
     runs-on: xcode-27
@@ -370,8 +372,8 @@ jobs:
 
   application-build:
     if: github.event_name == 'push' || inputs.validation_scope == 'full' || inputs.validation_scope == ''
-    # Startup smoke must still run when an unrelated archive/projection test
-    # fails. Its result is separate from overall native release qualification.
+    # All eight integration suites must pass before the full simulator app is
+    # compiled in the same ephemeral Bazel root. No private build cache is shared.
     # macos-latest does not satisfy versions.json. This preview image does;
     # prepare_host.py additionally verifies the actual OS/Xcode versions.
     runs-on: xcode-27
@@ -473,9 +475,9 @@ jobs:
           xcrun simctl list runtimes --json 2>&1 | tee build/fork-evidence/runtime.log
           python3 tools/fork_baseline/prepare_host.py --simulator
 
-      # This job checks out the same requested SHA on a fresh hosted runner.
-      # Core compilation may repeat; only pinned public downloads are shared.
-      # Startup smoke reuses this job's produced simulator IPA, not another build.
+      # Reuse this invocation's private Bazel outputs after all eight native
+      # suites pass. A test failure stops the app build; only public downloads
+      # leave the private root. Startup smoke uses this exact produced IPA.
       - name: Build the full simulator app and run TextFormat regression tests
         env:
           TELEGRAM_API_ID: ${{ secrets.TELEGRAM_API_ID }}
@@ -485,7 +487,32 @@ jobs:
         run: |
           set -euo pipefail
           umask 077
-          python3 tools/fork_baseline/baseline.py simulator --build-number "${{ github.run_number }}" 2>&1 | tee build/fork-evidence/simulator.log
+          python3 tools/fork_baseline/baseline.py simulator --integration-tests --build-number "${{ github.run_number }}" 2>&1 | tee build/fork-evidence/simulator.log
+
+      - name: Hash early integration test evidence
+        if: always()
+        run: |
+          python3 - <<'PY'
+          import hashlib
+          from pathlib import Path
+          evidence = Path('build/fork-evidence')
+          evidence.mkdir(parents=True, exist_ok=True)
+          files = sorted(p for p in evidence.rglob('*') if p.is_file() and p.name != 'SHA256SUMS')
+          (evidence / 'SHA256SUMS').write_text(''.join(
+              hashlib.sha256(p.read_bytes()).hexdigest() + '  ' + str(p.relative_to(evidence)) + '\n'
+              for p in files))
+          PY
+
+      - name: Publish native integration evidence before startup smoke
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: archive-integration-tests-${{ github.sha }}
+          path: ${{ github.workspace }}/fork-source/build/fork-evidence/
+          if-no-files-found: warn
+          retention-days: 7
+          include-hidden-files: false
+
 
       - name: Verify active fork branding in the full simulator IPA
         run: python3 tools/fork_baseline/branding.py --ipa build/fork-baseline-simulator/Telegram.ipa --bundle org.livara.ayugram --output build/fork-evidence/branding.json
