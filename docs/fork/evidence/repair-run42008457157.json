@@ -1,0 +1,56 @@
+{
+  "source_commit": "32ee28dabdf6baa57e2ced0b8a82fa6716be797e",
+  "run_id": 42008457157,
+  "overall_result": "failure",
+  "integration_job": 127181088332,
+  "device_job": 127181088192,
+  "simulator_job": 127181087981,
+  "full_application_failure": "Passcode.swift127 deprecated kSecUseAuthenticationUIFail with warnings-as-errors",
+  "integration_artifact": {
+    "id": 13407303617,
+    "sha256": "f9ce7b6889c7e6c89c1f9538df3d98d7d6317094ce6097a28de479ec27b436b0",
+    "outer_and_inner_checksums_verified": true
+  },
+  "suites": {
+    "PasscodeCore": {
+      "executed": 0,
+      "result": "failed to compile"
+    },
+    "Postbox": {
+      "executed": 201,
+      "failures": 0
+    },
+    "LocalMessageArchive": {
+      "executed": 77,
+      "failures": 0
+    },
+    "TelegramCore": {
+      "executed": 543,
+      "failures": 0
+    },
+    "LocalArchivePlayback": {
+      "executed": 6,
+      "failures": 2,
+      "protected_file_control": "passed",
+      "encrypted_round_trip_bytes": "passed",
+      "custom_loader_metadata_requests": 1,
+      "custom_loader_byte_range_requests": 0,
+      "failure": "AVFoundation -11800 / POSIX 1 for encrypted and memory sources"
+    },
+    "TextFormat": {
+      "executed": 270,
+      "failures": 0
+    },
+    "SettingsUI": {
+      "executed": 0,
+      "result": "PasscodeCore failed to compile"
+    },
+    "ChatLocalTextFilterProjection": {
+      "executed": 0,
+      "result": "PasscodeCore failed to compile"
+    }
+  },
+  "new_ipa_produced": false,
+  "startup_smoke_ran": false,
+  "physical_device_verified": false
+}

@@ -5,6 +5,11 @@ on:
     branches: [ci/verify-latest]
   workflow_dispatch:
     inputs:
+      validation_scope:
+        description: Focused native repair tests only, or full app qualification
+        type: choice
+        options: [full, focused]
+        default: full
       unsigned_device:
         description: Compile an unsigned device IPA alongside exact-commit integration tests
         type: boolean
@@ -127,6 +132,7 @@ jobs:
       - name: Run real iOS integration suites
         id: integration_tests
         env:
+          VALIDATION_SCOPE: ${{ inputs.validation_scope || 'full' }}
           TELEGRAM_API_ID: ${{ secrets.TELEGRAM_API_ID }}
           TELEGRAM_API_HASH: ${{ secrets.TELEGRAM_API_HASH }}
           IOS_BUNDLE_ID: org.livara.ayugram
@@ -134,7 +140,13 @@ jobs:
         run: |
           set -euo pipefail
           umask 077
-          python3 tools/fork_baseline/baseline.py simulator --integration-tests --tests-only 2>&1 | tee build/fork-evidence/integration-tests.log
+          repair_options=(--integration-tests --tests-only)
+          case "$VALIDATION_SCOPE" in
+            focused) repair_options+=(--focused-tests) ;;
+            full) ;;
+            *) echo "Invalid validation scope" >&2; exit 1 ;;
+          esac
+          python3 tools/fork_baseline/baseline.py simulator "${repair_options[@]}" 2>&1 | tee build/fork-evidence/integration-tests.log
 
       - name: Export verified public dependency downloads
         continue-on-error: true
@@ -178,7 +190,7 @@ jobs:
   unsigned-device-build:
     # Compilation must not wait for an unrelated simulator to boot. Passing
     # same-commit integration tests remains a separate release requirement.
-    if: github.event_name == 'push' || inputs.unsigned_device
+    if: github.event_name == 'push' || ((inputs.validation_scope == 'full' || inputs.validation_scope == '') && inputs.unsigned_device)
     # macos-latest does not satisfy versions.json. This preview image does;
     # prepare_host.py additionally verifies the actual OS/Xcode versions.
     runs-on: xcode-27
@@ -333,6 +345,7 @@ jobs:
       # integration artifacts, not a telemetry-free release or an installable signed IPA.
 
   application-build:
+    if: github.event_name == 'push' || inputs.validation_scope == 'full' || inputs.validation_scope == ''
     # Startup smoke must still run when an unrelated archive/projection test
     # fails. Its result is separate from overall native release qualification.
     # macos-latest does not satisfy versions.json. This preview image does;
