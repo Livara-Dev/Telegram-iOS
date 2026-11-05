@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- SPDX-License-Identifier: GPL-2.0-or-later; original AyuGram iOS artwork. -->
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
+<title>AyuGram local companion</title>
+<path fill="#FFFFFF" fill-rule="evenodd" d="M282 490 C282 353 382 250 512 250 C642 250 742 353 742 490 L742 739 C742 765 725 780 702 770 L638 737 C626 731 616 732 606 741 L541 794 C524 808 500 808 483 794 L418 741 C408 732 398 731 386 737 L322 770 C299 780 282 765 282 739 Z M415 470 a30 40 0 1 0 60 0 a30 40 0 1 0 -60 0 Z M549 470 a30 40 0 1 0 60 0 a30 40 0 1 0 -60 0 Z"/>
+</svg>

@@ -162,6 +162,18 @@ typedef enum {
         
         _headlines = @[ _englishStrings[@"Tour.Title1"], _englishStrings[@"Tour.Title2"],  _englishStrings[@"Tour.Title6"], _englishStrings[@"Tour.Title3"], _englishStrings[@"Tour.Title4"], _englishStrings[@"Tour.Title5"]];
         _descriptions = @[_englishStrings[@"Tour.Text1"], _englishStrings[@"Tour.Text2"],  _englishStrings[@"Tour.Text6"], _englishStrings[@"Tour.Text3"], _englishStrings[@"Tour.Text4"], _englishStrings[@"Tour.Text5"]];
+        // The configured fork has its own identity. This changes presentation
+        // only; authentication, localization selection and tour callbacks stay
+        // on the existing Telegram flow.
+        if ([[[NSBundle mainBundle] objectForInfoDictionaryKey:@"AyuGramBaseBundleIdentifier"] isKindOfClass:[NSString class]]) {
+            NSMutableArray *headlines = [_headlines mutableCopy];
+            NSMutableArray *descriptions = [_descriptions mutableCopy];
+            headlines[0] = @"AyuGram";
+            descriptions[0] = @"Independent client built with the Telegram API.\nLocal tools are in Settings → Custome options.";
+            _headlines = headlines;
+            _descriptions = descriptions;
+        }
+
         
         __weak RMIntroViewController *weakSelf = self;
         _didEnterBackgroundObserver = [[NSNotificationCenter defaultCenter] addObserverForName:UIApplicationDidEnterBackgroundNotification object:nil queue:nil usingBlock:^(__unused NSNotification *notification)
