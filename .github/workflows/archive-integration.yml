@@ -6,6 +6,11 @@ name: Archive application integration (hosted macOS)
 on:
   workflow_dispatch:
     inputs:
+      validation_scope:
+        description: Focused native repair tests only, or full app qualification
+        type: choice
+        options: [full, focused]
+        default: full
       unsigned_device:
         description: Compile an unsigned device IPA alongside exact-commit integration tests
         type: boolean
