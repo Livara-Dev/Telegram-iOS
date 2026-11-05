@@ -12,13 +12,18 @@ on:
         options: [full, focused, probe, startup, projection]
         default: full
       replay_run:
-        description: Startup only on integration/ayu-current; source simulator run ID
+        description: Startup replay; source simulator run ID
         type: string
         default: ''
       replay_source:
         description: Startup only; full compiled application source SHA
         type: string
         default: ''
+      startup_variant:
+        description: Startup control on ci/startup-replay
+        type: choice
+        options: [original, main-app-only]
+        default: original
       unsigned_device:
         description: Compile an unsigned device IPA alongside exact-commit integration tests
         type: boolean
@@ -33,5 +38,5 @@ jobs:
     steps:
       - name: Select the prepared verification revision
         run: |
-          echo "::error::Select ci/verify-latest for full qualification, or integration/ayu-current for startup artifact replay and focused diagnostics."
+          echo "::error::Select ci/verify-latest for full qualification, integration/ayu-current for native diagnostics, or ci/startup-replay for main-app-only artifact replay."
           exit 1
