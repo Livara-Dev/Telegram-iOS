@@ -44,6 +44,7 @@ final class ArchivePlaybackTests: XCTestCase {
         private var rangeRequests = 0
         private var requestedBytes = 0
         init(_ bytes: Data) { self.bytes = bytes }
+        var requestedRangeCount: Int { lock.lock(); defer { lock.unlock() }; return rangeRequests }
         var diagnosticCounts: String {
             lock.lock(); defer { lock.unlock() }
             return "metadataRequests=\(informationRequests), rangeRequests=\(rangeRequests), requestedBytes=\(requestedBytes)"
@@ -128,6 +129,12 @@ final class ArchivePlaybackTests: XCTestCase {
         return movie
     }
 
+    // Independent synthetic white H.264 fixture, 0.4s versus the black
+    // fixture's 0.2s. Different durations detect accidental resource reuse.
+    private func secondMovieFixture() throws -> Data {
+        return try XCTUnwrap(Data(base64Encoded: "AAAAIGZ0eXBpc29tAAACAGlzb21pc28yYXZjMW1wNDEAAAOwbW9vdgAAAGxtdmhkAAAAAAAAAAAAAAAAAAAD6AAAAZAAAQAAAQAAAAAAAAAAAAAAAAEAAAAAAAAAAAAAAAAAAAABAAAAAAAAAAAAAAAAAABAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAgAAAtt0cmFrAAAAXHRraGQAAAADAAAAAAAAAAAAAAABAAAAAAAAAZAAAAAAAAAAAAAAAAAAAAAAAAEAAAAAAAAAAAAAAAAAAAABAAAAAAAAAAAAAAAAAABAAAAAABAAAAAQAAAAAAAkZWR0cwAAABxlbHN0AAAAAAAAAAEAAAGQAAAEAAABAAAAAAJTbWRpYQAAACBtZGhkAAAAAAAAAAAAAAAAAAAyAAAAFABVxAAAAAAALWhkbHIAAAAAAAAAAHZpZGUAAAAAAAAAAAAAAABWaWRlb0hhbmRsZXIAAAAB/m1pbmYAAAAUdm1oZAAAAAEAAAAAAAAAAAAAACRkaW5mAAAAHGRyZWYAAAAAAAAAAQAAAAx1cmwgAAAAAQAAAb5zdGJsAAAAvnN0c2QAAAAAAAAAAQAAAK5hdmMxAAAAAAAAAAEAAAAAAAAAAAAAAAAAAAAAABAAEABIAAAASAAAAAAAAAABFUxhdmM2MS4xOS4xMDEgbGlieDI2NAAAAAAAAAAAAAAAGP//AAAANGF2Y0MBZAAK/+EAF2dkAAqs2V7ARAAAAwAEAAADAMg8SJZYAQAGaOvjyyLA/fj4AAAAABBwYXNwAAAAAQAAAAEAAAAUYnRydAAAAAAAAEDsAAAAAAAAABhzdHRzAAAAAAAAAAEAAAAKAAACAAAAABRzdHNzAAAAAAAAAAEAAAABAAAAYGN0dHMAAAAAAAAACgAAAAEAAAQAAAAAAQAACgAAAAABAAAEAAAAAAEAAAAAAAAAAQAAAgAAAAABAAAKAAAAAAEAAAQAAAAAAQAAAAAAAAABAAACAAAAAAEAAAQAAAAAHHN0c2MAAAAAAAAAAQAAAAEAAAAKAAAAAQAAADxzdHN6AAAAAAAAAAAAAAAKAAACxQAAAAwAAAAMAAAADAAAAAwAAAASAAAADgAAAAwAAAAMAAAAEgAAABRzdGNvAAAAAAAAAAEAAAPgAAAAYXVkdGEAAABZbWV0YQAAAAAAAAAhaGRscgAAAAAAAAAAbWRpcmFwcGwAAAAAAAAAAAAAAAAsaWxzdAAAACSpdG9vAAAAHGRhdGEAAAABAAAAAExhdmY2MS43LjEwMwAAAAhmcmVlAAADR21kYXQAAAKuBgX//6rcRem95tlIt5Ys2CDZI+7veDI2NCAtIGNvcmUgMTY0IHIzMTA4IDMxZTE5ZjkgLSBILjI2NC9NUEVHLTQgQVZDIGNvZGVjIC0gQ29weWxlZnQgMjAwMy0yMDIzIC0gaHR0cDovL3d3dy52aWRlb2xhbi5vcmcveDI2NC5odG1sIC0gb3B0aW9uczogY2FiYWM9MSByZWY9MyBkZWJsb2NrPTE6MDowIGFuYWx5c2U9MHgzOjB4MTEzIG1lPWhleCBzdWJtZT03IHBzeT0xIHBzeV9yZD0xLjAwOjAuMDAgbWl4ZWRfcmVmPTEgbWVfcmFuZ2U9MTYgY2hyb21hX21lPTEgdHJlbGxpcz0xIDh4OGRjdD0xIGNxbT0wIGRlYWR6b25lPTIxLDExIGZhc3RfcHNraXA9MSBjaHJvbWFfcXBfb2Zmc2V0PS0yIHRocmVhZHM9MSBsb29rYWhlYWRfdGhyZWFkcz0xIHNsaWNlZF90aHJlYWRzPTAgbnI9MCBkZWNpbWF0ZT0xIGludGVybGFjZWQ9MCBibHVyYXlfY29tcGF0PTAgY29uc3RyYWluZWRfaW50cmE9MCBiZnJhbWVzPTMgYl9weXJhbWlkPTIgYl9hZGFwdD0xIGJfYmlhcz0wIGRpcmVjdD0xIHdlaWdodGI9MSBvcGVuX2dvcD0wIHdlaWdodHA9MiBrZXlpbnQ9MjUwIGtleWludF9taW49MjUgc2NlbmVjdXQ9NDAgaW50cmFfcmVmcmVzaD0wIHJjX2xvb2thaGVhZD00MCByYz1jcmYgbWJ0cmVlPTEgY3JmPTIzLjAgcWNvbXA9MC42MCBxcG1pbj0wIHFwbWF4PTY5IHFwc3RlcD00IGlwX3JhdGlvPTEuNDAgYXE9MToxLjAwAIAAAAAPZYiEADf//vbw/gU2O5lBAAAACEGaJGxDf/7gAAAACEGeQniF/8GBAAAACAGeYXRCv8SAAAAACAGeY2pCv8SBAAAADkGaaEmoQWiZTAhf//7hAAAACkGehkURLC//wYEAAAAIAZ6ldEK/xIEAAAAIAZ6nakK/xIAAAAAOQZqpSahBbJlMCFf//sA="))
+    }
+
     func testMovieDecodesFromEncryptedArchiveAfterCacheFileRemovalAndRestart() async throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent("archive-playback-" + UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: root) }
@@ -157,7 +164,7 @@ final class ArchivePlaybackTests: XCTestCase {
         let playback = ArchivePlaybackAsset(source: source)
         XCTAssertEqual(playback.asset.referenceRestrictions, .forbidAll)
         XCTAssertEqual(playback.asset.url.scheme, "ayugram-archive")
-        XCTAssertEqual(playback.asset.url.host, "resource")
+        XCTAssertNotNil(playback.asset.url.host.flatMap { UUID(uuidString: $0) })
         XCTAssertTrue(playback.asset.url.path.isEmpty)
         if await self.assertMovieDecodes(playback.asset, stage: "encrypted-archive-loader", diagnostics: { source.diagnosticCounts }) {
             XCTAssertFalse(source.requestedLengths.isEmpty)
@@ -165,6 +172,46 @@ final class ArchivePlaybackTests: XCTestCase {
         }
         playback.stop()
         await close(reopened)
+    }
+
+    func testEachAssetHasAnIndependentOpaqueResourceIdentity() {
+        let first = ArchivePlaybackAsset(source: MemorySource(Data()))
+        let second = ArchivePlaybackAsset(source: MemorySource(Data()))
+        defer { first.stop(); second.stop() }
+        XCTAssertNotEqual(first.asset.url, second.asset.url)
+        for asset in [first.asset, second.asset] {
+            XCTAssertEqual(asset.url.scheme, "ayugram-archive")
+            XCTAssertNotNil(asset.url.host.flatMap { UUID(uuidString: $0) })
+            XCTAssertTrue(asset.url.path.isEmpty)
+            XCTAssertNil(asset.url.query)
+            XCTAssertEqual(asset.referenceRestrictions, .forbidAll)
+        }
+    }
+
+    func testFailedAssetDoesNotPoisonIndependentValidAssets() async throws {
+        let unavailable = ArchivePlaybackAsset(source: UnavailableSource())
+        do { _ = try await unavailable.asset.load(.duration); XCTFail("Unavailable asset must fail") }
+        catch { }
+        unavailable.stop()
+
+        let firstSource = MemorySource(try self.movieFixture())
+        let secondSource = MemorySource(try self.secondMovieFixture())
+        let first = ArchivePlaybackAsset(source: firstSource)
+        let second = ArchivePlaybackAsset(source: secondSource)
+        defer { first.stop(); second.stop() }
+        XCTAssertNotEqual(unavailable.asset.url, first.asset.url)
+        XCTAssertNotEqual(first.asset.url, second.asset.url)
+        XCTAssertEqual(first.asset.referenceRestrictions, .forbidAll)
+        XCTAssertEqual(second.asset.referenceRestrictions, .forbidAll)
+        let firstDecoded = await self.assertMovieDecodes(first.asset, stage: "first-independent-memory-loader", diagnostics: { firstSource.diagnosticCounts })
+        let secondDecoded = await self.assertMovieDecodes(second.asset, stage: "second-independent-memory-loader", diagnostics: { secondSource.diagnosticCounts })
+        guard firstDecoded && secondDecoded else { return }
+        let firstDuration = try await first.asset.load(.duration)
+        let secondDuration = try await second.asset.load(.duration)
+        XCTAssertEqual(CMTimeGetSeconds(firstDuration), 0.2, accuracy: 0.01)
+        XCTAssertEqual(CMTimeGetSeconds(secondDuration), 0.4, accuracy: 0.01)
+        XCTAssertGreaterThan(firstSource.requestedRangeCount, 0)
+        XCTAssertGreaterThan(secondSource.requestedRangeCount, 0)
     }
 
     func testSyntheticMovieDecodesThroughMemoryLoaderWithExternalReferencesForbidden() async throws {
