@@ -57,7 +57,8 @@ def validate_startup(device, simulator, proof, result):
         raise ReplayError('startup_variant_not_verified')
     checked = prior_smoke_report(result)
     if (checked.get('passed') is not True or checked.get('phase') != 'complete' or checked.get('failure') is not None
-            or len(checked['launches']) != 2):
+            or len(checked['launches']) != 2 or checked.get('screenshot_checker') !=
+            {'compiled': True, 'self_test_passed': True, 'self_test_cases': 3}):
         raise ReplayError('startup_variant_not_verified')
     for attempt, launch in enumerate(checked['launches'], 1):
         if (launch.get('attempt') != attempt or launch.get('storage_kind') != 'private'

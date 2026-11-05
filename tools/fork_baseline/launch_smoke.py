@@ -30,7 +30,8 @@ STAGES = READY | {'applicationEntered', 'windowCreated', 'sceneAttached', 'stora
 FAILURES = {'storageUnavailable', 'keychainUnavailable', 'storageConfiguration', 'initializationUnavailable'}
 MARKER = 'Library/Application Support/AyuGram/LaunchDiagnostics/latest.json'
 STORAGE_SELECTION = 'org.livara.ayugram.startup-storage.v1'
-PHASES = {'extractApplication', 'createDevice', 'bootDevice', 'waitForBoot',
+PHASES = {'extractApplication', 'compileScreenshotChecker', 'testScreenshotChecker',
+          'createDevice', 'bootDevice', 'waitForBoot',
           'installApplication', 'startRecording', 'launchApplication', 'getContainer',
           'waitForInterface', 'captureScreenshot', 'checkScreenshot', 'checkStorageSelection', 'complete',
           'shutdownDevice', 'deleteDevice', 'stopRecording', 'unknownPhase'}
@@ -134,9 +135,40 @@ def safe_system_errors(data):
     return errors
 
 
-def command(arguments, timeout=120, phase='extractApplication'):
+def write_compiler_log(path, data, arguments):
+    """Retain only bounded diagnostics from the fixed public host helper."""
+    path = Path(path)
+    if path.name != 'checker-compiler.log' or path.is_symlink() or not path.parent.is_dir():
+        raise ValueError('Invalid compiler diagnostics destination')
+    text = data[:COMMAND_OUTPUT_LIMIT].decode('utf-8', errors='replace')
+    prefixes = {}
+    for root, label in ((Path(__file__).resolve().parents[2], '<SOURCE_ROOT>'),
+                        (Path.home(), '<HOME_ROOT>'),
+                        (Path(arguments[-1]).parent, '<CHECKER_TEMP>'),
+                        (Path(tempfile.gettempdir()), '<TEMP_ROOT>')):
+        for candidate in (root, root.resolve()):
+            if candidate.is_absolute() and str(candidate) != '/': prefixes[str(candidate)] = label
+    for prefix in sorted(prefixes, key=len, reverse=True):
+        text = text.replace(prefix, prefixes[prefix])
+    # The fixed helper has no credentials. Also fail closed on recognizable
+    # credential assignments/tokens if a tool ever prints unexpected context.
+    text = re.sub(r'(?im)^.*\b(?:GH_TOKEN|GITHUB_TOKEN|TELEGRAM_API_HASH|TELEGRAM_API_ID|PASSWORD|AUTHORIZATION|SESSION_TOKEN)\b\s*[:=].*$',
+                  '<REDACTED_CREDENTIAL>', text)
+    text = re.sub(r'\b(?:gh[pousr]_[A-Za-z0-9_]{16,}|github_pat_[A-Za-z0-9_]{16,})\b',
+                  '<REDACTED_CREDENTIAL>', text)
+    with path.open('wb') as output:
+        path.chmod(0o600)
+        output.write(text.encode('utf-8')[:COMMAND_OUTPUT_LIMIT])
+
+
+def command(arguments, timeout=120, phase='extractApplication', compiler_log=None):
     if phase not in PHASES:
         raise ValueError('Unknown startup command phase')
+    if compiler_log is not None:
+        public_compiler = ['xcrun', 'swiftc', '-O', '-framework', 'CoreGraphics', '-framework', 'ImageIO',
+                           str(Path(__file__).with_name('screenshot_check.swift')), '-o']
+        if phase != 'compileScreenshotChecker' or arguments[:-1] != public_compiler or len(arguments) != 10:
+            raise ValueError('Only the fixed public checker compiler can retain diagnostics')
     process = None
     captured = {'stdout': bytearray(), 'stderr': bytearray()}
     deadline = time.monotonic() + timeout
@@ -181,6 +213,8 @@ def command(arguments, timeout=120, phase='extractApplication'):
             except subprocess.SubprocessError: pass
             if process.stdout is not None: process.stdout.close()
             if process.stderr is not None: process.stderr.close()
+        if compiler_log is not None:
+            write_compiler_log(compiler_log, captured['stderr'], arguments)
 
 
 def read_storage_kind(path, expected='private'):
@@ -196,6 +230,32 @@ def read_storage_kind(path, expected='private'):
             selection.get('kind') != expected):
         raise ValueError('Expected private storage was not observed')
     return 'private'
+
+
+def prepare_screenshot_checker(directory, compiler_log=None):
+    """Compile once before any simulator boot; run native synthetic controls."""
+    binary = Path(directory) / 'screenshot-check'
+    command(['xcrun', 'swiftc', '-O', '-framework', 'CoreGraphics', '-framework', 'ImageIO',
+             str(Path(__file__).with_name('screenshot_check.swift')), '-o', str(binary)],
+            timeout=300, phase='compileScreenshotChecker', compiler_log=compiler_log)
+    if binary.is_symlink() or not binary.is_file() or not 0 < binary.stat().st_size <= 20 * 1024**2:
+        raise SmokeError('invalidScreenshotEvidence', 'compileScreenshotChecker')
+    try:
+        result = json.loads(command([str(binary), '--self-test'], timeout=30, phase='testScreenshotChecker'))
+    except ValueError:
+        raise SmokeError('invalidScreenshotEvidence', 'testScreenshotChecker') from None
+    if (not isinstance(result, dict) or set(result) != {'self_test_passed', 'cases'} or
+            result['self_test_passed'] is not True or type(result['cases']) is not int or result['cases'] != 3):
+        raise SmokeError('invalidScreenshotEvidence', 'testScreenshotChecker')
+    return binary
+
+
+def persist_report(output, report):
+    """Persist only the closed evidence schema, including incomplete attempts."""
+    temporary = Path(output) / '.result.json.tmp'
+    temporary.write_text(json.dumps(report, indent=2) + '\n')
+    temporary.chmod(0o600)
+    temporary.replace(Path(output) / 'result.json')
 
 
 def smoke(ipa, output, expected_storage_kind=None):
@@ -214,6 +274,9 @@ def smoke(ipa, output, expected_storage_kind=None):
     try:
         with tempfile.TemporaryDirectory(prefix='ayu-launch-smoke-') as temporary:
             app = extract_app(ipa, Path(temporary) / 'Telegram.app')
+            report['phase'] = 'compileScreenshotChecker'
+            checker = prepare_screenshot_checker(temporary, compiler_log=output / 'checker-compiler.log')
+            report['screenshot_checker'] = {'compiled': True, 'self_test_passed': True, 'self_test_cases': 3}
             report['phase'] = 'createDevice'
             identifier = command(['xcrun', 'simctl', 'create', 'AYU_SMOKE_' + uuid.uuid4().hex,
                                   'com.apple.CoreSimulator.SimDeviceType.iPhone-17',
@@ -260,25 +323,31 @@ def smoke(ipa, output, expected_storage_kind=None):
                         if stage['failure'] is not None or stage['stage'] in READY:
                             break
                         time.sleep(0.5)
-                    time.sleep(0.5)  # Allow the newly installed root's first display frame.
-                    screenshot = output / ('launch-' + str(attempt + 1) + '.png')
-                    report['phase'] = 'captureScreenshot'
-                    command(['xcrun', 'simctl', 'io', identifier, 'screenshot', str(screenshot)], phase='captureScreenshot')
-                    report['phase'] = 'checkScreenshot'
-                    visual = json.loads(command(['xcrun', 'swift', str(Path(__file__).with_name('screenshot_check.swift')), str(screenshot)], phase='checkScreenshot'))
-                    if (not isinstance(visual, dict) or set(visual) != {'width', 'height', 'nonblank'} or
-                            type(visual.get('nonblank')) is not bool or
-                            any(type(visual.get(key)) is not int or not 0 < visual[key] <= 16384 for key in ('width', 'height'))):
-                        raise SmokeError('invalidScreenshotEvidence', 'checkScreenshot')
-                    result = {'attempt': attempt + 1, 'marker': stage, 'screenshot': visual,
+                    result = {'attempt': attempt + 1, 'marker': stage,
                               'seconds_to_marker': round(time.monotonic() - started, 2)}
                     report['launches'].append(result)
+                    persist_report(output, report)
+                    if stage['stage'] not in READY or stage['failure'] is not None:
+                        raise SmokeError('interfaceNotVisible', 'waitForInterface')
                     if expected_storage_kind is not None:
                         report['phase'] = 'checkStorageSelection'
                         result['storage_kind'] = 'unverified'
                         preferences = data / 'Library/Preferences' / (BUNDLE + '.plist')
                         result['storage_kind'] = read_storage_kind(preferences, expected_storage_kind)
-                    if stage['stage'] not in READY or stage['failure'] is not None or not visual['nonblank']:
+                        persist_report(output, report)
+                    time.sleep(0.5)  # Allow the newly installed root's first display frame.
+                    screenshot = output / ('launch-' + str(attempt + 1) + '.png')
+                    report['phase'] = 'captureScreenshot'
+                    command(['xcrun', 'simctl', 'io', identifier, 'screenshot', str(screenshot)], phase='captureScreenshot')
+                    report['phase'] = 'checkScreenshot'
+                    visual = json.loads(command([str(checker), str(screenshot)], timeout=30, phase='checkScreenshot'))
+                    if (not isinstance(visual, dict) or set(visual) != {'width', 'height', 'nonblank'} or
+                            type(visual.get('nonblank')) is not bool or
+                            any(type(visual.get(key)) is not int or not 0 < visual[key] <= 16384 for key in ('width', 'height'))):
+                        raise SmokeError('invalidScreenshotEvidence', 'checkScreenshot')
+                    result['screenshot'] = visual
+                    persist_report(output, report)
+                    if not visual['nonblank']:
                         raise SmokeError('interfaceNotVisible', 'waitForInterface')
                 report['passed'] = True
                 report['phase'] = 'complete'
@@ -315,7 +384,7 @@ def smoke(ipa, output, expected_storage_kind=None):
                     command(['xcrun', 'simctl', action, identifier], timeout=30, phase=phase)
                 except SmokeError as error:
                     report.setdefault('cleanup_failures', []).append(error.evidence())
-        (output / 'result.json').write_text(json.dumps(report, indent=2) + '\n')
+        persist_report(output, report)
     return report
 
 

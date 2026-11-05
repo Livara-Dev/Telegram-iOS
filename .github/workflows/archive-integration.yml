@@ -784,7 +784,7 @@ jobs:
           names = ['verification.json', 'archive-evidence/manifest.json', 'archive-evidence/prior-launch-result.json',
                    'replay-controls/replay.json']
           for control in ('normal', 'no-app-groups', 'main-app-only'):
-              for name in ('result.json', 'recording.log', 'launch.mp4', 'launch-1.png', 'launch-2.png'):
+              for name in ('result.json', 'checker-compiler.log', 'recording.log', 'launch.mp4', 'launch-1.png', 'launch-2.png'):
                   names.append('replay-controls/' + control + '/launch-smoke/' + name)
           rows = []
           for name in names:
@@ -805,16 +805,19 @@ jobs:
             ${{ github.workspace }}/fork-source/build/fork-evidence/startup-replay/archive-evidence/prior-launch-result.json
             ${{ github.workspace }}/fork-source/build/fork-evidence/startup-replay/replay-controls/replay.json
             ${{ github.workspace }}/fork-source/build/fork-evidence/startup-replay/replay-controls/normal/launch-smoke/result.json
+            ${{ github.workspace }}/fork-source/build/fork-evidence/startup-replay/replay-controls/normal/launch-smoke/checker-compiler.log
             ${{ github.workspace }}/fork-source/build/fork-evidence/startup-replay/replay-controls/normal/launch-smoke/recording.log
             ${{ github.workspace }}/fork-source/build/fork-evidence/startup-replay/replay-controls/normal/launch-smoke/launch.mp4
             ${{ github.workspace }}/fork-source/build/fork-evidence/startup-replay/replay-controls/normal/launch-smoke/launch-1.png
             ${{ github.workspace }}/fork-source/build/fork-evidence/startup-replay/replay-controls/normal/launch-smoke/launch-2.png
             ${{ github.workspace }}/fork-source/build/fork-evidence/startup-replay/replay-controls/no-app-groups/launch-smoke/result.json
+            ${{ github.workspace }}/fork-source/build/fork-evidence/startup-replay/replay-controls/no-app-groups/launch-smoke/checker-compiler.log
             ${{ github.workspace }}/fork-source/build/fork-evidence/startup-replay/replay-controls/no-app-groups/launch-smoke/recording.log
             ${{ github.workspace }}/fork-source/build/fork-evidence/startup-replay/replay-controls/no-app-groups/launch-smoke/launch.mp4
             ${{ github.workspace }}/fork-source/build/fork-evidence/startup-replay/replay-controls/no-app-groups/launch-smoke/launch-1.png
             ${{ github.workspace }}/fork-source/build/fork-evidence/startup-replay/replay-controls/no-app-groups/launch-smoke/launch-2.png
             ${{ github.workspace }}/fork-source/build/fork-evidence/startup-replay/replay-controls/main-app-only/launch-smoke/result.json
+            ${{ github.workspace }}/fork-source/build/fork-evidence/startup-replay/replay-controls/main-app-only/launch-smoke/checker-compiler.log
             ${{ github.workspace }}/fork-source/build/fork-evidence/startup-replay/replay-controls/main-app-only/launch-smoke/recording.log
             ${{ github.workspace }}/fork-source/build/fork-evidence/startup-replay/replay-controls/main-app-only/launch-smoke/launch.mp4
             ${{ github.workspace }}/fork-source/build/fork-evidence/startup-replay/replay-controls/main-app-only/launch-smoke/launch-1.png

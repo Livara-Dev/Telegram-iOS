@@ -64,6 +64,8 @@ def evidence(device_digest='d' * 64):
              'application_recompiled': False, 'physical_device_verified': False, 'extensions_removed': 6,
              'source_simulator_ipa_sha256': 'a' * 64}
     result = {'mode': 'fresh_simulator_launch', 'physical_device_verified': False, 'authentication_codes_used': False,
+              'expected_storage_kind': 'private', 'recording_return_code': 0,
+              'screenshot_checker': {'compiled': True, 'self_test_passed': True, 'self_test_cases': 3},
               'passed': True, 'phase': 'complete', 'launches': [
                   {'attempt': n, 'marker': {'stage': 'authorizationVisible', 'failure': None},
                    'screenshot': {'nonblank': True, 'width': 1206, 'height': 2622},
@@ -160,7 +162,7 @@ class DeviceVariantTests(unittest.TestCase):
     def test_gate_rejects_failure_wrong_source_missing_launch_private_storage_or_blank_ui(self):
         device, simulator, proof, result = evidence()
         self.assertEqual(variant.validate_startup(device, simulator, proof, result), (SOURCE, RUN, 6))
-        for kind in ('failed', 'source', 'digest', 'codesign', 'main_code', 'one_launch', 'storage', 'blank', 'stage'):
+        for kind in ('failed', 'source', 'digest', 'codesign', 'main_code', 'one_launch', 'storage', 'blank', 'stage', 'unchecked_screenshot_tool'):
             values = copy.deepcopy((device, simulator, proof, result)); dv, sm, pr, rs = values
             if kind == 'failed': pr['passed'] = False
             if kind == 'source': sm['source_commit'] = 'b' * 40
@@ -171,6 +173,7 @@ class DeviceVariantTests(unittest.TestCase):
             if kind == 'storage': rs['launches'][1]['storage_kind'] = 'group'
             if kind == 'blank': rs['launches'][0]['screenshot']['nonblank'] = False
             if kind == 'stage': rs['launches'][0]['marker']['stage'] = 'storageReady'
+            if kind == 'unchecked_screenshot_tool': rs.pop('screenshot_checker')
             with self.subTest(kind=kind), self.assertRaises(replay.ReplayError): variant.validate_startup(*values)
 
     def test_package_is_atomic_distinct_unsigned_and_published_only_after_startup_passes(self):

@@ -173,6 +173,47 @@ class ReplayArtifactTests(unittest.TestCase):
         value['failure']['system_errors'][0]['domain'] = 'private-path-or-unknown-domain'
         with self.assertRaises(replay.ReplayError): replay.prior_smoke_report(value)
 
+    def test_partial_attempt_preserves_ready_private_evidence_only_at_closed_failure_phase(self):
+        value = {'mode': 'fresh_simulator_launch', 'physical_device_verified': False,
+                 'authentication_codes_used': False, 'passed': False, 'expected_storage_kind': 'private',
+                 'recording_return_code': 0, 'phase': 'checkScreenshot',
+                 'screenshot_checker': {'compiled': True, 'self_test_passed': True, 'self_test_cases': 3},
+                 'launches': [{'attempt': 1, 'marker': {'stage': 'authorizationVisible', 'failure': None},
+                               'storage_kind': 'private', 'seconds_to_marker': 3}],
+                 'failure': {'code': 'commandTimedOut', 'phase': 'checkScreenshot', 'return_code': None,
+                             'timeout': True, 'system_errors': []}}
+        self.assertEqual(replay.prior_smoke_report(value), value)
+        for kind in ('passed', 'phase', 'no_failure', 'storage', 'stage', 'null_screenshot', 'private_text'):
+            changed = copy.deepcopy(value)
+            if kind == 'passed': changed['passed'] = True
+            if kind == 'phase': changed['phase'] = changed['failure']['phase'] = 'installApplication'
+            if kind == 'no_failure': changed['failure'] = None
+            if kind == 'storage': changed['launches'][0]['storage_kind'] = 'unverified'
+            if kind == 'stage': changed['launches'][0]['marker']['stage'] = 'applicationEntered'
+            if kind == 'null_screenshot': changed['launches'][0]['screenshot'] = None
+            if kind == 'private_text': changed['screenshot_checker']['detail'] = '/private/path'
+            with self.subTest(kind=kind), self.assertRaises(replay.ReplayError): replay.prior_smoke_report(changed)
+
+    def test_passing_evidence_requires_two_ready_nonblank_launches_and_expected_private_storage(self):
+        value = {'mode': 'fresh_simulator_launch', 'physical_device_verified': False,
+                 'authentication_codes_used': False, 'passed': True, 'expected_storage_kind': 'private',
+                 'recording_return_code': 0, 'phase': 'complete', 'failure': None,
+                 'screenshot_checker': {'compiled': True, 'self_test_passed': True, 'self_test_cases': 3},
+                 'launches': [{'attempt': n, 'marker': {'stage': 'authorizationVisible', 'failure': None},
+                               'storage_kind': 'private', 'seconds_to_marker': 3,
+                               'screenshot': {'nonblank': True, 'width': 1206, 'height': 2622}} for n in (1, 2)]}
+        self.assertEqual(replay.prior_smoke_report(value), value)
+        for kind in ('one_launch', 'missing_screenshot', 'blank', 'stage', 'storage', 'return_code', 'control_cases'):
+            changed = copy.deepcopy(value)
+            if kind == 'one_launch': changed['launches'].pop()
+            if kind == 'missing_screenshot': changed['launches'][1].pop('screenshot')
+            if kind == 'blank': changed['launches'][1]['screenshot']['nonblank'] = False
+            if kind == 'stage': changed['launches'][1]['marker']['stage'] = 'authorizationPrepared'
+            if kind == 'storage': changed['launches'][1]['storage_kind'] = 'unverified'
+            if kind == 'return_code': changed['recording_return_code'] = '/private/path'
+            if kind == 'control_cases': changed['screenshot_checker']['self_test_cases'] = True
+            with self.subTest(kind=kind), self.assertRaises(replay.ReplayError): replay.prior_smoke_report(changed)
+
     def test_checkout_verifies_commits_worktree_and_forbids_gitlinks(self):
         with tempfile.TemporaryDirectory() as d:
             root = Path(d)

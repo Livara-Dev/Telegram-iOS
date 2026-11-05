@@ -196,7 +196,8 @@ def prior_smoke_report(value):
               'sharedContextReady', 'authorizationPrepared', 'conversationsPrepared', 'authorizationVisible',
               'conversationsVisible', 'failed', 'notObserved'}
     failures = {None, 'storageUnavailable', 'keychainUnavailable', 'storageConfiguration', 'initializationUnavailable'}
-    if (not isinstance(value, dict) or not fields.issubset(value) or not set(value).issubset(fields | {'phase', 'failure', 'cleanup_failures'}) or value['mode'] != 'fresh_simulator_launch' or
+    optional = {'phase', 'failure', 'cleanup_failures', 'expected_storage_kind', 'recording_return_code', 'screenshot_checker'}
+    if (not isinstance(value, dict) or not fields.issubset(value) or not set(value).issubset(fields | optional) or value['mode'] != 'fresh_simulator_launch' or
             value['physical_device_verified'] is not False or value['authentication_codes_used'] is not False or
             type(value['passed']) is not bool or not isinstance(value['launches'], list) or len(value['launches']) > 2):
         raise ReplayError('unexpected_prior_smoke_fields')
@@ -204,20 +205,41 @@ def prior_smoke_report(value):
         raise ReplayError('unexpected_prior_smoke_fields')
     if value.get('failure') is not None:
         smoke_failure(value['failure'])
+        if value.get('phase') != value['failure']['phase']:
+            raise ReplayError('unexpected_prior_smoke_fields')
+    if 'expected_storage_kind' in value and value['expected_storage_kind'] != 'private':
+        raise ReplayError('unexpected_prior_smoke_fields')
+    if 'recording_return_code' in value and not (value['recording_return_code'] is None or
+            type(value['recording_return_code']) is int and -(2**31) <= value['recording_return_code'] < 2**31):
+        raise ReplayError('unexpected_prior_smoke_fields')
+    if 'screenshot_checker' in value:
+        checker = value['screenshot_checker']
+        if (not isinstance(checker, dict) or set(checker) != {'compiled', 'self_test_passed', 'self_test_cases'} or
+                checker['compiled'] is not True or checker['self_test_passed'] is not True or
+                type(checker['self_test_cases']) is not int or checker['self_test_cases'] != 3):
+            raise ReplayError('unexpected_prior_smoke_fields')
     cleanup = value.get('cleanup_failures', [])
     if not isinstance(cleanup, list) or len(cleanup) > 4:
         raise ReplayError('unexpected_prior_smoke_fields')
     for error in cleanup:
         smoke_failure(error)
-    for launch in value['launches']:
+    for index, launch in enumerate(value['launches'], 1):
         if (not isinstance(launch, dict) or not set(launch).issubset({'attempt', 'marker', 'screenshot', 'seconds_to_marker', 'storage_kind'}) or
-                type(launch.get('attempt')) is not int or launch['attempt'] not in {1, 2}):
+                type(launch.get('attempt')) is not int or launch['attempt'] != index):
             raise ReplayError('unexpected_prior_smoke_fields')
         marker, screen = launch.get('marker'), launch.get('screenshot')
         if (not isinstance(marker, dict) or set(marker) != {'stage', 'failure'} or
                 not isinstance(marker['stage'], str) or marker['stage'] not in stages or
-                not (marker['failure'] is None or isinstance(marker['failure'], str) and marker['failure'] in failures) or
-                not isinstance(screen, dict) or set(screen) != {'nonblank', 'width', 'height'} or type(screen['nonblank']) is not bool or
+                not (marker['failure'] is None or isinstance(marker['failure'], str) and marker['failure'] in failures)):
+            raise ReplayError('unexpected_prior_smoke_fields')
+        if 'screenshot' not in launch:
+            # Only the last, explicitly failed attempt can be incomplete. Keep
+            # the observed startup marker when native screenshot work fails.
+            if (value['passed'] or index != len(value['launches']) or value.get('failure') is None or
+                    value.get('phase') not in {'waitForInterface', 'checkStorageSelection', 'captureScreenshot', 'checkScreenshot'}):
+                raise ReplayError('unexpected_prior_smoke_fields')
+        elif (not isinstance(screen, dict) or set(screen) != {'nonblank', 'width', 'height'} or
+                type(screen['nonblank']) is not bool or
                 any(type(screen[k]) is not int or not 0 < screen[k] <= 20000 for k in ('width', 'height'))):
             raise ReplayError('unexpected_prior_smoke_fields')
         seconds = launch.get('seconds_to_marker')
@@ -225,6 +247,16 @@ def prior_smoke_report(value):
             raise ReplayError('unexpected_prior_smoke_fields')
         if 'storage_kind' in launch and (not isinstance(launch['storage_kind'], str) or launch['storage_kind'] not in {'private', 'group', 'unverified'}):
             raise ReplayError('unexpected_prior_smoke_fields')
+        if 'screenshot' not in launch and value.get('phase') in {'captureScreenshot', 'checkScreenshot'}:
+            if (marker['stage'] not in {'authorizationVisible', 'conversationsVisible'} or marker['failure'] is not None or
+                    (value.get('expected_storage_kind') == 'private' and launch.get('storage_kind') != 'private')):
+                raise ReplayError('unexpected_prior_smoke_fields')
+        if value['passed'] and (marker['stage'] not in {'authorizationVisible', 'conversationsVisible'} or
+                marker['failure'] is not None or not screen['nonblank'] or
+                (value.get('expected_storage_kind') == 'private' and launch.get('storage_kind') != 'private')):
+            raise ReplayError('unexpected_prior_smoke_fields')
+    if value['passed'] and (len(value['launches']) != 2 or value.get('phase') != 'complete' or value.get('failure') is not None):
+        raise ReplayError('unexpected_prior_smoke_fields')
     return value
 
 
