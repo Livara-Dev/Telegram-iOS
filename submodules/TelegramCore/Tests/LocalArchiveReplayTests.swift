@@ -228,11 +228,11 @@ final class LocalArchiveReplayTests: XCTestCase {
         return page
     }
 
-    private func installRangeTestChannel() throws -> PeerId {
-        let id = PeerId(namespace: Namespaces.Peer.CloudChannel, id: ._internalFromInt64Value(8200))
+    private func installRangeTestChannel(group: Bool = false) throws -> PeerId {
+        let id = PeerId(namespace: Namespaces.Peer.CloudChannel, id: ._internalFromInt64Value(group ? 8201 : 8200))
         let channel = TelegramChannel(id: id, accessHash: .personal(456), title: "Archive range fixture", username: nil,
             photo: [], creationDate: 0, version: 0, participationStatus: .member,
-            info: .broadcast(TelegramChannelBroadcastInfo(flags: [])), flags: [], restrictionInfo: nil,
+            info: group ? .group(TelegramChannelGroupInfo(flags: [])) : .broadcast(TelegramChannelBroadcastInfo(flags: [])), flags: [], restrictionInfo: nil,
             adminRights: nil, bannedRights: nil, defaultBannedRights: nil, usernames: [], storiesHidden: nil,
             nameColor: nil, backgroundEmojiId: nil, profileColor: nil, profileBackgroundEmojiId: nil,
             emojiStatus: nil, approximateBoostLevel: nil, subscriptionUntilDate: nil, verificationIconFileId: nil,
@@ -241,6 +241,47 @@ final class LocalArchiveReplayTests: XCTestCase {
             transaction.updatePeersInternal([channel], update: { _, peer in peer })
         })
         return id
+    }
+
+    func testLegacyGroupBroadcastAndSupergroupReplayCaptureIndividualEditAndDeletion() throws {
+        let legacyId = PeerId(namespace: Namespaces.Peer.CloudGroup, id: ._internalFromInt64Value(8210))
+        let legacy = TelegramGroup(id: legacyId, title: "Archive legacy fixture", photo: [], participantCount: 2, role: .member, membership: .Member, flags: [], defaultBannedRights: nil, migrationReference: nil, creationDate: 0, version: 0)
+        _ = try self.localArchiveValue(self.fixture.postbox.transaction { transaction in
+            transaction.updatePeersInternal([legacy], update: { _, updated in updated })
+        })
+        let peers = [legacyId, try self.installRangeTestChannel(), try self.installRangeTestChannel(group: true)]
+        for (offset, peerId) in peers.enumerated() {
+            let id = MessageId(peerId: peerId, namespace: Namespaces.Message.Cloud, id: Int32(700 + offset))
+            let original = localArchiveTestMessage(id, text: "received \(offset)", authorId: self.chatPeerId)
+            let edited = localArchiveTestMessage(id, text: "edited \(offset)", authorId: self.chatPeerId, attributes: [EditedMessageAttribute(date: 180, isHidden: false)])
+            _ = try XCTUnwrap(self.replay(self.finalState([.AddMessages([original], .Random), .EditMessage(id, edited), .DeleteMessages([id])], including: [peerId])))
+            let captured = try self.pending().filter { $0.messageId == id }
+            XCTAssertEqual(captured.map { $0.text }, ["received \(offset)", "edited \(offset)"])
+            XCTAssertEqual(captured.map { $0.kindRawValue }, [ArchiveEventKind.edited.rawValue, ArchiveEventKind.deleted.rawValue])
+            XCTAssertEqual(captured.map { $0.serverEditAt }, [nil, 180])
+            XCTAssertNil(try self.localArchiveValue(self.fixture.postbox.transaction { $0.getMessage(id) }))
+        }
+        try self.fixture.reopen()
+        XCTAssertEqual(try self.pending().count, 6)
+        let page = try self.drainIntoIndependentArchive()
+        XCTAssertEqual(Set(page.records.map { $0.peerId }), Set(peers.map { $0.toInt64() }))
+        XCTAssertEqual(Set(page.records.map { $0.text }), Set(["edited 0", "edited 1", "edited 2"]))
+    }
+
+    func testAcknowledgedChannelEditThenIndividualDeletionKeepsPreviousAndFinalVersions() throws {
+        let channel = try self.installRangeTestChannel()
+        let id = MessageId(peerId: channel, namespace: Namespaces.Message.Cloud, id: 711)
+        try self.store([localArchiveTestMessage(id, text: "channel original", authorId: self.accountPeerId).withUpdatedFlags([])])
+        let replacement = localArchiveTestMessage(id, text: "channel replacement", authorId: self.accountPeerId, attributes: [EditedMessageAttribute(date: 180, isHidden: false)]).withUpdatedFlags([])
+        let accountPeerId = self.accountPeerId
+        _ = try self.localArchiveValue(self.fixture.postbox.transaction { transaction in
+            applyAcknowledgedEditMessage(transaction: transaction, accountPeerId: accountPeerId, message: replacement)
+        })
+        _ = try XCTUnwrap(self.replay(self.finalState([.EditMessage(id, replacement), .DeleteMessages([id])], including: [channel])))
+        XCTAssertEqual(try self.pending().map { $0.text }, ["channel original", "channel replacement"])
+        try self.fixture.reopen()
+        XCTAssertEqual(try self.pending().count, 2)
+        XCTAssertNil(try self.localArchiveValue(self.fixture.postbox.transaction { $0.getMessage(id) }))
     }
 
     func testChannelRangeRemovalPreservesCachedPhotoAcrossRestartAndCacheClear() throws {

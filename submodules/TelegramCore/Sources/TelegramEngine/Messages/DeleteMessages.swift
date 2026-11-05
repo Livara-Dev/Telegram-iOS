@@ -74,21 +74,41 @@ public func _internal_deleteMessages(transaction: Transaction, mediaBox: MediaBo
     })
 }
 
+// Only application-level cloud removals opt in. Low-level Postbox observers
+// remain nil by default, including ordinary cache and expiry maintenance.
+private func localArchiveHistoryRemovalCapture(transaction: Transaction, peerId: PeerId) -> LocalArchiveDeletionCapture? {
+    guard peerId.namespace == Namespaces.Peer.CloudUser || peerId.namespace == Namespaces.Peer.CloudGroup || peerId.namespace == Namespaces.Peer.CloudChannel,
+          let accountState = transaction.getState() as? AuthorizedAccountState else { return nil }
+    return LocalArchiveDeletionCapture(transaction: transaction, accountPeerId: accountState.peerId)
+}
+
 func _internal_deleteAllMessagesWithAuthor(transaction: Transaction, mediaBox: MediaBox, peerId: PeerId, authorId: PeerId, namespace: MessageId.Namespace) {
+    let archiveCapture = localArchiveHistoryRemovalCapture(transaction: transaction, peerId: peerId)
+    let beforeRemoving: ((Message) -> Void)? = archiveCapture.map { capture in
+        { message in capture.append(message) }
+    }
     var resourceIds: [MediaResourceId] = []
-    transaction.removeAllMessagesWithAuthor(peerId, authorId: authorId, namespace: namespace, forEachMedia: { media in
+    transaction.removeAllMessagesWithAuthor(peerId, authorId: authorId, namespace: namespace, beforeRemoving: beforeRemoving, forEachMedia: { media in
         addMessageMediaResourceIdsToRemove(media: media, resourceIds: &resourceIds)
     })
+    let deferredArchiveResources = archiveCapture?.finish() ?? []
+    resourceIds.removeAll(where: { deferredArchiveResources.contains($0) })
     if !resourceIds.isEmpty {
         let _ = mediaBox.removeCachedResources(Array(Set(resourceIds))).start()
     }
 }
 
 func _internal_deleteAllMessagesWithForwardAuthor(transaction: Transaction, mediaBox: MediaBox, peerId: PeerId, forwardAuthorId: PeerId, namespace: MessageId.Namespace) {
+    let archiveCapture = localArchiveHistoryRemovalCapture(transaction: transaction, peerId: peerId)
+    let beforeRemoving: ((Message) -> Void)? = archiveCapture.map { capture in
+        { message in capture.append(message) }
+    }
     var resourceIds: [MediaResourceId] = []
-    transaction.removeAllMessagesWithForwardAuthor(peerId, forwardAuthorId: forwardAuthorId, namespace: namespace, forEachMedia: { media in
+    transaction.removeAllMessagesWithForwardAuthor(peerId, forwardAuthorId: forwardAuthorId, namespace: namespace, beforeRemoving: beforeRemoving, forEachMedia: { media in
         addMessageMediaResourceIdsToRemove(media: media, resourceIds: &resourceIds)
     })
+    let deferredArchiveResources = archiveCapture?.finish() ?? []
+    resourceIds.removeAll(where: { deferredArchiveResources.contains($0) })
     if !resourceIds.isEmpty {
         let _ = mediaBox.removeCachedResources(Array(Set(resourceIds)), force: true).start()
     }
@@ -292,6 +312,10 @@ func _internal_deleteReaction(account: Account, messageId: MessageId, authorId: 
 }
 
 func _internal_clearHistory(transaction: Transaction, mediaBox: MediaBox, peerId: PeerId, threadId: Int64?, namespaces: MessageIdNamespaces) {
+    let archiveCapture = localArchiveHistoryRemovalCapture(transaction: transaction, peerId: peerId)
+    let beforeRemoving: ((Message) -> Void)? = archiveCapture.map { capture in
+        { message in capture.append(message) }
+    }
     if peerId.namespace == Namespaces.Peer.SecretChat {
         var resourceIds: [MediaResourceId] = []
         transaction.withAllMessages(peerId: peerId, { message in
@@ -302,11 +326,16 @@ func _internal_clearHistory(transaction: Transaction, mediaBox: MediaBox, peerId
             let _ = mediaBox.removeCachedResources(Array(Set(resourceIds)), force: true).start()
         }
     }
-    transaction.clearHistory(peerId, threadId: threadId, minTimestamp: nil, maxTimestamp: nil, namespaces: namespaces, forEachMedia: { _ in
+    transaction.clearHistory(peerId, threadId: threadId, minTimestamp: nil, maxTimestamp: nil, namespaces: namespaces, beforeRemoving: beforeRemoving, forEachMedia: { _ in
     })
+    _ = archiveCapture?.finish()
 }
 
 func _internal_clearHistoryInRange(transaction: Transaction, mediaBox: MediaBox, peerId: PeerId, threadId: Int64?, minTimestamp: Int32, maxTimestamp: Int32, namespaces: MessageIdNamespaces) {
+    let archiveCapture = localArchiveHistoryRemovalCapture(transaction: transaction, peerId: peerId)
+    let beforeRemoving: ((Message) -> Void)? = archiveCapture.map { capture in
+        { message in capture.append(message) }
+    }
     if peerId.namespace == Namespaces.Peer.SecretChat {
         var resourceIds: [MediaResourceId] = []
         transaction.withAllMessages(peerId: peerId, { message in
@@ -319,8 +348,9 @@ func _internal_clearHistoryInRange(transaction: Transaction, mediaBox: MediaBox,
             let _ = mediaBox.removeCachedResources(Array(Set(resourceIds)), force: true).start()
         }
     }
-    transaction.clearHistory(peerId, threadId: threadId, minTimestamp: minTimestamp, maxTimestamp: maxTimestamp, namespaces: namespaces, forEachMedia: { _ in
+    transaction.clearHistory(peerId, threadId: threadId, minTimestamp: minTimestamp, maxTimestamp: maxTimestamp, namespaces: namespaces, beforeRemoving: beforeRemoving, forEachMedia: { _ in
     })
+    _ = archiveCapture?.finish()
 }
 
 public enum ClearCallHistoryError {

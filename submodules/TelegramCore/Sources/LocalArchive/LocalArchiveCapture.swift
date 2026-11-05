@@ -87,7 +87,7 @@ private enum LocalArchiveEligibleContent {
     case unsupportedRichText
 }
 
-private func eligibleMessage(transaction: Transaction, message: Message, settings: LocalArchiveSettings) -> LocalArchiveEligibleContent? {
+private func eligibleMessage(transaction: Transaction, message: Message, settings: LocalArchiveSettings, includeMetadata: Bool = true) -> LocalArchiveEligibleContent? {
     let peerNamespace = message.id.peerId.namespace
     guard message.id.namespace == Namespaces.Message.Cloud, message.id.id > 0,
           peerNamespace == Namespaces.Peer.CloudUser || peerNamespace == Namespaces.Peer.CloudGroup || peerNamespace == Namespaces.Peer.CloudChannel,
@@ -107,6 +107,11 @@ private func eligibleMessage(transaction: Transaction, message: Message, setting
     if richText(message.attributes) != nil {
         return .unsupportedRichText
     }
+    if !includeMetadata {
+        // A full handoff still counts eligible missed captures, but must not
+        // serialize every remaining body/attachment in a large history removal.
+        return .text(botConversation: botConversation, entities: Data())
+    }
     let encoder = JSONEncoder()
     encoder.outputFormatting = [.sortedKeys]
     guard let entities = try? encoder.encode(LocalArchiveEntities(version: message.media.isEmpty ? 1 : 2, entities: textEntities(message.attributes), media: message.media.isEmpty ? nil : localArchiveMediaMetadata(message.media))) else {
@@ -122,6 +127,7 @@ private struct LocalArchiveOutboxBudget {
     static let maximumBytes = 8 * 1024 * 1024
     var count = 0
     var bytes = 0
+    var hasCapacity: Bool { self.count < Self.maximumCount && self.bytes < Self.maximumBytes }
 
     init(transaction: Transaction, accountPeerId: PeerId) {
         transaction.operationLogEnumerateEntries(peerId: accountPeerId, tag: OperationLogTags.LocalArchiveCapture) { entry in
@@ -182,8 +188,12 @@ final class LocalArchiveDeletionCapture {
 
     func append(_ message: Message) {
         guard !self.finished,
-              let eligible = eligibleMessage(transaction: self.transaction, message: message, settings: self.settings) else { return }
+              let eligible = eligibleMessage(transaction: self.transaction, message: message, settings: self.settings, includeMetadata: self.budget.hasCapacity) else { return }
         guard case let .text(botConversation, entities) = eligible else {
+            recordCaptureGap(&self.settings)
+            return
+        }
+        guard self.budget.hasCapacity else {
             recordCaptureGap(&self.settings)
             return
         }

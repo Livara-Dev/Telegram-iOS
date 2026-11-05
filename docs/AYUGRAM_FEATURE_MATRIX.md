@@ -47,6 +47,34 @@ binary. No proprietary exteraGram components are copied.
 
 ## Core features and native integration
 
+### Current candidate overlay
+
+The baseline rows below remain historical evidence. The following changes were
+published in `b24d868867d7217b540f95bcbcd5b3b1cda17cd9`; the subsequent bulk-removal
+follow-up extends that candidate. None is certified by the older 62546557 IPA.
+
+| Candidate change | Current evidence | Remaining qualification or boundary |
+| --- | --- | --- |
+| Prominent **Custome options**, eleven searchable categories, quick toggles | Actual production renderer compiled; 8 controller tests and 1 XCUI scenario passed in [42097515377](https://github.com/Livara-Dev/Telegram-iOS/actions/runs/42097515377); twelve recorded stages | Synthetic account-free host; authenticated Settings entry/routing not proven. Job failed afterward during screenshot export, exit 64; recorded video retained |
+| Account-bound archive/Ghost/filter controls and disable-only reset | Source integrated with existing account facades | Current-candidate native suites and real account navigation pending |
+| Browse retained archives with capture disabled; chat search and profile links | Foreground read leases, chat-scoped search, separate saved-media/history destinations | New native tests pending; separate local destinations, not merged server search or canonical media grid |
+| Bulk clear-history/date/thread and author/forward-author deletion capture | Explicit cloud helpers use default-nil Postbox selected-row observers; 13 new production-path tests authored | Native execution pending. Handoff remains capped at 256 records / 8 MiB; overflow increments missed-capture count while canonical deletion proceeds. No extra full history scan; performance unmeasured |
+| Legacy group, broadcast and supergroup edit/delete replay | New actual replay fixtures and acknowledged channel-edit coverage | Native execution pending; no live two-client server claim |
+| Deleted/Edited label preferences and current live-version preview | Account-local editor and archive timeline/gallery bindings | New native tests pending. Labels apply to archive UI; inline deleted bubbles/history marks remain absent |
+| Encrypted import/export | Native picker, strict same-user/environment binding, authenticated envelope, live-row reconstruction and transactional merge | 30 new native tests pending; capture must be explicitly paused, with warned capture gap. No AyuSync/network transport |
+| Ordinary GIF, PDF and typed encrypted media playback | Bounded in-memory GIF/PDF renderers and expanded real-format tests | Native tests/recordings pending; Ogg/Opus decoding is not assumed supported |
+| Ordinary read/presence controls, story-opening warning, read after confirmed send | Account-scoped production hooks, bounded acknowledged-send intent, central story gate | New native tests pending; server behavior and other-client interactions unverified, mandatory expiry receipts preserved |
+| Text, bounded-expression, media-type and cached blocked-author filters | Background projection, temporary reveal and native rule editor | New native tests pending; unknown metadata/albums/rich/secret/timed content stays visible |
+| Hide sponsored messages | Account-local projection and stale visible-ad guards | New native tests pending; no Premium entitlement or server-request suppression; Telegram API-policy conflict documented |
+| Local palette, motion preference and explicit bundled-icon permission | Real account preferences; actual renderer controls exercised in the 8+1 passing UI cases | Account persistence tests/native OS icon operation pending; no server Premium entitlement bypass |
+| Timed, self-destructing and view-once retention | Separate native capability information; explicit exclusions remain enforced | Post-expiry retention unsupported under reviewed API terms. No misleading preservation switch; new exclusion tests pending |
+
+Full native qualification [42098718967](https://github.com/Livara-Dev/Telegram-iOS/actions/runs/42098718967)
+targets b24d8688. The later bulk-removal follow-up requires its own exact-revision
+qualification before a new full application/device build. Physical-device,
+authenticated multi-client, low-storage and actual OS-kill tests are not implied
+by close/reopen database fixtures or the synthetic renderer recording.
+
 Reference column abbreviates the pinned public sources documented in the
 [Android](fork/AYUGRAM-REFERENCE.md), [Desktop](fork/DESKTOP-REFERENCE.md) and
 [November audit](fork/REFERENCE-AUDIT-2026-11-05.md). “Native-tested” describes the
