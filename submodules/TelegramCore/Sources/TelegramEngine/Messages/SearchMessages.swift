@@ -845,9 +845,7 @@ func fetchRemoteMessage(accountPeerId: PeerId, postbox: Postbox, source: FetchMe
                 if let message = StoreMessage(apiMessage: message, accountPeerId: accountPeerId, peerIsForum: peerIsForum, namespace: id.namespace), case let .Id(updatedId) = message.id {
                     var addedExisting = false
                     if transaction.getMessage(updatedId) != nil {
-                        transaction.updateMessage(updatedId, update: { _ in
-                            return .update(message)
-                        })
+                        applyLocalArchiveRemoteMessage(transaction: transaction, requestedIds: [id], message: message)
                         if let updatedMessage = transaction.getMessage(updatedId) {
                             renderedMessages.append(updatedMessage)
                             addedExisting = true

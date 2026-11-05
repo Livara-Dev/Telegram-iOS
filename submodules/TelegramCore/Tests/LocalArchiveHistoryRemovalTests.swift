@@ -229,7 +229,7 @@ final class LocalArchiveHistoryRemovalTests: XCTestCase {
         XCTAssertTrue(try self.captures().isEmpty)
         try self.store([self.message(second)])
         _ = try self.localArchiveValue(postbox.transaction { transaction in
-            transaction.setState(nil)
+            transaction.setState(UnauthorizedAccountState(isTestingEnvironment: true, masterDatacenterId: 1, contents: .empty))
             _internal_clearHistory(transaction: transaction, mediaBox: postbox.mediaBox, peerId: group, threadId: nil, namespaces: .all)
         })
         XCTAssertNil(try self.current(first)); XCTAssertNil(try self.current(second))

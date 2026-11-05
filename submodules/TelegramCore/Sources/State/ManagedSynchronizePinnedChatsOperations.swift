@@ -252,7 +252,7 @@ private func synchronizePinnedChats(transaction: Transaction, postbox: Postbox, 
                         allPeersWithMessages.insert(message.id.peerId)
                     }
                 }
-                let _ = transaction.addMessages(storeMessages, location: .UpperHistoryBlock)
+                let _ = addMessagesWithLocalArchive(transaction: transaction, messages: storeMessages, location: .UpperHistoryBlock)
                 
                 transaction.resetIncomingReadStates(readStates)
                 

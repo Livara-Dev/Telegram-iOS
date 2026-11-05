@@ -245,31 +245,68 @@ func captureDeletedLocalArchiveMessages(transaction: Transaction, accountPeerId:
 /// its metadata changes can count as misses, but its locally cached full page does
 /// not. The seed merge preserves that cache when the server repeats the primary page.
 func captureEditedLocalArchiveMessage(transaction: Transaction, accountPeerId: PeerId, previous: Message, updated: StoreMessage, observedAt: Int64 = Int64(Date().timeIntervalSince1970)) {
-    var settings = localArchiveSettings(transaction: transaction)
-    guard settings.enabled, !settings.pendingPurge, settings.generation >= 0,
-          previous.text != updated.text || textEntities(previous.attributes) != textEntities(updated.attributes) || richText(previous.attributes)?.instantPage != richText(updated.attributes)?.instantPage || localArchiveMediaMetadata(previous.media) != localArchiveMediaMetadata(updated.media),
-          !updated.flags.contains(.CopyProtected), !containsExpiringAttribute(updated.attributes),
-          !updated.media.contains(where: { $0 is TelegramMediaExpiredContent || $0 is TelegramMediaAction }),
-          let eligible = eligibleMessage(transaction: transaction, message: previous, settings: settings) else { return }
-    guard case let .text(botConversation, entities) = eligible else {
-        recordCaptureGap(&settings)
-        setLocalArchiveSettings(transaction: transaction, settings: settings)
-        return
+    guard let capture = LocalArchiveEditCapture(transaction: transaction, accountPeerId: accountPeerId, observedAt: observedAt) else { return }
+    capture.append(previous: previous, updated: updated)
+    capture.finish()
+}
+
+/// Reuses one lazily initialized budget for a server-upsert batch. Comparing the
+/// actual sequential previous/replacement bodies avoids rescanning the outbox
+/// for unchanged loads and avoids re-encoding its entire backlog for every edit.
+final class LocalArchiveEditCapture {
+    private let transaction: Transaction
+    private let accountPeerId: PeerId
+    private let observedAt: Int64
+    private var settings: LocalArchiveSettings
+    private var budget: LocalArchiveOutboxBudget?
+    private let previousDropped: Int64
+    private var finished = false
+
+    init?(transaction: Transaction, accountPeerId: PeerId, observedAt: Int64 = Int64(Date().timeIntervalSince1970)) {
+        let settings = localArchiveSettings(transaction: transaction)
+        guard settings.isSupported, settings.enabled, !settings.pendingPurge else { return nil }
+        self.transaction = transaction
+        self.accountPeerId = accountPeerId
+        self.observedAt = observedAt
+        self.settings = settings
+        self.previousDropped = settings.droppedCaptures
     }
-    var budget = LocalArchiveOutboxBudget(transaction: transaction, accountPeerId: accountPeerId)
-    let previousDropped = settings.droppedCaptures
-    let operation = LocalArchiveCaptureOperation(
-        generation: settings.generation, messageId: previous.id, kindRawValue: ArchiveEventKind.edited.rawValue,
-        text: previous.text, entities: entities, authorId: previous.author?.id.toInt64(),
-        sentAt: Int64(previous.timestamp), observedAt: observedAt,
-        serverEditAt: previous.attributes.compactMap { ($0 as? EditedMessageAttribute).map { Int64($0.date) } }.first,
-        botConversation: botConversation
-    )
-    let inserted = budget.insert(operation, transaction: transaction, accountPeerId: accountPeerId)
-    if !inserted {
-        recordCaptureGap(&settings)
+
+    func append(previous: Message, updated: StoreMessage) {
+        guard !self.finished,
+              previous.text != updated.text || textEntities(previous.attributes) != textEntities(updated.attributes) || richText(previous.attributes)?.instantPage != richText(updated.attributes)?.instantPage || localArchiveMediaMetadata(previous.media) != localArchiveMediaMetadata(updated.media),
+              !updated.flags.contains(.CopyProtected), !containsExpiringAttribute(updated.attributes),
+              !updated.media.contains(where: { $0 is TelegramMediaExpiredContent || $0 is TelegramMediaAction }),
+              let eligible = eligibleMessage(transaction: self.transaction, message: previous, settings: self.settings, includeMetadata: self.budget?.hasCapacity ?? true) else { return }
+        guard case let .text(botConversation, entities) = eligible else {
+            recordCaptureGap(&self.settings)
+            return
+        }
+        if self.budget == nil {
+            self.budget = LocalArchiveOutboxBudget(transaction: self.transaction, accountPeerId: self.accountPeerId)
+        }
+        guard self.budget?.hasCapacity == true else {
+            recordCaptureGap(&self.settings)
+            return
+        }
+        let operation = LocalArchiveCaptureOperation(
+            generation: self.settings.generation, messageId: previous.id, kindRawValue: ArchiveEventKind.edited.rawValue,
+            text: previous.text, entities: entities, authorId: previous.author?.id.toInt64(),
+            sentAt: Int64(previous.timestamp), observedAt: self.observedAt,
+            serverEditAt: previous.attributes.compactMap { ($0 as? EditedMessageAttribute).map { Int64($0.date) } }.first,
+            botConversation: botConversation
+        )
+        if self.budget?.insert(operation, transaction: self.transaction, accountPeerId: self.accountPeerId) != true {
+            recordCaptureGap(&self.settings)
+        }
     }
-    if previousDropped != settings.droppedCaptures {
-        setLocalArchiveSettings(transaction: transaction, settings: settings)
+
+    /// Flush the bounded missed-attempt counter before leaving the transaction.
+    func finish() {
+        guard !self.finished else { return }
+        self.finished = true
+        if self.previousDropped != self.settings.droppedCaptures {
+            setLocalArchiveSettings(transaction: self.transaction, settings: self.settings)
+        }
     }
 }

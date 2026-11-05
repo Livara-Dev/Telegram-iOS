@@ -107,7 +107,7 @@ func _internal_getMessagesLoadIfNecessary(_ messageIds: [MessageId], postbox: Po
                                     storeMessages.append(message)
                                 }
                             }
-                            _ = transaction.addMessages(storeMessages, location: .Random)
+                            _ = addMessagesWithLocalArchive(transaction: transaction, messages: storeMessages, location: .Random)
                         }
                         
                         let parsedPeers = AccumulatedPeers(transaction: transaction, chats: chats, users: users)

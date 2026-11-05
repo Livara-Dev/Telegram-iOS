@@ -829,7 +829,7 @@ private func loadSparseCalendarPage(account: Account, peer: Peer, messageTag: Me
                 }
 
                 updatePeers(transaction: transaction, accountPeerId: accountPeerId, peers: parsedPeers)
-                let _ = transaction.addMessages(parsedMessages, location: .Random)
+                let _ = addMessagesWithLocalArchive(transaction: transaction, messages: parsedMessages, location: .Random)
 
                 var minMessageId: Int32?
                 var messagesByDay: [Int32: SparseMessageCalendar.Entry] = [:]

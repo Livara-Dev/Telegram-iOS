@@ -1051,7 +1051,11 @@ func fetchMessageHistoryHole(accountPeerId: PeerId, source: FetchMessageHistoryH
                     
                     /// Stores the fetched messages, closes the hole and reports what was filled.
                     let storeAndCloseHole: (Transaction) -> FetchMessageHistoryHoleResult? = { transaction in
-                        let _ = transaction.addMessages(storeMessages, location: .Random)
+                        if namespace == Namespaces.Message.Cloud {
+                            let _ = addMessagesWithLocalArchive(transaction: transaction, messages: storeMessages, location: .Random)
+                        } else {
+                            let _ = transaction.addMessages(storeMessages, location: .Random)
+                        }
                         var storedIds = Set<MessageId>()
                         for message in storeMessages {
                             if case let .Id(id) = message.id {
@@ -1213,7 +1217,7 @@ func fetchMessageHistoryHole(accountPeerId: PeerId, source: FetchMessageHistoryH
                     /// stories) and re-adds the messages whose reply targets just arrived, so a view
                     /// re-renders them with the target attached (a view watches its own chat only).
                     let storeReferencedData: (Transaction, AccumulatedPeers, [StoreMessage]) -> Void = { transaction, additionalParsedPeers, additionalMessages in
-                        let _ = transaction.addMessages(additionalMessages, location: .Random)
+                        let _ = addMessagesWithLocalArchive(transaction: transaction, messages: additionalMessages, location: .Random)
                         updatePeers(transaction: transaction, accountPeerId: accountPeerId, peers: additionalParsedPeers)
                         
                         var additionalIds = Set<MessageId>()
@@ -1317,8 +1321,8 @@ func fetchChatListHole(postbox: Postbox, network: Network, accountPeerId: PeerId
             }
             
             transaction.updateCurrentPeerNotificationSettings(fetchedChats.notificationSettings)
-            let _ = transaction.addMessages(fetchedChats.storeMessages, location: .UpperHistoryBlock)
-            let _ = transaction.addMessages(additionalMessages, location: .Random)
+            let _ = addMessagesWithLocalArchive(transaction: transaction, messages: fetchedChats.storeMessages, location: .UpperHistoryBlock)
+            let _ = addMessagesWithLocalArchive(transaction: transaction, messages: additionalMessages, location: .Random)
             transaction.resetIncomingReadStates(fetchedChats.readStates)
             
             for (peerId, autoremoveValue) in fetchedChats.ttlPeriods {

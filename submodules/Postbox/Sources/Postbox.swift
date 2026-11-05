@@ -43,10 +43,13 @@ public final class Transaction {
         self.postbox?.keychainTable.set(key, value: value)
     }
     
-    public func addMessages(_ messages: [StoreMessage], location: AddMessagesLocation) -> [Int64: MessageId] {
+    /// The optional observer is invoked immediately before an existing body is
+    /// replaced, with its canonical merged replacement. Ordinary callers do not
+    /// install an observer; observers must not mutate message history themselves.
+    public func addMessages(_ messages: [StoreMessage], location: AddMessagesLocation, beforeExistingUpdate: ((Message, StoreMessage) -> Void)? = nil) -> [Int64: MessageId] {
         assert(!self.disposed)
         if let postbox = self.postbox {
-            return postbox.addMessages(transaction: self, messages: messages, location: location)
+            return postbox.addMessages(transaction: self, messages: messages, location: location, beforeExistingUpdate: beforeExistingUpdate)
         } else {
             return [:]
         }
@@ -2193,9 +2196,11 @@ final class PostboxImpl {
         metaDisposable.set(disposable)
     }
     
-    fileprivate func addMessages(transaction: Transaction, messages: [StoreMessage], location: AddMessagesLocation) -> [Int64: MessageId] {
+    fileprivate func addMessages(transaction: Transaction, messages: [StoreMessage], location: AddMessagesLocation, beforeExistingUpdate: ((Message, StoreMessage) -> Void)? = nil) -> [Int64: MessageId] {
         var addedMessagesByPeerId: [PeerId: [StoreMessage]] = [:]
-        let addResult = self.messageHistoryTable.addMessages(messages: messages, operationsByPeerId: &self.currentOperationsByPeerId, updatedMedia: &self.currentUpdatedMedia, unsentMessageOperations: &currentUnsentOperations, updatedPeerReadStateOperations: &self.currentUpdatedSynchronizeReadStateOperations, globalTagsOperations: &self.currentGlobalTagsOperations, pendingActionsOperations: &self.currentPendingMessageActionsOperations, updatedMessageActionsSummaries: &self.currentUpdatedMessageActionsSummaries, updatedMessageTagSummaries: &self.currentUpdatedMessageTagSummaries, invalidateMessageTagSummaries: &self.currentInvalidateMessageTagSummaries, localTagsOperations: &self.currentLocalTagsOperations, timestampBasedMessageAttributesOperations: &self.currentTimestampBasedMessageAttributesOperations, processMessages: { messagesByPeerId in
+        let addResult = self.messageHistoryTable.addMessages(messages: messages, operationsByPeerId: &self.currentOperationsByPeerId, updatedMedia: &self.currentUpdatedMedia, unsentMessageOperations: &currentUnsentOperations, updatedPeerReadStateOperations: &self.currentUpdatedSynchronizeReadStateOperations, globalTagsOperations: &self.currentGlobalTagsOperations, pendingActionsOperations: &self.currentPendingMessageActionsOperations, updatedMessageActionsSummaries: &self.currentUpdatedMessageActionsSummaries, updatedMessageTagSummaries: &self.currentUpdatedMessageTagSummaries, invalidateMessageTagSummaries: &self.currentInvalidateMessageTagSummaries, localTagsOperations: &self.currentLocalTagsOperations, timestampBasedMessageAttributesOperations: &self.currentTimestampBasedMessageAttributesOperations, beforeExistingUpdate: beforeExistingUpdate.map { callback in
+            { previous, updated in callback(self.renderIntermediateMessage(previous), updated) }
+        }, processMessages: { messagesByPeerId in
             addedMessagesByPeerId = messagesByPeerId
         })
         

@@ -721,4 +721,40 @@ final class LocalArchiveReplayTests: XCTestCase {
         XCTAssertEqual(try self.localArchiveValue(LocalStoryPrivacyContext(postbox: self.fixture.postbox).settings), policy)
         XCTAssertTrue(try self.pending().isEmpty)
     }
+
+    func testServerAddReplayOverwritesPreserveSequentialVersionsAndSkipDuplicateBody() throws {
+        let id = self.id()
+        let original = localArchiveTestMessage(id, text: "A")
+        let second = localArchiveTestMessage(id, text: "B", attributes: [EditedMessageAttribute(date: 190, isHidden: false)])
+        let third = localArchiveTestMessage(id, text: "C", attributes: [EditedMessageAttribute(date: 190, isHidden: false)])
+        _ = try XCTUnwrap(self.replay([.AddMessages([original], .Random)]))
+        XCTAssertTrue(try self.pending().isEmpty)
+        _ = try XCTUnwrap(self.replay([.AddMessages([second, third, third], .Random)]))
+        XCTAssertEqual(try self.pending().map { $0.text }, ["A", "B"])
+        XCTAssertEqual(try self.localArchiveValue(self.fixture.postbox.transaction { $0.getMessage(id)?.text }), "C")
+        let keys = try self.pending().map { $0.eventKey }
+        try self.fixture.reopen()
+        _ = try XCTUnwrap(self.replay([.AddMessages([third], .Random)]))
+        XCTAssertEqual(try self.pending().map { $0.eventKey }, keys)
+        _ = try XCTUnwrap(self.replay([.DeleteMessages([id])]))
+        XCTAssertEqual(try self.pending().map { $0.text }, ["A", "B", "C"])
+        XCTAssertEqual(try self.drainIntoIndependentArchive().records.map { $0.text }, ["C"])
+    }
+
+    func testChannelResetStyleAddReplayCapturesTimestampChangingReplacement() throws {
+        let peer = try self.installRangeTestChannel()
+        let id = MessageId(peerId: peer, namespace: Namespaces.Message.Cloud, id: 1)
+        let original = localArchiveTestMessage(id, text: "before reset")
+        let replacement = StoreMessage(id: id, customStableId: nil, globallyUniqueId: nil, groupingKey: nil, threadId: nil,
+            timestamp: 130, flags: [.Incoming], tags: [], globalTags: [], localTags: [], forwardInfo: nil,
+            authorId: peer, text: "reset response", attributes: [EditedMessageAttribute(date: 200, isHidden: false)], media: [])
+        try self.store([original])
+        _ = try XCTUnwrap(self.replay(self.finalState([.AddMessages([replacement], .UpperHistoryBlock)], including: [peer])))
+        XCTAssertEqual(try self.pending().map { $0.text }, ["before reset"])
+        XCTAssertEqual(try self.pending().first?.sentAt, 100)
+        XCTAssertEqual(try self.localArchiveValue(self.fixture.postbox.transaction { $0.getMessage(id)?.timestamp }), 130)
+        _ = try XCTUnwrap(self.replay(self.finalState([.AddMessages([replacement], .UpperHistoryBlock)], including: [peer])))
+        XCTAssertEqual(try self.pending().count, 1)
+    }
+
 }

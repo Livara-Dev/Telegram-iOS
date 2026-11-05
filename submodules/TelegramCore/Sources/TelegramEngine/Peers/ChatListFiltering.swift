@@ -1012,7 +1012,7 @@ private func loadAndStorePeerChatInfos(accountPeerId: PeerId, postbox: Postbox, 
                 
                 for message in storeMessages {
                     if case let .Id(id) = message.id {
-                        let _ = transaction.addMessages([message], location: topMessageIds.contains(id) ? .UpperHistoryBlock : .Random)
+                        let _ = addMessagesWithLocalArchive(transaction: transaction, messages: [message], location: topMessageIds.contains(id) ? .UpperHistoryBlock : .Random)
                     }
                 }
             }

@@ -178,7 +178,7 @@ private class ReplyThreadHistoryContextImpl {
                         
                         let parsedPeers = AccumulatedPeers(transaction: transaction, chats: chats, users: users)
                         
-                        let _ = transaction.addMessages(parsedMessages, location: .Random)
+                        let _ = addMessagesWithLocalArchive(transaction: transaction, messages: parsedMessages, location: .Random)
                         
                         updatePeers(transaction: transaction, accountPeerId: accountPeerId, peers: parsedPeers)
                         
@@ -711,7 +711,7 @@ func _internal_fetchChannelReplyThreadMessage(account: Account, messageId: Messa
                     
                     let parsedPeers = AccumulatedPeers(transaction: transaction, chats: chats, users: users)
                     
-                    let _ = transaction.addMessages(parsedMessages, location: .Random)
+                    let _ = addMessagesWithLocalArchive(transaction: transaction, messages: parsedMessages, location: .Random)
                     
                     updatePeers(transaction: transaction, accountPeerId: accountPeerId, peers: parsedPeers)
                     

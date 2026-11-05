@@ -22,7 +22,9 @@ func storeFeedMessages(transaction: Transaction, accountPeerId: PeerId, messages
         }
         if transaction.getMessage(id) != nil {
             transaction.updateMessage(id, update: { previousMessage in
-                return .update(mergedServerMessageUpdate(previous: previousMessage, updated: storeMessage))
+                let updatedMessage = mergedServerMessageUpdate(previous: previousMessage, updated: storeMessage)
+                captureEditedLocalArchiveServerMessage(transaction: transaction, previous: previousMessage, updated: updatedMessage)
+                return .update(updatedMessage)
             })
         } else {
             addedMessages.append(storeMessage)

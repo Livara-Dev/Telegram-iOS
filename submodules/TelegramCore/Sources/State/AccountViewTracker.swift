@@ -1136,17 +1136,13 @@ public final class AccountViewTracker {
                                 return account.postbox.transaction { transaction -> Void in
                                     let parsedPeers = AccumulatedPeers(transaction: transaction, chats: chats, users: users)
                                     updatePeers(transaction: transaction, accountPeerId: accountPeerId, peers: parsedPeers)
+                                    let requestedMessageIds = Set(messageIds)
                                     
                                     for message in messages {
                                         guard let storeMessage = StoreMessage(apiMessage: message, accountPeerId: accountPeerId, peerIsForum: topPeer.isForumOrMonoForum) else {
                                             continue
                                         }
-                                        guard case let .Id(id) = storeMessage.id else {
-                                            continue
-                                        }
-                                        transaction.updateMessage(id, update: { _ in
-                                            return .update(storeMessage)
-                                        })
+                                        applyLocalArchiveRemoteMessage(transaction: transaction, requestedIds: requestedMessageIds, message: storeMessage)
                                     }
                                 }
                             }

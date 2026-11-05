@@ -969,13 +969,7 @@ func _internal_fetchAndUpdateCachedPeerData(accountPeerId: PeerId, peerId rawPee
                                             })
                                         
                                             if let minAvailableMessageId = minAvailableMessageId, minAvailableMessageIdUpdated {
-                                                var resourceIds: [MediaResourceId] = []
-                                                transaction.deleteMessagesInRange(peerId: peerId, namespace: minAvailableMessageId.namespace, minId: 1, maxId: minAvailableMessageId.id, forEachMedia: { media in
-                                                    addMessageMediaResourceIdsToRemove(media: media, resourceIds: &resourceIds)
-                                                })
-                                                if !resourceIds.isEmpty {
-                                                    let _ = postbox.mediaBox.removeCachedResources(Array(Set(resourceIds))).start()
-                                                }
+                                                applyLocalArchiveCachedMinAvailableMessage(transaction: transaction, mediaBox: postbox.mediaBox, accountPeerId: accountPeerId, peerId: peerId, minAvailableMessageId: minAvailableMessageId)
                                             }
                                         case let .communityFull(communityFullData):
                                             let (about, chatPhoto, apiLinkedPeers, adminsCount, kickedCount, pendingRequests) = (communityFullData.about, communityFullData.chatPhoto, communityFullData.linkedPeers, communityFullData.adminsCount, communityFullData.kickedCount, communityFullData.peerLinkRequestsPending)

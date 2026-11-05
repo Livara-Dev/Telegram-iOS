@@ -2545,7 +2545,7 @@ func resolveForumThreads(accountPeerId: PeerId, postbox: Postbox, source: FetchM
                         let parsedPeers = AccumulatedPeers(transaction: transaction, chats: chats, users: users)
                         updatePeers(transaction: transaction, accountPeerId: accountPeerId, peers: parsedPeers)
                         
-                        let _ = transaction.addMessages(storeMessages, location: .Random)
+                        let _ = addMessagesWithLocalArchive(transaction: transaction, messages: storeMessages, location: .Random)
                     }
                 }
             }
@@ -4435,7 +4435,7 @@ func replayFinalState(
                     }
                 }
             
-                let _ = transaction.addMessages(messages, location: location)
+                let _ = addMessagesWithLocalArchive(transaction: transaction, messages: messages, location: location)
                 if case .UpperHistoryBlock = location {
                     for message in messages {
                         let chatPeerId = message.id.peerId
