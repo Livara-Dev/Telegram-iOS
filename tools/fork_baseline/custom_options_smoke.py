@@ -18,6 +18,7 @@ from launch_smoke import command, prepare_screenshot_checker, SmokeError
 BUNDLE = 'org.livara.ayugram.tests.custome-options'
 DEVICE_NAME = 'BAZEL_TEST_iPhone 15 Pro_27.0'
 RUNTIME = 'com.apple.CoreSimulator.SimRuntime.iOS-27-0'
+DEVICE_TYPE = 'com.apple.CoreSimulator.SimDeviceType.iPhone-15-Pro'
 STAGES = ('root-light', 'search-light', 'category-light', 'root-dark', 'search-dark',
           'category-dark', 'reset-prompt', 'reset-cancelled', 'reset-confirmed',
           'cosmetics-before', 'cosmetics-changed', 'cosmetics-reset')
@@ -29,9 +30,13 @@ class InvalidVisualEvidence(ValueError):
 
 def validate_runtime():
     runtimes = json.loads(command(['xcrun', 'simctl', 'list', 'runtimes', '--json']))['runtimes']
-    types = json.loads(command(['xcrun', 'simctl', 'list', 'devicetypes', '--json']))['devicetypes']
-    if (not any(item.get('identifier') == RUNTIME and item.get('isAvailable') is True for item in runtimes) or
-            not any(item.get('identifier') == 'com.apple.CoreSimulator.SimDeviceType.iPhone-15-Pro' for item in types)):
+    # simctl supports a case-insensitive description search after the type.
+    # Restrict the public inventory at its source, keeping the shared 64 KiB
+    # command cap intact. The search may include Pro Max, so verify exact IDs.
+    types = json.loads(command(['xcrun', 'simctl', 'list', '--json', 'devicetypes', 'iPhone 15 Pro']))['devicetypes']
+    runtime_matches = [item for item in runtimes if item.get('identifier') == RUNTIME and item.get('isAvailable') is True]
+    type_matches = [item for item in types if item.get('identifier') == DEVICE_TYPE]
+    if len(runtime_matches) != 1 or len(type_matches) != 1:
         raise InvalidVisualEvidence('The fixed iPhone 15 Pro / iOS 27.0 profile is unavailable')
 
 
@@ -169,7 +174,7 @@ class DisposableRendererSimulator:
         if any(item.get('name') == DEVICE_NAME for item in devices.get(RUNTIME, [])):
             raise InvalidVisualEvidence('Renderer test requires a fresh runner without a matching device')
         identifier = command(['xcrun', 'simctl', 'create', DEVICE_NAME,
-            'com.apple.CoreSimulator.SimDeviceType.iPhone-15-Pro', RUNTIME], phase='createDevice')
+            DEVICE_TYPE, RUNTIME], phase='createDevice')
         try: uuid.UUID(identifier)
         except ValueError: raise InvalidVisualEvidence('Invalid disposable simulator identity') from None
         self.identifier = identifier

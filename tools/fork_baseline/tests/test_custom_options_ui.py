@@ -15,11 +15,37 @@ from types import SimpleNamespace
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import custom_options_ui as profile
 import custom_options_smoke as visual
+import launch_smoke
 
 ROOT = Path(__file__).resolve().parents[3]
 
 
 class CustomOptionsContracts(unittest.TestCase):
+    def test_large_unrelated_inventory_uses_supported_fixed_search_without_raising_output_cap(self):
+        unrelated = [{'name': 'Unrelated model ' + str(index), 'identifier': 'unrelated.' + str(index),
+                      'description': 'public hardware metadata ' * 10} for index in range(500)]
+        inventory = json.dumps({'devicetypes': unrelated + [{'identifier': visual.DEVICE_TYPE}]}).encode()
+        self.assertGreater(len(inventory), 64 * 1024)
+        self.assertEqual(launch_smoke.COMMAND_OUTPUT_LIMIT, 64 * 1024)
+        expected = ['xcrun', 'simctl', 'list', '--json', 'devicetypes', 'iPhone 15 Pro']
+        def limited_command(args):
+            if args == ['xcrun', 'simctl', 'list', 'runtimes', '--json']:
+                return json.dumps({'runtimes': [{'identifier': visual.RUNTIME, 'isAvailable': True}]})
+            if args == expected:
+                return json.dumps({'devicetypes': [{'identifier': visual.DEVICE_TYPE}, {'identifier': visual.DEVICE_TYPE + '-Max'}]})
+            raise launch_smoke.SmokeError('commandOutputLimit', 'extractApplication')
+        with patch.object(visual, 'command', side_effect=limited_command) as command:
+            visual.validate_runtime()
+            self.assertEqual(command.call_count, 2)
+            self.assertEqual(command.call_args_list[-1].args[0], expected)
+
+    def test_filtered_device_inventory_requires_one_exact_identifier(self):
+        for identifiers in ([visual.DEVICE_TYPE + '-Max'], [visual.DEVICE_TYPE, visual.DEVICE_TYPE], []):
+            with self.subTest(identifiers=identifiers), patch.object(visual, 'command', side_effect=[
+                    json.dumps({'runtimes': [{'identifier': visual.RUNTIME, 'isAvailable': True}]}),
+                    json.dumps({'devicetypes': [{'identifier': identifier} for identifier in identifiers]})]):
+                with self.assertRaises(visual.InvalidVisualEvidence): visual.validate_runtime()
+
     def test_renderer_is_exactly_three_production_sources_without_account_binding(self):
         build = (ROOT / 'submodules/SettingsUI/BUILD').read_text()
         group = re.search(r'filegroup\(\n\s+name = "CustomeOptionsRendererSources",(.*?)\n\)', build, re.S).group(1)

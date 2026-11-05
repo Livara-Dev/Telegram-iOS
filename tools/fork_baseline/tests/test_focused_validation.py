@@ -225,7 +225,7 @@ class FocusedWorkflowRoutingTests(unittest.TestCase):
                 self.assertTrue(self.condition('integration-tests', 'workflow_dispatch', 'projection', device))
                 for job in ('application-build', 'unsigned-device-build', 'native-api-probe', 'startup-artifact-replay'):
                     self.assertFalse(self.condition(job, 'workflow_dispatch', 'projection', device))
-        self.assertIn('options: [full, focused, projection, projection-only, custom-options-ui, probe, startup]', WORKFLOW.read_text())
+        self.assertIn('options: [full, native-only, focused, projection, projection-only, custom-options-ui, probe, startup]', WORKFLOW.read_text())
         self.assertIn('projection) repair_options+=(--projection-tests)', WORKFLOW.read_text())
 
     def test_projection_only_dispatch_skips_every_other_build_or_probe(self):
@@ -339,6 +339,39 @@ class FocusedWorkflowRoutingTests(unittest.TestCase):
                              ('workflow_dispatch', 'projection-only'), ('workflow_dispatch', 'probe'),
                              ('workflow_dispatch', 'startup'), ('workflow_dispatch', '')]:
             self.assertFalse(self.condition('custom-options-ui', event, scope, True))
+
+    def test_native_only_runs_all_fixed_native_suites_without_any_app_or_ui_job(self):
+        for device in (False, True):
+            self.assertTrue(self.condition('integration-tests', 'workflow_dispatch', 'native-only', device))
+            for job in ('application-build', 'unsigned-device-build', 'native-api-probe', 'startup-artifact-replay', 'custom-options-ui'):
+                self.assertFalse(self.condition(job, 'workflow_dispatch', 'native-only', device))
+        section = self.section('integration-tests')
+        self.assertIn('repair_options=(--integration-tests --tests-only)', section)
+        self.assertIn('native-only) ;;', section)
+        self.assertEqual(len(baseline.INTEGRATION_TEST_TARGETS), 8)
+        self.assertEqual(tuple(baseline.INTEGRATION_TEST_TARGETS), (
+            '//submodules/PasscodeCore:PasscodeCoreTests',
+            '//submodules/Postbox:PostboxTests',
+            '//submodules/LocalMessageArchive:LocalMessageArchiveTests',
+            '//submodules/TelegramCore:TelegramCoreTests',
+            '//submodules/LocalMessageArchive:LocalArchivePlaybackTests',
+            '//submodules/TextFormat:TextFormatTests',
+            '//submodules/SettingsUI:SettingsUITests',
+            '//submodules/TelegramUI/Components/Chat/ChatHistoryEntry:ChatLocalTextFilterProjectionTests',
+        ))
+
+    def test_native_only_keeps_full_native_evidence_without_claiming_application_build(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory); (root / 'versions.json').write_text('{}')
+            outcomes = dict.fromkeys(baseline.INTEGRATION_TEST_TARGETS, 'passed')
+            with patch.object(baseline, 'ROOT', root), patch.object(baseline, 'output', return_value='d' * 40):
+                baseline.retain_integration_test_summary(outcomes)
+            summary = json.loads((root / 'build/fork-evidence/integration-tests.json').read_text())
+        self.assertEqual(summary['tests'], outcomes)
+        self.assertTrue(summary['full_integration_suite_requested'])
+        self.assertTrue(summary['tests_only'])
+        self.assertFalse(summary['full_application_built'])
+        self.assertFalse(summary['physical_device_verified'])
 
     def test_small_renderer_job_uses_fixed_wrapper_and_has_no_signing_credentials(self):
         section = self.section('custom-options-ui')
