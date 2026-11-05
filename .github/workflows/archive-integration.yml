@@ -1,0 +1,24 @@
+name: Archive application integration (hosted macOS)
+
+# Registration entry on the default branch. The actual qualification workflow
+# lives on ci/verify-latest and is loaded when that branch is selected in Actions.
+# No source, signing keys or app data is changed by this entry.
+on:
+  workflow_dispatch:
+    inputs:
+      unsigned_device:
+        description: Compile an unsigned device IPA alongside exact-commit integration tests
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+
+jobs:
+  select-verification-branch:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Select the prepared verification revision
+        run: |
+          echo "::error::Select ci/verify-latest in the Run workflow branch menu. It contains the prepared application, native tests, device IPA build and startup smoke test."
+          exit 1
