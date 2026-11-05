@@ -23,6 +23,9 @@ ADDED_PREFIXES = (
     "submodules/TelegramUI/Components/Chat/ChatMessageLocalFilterBubbleContentNode/",
 )
 ADDED_FILES = {
+    'submodules/SettingsUI/Sources/LocalArchiveMediaPreview.swift',
+    'submodules/SettingsUI/Tests/LocalArchiveMediaPreviewTests.swift',
+
     'submodules/SettingsUI/Tests/LocalArchiveTransferLifecycleTests.swift',
     'submodules/SettingsUI/Sources/LocalArchiveTransferController.swift',
     'submodules/SettingsUI/Sources/LocalClientCosmeticsController.swift',
