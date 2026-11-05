@@ -15,10 +15,20 @@ STAGES = {'didFinish', 'sceneVisible'}
 def read_marker(container):
     if container is None:
         return {'state': 'unavailable'}
-    path = Path(container) / MARKER
     try:
-        if any(parent.is_symlink() for parent in (path, *path.parents)):
+        approved_root = Path(container)
+        if approved_root.is_symlink():
             return {'state': 'unsafe'}
+        # simctl approved this data root. Canonicalize OS aliases above it
+        # (notably macOS /var -> /private/var), then enforce the boundary only
+        # on the fixed marker descendants. Never follow a link inside it.
+        path = approved_root.resolve(strict=True)
+        if not path.is_dir():
+            return {'state': 'unavailable'}
+        for component in Path(MARKER).parts:
+            path = path / component
+            if path.is_symlink():
+                return {'state': 'unsafe'}
         # O_NONBLOCK also bounds unexpected FIFO/device paths before the regular
         # file check; the marker is synthetic and must never block collection.
         descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)

@@ -93,6 +93,32 @@ class SimulatorProbeTests(unittest.TestCase):
             self.assertTrue(report['probe_only_not_test_result'])
             self.assertEqual(report['commands']['installed_signature'], {'exit_code': 1})
 
+    def test_os_alias_above_approved_data_root_is_valid_but_root_link_is_unsafe(self):
+        with tempfile.TemporaryDirectory() as directory:
+            base = Path(directory)
+            actual_parent = base / 'actual'; actual_parent.mkdir()
+            data = actual_parent / 'Data'; data.mkdir()
+            marker = data / simulator_probe.MARKER
+            marker.parent.mkdir(parents=True)
+            marker.write_text('{"stage":"sceneVisible"}')
+            ancestor_alias = base / 'os-alias'
+            ancestor_alias.symlink_to(actual_parent, target_is_directory=True)
+            self.assertEqual(simulator_probe.read_marker(ancestor_alias / 'Data'), {'state': 'observed', 'stage': 'sceneVisible'})
+            direct_root_link = base / 'direct-data-link'
+            direct_root_link.symlink_to(data, target_is_directory=True)
+            self.assertEqual(simulator_probe.read_marker(direct_root_link), {'state': 'unsafe'})
+
+    def test_directory_symlink_inside_approved_data_root_is_unsafe(self):
+        with tempfile.TemporaryDirectory() as directory:
+            base = Path(directory)
+            external = base / 'External'
+            external_marker = external / 'Caches/AyuGramNativeTestHost/projection-lifecycle.json'
+            external_marker.parent.mkdir(parents=True)
+            external_marker.write_text('{"stage":"didFinish"}')
+            data = base / 'Data'; data.mkdir()
+            (data / 'Library').symlink_to(external, target_is_directory=True)
+            self.assertEqual(simulator_probe.read_marker(data), {'state': 'unsafe'})
+
     def test_no_matching_test_device_never_launches_a_personal_simulator(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
