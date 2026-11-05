@@ -11,6 +11,7 @@ import math
 from pathlib import Path, PurePosixPath
 import re
 import stat
+import struct
 import subprocess
 import tempfile
 import zipfile
@@ -29,6 +30,13 @@ MAX_ZIP_BYTES = 1024**3
 MAX_CONTENT_BYTES = 2 * 1024**3
 MAX_FILES = 20000
 BASE = 'repos/' + REPOSITORY
+MODES = {
+    'simulator': {'job': 'application-build', 'compile': COMPILE_STEP, 'artifact': 'archive-integration-',
+                  'prefix': 'fork-baseline-simulator', 'output': 'startup-replay'},
+    'unsigned-device': {'job': 'unsigned-device-build', 'compile': 'Compile unsigned device package',
+                        'artifact': 'archive-unsigned-device-', 'prefix': 'fork-baseline-unsigned-device',
+                        'output': 'startup-replay-device'},
+}
 
 
 class ReplayError(ValueError):
@@ -103,7 +111,9 @@ def download(artifact_id, destination):
         raise ReplayError('github_artifact_download_failed') from None
 
 
-def select_artifact(run, source, api):
+def select_artifact(run, source, api, mode='simulator'):
+    if mode not in MODES: raise ReplayError('invalid_artifact_mode')
+    specification = MODES[mode]
     value = api(BASE + '/actions/runs/' + str(run))
     if (not isinstance(value, dict) or value.get('id') != run or value.get('head_sha') != source or
             not isinstance(value.get('path'), str) or value['path'].split('@', 1)[0] != WORKFLOW or
@@ -117,25 +127,27 @@ def select_artifact(run, source, api):
     jobs = api(BASE + '/actions/runs/' + str(run) + '/jobs?filter=latest&per_page=100')
     if not isinstance(jobs, dict) or not isinstance(jobs.get('jobs'), list) or type(jobs.get('total_count')) is not int or not 0 <= jobs['total_count'] <= 100:
         raise ReplayError('invalid_job_metadata')
-    applications = [job for job in jobs['jobs'] if isinstance(job, dict) and job.get('name') == 'application-build']
+    applications = [job for job in jobs['jobs'] if isinstance(job, dict) and job.get('name') == specification['job']]
     if len(applications) != 1:
         raise ReplayError('application_build_not_found')
     job = applications[0]
     if not isinstance(job.get('steps'), list):
         raise ReplayError('invalid_job_metadata')
-    compiled = [step for step in job['steps'] if isinstance(step, dict) and step.get('name') == COMPILE_STEP]
+    compiled = [step for step in job['steps'] if isinstance(step, dict) and step.get('name') == specification['compile']]
     if (job.get('run_id') != run or job.get('status') != 'completed' or type(job.get('id')) is not int or
             len(compiled) != 1 or compiled[0].get('status') != 'completed' or compiled[0].get('conclusion') != 'success'):
         raise ReplayError('application_compilation_not_verified')
     conclusion = job.get('conclusion')
     if not isinstance(conclusion, str) or conclusion not in {'success', 'failure', 'cancelled', 'timed_out', 'skipped', 'neutral', 'action_required'}:
         raise ReplayError('invalid_job_conclusion')
+    if mode == 'unsigned-device' and conclusion != 'success':
+        raise ReplayError('device_build_not_successful')
     smoke = [step for step in job['steps'] if isinstance(step, dict) and step.get('name') == SMOKE_STEP]
     prior_smoke_passed = len(smoke) == 1 and smoke[0].get('conclusion') == 'success'
     result = api(BASE + '/actions/runs/' + str(run) + '/artifacts?per_page=100')
     if not isinstance(result, dict) or not isinstance(result.get('artifacts'), list) or type(result.get('total_count')) is not int or not 0 <= result['total_count'] <= 100:
         raise ReplayError('invalid_artifact_metadata')
-    artifacts = [a for a in result['artifacts'] if isinstance(a, dict) and a.get('name') == 'archive-integration-' + source]
+    artifacts = [a for a in result['artifacts'] if isinstance(a, dict) and a.get('name') == specification['artifact'] + source]
     if len(artifacts) != 1:
         raise ReplayError('simulator_artifact_not_unique')
     artifact = artifacts[0]
@@ -216,7 +228,58 @@ def prior_smoke_report(value):
     return value
 
 
-def verify_extract(archive_path, artifact, source, destination):
+def unsigned_device_inspection(path):
+    """Check every Mach-O, not just the main executable, without executing code."""
+    inspection = inspect_ipa(path, 'unsigned-device', BUNDLE)
+    count = 0
+    with zipfile.ZipFile(path) as archive:
+        entries = archive.infolist()
+        if len(entries) > MAX_FILES or len({e.filename for e in entries}) != len(entries):
+            raise ReplayError('invalid_ipa_entries')
+        total = 0
+        for entry in entries:
+            name = member_name(entry.filename, directory=entry.is_dir())
+            if (entry.flag_bits & 1 or stat.S_IFMT(entry.external_attr >> 16) not in {0, stat.S_IFREG, stat.S_IFDIR}
+                    or '_CodeSignature' in PurePosixPath(name).parts or name.endswith('/embedded.mobileprovision')):
+                raise ReplayError('device_ipa_not_unsigned')
+            total += entry.file_size
+            if entry.file_size > MAX_ZIP_BYTES or total > MAX_CONTENT_BYTES:
+                raise ReplayError('ipa_content_limit_exceeded')
+            if entry.is_dir(): continue
+            with archive.open(entry) as stream:
+                magic = stream.read(4)
+                if magic != b'\xcf\xfa\xed\xfe':
+                    if magic in {b'\xfe\xed\xfa\xcf', b'\xce\xfa\xed\xfe', b'\xfe\xed\xfa\xce',
+                                 b'\xca\xfe\xba\xbe', b'\xbe\xba\xfe\xca', b'\xca\xfe\xba\xbf', b'\xbf\xba\xfe\xca'}:
+                        raise ReplayError('unsupported_device_macho')
+                    continue
+                header = magic + stream.read(28)
+                if len(header) != 32: raise ReplayError('invalid_device_macho')
+                _, cpu, _, filetype, commands, size, _, _ = struct.unpack('<8I', header)
+                if (cpu != 0x0100000c or filetype not in {2, 6, 8} or not 1 <= commands <= 4096 or
+                        not commands * 8 <= size <= min(1024**2, entry.file_size - 32)):
+                    raise ReplayError('invalid_device_macho')
+                data = stream.read(size)
+                if len(data) != size: raise ReplayError('invalid_device_macho')
+                position, platform = 0, None
+                for _ in range(commands):
+                    if position + 8 > len(data): raise ReplayError('invalid_device_macho')
+                    code, length = struct.unpack_from('<II', data, position)
+                    if length < 8 or length % 8 or position + length > len(data):
+                        raise ReplayError('invalid_device_macho')
+                    if code == 0x1d: raise ReplayError('device_ipa_not_unsigned')  # LC_CODE_SIGNATURE
+                    if code == 0x32:
+                        if length < 24 or platform is not None: raise ReplayError('invalid_device_macho')
+                        platform = struct.unpack_from('<I', data, position + 8)[0]
+                    position += length
+                if position != len(data) or platform != 2: raise ReplayError('device_macho_platform_mismatch')
+                count += 1
+    if not count: raise ReplayError('device_macho_missing')
+    return {**inspection, 'unsigned_macho_count': count, 'all_macho_platforms': 2, 'signing': 'disabled'}
+
+
+def verify_extract(archive_path, artifact, source, destination, mode='simulator'):
+    if mode not in MODES: raise ReplayError('invalid_artifact_mode')
     archive_path, destination = Path(archive_path), Path(destination)
     if archive_path.stat().st_size != artifact['size_in_bytes']:
         raise ReplayError('artifact_size_mismatch')
@@ -258,16 +321,19 @@ def verify_extract(archive_path, artifact, source, destination):
                         if digest_stream(stream) != parts[0]:
                             raise ReplayError('inner_checksum_mismatch')
                     verified.add(target)
-            ipa_name = 'fork-baseline-simulator/Telegram.ipa'
-            manifest_name = 'fork-baseline-simulator/manifest.json'
+            ipa_name = MODES[mode]['prefix'] + '/Telegram.ipa'
+            manifest_name = MODES[mode]['prefix'] + '/manifest.json'
             if not checksums or ipa_name not in verified or manifest_name not in names:
                 raise ReplayError('required_artifact_evidence_missing')
             if archive.getinfo(manifest_name).file_size > 65536:
                 raise ReplayError('manifest_too_large')
             manifest = json.loads(archive.read(manifest_name))
-            if (not isinstance(manifest, dict) or manifest.get('source_commit') != source or manifest.get('mode') != 'simulator' or
+            if (not isinstance(manifest, dict) or manifest.get('source_commit') != source or manifest.get('mode') != mode or
                     manifest.get('bundle_id') != BUNDLE or not isinstance(manifest.get('sha256'), str) or not DIGEST.fullmatch(manifest['sha256'])):
                 raise ReplayError('simulator_manifest_mismatch')
+            if mode == 'unsigned-device' and (manifest.get('signing') != 'disabled' or manifest.get('runtime_verified') is not False
+                                               or manifest.get('signature_verified') is not False):
+                raise ReplayError('device_manifest_not_unsigned')
             destination.mkdir(parents=True, mode=0o700)
             ipa = destination / 'Telegram.ipa'
             with archive.open(ipa_name) as src, ipa.open('xb') as out:
@@ -277,7 +343,7 @@ def verify_extract(archive_path, artifact, source, destination):
             with ipa.open('rb') as stream:
                 if digest_stream(stream) != manifest['sha256']:
                     raise ReplayError('ipa_digest_mismatch')
-            inspection = inspect_ipa(ipa, 'simulator', BUNDLE)
+            inspection = unsigned_device_inspection(ipa) if mode == 'unsigned-device' else inspect_ipa(ipa, mode, BUNDLE)
             evidence = destination / 'archive-evidence'
             evidence.mkdir(mode=0o700)
             (evidence / 'manifest.json').write_text(json.dumps(manifest, indent=2) + '\n')
@@ -295,22 +361,23 @@ def verify_extract(archive_path, artifact, source, destination):
         raise ReplayError('invalid_simulator_artifact') from None
 
 
-def replay(run, source, output, root=None, api=gh_json, fetch=download):
+def replay(run, source, output, root=None, api=gh_json, fetch=download, mode='simulator'):
+    if mode not in MODES: raise ReplayError('invalid_artifact_mode')
     run, source = coordinates(run, source)
     root = Path(root or Path(__file__).resolve().parents[2]).resolve()
     output = Path(output)
     if not output.is_absolute():
         output = root / output
-    expected = root / 'build/fork-evidence/startup-replay'
+    expected = root / ('build/fork-evidence/' + MODES[mode]['output'])
     if output != expected or any(parent.is_symlink() for parent in (output, *output.parents)):
         raise ReplayError('invalid_replay_output_path')
     head, changed_count = verify_checkout(root, source)
-    artifact, provenance = select_artifact(run, source, api)
+    artifact, provenance = select_artifact(run, source, api, mode)
     with tempfile.TemporaryDirectory(prefix='ayu-replay-download-') as temporary:
         archive_path = Path(temporary) / 'simulator-artifact.zip'
         fetch(artifact['id'], archive_path)
-        result = verify_extract(archive_path, artifact, source, output)
-    report = {'schema': 1, 'repository': REPOSITORY, 'source_run': run, 'source_commit': source,
+        result = verify_extract(archive_path, artifact, source, output, mode)
+    report = {'schema': 1, 'mode': mode, 'repository': REPOSITORY, 'source_run': run, 'source_commit': source,
               'replay_checkout_commit': head, 'artifact_id': artifact['id'], 'allowed_tooling_changes': changed_count,
               'application_source_unchanged': True, **provenance, **result,
               'diagnostic_replay_only': True, 'release_qualified': False, 'physical_device_verified': False}
@@ -323,9 +390,10 @@ def main(argv=None):
     parser.add_argument('--run', required=True)
     parser.add_argument('--source', required=True)
     parser.add_argument('--output', type=Path, required=True)
+    parser.add_argument('--mode', choices=tuple(MODES), default='simulator')
     args = parser.parse_args(argv)
     try:
-        report = replay(args.run, args.source, args.output)
+        report = replay(args.run, args.source, args.output, mode=args.mode)
     except ReplayError as error:
         print(json.dumps({'error': str(error), 'verified': False}, sort_keys=True))
         raise SystemExit(1) from None

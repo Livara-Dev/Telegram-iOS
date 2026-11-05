@@ -36,6 +36,23 @@ def entitlements():
             'get-task-allow': True, 'com.example.unchanged': {'flag': True}}
 
 
+def signed_application(root):
+    app = application(root)
+    binary = struct.pack('<8I', 0xfeedfacf, 0x0100000c, 0, 2, 2, 40, 0, 0)
+    binary += struct.pack('<6I', 0x32, 24, 7, 0x000f0000, 0x001b0100, 0)
+    binary += struct.pack('<4I', 0x1d, 16, 96, 16)
+    binary += b'original-code'.ljust(24, b'\0') + b'signature-bytes!'
+    (app / 'Telegram').write_bytes(binary)
+    for name in ('Share.appex', 'Notification.appex'):
+        extension = app / 'PlugIns' / name
+        extension.mkdir(parents=True)
+        (extension / 'Info.plist').write_bytes(plistlib.dumps({'CFBundleIdentifier': 'example.' + name}))
+    resource = app / 'Resources/PlugIns/retained.txt'
+    resource.parent.mkdir(parents=True)
+    resource.write_text('nested resource called PlugIns must be preserved')
+    return app
+
+
 class Codesign:
     def __init__(self, original=None, changed=None, mutate_framework=False):
         self.original = entitlements() if original is None else original
@@ -55,6 +72,104 @@ class Codesign:
 
 
 class StartupReplayTests(unittest.TestCase):
+    def test_main_only_removes_exact_extension_boundary_and_preserves_all_entitlements(self):
+        with tempfile.TemporaryDirectory() as d:
+            app = signed_application(d)
+            original = entitlements()
+            runner = Codesign(original=original, changed=original)
+            result = replay.main_app_only(app, d, run=runner)
+            self.assertEqual(result['extensions_removed'], 2)
+            self.assertTrue(result['main_code_unchanged'])
+            self.assertTrue(result['other_entitlements_preserved'])
+            self.assertFalse(result['app_group_entitlement_absent_after'])
+            self.assertFalse((app / 'PlugIns').exists())
+            self.assertTrue((app / 'Resources/PlugIns/retained.txt').is_file())
+            self.assertEqual((app / 'Frameworks/Sample.framework/Sample').read_bytes(), b'synthetic framework bytes')
+            self.assertEqual(len([a for a, _ in runner.calls if '--force' in a]), 1)
+            self.assertTrue(any(a[1:4] == ['--verify', '--deep', '--strict'] for a, _ in runner.calls))
+            supplied = plistlib.loads((Path(d) / 'filtered-entitlements.plist').read_bytes())
+            self.assertEqual(supplied, original)
+
+    def test_main_only_rejects_link_or_unknown_item_before_removal(self):
+        for unsafe in ('symlink', 'file'):
+            with tempfile.TemporaryDirectory() as d:
+                app = signed_application(d); runner = Codesign()
+                path = app / 'PlugIns/unsafe'
+                path.symlink_to('/tmp') if unsafe == 'symlink' else path.write_bytes(b'not an extension')
+                with self.assertRaises(replay.ReplayError): replay.main_app_only(app, d, run=runner)
+                self.assertTrue((app / 'PlugIns/Share.appex').exists())
+                self.assertFalse(runner.calls)
+
+    def test_main_only_rejects_executable_code_or_framework_mutation(self):
+        for target in ('Telegram', 'Frameworks/Sample.framework/Sample'):
+            with tempfile.TemporaryDirectory() as d:
+                app = signed_application(d); original = {'get-task-allow': True}
+                codesign = Codesign(original=original, changed=original)
+                def mutate(args, **kwargs):
+                    result = codesign(args, **kwargs)
+                    if '--force' in args:
+                        path = app / target
+                        data = bytearray(path.read_bytes()); data[-17 if target == 'Telegram' else -1] ^= 1
+                        path.write_bytes(data)
+                    return result
+                with self.assertRaises(replay.ReplayError): replay.main_app_only(app, d, run=mutate)
+
+    def test_main_code_digest_permits_signature_size_but_never_code_or_offset_changes(self):
+        with tempfile.TemporaryDirectory() as d:
+            app = signed_application(d); path = app / 'Telegram'
+            before = replay.main_code_digest(app); original = path.read_bytes()
+            data = bytearray(original); struct.pack_into('<I', data, 68, 8); path.write_bytes(data)
+            self.assertEqual(before, replay.main_code_digest(app))
+            data[80] ^= 1; path.write_bytes(data)
+            self.assertNotEqual(before, replay.main_code_digest(app))
+            data = bytearray(original); struct.pack_into('<I', data, 64, 95); path.write_bytes(data)
+            self.assertNotEqual(before, replay.main_code_digest(app))
+
+    def test_main_only_runs_only_one_variant_private_control_without_normal_install(self):
+        with tempfile.TemporaryDirectory() as d:
+            app = signed_application(d); ipa = Path(d) / 'source.ipa'; replay.repack_app(app, ipa)
+            def prepare(app, directory):
+                import shutil
+                shutil.rmtree(app / 'PlugIns')
+                return {'extensions_removed': 2, 'main_code_unchanged': True}
+            with mock.patch.object(replay.platform, 'system', return_value='Darwin'), \
+                 mock.patch.object(replay, 'private_command', return_value=plistlib.dumps({'get-task-allow': True})), \
+                 mock.patch.object(replay, 'main_app_only', side_effect=prepare), \
+                 mock.patch.object(replay, 'smoke', return_value={'passed': True}) as launched:
+                result = replay.replay(ipa, Path(d) / 'evidence', 'main-app-only')
+            self.assertEqual(launched.call_count, 1)
+            self.assertIn('main-app-only/launch-smoke', str(launched.call_args.args[1]))
+            self.assertEqual(launched.call_args.kwargs, {'expected_storage_kind': 'private'})
+            self.assertEqual(result['mode'], 'main_app_only')
+            self.assertFalse(result['normal_control_passed'])
+            self.assertTrue(result['source_ipa_unchanged'])
+            self.assertTrue(result['main_app_only_control_passed'])
+            self.assertTrue(result['passed'])
+
+    def test_main_only_fails_before_launch_when_source_groups_would_change_another_variable(self):
+        with tempfile.TemporaryDirectory() as d:
+            app = signed_application(d); ipa = Path(d) / 'source.ipa'; replay.repack_app(app, ipa)
+            with mock.patch.object(replay.platform, 'system', return_value='Darwin'), \
+                 mock.patch.object(replay, 'private_command', return_value=plistlib.dumps(entitlements())), \
+                 mock.patch.object(replay, 'smoke') as launched:
+                with self.assertRaises(replay.ReplayError): replay.replay(ipa, Path(d) / 'evidence', 'main-app-only')
+            launched.assert_not_called()
+
+    def test_failed_variant_never_reports_pass_or_retries_the_original(self):
+        with tempfile.TemporaryDirectory() as d:
+            app = signed_application(d); ipa = Path(d) / 'source.ipa'; replay.repack_app(app, ipa)
+            output = Path(d) / 'evidence'
+            with mock.patch.object(replay.platform, 'system', return_value='Darwin'), \
+                 mock.patch.object(replay, 'private_command', return_value=plistlib.dumps({'get-task-allow': True})), \
+                 mock.patch.object(replay, 'main_app_only', return_value={'extensions_removed': 2, 'main_code_unchanged': True}), \
+                 mock.patch.object(replay, 'smoke', return_value={'passed': False}) as launched:
+                with self.assertRaises(replay.ReplayError): replay.replay(ipa, output, 'main-app-only')
+            self.assertEqual(launched.call_count, 1)
+            result = json.loads((output / 'replay.json').read_text())
+            self.assertEqual(result['phase'], 'mainAppOnlyControl')
+            self.assertFalse(result['normal_control_passed'])
+            self.assertFalse(result['passed'])
+
     def test_entitlements_drop_only_app_groups_and_do_not_mutate_input(self):
         original = entitlements(); before = copy.deepcopy(original)
         filtered = replay.filtered_entitlements(original)
