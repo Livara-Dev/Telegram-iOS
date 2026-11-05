@@ -12,6 +12,7 @@ import unittest
 import zipfile
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+import artifact_licensing
 import device_variant as variant
 import replay_artifact as replay
 from test_replay_artifact import API
@@ -57,6 +58,9 @@ def evidence(device_digest='d' * 64):
               'artifact_id': 12, 'outer_sha256': 'e' * 64, 'application_source_unchanged': True,
               'source_compile_step_passed': True, 'physical_device_verified': False, 'release_qualified': False}
     device = {**common, 'mode': 'unsigned-device', 'ipa_sha256': device_digest, 'source_job_conclusion': 'success'}
+    materials = artifact_licensing.material_bytes(Path(__file__).resolve().parents[3], SOURCE)
+    device['source_license_materials_present'] = True
+    device['license_materials'] = artifact_licensing.validate_materials(materials, SOURCE)
     simulator = {**common, 'mode': 'simulator', 'ipa_sha256': 'a' * 64}
     proof = {'mode': 'main_app_only', 'startup_variant': 'main-app-only', 'passed': True, 'phase': 'complete',
              'private_mode_control': 'automaticSelection', 'automatic_fallback_verified': True,
@@ -229,6 +233,8 @@ class DeviceVariantTests(unittest.TestCase):
             with self.assertRaises(replay.ReplayError): variant.package(source, *paths, root / 'blocked')
             self.assertFalse((root / 'blocked').exists())
             paths[2].write_text(json.dumps(reports[2]))
+            materials = artifact_licensing.material_bytes(Path(__file__).resolve().parents[3], SOURCE)
+            artifact_licensing.write_materials(materials, root)
             report = variant.package(source, *paths, root / 'published')
             self.assertIn('main-app-only-unsigned-device.ipa', report['filename'])
             self.assertEqual(report['signing'], 'disabled')
@@ -240,6 +246,9 @@ class DeviceVariantTests(unittest.TestCase):
             sums = (root / 'published/SHA256SUMS').read_text()
             self.assertIn(variant.digest(root / 'published' / report['filename']), sums)
             self.assertIn(variant.digest(root / 'published/manifest.json'), sums)
+            for name, value in materials.items():
+                self.assertEqual((root / 'published' / name).read_bytes(), value)
+                self.assertIn(hashlib.sha256(value).hexdigest() + '  ' + name, sums)
 
     def test_output_symlink_or_symlink_ancestor_is_rejected_without_publishing(self):
         with tempfile.TemporaryDirectory() as d:
@@ -253,3 +262,24 @@ class DeviceVariantTests(unittest.TestCase):
                 with self.subTest(ancestor=output != alias), self.assertRaisesRegex(replay.ReplayError, 'invalid_variant_output'):
                     variant.package(source, *paths, output)
             self.assertEqual(list(target.iterdir()), [])
+
+    def test_new_distribution_rejects_missing_partial_symlink_tampered_or_unverified_source_materials(self):
+        for kind in ('missing', 'partial', 'symlink', 'tampered', 'legacy-proof', 'wrong-proof'):
+            with self.subTest(kind=kind), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory).resolve(); source = ipa(root / 'source.ipa'); before = source.read_bytes()
+                reports = evidence(variant.digest(source)); paths = []
+                if kind != 'missing':
+                    materials = artifact_licensing.material_bytes(Path(__file__).resolve().parents[3], SOURCE)
+                    artifact_licensing.write_materials(materials, root)
+                    path = root / 'LICENSE-NOTICE.md'
+                    if kind == 'partial': path.unlink()
+                    if kind == 'symlink': path.rename(root / 'private-notice'); path.symlink_to(root / 'private-notice')
+                    if kind == 'tampered': (root / 'COPYING').write_bytes(b'not the verified license')
+                    if kind == 'legacy-proof': reports[0]['source_license_materials_present'] = False
+                    if kind == 'wrong-proof': reports[0]['license_materials']['COPYING']['sha256'] = '0' * 64
+                for index, value in enumerate(reports):
+                    path = root / (str(index) + '.json'); path.write_text(json.dumps(value)); paths.append(path)
+                with self.assertRaises(replay.ReplayError): variant.package(source, *paths, root / 'blocked')
+                self.assertFalse((root / 'blocked').exists())
+                self.assertEqual(list(root.glob('.main-app-only-*')), [])
+                self.assertEqual(source.read_bytes(), before)

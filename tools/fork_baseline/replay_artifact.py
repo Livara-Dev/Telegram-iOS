@@ -19,6 +19,7 @@ import zipfile
 from ipa_inspect import inspect_ipa
 from launch_smoke import PHASES, SMOKE_CODES, ERROR_DOMAINS
 from storage_evidence import STORAGE_FIELDS
+from artifact_licensing import MATERIAL_NAMES, validate_materials, write_materials
 
 REPOSITORY = 'Livara-Dev/Telegram-iOS'
 WORKFLOW = '.github/workflows/archive-integration.yml'
@@ -389,6 +390,24 @@ def verify_extract(archive_path, artifact, source, destination, mode='simulator'
             if mode == 'unsigned-device' and (manifest.get('signing') != 'disabled' or manifest.get('runtime_verified') is not False
                                                or manifest.get('signature_verified') is not False):
                 raise ReplayError('device_manifest_not_unsigned')
+            material_names = {name: MODES[mode]['prefix'] + '/' + name for name in MATERIAL_NAMES}
+            present_materials = {name for name, member in material_names.items() if member in names}
+            materials, license_metadata = {}, None
+            if present_materials:
+                if present_materials != set(MATERIAL_NAMES):
+                    raise ReplayError('incomplete_license_materials')
+                for name, member in material_names.items():
+                    if member not in verified or not 0 < archive.getinfo(member).file_size <= 65536:
+                        raise ReplayError('license_materials_not_verified')
+                    materials[name] = archive.read(member)
+                try:
+                    license_metadata = validate_materials(materials, source)
+                except ValueError:
+                    raise ReplayError('invalid_license_materials') from None
+                if manifest.get('license_materials') != license_metadata:
+                    raise ReplayError('license_material_provenance_mismatch')
+            elif manifest.get('license_materials') is not None:
+                raise ReplayError('incomplete_license_materials')
             destination.mkdir(parents=True, mode=0o700)
             ipa = destination / 'Telegram.ipa'
             with archive.open(ipa_name) as src, ipa.open('xb') as out:
@@ -399,6 +418,8 @@ def verify_extract(archive_path, artifact, source, destination, mode='simulator'
                 if digest_stream(stream) != manifest['sha256']:
                     raise ReplayError('ipa_digest_mismatch')
             inspection = unsigned_device_inspection(ipa) if mode == 'unsigned-device' else inspect_ipa(ipa, mode, BUNDLE)
+            if materials:
+                write_materials(materials, destination)
             evidence = destination / 'archive-evidence'
             evidence.mkdir(mode=0o700)
             (evidence / 'manifest.json').write_text(json.dumps(manifest, indent=2) + '\n')
@@ -411,6 +432,7 @@ def verify_extract(archive_path, artifact, source, destination, mode='simulator'
                 (evidence / 'prior-launch-result.json').write_text(json.dumps(original, indent=2) + '\n')
             return {'outer_sha256': outer_digest, 'ipa_sha256': manifest['sha256'],
                     'checksum_files_verified': len(checksums), 'inner_payloads_verified': len(verified),
+                    'source_license_materials_present': bool(materials), 'license_materials': license_metadata,
                     'prior_smoke_evidence_present': smoke_present, 'main_executable': inspection}
     except (zipfile.BadZipFile, KeyError, UnicodeError, json.JSONDecodeError):
         raise ReplayError('invalid_simulator_artifact') from None

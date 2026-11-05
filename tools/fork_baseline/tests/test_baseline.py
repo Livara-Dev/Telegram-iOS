@@ -12,6 +12,7 @@ import unittest
 from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+import artifact_licensing
 SPEC = importlib.util.spec_from_file_location("baseline", Path(__file__).resolve().parents[1] / "baseline.py")
 baseline = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(baseline)
@@ -241,6 +242,10 @@ class BundleDiagnosticsTests(unittest.TestCase):
 
 class PrivacyAndArtifactsTests(unittest.TestCase):
     def setUp(self):
+        materials = patch.object(baseline, 'material_bytes',
+            side_effect=lambda root, commit: artifact_licensing.material_bytes(Path(__file__).resolve().parents[3], commit))
+        materials.start()
+        self.addCleanup(materials.stop)
         overlay = patch.object(baseline, "prepare_unsigned_rules", return_value={"fixture": "reviewed"})
         overlay.start()
         self.addCleanup(overlay.stop)

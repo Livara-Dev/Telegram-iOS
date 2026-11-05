@@ -61,7 +61,20 @@ API terms §2.1 and iOS `README.md:8` require the application's own `api_id`. Ay
 
 ## Release verification still open
 
-- The fork now includes root `COPYING` and [license provenance](LICENSE-NOTICE.md). The complete dependency notice/source inventory and binary distribution clearance remain open.
+- Original build artifacts now mechanically include the unmodified GPL text as
+  `COPYING`, the reviewed `LICENSE-NOTICE.md`, and `CORRESPONDING-SOURCE.md` with
+  the exact public repository/commit and reproducible build/source retrieval
+  instructions. Their bytes, sizes and SHA-256 values are paired with the IPA
+  manifest. Newly published main-app-only derivatives preserve the original
+  three verified files and fail closed if they are missing or altered. Older
+  artifacts without these files remain usable for explicitly scoped diagnostic
+  replay, not newly derived distribution through that publisher.
+- These checks establish material presence and integrity, not complete GPL
+  compliance or legal clearance. Recipients must actually have access to all
+  corresponding source, notices and build/installation materials for the exact
+  artifact. The full third-party notice/source inventory and distribution-channel
+  review remain open. No private credentials or generated configuration are
+  collected into the three source/license materials.
 - Exact recursive submodule and resolved dependency verification plus source availability review.
 - Privacy hardening and runtime network/telemetry tests.
 - Distribution-channel contract review and resolution of the explicit ghost-mode API-terms conflict.

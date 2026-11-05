@@ -17,6 +17,7 @@ import zipfile
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import replay_artifact as replay
+import artifact_licensing as licensing
 
 SOURCE = 'c' * 40
 RUN = 42031063759
@@ -72,6 +73,54 @@ class API:
 
 
 class ReplayArtifactTests(unittest.TestCase):
+    def test_all_verified_source_materials_are_retained_while_legacy_diagnostics_remain_explicit(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory); archive = root / 'source.zip'
+            artifact, _, _ = fixture(archive)
+            legacy = replay.verify_extract(archive, artifact, SOURCE, root / 'legacy')
+            self.assertFalse(legacy['source_license_materials_present'])
+            self.assertIsNone(legacy['license_materials'])
+            materials = licensing.material_bytes(Path(__file__).resolve().parents[3], SOURCE)
+            with zipfile.ZipFile(archive) as original:
+                names = {name: original.read(name) for name in original.namelist()}
+            manifest_name = 'fork-baseline-simulator/manifest.json'
+            manifest = json.loads(names[manifest_name]); manifest['license_materials'] = licensing.validate_materials(materials, SOURCE)
+            names[manifest_name] = json.dumps(manifest).encode()
+            for name, data in materials.items(): names['fork-baseline-simulator/' + name] = data
+            names['fork-baseline-simulator/SHA256SUMS'] = ''.join(hashlib.sha256(data).hexdigest() + '  ' + name.removeprefix('fork-baseline-simulator/') + '\n'
+                for name, data in names.items() if name.startswith('fork-baseline-simulator/') and not name.endswith('SHA256SUMS')).encode()
+            with zipfile.ZipFile(archive, 'w') as target:
+                for name, data in names.items(): target.writestr(name, data)
+            artifact.update(size_in_bytes=archive.stat().st_size, digest='sha256:' + hashlib.sha256(archive.read_bytes()).hexdigest())
+            verified = replay.verify_extract(archive, artifact, SOURCE, root / 'licensed')
+            self.assertTrue(verified['source_license_materials_present'])
+            self.assertEqual(verified['license_materials'], manifest['license_materials'])
+            for name, data in materials.items(): self.assertEqual((root / 'licensed' / name).read_bytes(), data)
+
+    def test_partial_tampered_wrong_source_or_unchecksummed_materials_cannot_be_replayed(self):
+        for kind in ('partial', 'tampered', 'wrong-source', 'unchecked', 'manifest-mismatch'):
+            with self.subTest(kind=kind), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory); archive = root / 'source.zip'; artifact, _, _ = fixture(archive)
+                materials = licensing.material_bytes(Path(__file__).resolve().parents[3], SOURCE)
+                metadata = licensing.validate_materials(materials, SOURCE)
+                if kind == 'partial': materials.pop('LICENSE-NOTICE.md')
+                if kind == 'tampered': materials['COPYING'] += b'tampered'
+                if kind == 'wrong-source': materials['CORRESPONDING-SOURCE.md'] = licensing.source_notice('d' * 40)
+                if kind == 'manifest-mismatch': metadata['COPYING']['sha256'] = '0' * 64
+                with zipfile.ZipFile(archive) as original: names = {name: original.read(name) for name in original.namelist()}
+                manifest_name = 'fork-baseline-simulator/manifest.json'
+                manifest = json.loads(names[manifest_name]); manifest['license_materials'] = metadata
+                names[manifest_name] = json.dumps(manifest).encode()
+                for name, data in materials.items(): names['fork-baseline-simulator/' + name] = data
+                names['fork-baseline-simulator/SHA256SUMS'] = ''.join(hashlib.sha256(data).hexdigest() + '  ' + name.removeprefix('fork-baseline-simulator/') + '\n'
+                    for name, data in names.items() if name.startswith('fork-baseline-simulator/') and not name.endswith('SHA256SUMS') and
+                    not (kind == 'unchecked' and name.endswith('LICENSE-NOTICE.md'))).encode()
+                with zipfile.ZipFile(archive, 'w') as target:
+                    for name, data in names.items(): target.writestr(name, data)
+                artifact.update(size_in_bytes=archive.stat().st_size, digest='sha256:' + hashlib.sha256(archive.read_bytes()).hexdigest())
+                with self.assertRaises(replay.ReplayError): replay.verify_extract(archive, artifact, SOURCE, root / 'blocked')
+                self.assertFalse((root / 'blocked').exists())
+
     def test_inputs_and_source_change_allowlist_fail_closed(self):
         self.assertEqual(replay.coordinates(str(RUN), SOURCE), (RUN, SOURCE))
         for run, source in [('0', SOURCE), ('-1', SOURCE), ('2/x', SOURCE), ('9' * 20, SOURCE), (str(RUN), 'HEAD')]:

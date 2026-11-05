@@ -11,6 +11,7 @@ import json
 from pathlib import Path, PurePosixPath
 import tempfile
 import zipfile
+from artifact_licensing import read_materials, validate_materials, write_materials
 
 from replay_artifact import (BUNDLE, DIGEST, REPOSITORY, ReplayError, coordinates,
                              digest_stream, prior_smoke_report, unsigned_device_inspection)
@@ -137,11 +138,20 @@ def package(ipa, verification, simulator_verification, startup_proof, startup_re
         raise ReplayError('device_ipa_digest_mismatch')
     if output.exists() or any(p.is_symlink() for p in (output, *output.parents)):
         raise ReplayError('invalid_variant_output')
+    try:
+        materials = read_materials(ipa.parent, source)
+        license_metadata = validate_materials(materials, source)
+    except (OSError, ValueError):
+        raise ReplayError('variant_source_materials_unavailable') from None
+    if (device.get('source_license_materials_present') is not True or
+            device.get('license_materials') != license_metadata):
+        raise ReplayError('variant_source_materials_not_verified')
     output.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
     with tempfile.TemporaryDirectory(prefix='.main-app-only-', dir=output.parent) as temporary:
         staging = Path(temporary) / 'package'; staging.mkdir(mode=0o700)
         filename = 'AyuGram-' + source[:8] + '-main-app-only-unsigned-device.ipa'
         report = strip_extensions(ipa, staging / filename, extension_count)
+        write_materials(materials, staging)
         if digest(ipa) != device['ipa_sha256']: raise ReplayError('source_package_changed')
         manifest = {'schema': 1, 'mode': 'unsigned-device', 'variant': 'main-app-only', 'bundle_id': BUNDLE,
                     'source_commit': source, 'source_run': run, 'source_artifact_id': device['artifact_id'],
@@ -158,10 +168,11 @@ def package(ipa, verification, simulator_verification, startup_proof, startup_re
                     'simulator_private_selection_seeded': result['storage_test_setup'] == 'freshPinnedPrivate',
                     'simulator_private_account_store_stable_after_restart': True,
                     'source_ipa_unchanged': True, 'build_number_changed': False,
-                    'extensions_available': False, 'release_qualified': False, **report}
+                    'extensions_available': False, 'release_qualified': False,
+                    'license_materials': license_metadata, **report}
         (staging / 'manifest.json').write_text(json.dumps(manifest, sort_keys=True, indent=2) + '\n')
         (staging / 'SHA256SUMS').write_text(''.join(digest(staging / name) + '  ' + name + '\n'
-                                                   for name in (filename, 'manifest.json')))
+                                                   for name in (filename, 'manifest.json', *materials)))
         staging.rename(output)
     return manifest
 

@@ -19,6 +19,7 @@ import sys
 import tempfile
 import time
 import zipfile
+from artifact_licensing import material_bytes, validate_materials, write_materials
 
 from unsigned_rules import prepare_unsigned_rules
 from ipa_inspect import inspect_ipa, InvalidIPA
@@ -417,13 +418,25 @@ def publish_artifact(source, destination, mode, bundle_id, build_number, test_re
         "signing": "disabled" if mode == "unsigned-device" else "not_verified",
         "main_executable": binary_report,
     }
+    try:
+        materials = material_bytes(ROOT, metadata["source_commit"])
+        metadata["license_materials"] = validate_materials(materials, metadata["source_commit"])
+    except (OSError, ValueError):
+        raise InvalidSetup("Artifact license/source materials failed validation") from None
     destination.parent.mkdir(parents=True, exist_ok=True)
     # Upload globs never see this hidden staging directory or a partial package.
     with tempfile.TemporaryDirectory(prefix=".fork-artifact-", dir=destination.parent) as directory:
         staging = Path(directory)
         shutil.copyfile(source, staging / "Telegram.ipa")
-        (staging / "SHA256SUMS").write_text(digest + "  Telegram.ipa\n")
+        try:
+            write_materials(materials, staging)
+        except ValueError:
+            raise InvalidSetup("Artifact license/source materials could not be written safely") from None
         (staging / "manifest.json").write_text(json.dumps(metadata, indent=2) + "\n")
+        checksums = {"Telegram.ipa": digest,
+                     "manifest.json": hashlib.sha256((staging / "manifest.json").read_bytes()).hexdigest()}
+        checksums.update({name: value["sha256"] for name, value in metadata["license_materials"].items()})
+        (staging / "SHA256SUMS").write_text(''.join(value + '  ' + name + '\n' for name, value in sorted(checksums.items())))
         staging.rename(destination)
 
 
