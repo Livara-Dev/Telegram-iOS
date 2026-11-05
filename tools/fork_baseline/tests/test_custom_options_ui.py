@@ -21,6 +21,143 @@ ROOT = Path(__file__).resolve().parents[3]
 
 
 class CustomOptionsContracts(unittest.TestCase):
+    def test_attachment_export_prepares_private_directory_and_records_fixed_command_success(self):
+        real_popen = visual.subprocess.Popen
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory); bundle = root / 'test.xcresult'; bundle.mkdir()
+            exported = root / 'exported'; diagnostic = root / 'attachment-export.json'
+            def execute(arguments, **kwargs):
+                self.assertEqual(arguments, ['xcrun', 'xcresulttool', 'export', 'attachments',
+                    '--path', str(bundle), '--output-path', str(exported)])
+                self.assertTrue(exported.is_dir())
+                self.assertEqual(exported.stat().st_mode & 0o777, 0o700)
+                self.assertLessEqual(set(kwargs['env']), visual.EXPORT_ENVIRONMENT_KEYS)
+                for key in ('TELEGRAM_API_HASH', 'TELEGRAM_API_ID', 'GITHUB_TOKEN', 'DYLD_INSERT_LIBRARIES'):
+                    self.assertNotIn(key, kwargs['env'])
+                return real_popen([sys.executable, '-c', "import sys;sys.stderr.write('Export complete\\n');print('stdout is never retained')"], **kwargs)
+            api_hash_key = 'TELEGRAM_' + 'API_HASH'
+            with patch.dict(os.environ, {api_hash_key: 'synthetic-api-secret', 'TELEGRAM_API_ID': '1234567',
+                    'GITHUB_TOKEN': 'synthetic-ci-secret', 'DYLD_INSERT_LIBRARIES': 'private-injection'}), patch.object(visual.subprocess, 'Popen', side_effect=execute):
+                visual.export_attachments(bundle, exported, diagnostic)
+            report = json.loads(diagnostic.read_text())
+            self.assertEqual(report['phase'], 'exportAttachments')
+            self.assertEqual(report['status'], 'success')
+            self.assertEqual(report['return_code'], 0)
+            self.assertFalse(report['timeout'])
+            self.assertNotIn('stdout is never retained', diagnostic.read_text())
+            self.assertGreater(report['stdout_bytes'], 0)
+            self.assertEqual(diagnostic.stat().st_mode & 0o777, 0o600)
+
+    def test_attachment_export_failure_retains_usage_and_redacts_credentials_paths_and_identifiers(self):
+        real_popen = visual.subprocess.Popen
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory); bundle = root / 'test.xcresult'; bundle.mkdir()
+            exported = root / 'exported'; diagnostic = root / 'attachment-export.json'
+            secret = 'synthetic-secret-value-not-for-artifacts'
+            api_hash_key = 'TELEGRAM_' + 'API_HASH'
+            token = 'github_pat_' + 'Z' * 30
+            identifier = '11111111-2222-3333-4444-555555555555'
+            stderr = ('USAGE: xcresulttool export attachments --path <path> --output-path <output-path>\n'
+                + 'Error: output directory ' + str(exported) + ' could not be used\n'
+                + api_hash_key + '=' + secret + '\n' + 'token ' + token + '\n'
+                + '/Users/private/Library/' + identifier + ' https://example.invalid/private?q=private\n'
+                + 'person@example.invalid\n' + '-----BEGIN ' + 'PRIVATE KEY-----\nprivate-key-material\n-----END ' + 'PRIVATE KEY-----\n')
+            def execute(arguments, **kwargs):
+                return real_popen([sys.executable, '-c', 'import sys;sys.stderr.write(' + repr(stderr) + ');sys.exit(64)'], **kwargs)
+            with patch.dict(os.environ, {api_hash_key: secret}), patch.object(visual.subprocess, 'Popen', side_effect=execute):
+                with self.assertRaises(launch_smoke.SmokeError) as raised:
+                    visual.export_attachments(bundle, exported, diagnostic)
+            self.assertEqual(raised.exception.evidence()['phase'], 'exportAttachments')
+            self.assertEqual(raised.exception.return_code, 64)
+            text = diagnostic.read_text(); report = json.loads(text)
+            self.assertEqual(report['status'], 'commandFailed')
+            self.assertEqual(report['return_code'], 64)
+            self.assertIn('USAGE: xcresulttool export attachments', report['stderr'])
+            self.assertIn('<PRIVATE_EXPORT>', report['stderr'])
+            for private in (secret, token, identifier, str(root), '/Users/private', 'example.invalid', 'private-key-material'):
+                self.assertNotIn(private, text)
+            self.assertLessEqual(len(report['stderr']), 16384)
+
+    def test_attachment_export_pipe_cap_and_timeout_fail_closed_with_diagnostics(self):
+        real_popen = visual.subprocess.Popen
+        cases = [("import os;os.write(2,b'x'*131072)", 5, 'commandOutputLimit'),
+                 ('import time;time.sleep(5)', .05, 'commandTimedOut')]
+        for script, timeout, expected in cases:
+            with self.subTest(expected=expected), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory); bundle = root / 'test.xcresult'; bundle.mkdir()
+                diagnostic = root / 'attachment-export.json'
+                def execute(arguments, **kwargs):
+                    return real_popen([sys.executable, '-c', script], **kwargs)
+                with patch.object(visual.subprocess, 'Popen', side_effect=execute):
+                    with self.assertRaises(launch_smoke.SmokeError) as raised:
+                        visual.export_attachments(bundle, root / 'exported', diagnostic, timeout=timeout)
+                self.assertEqual(raised.exception.code, expected)
+                self.assertEqual(raised.exception.phase, 'exportAttachments')
+                report = json.loads(diagnostic.read_text())
+                self.assertEqual(report['status'], expected)
+                self.assertEqual(report['timeout'], expected == 'commandTimedOut')
+                self.assertLessEqual(report['stderr_bytes'], launch_smoke.COMMAND_OUTPUT_LIMIT)
+                self.assertLessEqual(len(report['stderr']), 16384)
+
+    def test_attachment_export_rejects_symlink_roots_and_existing_diagnostics_before_start(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory); bundle = root / 'test.xcresult'; bundle.mkdir()
+            bundle_link = root / 'result-link'; bundle_link.symlink_to(bundle, target_is_directory=True)
+            export_link = root / 'export-link'; export_link.symlink_to(bundle, target_is_directory=True)
+            log = root / 'already.json'; log.write_text('keep original')
+            for source, target, diagnostic in ((bundle_link, root / 'exported', root / 'new.json'),
+                    (bundle, export_link, root / 'new.json'), (bundle, root / 'exported', log)):
+                with self.subTest(source=source.name, target=target.name), patch.object(visual.subprocess, 'Popen') as process:
+                    with self.assertRaises(visual.InvalidVisualEvidence):
+                        visual.export_attachments(source, target, diagnostic)
+                    process.assert_not_called()
+            self.assertEqual(log.read_text(), 'keep original')
+
+    def test_attachment_export_combined_pipe_limit_rejects_two_individually_small_streams(self):
+        real_popen = visual.subprocess.Popen
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory); bundle = root / 'test.xcresult'; bundle.mkdir()
+            diagnostic = root / 'attachment-export.json'
+            def execute(arguments, **kwargs):
+                return real_popen([sys.executable, '-c', "import os;os.write(1,b'a'*40000);os.write(2,b'b'*40000)"], **kwargs)
+            with patch.object(visual.subprocess, 'Popen', side_effect=execute):
+                with self.assertRaises(launch_smoke.SmokeError) as raised:
+                    visual.export_attachments(bundle, root / 'exported', diagnostic)
+            self.assertEqual(raised.exception.code, 'commandOutputLimit')
+            report = json.loads(diagnostic.read_text())
+            self.assertEqual(report['total_bytes'], launch_smoke.COMMAND_OUTPUT_LIMIT)
+            self.assertEqual(report['total_bytes'], report['stdout_bytes'] + report['stderr_bytes'])
+            self.assertLess(report['stdout_bytes'], launch_smoke.COMMAND_OUTPUT_LIMIT)
+            self.assertLess(report['stderr_bytes'], launch_smoke.COMMAND_OUTPUT_LIMIT)
+            self.assertLessEqual(len(report['stderr']), 16384)
+
+    def test_attachment_export_diagnostic_failure_preserves_original_command_failure(self):
+        real_popen = visual.subprocess.Popen
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory); bundle = root / 'test.xcresult'; bundle.mkdir()
+            def execute(arguments, **kwargs):
+                return real_popen([sys.executable, '-c', 'import sys;sys.exit(64)'], **kwargs)
+            with patch.object(visual.subprocess, 'Popen', side_effect=execute), patch.object(visual.json, 'dump', side_effect=OSError('synthetic disk-full diagnostic failure')):
+                with self.assertRaises(launch_smoke.SmokeError) as raised:
+                    visual.export_attachments(bundle, root / 'exported', root / 'attachment-export.json')
+            self.assertEqual(raised.exception.code, 'commandFailed')
+            self.assertEqual(raised.exception.phase, 'exportAttachments')
+            self.assertEqual(raised.exception.return_code, 64)
+
+    def test_export_success_does_not_accept_missing_required_screenshot_attachments(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory); outputs = root / 'outputs'; outputs.mkdir()
+            (outputs / 'test.xcresult').mkdir()
+            def exported(bundle, destination, diagnostic):
+                destination.mkdir()
+                (destination / 'manifest.json').write_text('[]')
+                diagnostic.write_text('{"status":"success"}')
+            with patch.object(visual, 'export_attachments', side_effect=exported), patch.object(visual, 'prepare_screenshot_checker') as checker:
+                with self.assertRaises(visual.InvalidVisualEvidence):
+                    visual.export_screenshots(outputs, root / 'screenshots')
+                checker.assert_not_called()
+            self.assertTrue((root / 'screenshots/attachment-export.json').is_file())
+
     def test_large_unrelated_inventory_uses_supported_fixed_search_without_raising_output_cap(self):
         unrelated = [{'name': 'Unrelated model ' + str(index), 'identifier': 'unrelated.' + str(index),
                       'description': 'public hardware metadata ' * 10} for index in range(500)]
@@ -104,6 +241,21 @@ class CustomOptionsContracts(unittest.TestCase):
                         [dict(value, window=[0, 0, float('inf'), 852]) for value in values]):
             with self.assertRaises((visual.InvalidVisualEvidence, ValueError)):
                 visual.frames_from_log('\n'.join('AYU_OPTIONS_FRAME:' + json.dumps(value) for value in invalid))
+
+    def test_dark_stage_labels_cannot_substitute_for_observed_dark_traits_and_background(self):
+        values = []
+        for stage in visual.STAGES:
+            if stage == 'reset-prompt': continue
+            dark = not stage.endswith('-light')
+            values.append({'stage': stage, 'window_dark': dark, 'table_dark': dark, 'background_dark': dark,
+                'table_found': True, 'background_sampled': True})
+        encode = lambda items: '\n'.join('AYU_OPTIONS_APPEARANCE:' + json.dumps(value) for value in items)
+        self.assertEqual(len(visual.appearances_from_log(encode(values))), 11)
+        invalid = [dict(value) for value in values]
+        next(value for value in invalid if value['stage'] == 'root-dark')['background_dark'] = False
+        for case in (invalid, values[:-1], values + [values[0]], [dict(value, account='private') for value in values],
+                     [dict(value, table_found=1) for value in values]):
+            with self.assertRaises(visual.InvalidVisualEvidence): visual.appearances_from_log(encode(case))
 
     def test_attachment_export_mapping_is_fixed_and_rejects_traversal_or_missing_states(self):
         values = [{'exportedFileName': 'opaque-' + str(i) + '.png', 'suggestedHumanReadableName': 'ayu-' + stage + '_0_fixture.png'} for i, stage in enumerate(visual.STAGES)]
@@ -195,7 +347,7 @@ class CustomOptionsContracts(unittest.TestCase):
                 return {'target': label, 'owned_simulator_verified': True}
             env = {'TELEGRAM_API_ID': '1234567', 'TELEGRAM_API_HASH': 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', 'IOS_BUNDLE_ID': 'org.livara.ayugram'}
             env.update(GH_TOKEN='synthetic-ci-token', ACTIONS_RUNTIME_TOKEN='synthetic-actions-token')
-            with patch.object(profile, 'ROOT', root), patch.object(profile.baseline, 'ROOT', root), patch.object(profile.baseline, 'preflight', return_value=Path('/bazel')), patch.object(profile, 'validate_runtime'), patch.object(profile.baseline, 'output', return_value='c' * 40), patch.object(profile.baseline, 'run_redacted', side_effect=execute), patch.object(profile, 'inspect_ipa', return_value={'mach_o_platform': 7}), patch.object(profile, 'DisposableRendererSimulator', return_value=context), patch.object(profile, 'retain_native_logs', side_effect=retained), patch.object(profile, 'log_directory', return_value=root), patch.object(profile, 'frames_from_log', return_value=[]), patch.object(profile, 'export_screenshots', return_value={}), patch.object(profile, 'command', return_value=''), patch.object(profile.subprocess, 'run'):
+            with patch.object(profile, 'ROOT', root), patch.object(profile.baseline, 'ROOT', root), patch.object(profile.baseline, 'preflight', return_value=Path('/bazel')), patch.object(profile, 'validate_runtime'), patch.object(profile.baseline, 'output', return_value='c' * 40), patch.object(profile.baseline, 'run_redacted', side_effect=execute), patch.object(profile, 'inspect_ipa', return_value={'mach_o_platform': 7}), patch.object(profile, 'DisposableRendererSimulator', return_value=context), patch.object(profile, 'retain_native_logs', side_effect=retained), patch.object(profile, 'log_directory', return_value=root), patch.object(profile, 'frames_from_log', return_value=[]), patch.object(profile, 'appearances_from_log', return_value=[]), patch.object(profile, 'export_screenshots', return_value={}), patch.object(profile, 'command', return_value=''), patch.object(profile.subprocess, 'run'):
                 result = profile.run(env)
             self.assertEqual(calls, [profile.APP_TARGET, profile.UNIT_TARGET, profile.UI_TARGET])
             self.assertTrue(result['passed'])

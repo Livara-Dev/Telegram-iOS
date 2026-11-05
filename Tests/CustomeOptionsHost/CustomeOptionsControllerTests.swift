@@ -115,8 +115,9 @@ final class CustomeOptionsControllerTests: XCTestCase {
     func testActualHeaderAndTableFramesFitLightAndDarkWindow() throws {
         let fixture = try self.installed(); defer { fixture.close() }
         let root = try XCTUnwrap(fixture.navigation.topViewController as? CustomeOptionsController)
+        let appearance = try XCTUnwrap(root.toolbarItems?.last?.customView as? UIButton)
         for dark in [false, true] {
-            root.updateAppearance(palette: .standard(dark: dark))
+            if fixture.dark != dark { appearance.sendActions(for: .touchUpInside) }
             root.view.setNeedsLayout(); root.view.layoutIfNeeded(); self.drain()
             let table = try XCTUnwrap(self.view(UITableView.self, id: "ayugram.custom-options.list", in: root.view))
             let header = try XCTUnwrap(self.view(UIView.self, id: "ayugram.custom-options.header", in: root.view))
@@ -127,6 +128,18 @@ final class CustomeOptionsControllerTests: XCTestCase {
             XCTAssertLessThanOrEqual(frame.maxX, root.view.bounds.width + 0.5)
             XCTAssertTrue(frame.origin.x.isFinite && frame.origin.y.isFinite)
             XCTAssertEqual(table.overrideUserInterfaceStyle, dark ? .dark : .light)
+            XCTAssertEqual(fixture.appearanceObservation(), ["window_dark": dark, "table_found": true,
+                "table_dark": dark, "background_sampled": true, "background_dark": dark])
+            let sampleData = try XCTUnwrap(appearance.accessibilityValue?.data(using: .utf8))
+            XCTAssertEqual(try JSONDecoder().decode([String: Bool].self, from: sampleData), fixture.appearanceObservation())
+            // A requested dark flag cannot conceal an actually light table.
+            if dark {
+                table.backgroundColor = .white
+                XCTAssertFalse(fixture.appearanceObservation()["background_dark"] ?? true)
+                table.overrideUserInterfaceStyle = .light
+                XCTAssertFalse(fixture.appearanceObservation()["table_dark"] ?? true)
+                root.updateAppearance(palette: .standard(dark: true))
+            }
         }
     }
 

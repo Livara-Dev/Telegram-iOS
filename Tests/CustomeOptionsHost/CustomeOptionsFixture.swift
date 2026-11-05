@@ -4,6 +4,19 @@ import UIKit
 import SwiftSignalKit
 import CustomeOptionsRenderer
 
+@MainActor
+private final class FixtureAppearanceButton: UIButton {
+    var sample: (() -> [String: Bool])?
+    override var accessibilityValue: String? {
+        get {
+            guard let sample = self.sample,
+                  let data = try? JSONSerialization.data(withJSONObject: sample(), options: [.sortedKeys]) else { return nil }
+            return String(data: data, encoding: .utf8)
+        }
+        set { /* The value always samples rendered UIKit state. */ }
+    }
+}
+
 /// Synthetic callback source only: no account, Postbox, archive or network.
 @MainActor
 public final class CustomeOptionsFixture: NSObject {
@@ -156,11 +169,36 @@ public final class CustomeOptionsFixture: NSObject {
         ledger.accessibilityIdentifier = "fixture.ledger"
         ledger.isAccessibilityElement = true
         self.ledgers.append(ledger)
-        let appearance = UIBarButtonItem(title: "Light / Dark", style: .plain, target: self, action: #selector(self.toggleAppearance))
+        let appearance = FixtureAppearanceButton(type: .system)
+        appearance.setTitle("Light / Dark", for: .normal)
         appearance.accessibilityIdentifier = "fixture.appearance"
+        appearance.addTarget(self, action: #selector(self.toggleAppearance), for: .touchUpInside)
+        appearance.sample = { [weak self] in self?.appearanceObservation() ?? [:] }
+        appearance.sizeToFit()
         controller.toolbarItems = [UIBarButtonItem(customView: ledger),
-            UIBarButtonItem(barButtonSystemItem: .flexibleSpace, target: nil, action: nil), appearance]
+            UIBarButtonItem(barButtonSystemItem: .flexibleSpace, target: nil, action: nil), UIBarButtonItem(customView: appearance)]
         self.updateLedger()
+    }
+
+    /// Sample the visible production table independently of the requested mode.
+    /// Returning both its actual trait and resolved color prevents a renamed
+    /// screenshot or a fixture boolean from passing as rendered dark mode.
+    public func appearanceObservation() -> [String: Bool] {
+        func findTable(_ root: UIView) -> UITableView? {
+            if let table = root as? UITableView,
+               table.accessibilityIdentifier == "ayugram.custom-options.list" || table.accessibilityIdentifier == "ayugram.cosmetics.list" { return table }
+            for view in root.subviews { if let table = findTable(view) { return table } }
+            return nil
+        }
+        let table = self.navigation?.topViewController?.viewIfLoaded.flatMap(findTable)
+        var red: CGFloat = 0, green: CGFloat = 0, blue: CGFloat = 0, alpha: CGFloat = 0
+        let color = table.flatMap { table in table.backgroundColor?.resolvedColor(with: table.traitCollection) }
+        let sampled = color?.getRed(&red, green: &green, blue: &blue, alpha: &alpha) == true
+        let luminance = red * 0.2126 + green * 0.7152 + blue * 0.0722
+        return ["window_dark": self.window?.traitCollection.userInterfaceStyle == .dark,
+                "table_found": table != nil, "table_dark": table?.traitCollection.userInterfaceStyle == .dark,
+                "background_sampled": sampled && alpha > 0.99,
+                "background_dark": sampled && luminance < 0.35]
     }
 
     @objc private func toggleAppearance() {

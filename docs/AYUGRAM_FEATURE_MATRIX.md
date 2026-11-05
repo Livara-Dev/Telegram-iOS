@@ -44,6 +44,17 @@ binary. No proprietary exteraGram components are copied.
   similar to stock Telegram. That is user-reported startup evidence, not a
   demonstration of the hidden/default-off feature paths. No new feature batch
   or customized UI is claimed verified by the older startup recording.
+- [42097515377](https://github.com/Livara-Dev/Telegram-iOS/actions/runs/42097515377)
+  compiled the exact production options renderer and passed eight controller
+  tests plus one real XCUI scenario in an account-free host. Screenshot export
+  then failed with exit 64; the overall workflow did not pass. Its variable-rate
+  recording and 17 checksum references were retained and verified. Frame review
+  found that the dark-labelled scenes were actually light: the empty-search
+  keyboard covered the fixture's appearance control. Dark UI is not verified by
+  that pass. The follow-up tests require a hittable control, keyboard dismissal,
+  and observations of the actual window/table traits and resolved table color.
+  Light layouts and the synthetic reset/cosmetic actions were visually observed;
+  recorded navigation gaps up to 248 ms do not establish smooth device scrolling.
 
 ## Core features and native integration
 
@@ -55,7 +66,7 @@ follow-up extends that candidate. None is certified by the older 62546557 IPA.
 
 | Candidate change | Current evidence | Remaining qualification or boundary |
 | --- | --- | --- |
-| Prominent **Custome options**, eleven searchable categories, quick toggles | Actual production renderer compiled; 8 controller tests and 1 XCUI scenario passed in [42097515377](https://github.com/Livara-Dev/Telegram-iOS/actions/runs/42097515377); twelve recorded stages | Synthetic account-free host; authenticated Settings entry/routing not proven. Job failed afterward during screenshot export, exit 64; recorded video retained |
+| Prominent **Custome options**, eleven searchable categories, quick toggles | Actual production renderer compiled; 8 controller tests and 1 XCUI scenario passed in [42097515377](https://github.com/Livara-Dev/Telegram-iOS/actions/runs/42097515377); twelve recorded stages | Synthetic account-free host; authenticated Settings entry/routing not proven. Dark-labelled stages stayed light and do not verify dark mode; repaired scenario needs rerun. Job failed afterward during screenshot export, exit 64; recorded video retained |
 | Account-bound archive/Ghost/filter controls and disable-only reset | Source integrated with existing account facades | Current-candidate native suites and real account navigation pending |
 | Browse retained archives with capture disabled; chat search and profile links | Foreground read leases, chat-scoped search, separate saved-media/history destinations | New native tests pending; separate local destinations, not merged server search or canonical media grid |
 | Bulk clear-history/date/thread and author/forward-author deletion capture | Explicit cloud helpers use default-nil Postbox selected-row observers; 13 new production-path tests authored | Native execution pending. Handoff remains capped at 256 records / 8 MiB; overflow increments missed-capture count while canonical deletion proceeds. No extra full history scan; performance unmeasured |

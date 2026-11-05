@@ -20,7 +20,7 @@ import baseline
 from ipa_inspect import inspect_ipa
 from launch_smoke import SmokeError
 from custom_options_smoke import (BUNDLE, STAGES, DisposableRendererSimulator, export_screenshots,
-                                  frames_from_log, InvalidVisualEvidence, command)
+                                  frames_from_log, appearances_from_log, InvalidVisualEvidence, command)
 from custom_options_smoke import validate_runtime
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -139,6 +139,7 @@ def run(env):
                     report['recording_return_code'] = simulator.recording_return_code
                     report['recording_started_before_ui_scenario'] = simulator.recording_started
                     report['frames'] = frames_from_log((evidence / 'interaction-tests/test.log').read_text())
+                    report['appearances'] = appearances_from_log((evidence / 'interaction-tests/test.log').read_text())
                     report['phase'] = 'exportActualScreenshots'
                     outputs = log_directory(temporary / 'bazel-root', UI_TARGET) / 'test.outputs'
                     report['screenshots'] = export_screenshots(outputs, evidence / 'screenshots')

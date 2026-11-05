@@ -31,7 +31,7 @@ STAGES = READY | {'applicationEntered', 'windowCreated', 'sceneAttached', 'stora
                   'conversationsPrepared', 'failed'}
 FAILURES = {'storageUnavailable', 'keychainUnavailable', 'storageConfiguration', 'initializationUnavailable'}
 MARKER = 'Library/Application Support/AyuGram/LaunchDiagnostics/latest.json'
-PHASES = {'extractApplication', 'compileScreenshotChecker', 'testScreenshotChecker',
+PHASES = {'extractApplication', 'exportAttachments', 'compileScreenshotChecker', 'testScreenshotChecker',
           'createDevice', 'bootDevice', 'waitForBoot',
           'installApplication', 'startRecording', 'launchApplication', 'getContainer',
           'waitForInterface', 'captureScreenshot', 'checkScreenshot', 'checkStorageSelection',

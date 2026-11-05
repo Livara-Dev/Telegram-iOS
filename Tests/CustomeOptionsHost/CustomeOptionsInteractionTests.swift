@@ -9,6 +9,9 @@ final class CustomeOptionsInteractionTests: XCTestCase {
 
     @MainActor
     private func record(_ stage: String, app: XCUIApplication) {
+        if stage != "reset-prompt" {
+            self.assertAppearance(dark: !stage.hasSuffix("-light"), stage: stage, app: app)
+        }
         let attachment = XCTAttachment(screenshot: XCUIScreen.main.screenshot())
         attachment.name = "ayu-" + stage
         attachment.lifetime = .keepAlways
@@ -40,7 +43,45 @@ final class CustomeOptionsInteractionTests: XCTestCase {
         }
         if !text.isEmpty { field.typeText(text) }
         let done = app.keyboards.buttons["Search"]
-        if done.exists { done.tap() }
+        if done.exists && done.isEnabled && done.isHittable { done.tap() }
+        // Empty searches disable the keyboard's Search action. Exercise the
+        // production table's interactive keyboard dismissal instead of tapping
+        // an offscreen toolbar through the keyboard.
+        for _ in 0..<3 where app.keyboards.firstMatch.exists {
+            let keyboard = app.keyboards.firstMatch.frame
+            XCTAssertGreaterThan(keyboard.height, 100)
+            XCTAssertGreaterThan(keyboard.minY - table.frame.minY, 100)
+            let start = table.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0))
+                .withOffset(CGVector(dx: 0, dy: keyboard.minY - table.frame.minY - 60))
+            let end = app.windows.firstMatch.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.9))
+            start.press(forDuration: 0.1, thenDragTo: end)
+        }
+        let hidden = XCTNSPredicateExpectation(predicate: NSPredicate(format: "exists == false"), object: app.keyboards.firstMatch)
+        XCTAssertEqual(XCTWaiter.wait(for: [hidden], timeout: 5), .completed)
+    }
+
+    @MainActor
+    private func assertAppearance(dark: Bool, stage: String, app: XCUIApplication) {
+        let button = app.toolbars.buttons["fixture.appearance"]
+        XCTAssertTrue(button.waitForExistence(timeout: 5))
+        XCTAssertTrue(button.isHittable)
+        let frame = button.frame
+        XCTAssertGreaterThan(frame.width, 20)
+        XCTAssertGreaterThan(frame.height, 20)
+        XCTAssertTrue(app.windows.firstMatch.frame.contains(frame))
+        let expected = ["window_dark": dark, "table_found": true, "table_dark": dark,
+                        "background_sampled": true, "background_dark": dark]
+        guard let data = try? JSONSerialization.data(withJSONObject: expected, options: [.sortedKeys]),
+              let value = String(data: data, encoding: .utf8) else { XCTFail("Invalid closed appearance expectation"); return }
+        let sampled = XCTNSPredicateExpectation(predicate: NSPredicate(format: "value == %@", value), object: button)
+        XCTAssertEqual(XCTWaiter.wait(for: [sampled], timeout: 5), .completed)
+        if let observed = button.value as? String, let data = observed.data(using: .utf8),
+           let actual = try? JSONSerialization.jsonObject(with: data) as? [String: Bool] {
+            XCTAssertEqual(actual, expected)
+            var evidence: [String: Any] = actual; evidence["stage"] = stage
+            if let data = try? JSONSerialization.data(withJSONObject: evidence, options: [.sortedKeys]),
+               let text = String(data: data, encoding: .utf8) { print("AYU_OPTIONS_APPEARANCE:" + text) }
+        } else { XCTFail("Rendered table appearance was not observed") }
     }
 
     @MainActor
@@ -84,7 +125,11 @@ final class CustomeOptionsInteractionTests: XCTestCase {
         self.record("category-light", app: app)
         self.back(app)
         self.search("", app: app)
-        app.toolbars.buttons["fixture.appearance"].tap()
+        let appearance = app.toolbars.buttons["fixture.appearance"]
+        XCTAssertTrue(appearance.waitForExistence(timeout: 5))
+        XCTAssertTrue(appearance.isHittable)
+        XCTAssertTrue(app.windows.firstMatch.frame.contains(appearance.frame))
+        appearance.tap()
         self.record("root-dark", app: app)
         self.search("view once", app: app)
         self.record("search-dark", app: app)
