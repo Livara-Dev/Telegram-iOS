@@ -106,6 +106,9 @@ protocol LocalArchiveStorage: AnyObject {
     func close(completion: @escaping () -> Void)
     func deletedMessages(peerId: Int64?, beforeSequence: Int64?, limit: Int,
                          completion: @escaping (Result<[ArchivedRecord], ArchiveError>) -> Void)
+    func deletedHistory(peerId: Int64, namespace: Int32, messageIds: ClosedRange<Int32>, sentAt: ClosedRange<Int64>,
+                        excludingAuthors: Set<Int64>, limit: Int,
+                        completion: @escaping (Result<ArchiveDeletedHistoryPage, ArchiveError>) -> Void)
     func timeline(for message: ArchiveMessageID, beforeSequence: Int64?, limit: Int,
                   completion: @escaping (Result<[ArchivedRecord], ArchiveError>) -> Void)
     func searchMessages(query: String, peerId: Int64?, kind: ArchiveEventKind?, beforeSequence: Int64?, limit: Int, completion: @escaping (Result<[ArchivedRecord], ArchiveError>) -> Void)
@@ -122,6 +125,11 @@ extension LocalArchiveStorage {
     // Existing test doubles retain conservative coordinator-side invalidation.
     // Production ArchiveStore reports even a prune inside a read transaction.
     func setMutationObserver(_ observer: (() -> Void)?, completion: @escaping () -> Void) { completion() }
+    func deletedHistory(peerId: Int64, namespace: Int32, messageIds: ClosedRange<Int32>, sentAt: ClosedRange<Int64>,
+                        excludingAuthors: Set<Int64>, limit: Int,
+                        completion: @escaping (Result<ArchiveDeletedHistoryPage, ArchiveError>) -> Void) {
+        completion(.failure(.unavailable(-1)))
+    }
     // Test/legacy storage doubles do not acquire real export capability merely
     // by conforming to the capture interface.
     func exportBackup(to destination: URL, password: String, ownerId: Int64?, testingEnvironment: Bool, cancellation: ArchiveTransferCancellation,
@@ -527,6 +535,17 @@ public final class LocalArchiveCoordinator {
     public func deletedMessages(peerId: Int64? = nil, beforeSequence: Int64? = nil, limit: Int = 100) -> Signal<LocalArchivePage, NoError> {
         return self.readPage { storage, completion in
             storage.deletedMessages(peerId: peerId, beforeSequence: beforeSequence, limit: limit, completion: completion)
+        }
+    }
+
+    public func deletedHistory(window: LocalArchiveDeletedHistoryWindow, excludingAuthors: Set<Int64>) -> Signal<LocalArchiveDeletedHistoryResult, NoError> {
+        let value: Signal<ArchiveDeletedHistoryPage?, NoError> = self.readValue { storage, completion in
+            storage.deletedHistory(peerId: window.peerId.toInt64(), namespace: Namespaces.Message.Cloud,
+                messageIds: window.messageIds, sentAt: window.sentAt, excludingAuthors: excludingAuthors, limit: 40, completion: completion)
+        }
+        return value |> map { page in
+            guard let page else { return LocalArchiveDeletedHistoryResult(records: [], isTruncated: false, unavailable: true) }
+            return LocalArchiveDeletedHistoryResult(records: page.records.map(LocalArchivedMessage.init), isTruncated: page.isTruncated, unavailable: false)
         }
     }
 

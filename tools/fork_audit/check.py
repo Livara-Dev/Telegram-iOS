@@ -23,6 +23,9 @@ ADDED_PREFIXES = (
     "submodules/TelegramUI/Components/Chat/ChatMessageLocalFilterBubbleContentNode/",
 )
 ADDED_FILES = {
+    'submodules/TelegramUI/Components/Chat/ChatHistoryEntry/Sources/ChatLocalArchiveProjection.swift',
+    'submodules/TelegramUI/Components/Chat/ChatMessageItemImpl/Sources/ChatLocalArchiveItem.swift',
+    'submodules/TelegramUI/Components/Chat/ChatMessageItemImpl/Sources/ChatLocalArchiveRowView.swift',
     'submodules/TelegramCore/Sources/Utils/SafePeerId.swift',
     'submodules/SettingsUI/Tests/LocalArchivePeerReferenceTests.swift',
     'docs/AYUGRAM_INLINE_HISTORY.md',
@@ -72,6 +75,8 @@ ADDED_FILES = {
 # gitlinks, stays pinned. An allowlist is a scope tripwire, not a semantic audit of
 # every change within these files; reviewers must inspect their Git diffs.
 REVIEWED_MODIFICATIONS = {
+    'submodules/TelegramUI/Components/Chat/ChatMessageItemImpl/BUILD': 'expose the exact production local archive row renderer to native projection tests without linking an alternate renderer',
+    'submodules/TelegramUI/Sources/PreparedChatHistoryViewTransition.swift': 'exclude distinct local archive rows from canonical unread, restoration and remote scroll targets while retaining ListView index accounting',
     'submodules/TelegramUI/Components/Chat/ChatMessageDateAndStatusNode/Sources/ChatMessageDateAndStatusNode.swift': 'verified saved-edit presentation and a date-only archive action preserving reaction hit regions and imported tooltips',
     'submodules/TelegramUI/Components/Chat/ChatMessageTextBubbleContentNode/Sources/ChatMessageTextBubbleContentNode.swift': 'foreground visible-cell saved-edit query with account/version identity and cancellation; no archived content enters Telegram messages',
     'submodules/ChatListUI/Sources/ChatListFilterPresetListController.swift': 'account-local folder title/color projection; canonical filters and Premium limits remain unchanged',
@@ -144,10 +149,10 @@ REVIEWED_MODIFICATIONS = {
     "submodules/Postbox/BUILD": "pin simulator test runner to installed iOS 27.0",
     "submodules/TextFormat/BUILD": "pin simulator test runner to installed iOS 27.0",
     "submodules/TelegramUI/Components/Chat/ChatMessageBubbleItemNode/BUILD": "link the local text-filter placeholder component",
-    "submodules/TelegramUI/Components/Chat/ChatHistoryEntry/BUILD": "isolated local text-filter projection test target and host",
-    "submodules/TelegramUI/Components/Chat/ChatHistoryEntry/Sources/ChatHistoryEntry.swift": "presentation-only filter state preserving row identity",
+    "submodules/TelegramUI/Components/Chat/ChatHistoryEntry/BUILD": "isolated local filter/archive projection tests and exact production archive UIKit renderer source",
+    "submodules/TelegramUI/Components/Chat/ChatHistoryEntry/Sources/ChatHistoryEntry.swift": "presentation-only filter state and separate local archive entry identity; no canonical Telegram message fabrication",
     "submodules/TelegramUI/Components/ChatControllerInteraction/Sources/ChatControllerInteraction.swift": "controller-scoped temporary reveal state and separate read-only archive timeline action",
-    "submodules/TelegramUI/Sources/ChatHistoryListNode.swift": "off-main literal projection and removal of optional viewport analytics",
+    "submodules/TelegramUI/Sources/ChatHistoryListNode.swift": "bounded local filtering/archive projections, canonical-only read/navigation anchors and removal of optional viewport analytics",
     "submodules/TelegramUI/Sources/ChatInterfaceStateContextMenus.swift": "create local literal rule from eligible message text",
     "submodules/TelegramUI/Components/Chat/ChatMessageBubbleItemNode/Sources/ChatMessageBubbleItemNode.swift": "render local text placeholder and guard hidden-message actions",
     "submodules/TelegramUI/Components/Chat/ChatMessageItemView/Sources/ChatMessageItemView.swift": "redact hidden message accessibility data",

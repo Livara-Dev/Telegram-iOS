@@ -1,0 +1,99 @@
+{
+  "scope": "plain host execution of extracted SQL on vendored amalgamation; no Swift, encryption, native iOS, UI or performance verification",
+  "sqlite_version": "3.53.4",
+  "amalgamation_sha256": "8640c653acadf665cce6331646f60b5b74a4690746f2c4a2d8f688a0570a0c0c",
+  "query_body_sha256": "d7c9d9fc6175d1c1fa6d2beb241ebad26c570f5bbdcb14380b1511782066aa8c",
+  "schema": "CREATE TABLE events(sequence INTEGER PRIMARY KEY AUTOINCREMENT,event_key TEXT NOT NULL UNIQUE,\n            account_id INTEGER NOT NULL,peer_id INTEGER NOT NULL,namespace INTEGER NOT NULL,message_id INTEGER NOT NULL,\n            kind INTEGER NOT NULL CHECK(kind IN(1,2)),observed_at INTEGER NOT NULL,server_edit_at INTEGER,\n            text TEXT NOT NULL,author_id INTEGER,sent_at INTEGER NOT NULL,entities BLOB NOT NULL,payload_bytes INTEGER NOT NULL);\nCREATE INDEX events_message ON events(account_id,peer_id,namespace,message_id,sequence);\nCREATE INDEX events_deleted ON events(account_id,kind,sequence);\nCREATE INDEX events_retention ON events(observed_at,sequence);\nCREATE TABLE event_media(event_key TEXT NOT NULL REFERENCES events(event_key) ON DELETE CASCADE,\n            slot INTEGER NOT NULL CHECK(slot>=0 AND slot<10), kind TEXT NOT NULL CHECK(length(CAST(kind AS BLOB))<=32), mime TEXT NOT NULL CHECK(length(CAST(mime AS BLOB))<=256),\n            payload BLOB NOT NULL CHECK(length(payload)<=536870912), byte_cost INTEGER NOT NULL CHECK(byte_cost=length(payload)+length(CAST(kind AS BLOB))+length(CAST(mime AS BLOB))+64),\n            PRIMARY KEY(event_key,slot));",
+  "cases": {
+    "latest_id_account_peer_namespace_author_retention_time_excerpt": {
+      "rc": 101,
+      "vm_steps": 242,
+      "progress_calls": 0,
+      "is_truncated": false,
+      "selected": [
+        {
+          "id": 18,
+          "text_length": 2048
+        },
+        {
+          "id": 10,
+          "text_length": 6
+        }
+      ]
+    },
+    "unknown_author_visible_only_without_sender_exclusions": {
+      "passed": true
+    },
+    "maximum_4096_sender_exclusions": {
+      "rc": 101,
+      "vm_steps": 12567,
+      "progress_calls": 12,
+      "is_truncated": false
+    },
+    "forty_rows_plus_one_truncation_probe": {
+      "rc": 101,
+      "vm_steps": 2281,
+      "progress_calls": 2,
+      "is_truncated": true
+    },
+    "pathological_8192_versions_interrupt_discards_partial_page": {
+      "rc": 9,
+      "vm_steps": 200028,
+      "progress_calls": 200,
+      "is_truncated": false
+    },
+    "handler_cleared_connection_reusable": {
+      "passed": true,
+      "rows_after_interrupt": 8192,
+      "unbudgeted_vm_steps": 319531
+    }
+  },
+  "query_plan": [
+    "SEARCH events USING INDEX events_message (account_id=? AND peer_id=? AND namespace=? AND message_id>? AND message_id<?)",
+    "CORRELATED SCALAR SUBQUERY 1",
+    "SEARCH latest USING INDEX events_message (account_id=? AND peer_id=? AND namespace=? AND message_id=?)"
+  ],
+  "classification": "Executed host SQL proof; not a GitHub Actions or native iOS pass",
+  "codec_enabled": false,
+  "apple_build_flags_enabled": false,
+  "source": {
+    "path": "submodules/LocalMessageArchive/Sources/LocalMessageArchive/ArchiveStore.swift",
+    "sha256": "8cb3a8c09adb641803a797f5bd054cb660f2db05dddc918374e4ef4c936a38a0",
+    "method": "ArchiveStore.deletedHistory"
+  },
+  "query_sql": "SELECT sequence,event_key,account_id,peer_id,namespace,message_id,kind,observed_at,server_edit_at,substr(text,1,2048),author_id,sent_at,entities FROM events INDEXED BY events_message WHERE account_id=? AND peer_id=? AND namespace=?\nAND message_id>=? AND message_id<=? AND kind=1 AND sent_at>=? AND sent_at<=? AND observed_at>=?\nAND sequence=(SELECT MAX(latest.sequence) FROM events AS latest INDEXED BY events_message\nWHERE latest.account_id=events.account_id AND latest.peer_id=events.peer_id\nAND latest.namespace=events.namespace AND latest.message_id=events.message_id AND latest.kind=1) AND author_id IS NOT NULL AND author_id NOT IN (?) ORDER BY message_id DESC,sequence DESC LIMIT ?;\n",
+  "query_sha256": "e8126e3497977e279a41e1384eb02303bb0bd23c71de54032626e1392a581aee",
+  "compiler": {
+    "name": "GCC",
+    "version": "14.2.0",
+    "flags": [
+      "-O1",
+      "-fPIC",
+      "-shared",
+      "-DSQLITE_THREADSAFE=1",
+      "-DSQLITE_TEMP_STORE=2",
+      "-DSQLITE_ENABLE_FTS5",
+      "-DHAVE_USLEEP=1",
+      "-DSQLITE_DEFAULT_MEMSTATUS=0",
+      "-DSQLITE_OMIT_LOAD_EXTENSION",
+      "-DSQLITE_OMIT_DECLTYPE",
+      "-DSQLITE_OMIT_DEPRECATED",
+      "-DNDEBUG=1",
+      "-DSQLITE_MAX_MMAP_SIZE=0"
+    ],
+    "source": "submodules/sqlcipher/Sources/sqlite3.c",
+    "libraries": [
+      "m",
+      "dl",
+      "pthread"
+    ]
+  },
+  "progress_guard": {
+    "callback_interval": 1000,
+    "callback_limit": 200,
+    "description": "approximately 200k VM instructions; the callback may occur after its requested interval"
+  },
+  "fixture_data": "Synthetic in-memory event rows only; no accounts, credentials, network traffic or production message bodies",
+  "native_status": "Swift compilation, SQLCipher encrypted-store tests, Postbox integration and UIKit tests authored but unexecuted for this change",
+  "host_harness_sha256": "02a4e47b45b3932f1676ebda00848230cee8b42bde4c9fd44296c3e51bb856f3"
+}

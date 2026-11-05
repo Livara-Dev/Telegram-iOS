@@ -1,5 +1,11 @@
 load("@build_bazel_rules_swift//swift:swift.bzl", "swift_library")
 
+filegroup(
+    name = "LocalArchiveRowRendererSource",
+    srcs = ["Sources/ChatLocalArchiveRowView.swift"],
+    visibility = ["//visibility:public"],
+)
+
 swift_library(
     name = "ChatMessageItemImpl",
     module_name = "ChatMessageItemImpl",

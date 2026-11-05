@@ -184,6 +184,7 @@ func preparedChatHistoryViewTransition(from fromView: ChatHistoryView?, to toVie
                 if scrollToItem == nil {
                     var index = toView.filteredEntries.count - 1
                     for entry in toView.filteredEntries {
+                        if case .LocalArchiveEntry = entry { index -= 1; continue }
                         if entry.index >= unreadIndex {
                             scrollToItem = ListViewScrollToItem(index: index, position: .bottom(0.0), animated: false, curve: curve,  directionHint: .Down)
                             break
@@ -194,6 +195,7 @@ func preparedChatHistoryViewTransition(from fromView: ChatHistoryView?, to toVie
                     if let currentScrollToItem = scrollToItem {
                         index = 0
                         for entry in toView.filteredEntries.reversed() {
+                            if case .LocalArchiveEntry = entry { index += 1; continue }
                             if index > currentScrollToItem.index {
                                 if entry.index.timestamp > 10 {
                                     break
@@ -210,6 +212,7 @@ func preparedChatHistoryViewTransition(from fromView: ChatHistoryView?, to toVie
                 if scrollToItem == nil {
                     var index = 0
                     for entry in toView.filteredEntries.reversed() {
+                        if case .LocalArchiveEntry = entry { index += 1; continue }
                         if entry.index < unreadIndex {
                             scrollToItem = ListViewScrollToItem(index: index, position: .bottom(0.0), animated: false, curve: curve, directionHint: .Down)
                             break
@@ -220,6 +223,7 @@ func preparedChatHistoryViewTransition(from fromView: ChatHistoryView?, to toVie
             case let .positionRestoration(scrollIndex, relativeOffset):
                 var index = toView.filteredEntries.count - 1
                 for entry in toView.filteredEntries {
+                    if case .LocalArchiveEntry = entry { index -= 1; continue }
                     if entry.index >= scrollIndex {
                         scrollToItem = ListViewScrollToItem(index: index, position: .top(relativeOffset), animated: false, curve: curve,  directionHint: .Down)
                         break
@@ -230,6 +234,7 @@ func preparedChatHistoryViewTransition(from fromView: ChatHistoryView?, to toVie
                 if scrollToItem == nil {
                     var index = 0
                     for entry in toView.filteredEntries.reversed() {
+                        if case .LocalArchiveEntry = entry { index += 1; continue }
                         if entry.index < scrollIndex {
                             scrollToItem = ListViewScrollToItem(index: index, position: .top(0.0), animated: false, curve: curve, directionHint: .Down)
                             break
@@ -277,6 +282,7 @@ func preparedChatHistoryViewTransition(from fromView: ChatHistoryView?, to toVie
                 }
                 var index = toView.filteredEntries.count - 1
                 for entry in toView.filteredEntries {
+                    if case .LocalArchiveEntry = entry { index -= 1; continue }
                     if isSavedMusic {
                         if case let .message(messageIndex) = scrollIndex.index, messageIndex.id == entry.index.id {
                             print(messageIndex.id)
@@ -295,6 +301,7 @@ func preparedChatHistoryViewTransition(from fromView: ChatHistoryView?, to toVie
                 if scrollToItem == nil {
                     var index = 0
                     for entry in toView.filteredEntries.reversed() {
+                        if case .LocalArchiveEntry = entry { index += 1; continue }
                         if !scrollIndex.index.isLess(than: entry.index) {
                             scrolledToSomeIndex = true
                             scrollToItem = ListViewScrollToItem(index: index, position: position, animated: animated, curve: curve, directionHint: directionHint)

@@ -88,6 +88,44 @@ private struct ChatHistoryLocalTextFilterResult {
     let revealed: Bool
 }
 
+private struct ChatHistoryLocalArchiveResult {
+    let filtered: ChatHistoryLocalTextFilterResult
+    let rows: [LocalArchiveDeletedHistoryItem]
+}
+
+private func chatHistoryLocalArchiveWindow(view: MessageHistoryView, data: ChatHistoryCombinedInitialData,
+                                           peerId: PeerId) -> LocalArchiveDeletedHistoryWindow? {
+    var peer: Peer? = data.initialData?.peer
+    var copyProtected = peer?.isCopyProtectionEnabled ?? false
+    if let cached = data.cachedData as? CachedUserData {
+        copyProtected = copyProtected || cached.flags.contains(.copyProtectionEnabled) || cached.flags.contains(.myCopyProtectionEnabled)
+    }
+    for entry in view.additionalData {
+        if case let .peer(id, value) = entry, id == peerId, let value {
+            peer = value
+            copyProtected = copyProtected || value.isCopyProtectionEnabled
+        } else if case let .cachedPeerData(id, cached) = entry, id == peerId, let cached = cached as? CachedUserData {
+            copyProtected = copyProtected || cached.flags.contains(.copyProtectionEnabled) || cached.flags.contains(.myCopyProtectionEnabled)
+        }
+    }
+    guard !view.isLoading, !copyProtected, let peer, peer.id == peerId else { return nil }
+    let canonical = view.entries.map(\.message).filter {
+        $0.id.peerId == peerId && $0.id.namespace == Namespaces.Message.Cloud && $0.id.id > 0 && $0.timestamp >= 0
+    }
+    // Postbox's loaded history is the visible window plus its bounded prefetch.
+    // Keep the query tied to that window rather than scanning the whole archive
+    // on every scroll callback. Empty/latest edges can show the newest 40 saved
+    // rows; SQL still has an independent work/output bound.
+    let atStart = view.earlierId == nil && !view.holeEarlier
+    let atEnd = view.laterId == nil && !view.holeLater
+    let lowerId = atStart ? 1 : (canonical.map { $0.id.id }.min() ?? 1)
+    let upperId = atEnd ? Int32.max : (canonical.map { $0.id.id }.max() ?? Int32.max)
+    let lowerTime = atStart ? 0 : Int64(canonical.map(\.timestamp).min() ?? 0)
+    let upperTime = atEnd ? Int64(Int32.max) : Int64(canonical.map(\.timestamp).max() ?? Int32.max)
+    guard lowerId <= upperId, lowerTime <= upperTime else { return nil }
+    return LocalArchiveDeletedHistoryWindow(peer: EnginePeer(peer), messageIds: lowerId...upperId, sentAt: lowerTime...upperTime)
+}
+
 struct ChatHistoryView {
     let originalView: MessageHistoryView
     let filteredEntries: [ChatHistoryEntry]
@@ -202,6 +240,11 @@ struct ChatHistoryListViewTransition {
 }
 
 private func maxMessageIndexForEntries(_ view: ChatHistoryView, indexRange: (Int, Int)) -> (incoming: MessageIndex?, overall: MessageIndex?) {
+    let lower = max(0, indexRange.0)
+    let upper = min(view.filteredEntries.count - 1, indexRange.1)
+    guard lower <= upper, view.filteredEntries[lower...upper].contains(where: {
+        switch $0 { case .MessageEntry, .MessageGroupEntry: return true; default: return false }
+    }) else { return (nil, nil) }
     var incoming: MessageIndex?
     var overall: MessageIndex?
     var nextLowestIndex: MessageIndex?
@@ -272,6 +315,10 @@ private func mappedInsertEntries(context: AccountContext, chatLocation: ChatLoca
     
     return entries.map { entry -> ChatHistoryListViewInsertItem in
         switch entry.entry {
+            case let .LocalArchiveEntry(row, presentationData):
+                return ChatHistoryListViewInsertItem(index: entry.index, previousIndex: entry.previousIndex,
+                    stableId: entry.entry.stableId, item: ChatLocalArchiveItem(row: row, presentationData: presentationData,
+                    controllerInteraction: controllerInteraction), directionHint: nil)
             case let .MessageEntry(message, presentationData, read, location, selection, attributes):
                 let item: ListViewItem
                 switch mode {
@@ -327,6 +374,10 @@ private func mappedUpdateEntries(context: AccountContext, chatLocation: ChatLoca
     
     return entries.map { entry -> ChatHistoryListViewUpdateItem in
         switch entry.entry {
+            case let .LocalArchiveEntry(row, presentationData):
+                return ChatHistoryListViewUpdateItem(index: entry.index, previousIndex: entry.previousIndex,
+                    stableId: entry.entry.stableId, item: ChatLocalArchiveItem(row: row, presentationData: presentationData,
+                    controllerInteraction: controllerInteraction), directionHint: nil)
             case let .MessageEntry(message, presentationData, read, location, selection, attributes):
                 let item: ListViewItem
                 switch mode {
@@ -559,6 +610,9 @@ public final class ChatHistoryListNodeImpl: ASDisplayNode, ChatHistoryNode, Chat
     
     private let historyDisposable = MetaDisposable()
     private let readHistoryDisposable = MetaDisposable()
+    private var localArchiveDeletedHistory: LocalArchiveDeletedHistoryLoader?
+    private let localArchiveDeletedRows = ValuePromise<[LocalArchiveDeletedHistoryItem]>([], ignoreRepeated: true)
+    private let localArchiveVisibilityDisposable = MetaDisposable()
     
     private var dequeuedInitialTransitionOnLayout = false
     private var enqueuedHistoryViewTransitions: [ChatHistoryListViewTransition] = []
@@ -1041,6 +1095,19 @@ public final class ChatHistoryListNodeImpl: ASDisplayNode, ChatHistoryNode, Chat
         self.listView = ChatHistoryListNodeImpl.makeListView(rotated: rotated, useCoreListBackend: useCoreListBackend)
 
         super.init()
+
+        if case .bubbles = mode, rotated, subject == nil, tag == nil,
+           case .default = source, case .peer = chatLocation, let archive = context.account.localArchive {
+            self.localArchiveDeletedHistory = LocalArchiveDeletedHistoryLoader(archive: archive,
+                presentation: context.account.localArchivePresentation, changed: { [weak self] rows in
+                    self?.localArchiveDeletedRows.set(rows)
+                })
+            self.localArchiveVisibilityDisposable.set((combineLatest(self.canReadHistory.get(),
+                context.sharedContext.applicationBindings.applicationIsActive, selectedMessages)
+            |> deliverOnMainQueue).start(next: { [weak self] visible, active, selection in
+                self?.localArchiveDeletedHistory?.setActive(visible && active && selection == nil)
+            }))
+        }
         
         // Force-load this node's view in the initializer. ChatHistoryListNodeImpl used to *be* the
         // ListViewImpl, whose view was loaded eagerly during init, so `self.isNodeLoaded` was always
@@ -1426,6 +1493,10 @@ public final class ChatHistoryListNodeImpl: ASDisplayNode, ChatHistoryNode, Chat
     }
     
     deinit {
+        self.localArchiveVisibilityDisposable.dispose()
+        if let loader = self.localArchiveDeletedHistory {
+            if Thread.isMainThread { loader.dispose() } else { Queue.mainQueue().async { loader.dispose() } }
+        }
         self.historyDisposable.dispose()
         self.readHistoryDisposable.dispose()
         self.interactiveReadActionDisposable?.dispose()
@@ -2069,7 +2140,20 @@ public final class ChatHistoryListNodeImpl: ASDisplayNode, ChatHistoryNode, Chat
         // Pair a decision with its exact history update. There is deliberately no
         // initial empty-decision emission that could flash matching text first.
         let historyWithLocalFilter = combineLatest(queue: messageViewQueue, historyViewUpdate, context.account.localMessageFilter.settings, controllerInteraction.localTextFilterRevealed.get())
-        |> map { incomingUpdate, state, revealed -> Signal<ChatHistoryLocalTextFilterResult, NoError> in
+        |> map { [weak self] incomingUpdate, state, revealed -> Signal<ChatHistoryLocalTextFilterResult, NoError> in
+            if let loader = self?.localArchiveDeletedHistory {
+                // A separate archive row must not bypass an enabled filter's
+                // visibility decision. Until it has its own archive-aware filter
+                // projection, explicit archive browsing remains the only route.
+                let filtersDisabled: Bool
+                if case let .available(settings) = state { filtersDisabled = !settings.enabled } else { filtersDisabled = false }
+                if filtersDisabled, self?.tag == nil, case let .peer(peerId) = chatLocation,
+                   case let .HistoryView(view, _, _, _, _, data, _) = incomingUpdate.0 {
+                    loader.setWindow(chatHistoryLocalArchiveWindow(view: view, data: data, peerId: peerId))
+                } else {
+                    loader.setWindow(nil)
+                }
+            }
             let revision = localFilterRevision.modify { $0 &+ 1 }
             var update = incomingUpdate
             if let pending = pendingLocalFilterUpdate, pending.2 == update.2,
@@ -2134,8 +2218,10 @@ public final class ChatHistoryListNodeImpl: ASDisplayNode, ChatHistoryNode, Chat
             |> switchToLatest
         }
         |> switchToLatest
+        let historyWithLocalArchive = combineLatest(queue: messageViewQueue, historyWithLocalFilter, self.localArchiveDeletedRows.get())
+        |> map { ChatHistoryLocalArchiveResult(filtered: $0, rows: $1) }
         let historyViewTransitionDisposable = (combineLatest(queue: messageViewQueue,
-            historyWithLocalFilter |> debug_measureTimeToFirstEvent(label: "chatHistoryNode_historyViewUpdate"),
+            historyWithLocalArchive |> debug_measureTimeToFirstEvent(label: "chatHistoryNode_historyViewUpdate"),
             self.chatPresentationDataPromise.get() |> debug_measureTimeToFirstEvent(label: "chatHistoryNode_chatPresentationData"),
             selectedMessages |> debug_measureTimeToFirstEvent(label: "chatHistoryNode_selectedMessages"),
             updatingMedia |> debug_measureTimeToFirstEvent(label: "chatHistoryNode_updatingMedia"),
@@ -2161,7 +2247,8 @@ public final class ChatHistoryListNodeImpl: ASDisplayNode, ChatHistoryNode, Chat
             chatThemes |> debug_measureTimeToFirstEvent(label: "chatHistoryNode_chatThemes"),
             deviceContactsNumbers |> debug_measureTimeToFirstEvent(label: "chatHistoryNode_deviceContactsNumbers"),
             contentSettings |> debug_measureTimeToFirstEvent(label: "chatHistoryNode_contentSettings")
-        ) |> debug_measureTimeToFirstEvent(label: "chatHistoryNode_firstChatHistoryTransition")).startStrict(next: { [weak self] filteredUpdate, chatPresentationData, selectedMessages, updatingMedia, networkType, preferredStoryHighQuality, animatedEmojiAndGiftStickers, additionalAnimatedEmojiStickers, customChannelDiscussionReadState, customThreadOutgoingReadState, availableReactions, availableMessageEffects, savedMessageTags, defaultReaction, accountPeer, accountCountry, suggestAudioTranscription, promises, topicAuthorId, translationState, maxReadStoryId, recommendedChannels, audioTranscriptionTrial, chatThemes, deviceContactsNumbers, contentSettings in
+        ) |> debug_measureTimeToFirstEvent(label: "chatHistoryNode_firstChatHistoryTransition")).startStrict(next: { [weak self] archivedUpdate, chatPresentationData, selectedMessages, updatingMedia, networkType, preferredStoryHighQuality, animatedEmojiAndGiftStickers, additionalAnimatedEmojiStickers, customChannelDiscussionReadState, customThreadOutgoingReadState, availableReactions, availableMessageEffects, savedMessageTags, defaultReaction, accountPeer, accountCountry, suggestAudioTranscription, promises, topicAuthorId, translationState, maxReadStoryId, recommendedChannels, audioTranscriptionTrial, chatThemes, deviceContactsNumbers, contentSettings in
+            let filteredUpdate = archivedUpdate.filtered
             let update = filteredUpdate.update
             let (animatedEmojiStickers, premiumGiftStickers, tonGiftStickers) = animatedEmojiAndGiftStickers
             let (historyAppearsCleared, pendingUnpinnedAllMessages, pendingRemovedMessages, currentlyPlayingMessageIdAndType, scrollToMessageId, chatHasBots, allAdMessages) = promises
@@ -2481,7 +2568,16 @@ public final class ChatHistoryListNodeImpl: ASDisplayNode, ChatHistoryNode, Chat
                 )
                 // Selection mode deliberately shows originals: Telegram's
                 // existing selection toolbar must not operate on hidden rows.
-                let filteredEntries = chatHistoryApplyingLocalTextFilter(unfilteredEntries, matches: isCopyProtectionEnabled ? [:] : filteredUpdate.matches, revealed: filteredUpdate.revealed, selectionActive: selectedMessages != nil)
+                let textFilteredEntries = chatHistoryApplyingLocalTextFilter(unfilteredEntries, matches: isCopyProtectionEnabled ? [:] : filteredUpdate.matches, revealed: filteredUpdate.revealed, selectionActive: selectedMessages != nil)
+                let filteredEntries: [ChatHistoryEntry]
+                if case let .peer(peerId) = chatLocation {
+                    filteredEntries = chatHistoryApplyingLocalArchive(textFilteredEntries, rows: archivedUpdate.rows,
+                        peerId: peerId, presentationData: chatPresentationData,
+                        permitted: selectedMessages == nil && !isCopyProtectionEnabled && !historyAppearsCleared && mode == .bubbles && tag == nil && subject == nil,
+                        reverse: reverse)
+                } else {
+                    filteredEntries = textFilteredEntries
+                }
                 let lastHeaderId = filteredEntries.last.flatMap { listMessageDateHeaderId(timestamp: $0.index.timestamp) } ?? 0
                 let processedView = ChatHistoryView(originalView: view, filteredEntries: filteredEntries, associatedData: associatedData, lastHeaderId: lastHeaderId, id: id, locationInput: update.2, ignoreMessagesInTimestampRange: update.3, ignoreMessageIds: update.4)
                 let previousValueAndVersion = previousView.swap((processedView, update.1, selectedMessages, allAdMessages.version))
@@ -3204,6 +3300,9 @@ public final class ChatHistoryListNodeImpl: ASDisplayNode, ChatHistoryNode, Chat
     
     private func processDisplayedItemRangeChanged(displayedRange: ListViewDisplayedItemRange, transactionState: ChatHistoryTransactionOpaqueState) {
         let historyView = transactionState.historyView
+        let lastCanonicalIndex = historyView.filteredEntries.lastIndex(where: {
+            switch $0 { case .MessageEntry, .MessageGroupEntry: return true; default: return false }
+        }) ?? -1
         var isTopReplyThreadMessageShownValue = false
         var topVisibleMessageRange: ChatTopVisibleMessageRange?
         let isLoading = historyView.originalView.isLoading
@@ -3411,9 +3510,9 @@ public final class ChatHistoryListNodeImpl: ASDisplayNode, ChatHistoryNode, Chat
                             isTopReplyThreadMessageShownValue = true
                         }
                         if let topVisibleMessageRangeValue = topVisibleMessageRange {
-                            topVisibleMessageRange = ChatTopVisibleMessageRange(lowerBound: topVisibleMessageRangeValue.lowerBound, upperBound: message.index, isLast: i == historyView.filteredEntries.count - 1, isLoading: isLoading)
+                            topVisibleMessageRange = ChatTopVisibleMessageRange(lowerBound: topVisibleMessageRangeValue.lowerBound, upperBound: message.index, isLast: i == lastCanonicalIndex, isLoading: isLoading)
                         } else {
-                            topVisibleMessageRange = ChatTopVisibleMessageRange(lowerBound: message.index, upperBound: message.index, isLast: i == historyView.filteredEntries.count - 1, isLoading: isLoading)
+                            topVisibleMessageRange = ChatTopVisibleMessageRange(lowerBound: message.index, upperBound: message.index, isLast: i == lastCanonicalIndex, isLoading: isLoading)
                         }
                         if message.id.namespace == Namespaces.Message.Cloud, self.remainingDynamicAdMessageInterval != nil {
                             allVisibleAnchorMessageIds.append((message.id, nodeIndex))
@@ -3478,9 +3577,9 @@ public final class ChatHistoryListNodeImpl: ASDisplayNode, ChatHistoryNode, Chat
                                 isTopReplyThreadMessageShownValue = true
                             }
                             if let topVisibleMessageRangeValue = topVisibleMessageRange {
-                                topVisibleMessageRange = ChatTopVisibleMessageRange(lowerBound: topVisibleMessageRangeValue.lowerBound, upperBound: message.index, isLast: i == historyView.filteredEntries.count - 1, isLoading: isLoading)
+                                topVisibleMessageRange = ChatTopVisibleMessageRange(lowerBound: topVisibleMessageRangeValue.lowerBound, upperBound: message.index, isLast: i == lastCanonicalIndex, isLoading: isLoading)
                             } else {
-                                topVisibleMessageRange = ChatTopVisibleMessageRange(lowerBound: message.index, upperBound: message.index, isLast: i == historyView.filteredEntries.count - 1, isLoading: isLoading)
+                                topVisibleMessageRange = ChatTopVisibleMessageRange(lowerBound: message.index, upperBound: message.index, isLast: i == lastCanonicalIndex, isLoading: isLoading)
                             }
                         }
                         if let message = messages.first {
@@ -3771,7 +3870,8 @@ public final class ChatHistoryListNodeImpl: ASDisplayNode, ChatHistoryNode, Chat
             return VisibleMessageRange(lowerBound: range.lowerBound, upperBound: range.upperBound)
         })
         
-        if let loaded = displayedRange.visibleRange, let firstEntry = historyView.filteredEntries.first, let lastEntry = historyView.filteredEntries.last {
+        let canonicalEntries = chatHistoryCanonicalEntries(historyView.filteredEntries)
+        if let loaded = displayedRange.visibleRange, let firstEntry = canonicalEntries.first, let lastEntry = canonicalEntries.last {
             var mathesFirst = false
             if loaded.firstIndex <= 5 {
                 var firstHasGroups = false
@@ -3986,7 +4086,7 @@ public final class ChatHistoryListNodeImpl: ASDisplayNode, ChatHistoryNode, Chat
     
     public func latestMessageInCurrentHistoryView() -> EngineMessage? {
         if let historyView = self.historyView {
-            if historyView.originalView.laterId == nil, let firstEntry = historyView.filteredEntries.last {
+            if historyView.originalView.laterId == nil, let firstEntry = chatHistoryCanonicalEntries(historyView.filteredEntries).last {
                 if case let .MessageEntry(message, _, _, _, _, _) = firstEntry {
                     return EngineMessage(message)
                 }
@@ -4012,8 +4112,9 @@ public final class ChatHistoryListNodeImpl: ASDisplayNode, ChatHistoryNode, Chat
     
     public func messageInCurrentHistoryView(after messageId: EngineMessage.Id) -> EngineMessage? {
         if let historyView = self.historyView {
-            if let index = historyView.filteredEntries.firstIndex(where: { $0.firstIndex.id == messageId }), index < historyView.filteredEntries.count - 1 {
-                let nextEntry = historyView.filteredEntries[index + 1]
+            let canonicalEntries = chatHistoryCanonicalEntries(historyView.filteredEntries)
+            if let index = canonicalEntries.firstIndex(where: { $0.firstIndex.id == messageId }), index < canonicalEntries.count - 1 {
+                let nextEntry = canonicalEntries[index + 1]
                 if case let .MessageEntry(message, _, _, _, _, _) = nextEntry {
                     return EngineMessage(message)
                 } else if case let .MessageGroupEntry(_, messages, _) = nextEntry, let firstMessage = messages.first {
@@ -4026,8 +4127,9 @@ public final class ChatHistoryListNodeImpl: ASDisplayNode, ChatHistoryNode, Chat
 
     public func messageInCurrentHistoryView(before messageId: EngineMessage.Id) -> EngineMessage? {
         if let historyView = self.historyView {
-            if let index = historyView.filteredEntries.firstIndex(where: { $0.firstIndex.id == messageId }), index > 0 {
-                let nextEntry = historyView.filteredEntries[index - 1]
+            let canonicalEntries = chatHistoryCanonicalEntries(historyView.filteredEntries)
+            if let index = canonicalEntries.firstIndex(where: { $0.firstIndex.id == messageId }), index > 0 {
+                let nextEntry = canonicalEntries[index - 1]
                 if case let .MessageEntry(message, _, _, _, _, _) = nextEntry {
                     return EngineMessage(message)
                 } else if case let .MessageGroupEntry(_, messages, _) = nextEntry, let firstMessage = messages.first {
@@ -4154,7 +4256,8 @@ public final class ChatHistoryListNodeImpl: ASDisplayNode, ChatHistoryNode, Chat
                 }
             }
             
-            let isEmpty = transition.historyView.originalView.entries.isEmpty || loadState == .empty(.botInfo)
+            let hasLocalArchiveRows = transition.historyView.filteredEntries.contains { if case .LocalArchiveEntry = $0 { return true }; return false }
+            let isEmpty = !hasLocalArchiveRows && (transition.historyView.originalView.entries.isEmpty || loadState == .empty(.botInfo))
             
             var hasReachedLimits = false
             if case let .customChatContents(customChatContents) = self.subject, let messageLimit = customChatContents.messageLimit {
@@ -4657,7 +4760,8 @@ public final class ChatHistoryListNodeImpl: ASDisplayNode, ChatHistoryNode, Chat
                     strongSelf._initialData.set(.single(ChatHistoryCombinedInitialData(initialData: transition.initialData, buttonKeyboardMessage: transition.keyboardButtonsMessage, cachedData: transition.cachedData, cachedDataMessages: transition.cachedDataMessages, readStateData: transition.readStateData)))
                 }
                 strongSelf._cachedPeerDataAndMessages.set(.single((transition.cachedData, transition.cachedDataMessages)))
-                let isEmpty = transition.historyView.originalView.entries.isEmpty || loadState == .empty(.botInfo)
+                let hasLocalArchiveRows = transition.historyView.filteredEntries.contains { if case .LocalArchiveEntry = $0 { return true }; return false }
+                let isEmpty = !hasLocalArchiveRows && (transition.historyView.originalView.entries.isEmpty || loadState == .empty(.botInfo))
                 var hasReachedLimits = false
                 if case let .customChatContents(customChatContents) = strongSelf.subject, let messageLimit = customChatContents.messageLimit {
                     hasReachedLimits = transition.historyView.originalView.entries.count >= messageLimit

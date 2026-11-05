@@ -7,6 +7,10 @@ import sqlcipher
 private let archiveTransient = unsafeBitCast(-1, to: sqlite3_destructor_type.self)
 private enum SQLValue { case integer(Int64), optionalInteger(Int64?), text(String), blob(Data) }
 
+private final class ArchiveDeletedHistoryReadBudget {
+    var remaining = 200
+}
+
 /// One account, one encrypted database, one serial worker. Completions use callbackQueue.
 public final class ArchiveStore {
     public let accountId: Int64
@@ -437,6 +441,55 @@ public final class ArchiveStore {
             if let peerId = peerId { clause += " AND peer_id=?"; values.append(.integer(peerId)) }
             clause += " ORDER BY sequence DESC LIMIT ?"; values.append(.integer(Int64(limit)))
             return try self.read(clause, values)
+        }
+    }
+
+    /// A bounded, presentation-only window. The existing message index seeks
+    /// directly into this chat's cloud-id range; no canonical history is changed.
+    /// A hard VM-work budget fails closed on a pathological number of versions.
+    /// Excluded authors are rejected by SQL before their plaintext is returned.
+    public func deletedHistory(peerId: Int64, namespace: Int32, messageIds: ClosedRange<Int32>,
+                               sentAt: ClosedRange<Int64>, excludingAuthors: Set<Int64>, limit: Int = 40,
+                               completion: @escaping (Result<ArchiveDeletedHistoryPage, ArchiveError>) -> Void) {
+        self.submit(completion) {
+            guard namespace == 0, messageIds.lowerBound > 0, sentAt.lowerBound >= 0,
+                  sentAt.upperBound <= Int64(Int32.max), (1...40).contains(limit),
+                  excludingAuthors.count <= ArchiveDeletedHistoryPage.maximumExcludedAuthors,
+                  let handle = self.handle else { throw ArchiveError.invalidInput }
+            let budget = ArchiveDeletedHistoryReadBudget()
+            sqlite3_progress_handler(handle, 1000, { context in
+                guard let context else { return 1 }
+                let budget = Unmanaged<ArchiveDeletedHistoryReadBudget>.fromOpaque(context).takeUnretainedValue()
+                budget.remaining -= 1
+                return budget.remaining > 0 ? 0 : 1
+            }, Unmanaged.passUnretained(budget).toOpaque())
+            defer {
+                sqlite3_progress_handler(handle, 0, nil, nil)
+                withExtendedLifetime(budget) {}
+            }
+            let now = self.clock()
+            guard now >= 0 else { throw ArchiveError.invalidInput }
+            let cutoff = max(0, now - min(now, self.retention.maxAgeSeconds))
+            var clause = """
+                INDEXED BY events_message WHERE account_id=? AND peer_id=? AND namespace=?
+                AND message_id>=? AND message_id<=? AND kind=1 AND sent_at>=? AND sent_at<=? AND observed_at>=?
+                AND sequence=(SELECT MAX(latest.sequence) FROM events AS latest INDEXED BY events_message
+                WHERE latest.account_id=events.account_id AND latest.peer_id=events.peer_id
+                AND latest.namespace=events.namespace AND latest.message_id=events.message_id AND latest.kind=1)
+                """
+            var values: [SQLValue] = [.integer(self.accountId), .integer(peerId), .integer(Int64(namespace)),
+                .integer(Int64(messageIds.lowerBound)), .integer(Int64(messageIds.upperBound)),
+                .integer(sentAt.lowerBound), .integer(sentAt.upperBound), .integer(cutoff)]
+            if !excludingAuthors.isEmpty {
+                clause += " AND author_id IS NOT NULL AND author_id NOT IN (" + Array(repeating: "?", count: excludingAuthors.count).joined(separator: ",") + ")"
+                values.append(contentsOf: excludingAuthors.sorted().map(SQLValue.integer))
+            }
+            clause += " ORDER BY message_id DESC,sequence DESC LIMIT ?"
+            values.append(.integer(Int64(limit + 1)))
+            // Only a short excerpt enters the normal chat. Full versions remain
+            // available in the explicitly opened, protected archive timeline.
+            let records = try self.read(clause, values, textExpression: "substr(text,1,2048)")
+            return ArchiveDeletedHistoryPage(records: Array(records.prefix(limit)), isTruncated: records.count > limit)
         }
     }
 
@@ -1084,8 +1137,9 @@ public final class ArchiveStore {
         return value
     }
 
-    private func read(_ clause: String, _ values: [SQLValue]) throws -> [ArchivedRecord] {
-        let prepared = try statement("SELECT sequence,event_key,account_id,peer_id,namespace,message_id,kind,observed_at,server_edit_at,text,author_id,sent_at,entities FROM events " + clause, values)
+    private func read(_ clause: String, _ values: [SQLValue], textExpression: String = "text") throws -> [ArchivedRecord] {
+        // textExpression is an internal fixed SQL expression, never user input.
+        let prepared = try statement("SELECT sequence,event_key,account_id,peer_id,namespace,message_id,kind,observed_at,server_edit_at," + textExpression + ",author_id,sent_at,entities FROM events " + clause, values)
         defer { sqlite3_finalize(prepared) }
         var result: [ArchivedRecord] = []
         var code = sqlite3_step(prepared)

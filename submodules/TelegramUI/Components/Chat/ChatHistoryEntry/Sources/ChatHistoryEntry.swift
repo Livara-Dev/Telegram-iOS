@@ -75,9 +75,15 @@ public enum ChatHistoryEntry: Identifiable, Comparable {
     case UnreadEntry(EngineMessage.Index, ChatPresentationData)
     case ReplyCountEntry(EngineMessage.Index, Bool, Int, ChatPresentationData)
     case ChatInfoEntry(ChatInfoData, ChatPresentationData)
+    /// Local encrypted-archive presentation only; never a canonical message.
+    case LocalArchiveEntry(LocalArchiveDeletedHistoryItem, ChatPresentationData)
     
     public var stableId: UInt64 {
         switch self {
+        case let .LocalArchiveEntry(item, _):
+            // Canonical/group identities carry bit 41 or 42. This is disjoint
+            // even from an arbitrary signed group stable id.
+            return (UInt64(8) << 40) | UInt64(UInt32(bitPattern: item.messageId))
         case let .MessageEntry(message, _, _, _, _, attributes):
             if let groupStableId = attributes.groupStableId {
                 return UInt64(bitPattern: groupStableId) | ((UInt64(2) << 40))
@@ -110,6 +116,8 @@ public enum ChatHistoryEntry: Identifiable, Comparable {
     
     public var index: EngineMessage.Index {
         switch self {
+        case let .LocalArchiveEntry(item, _):
+            return EngineMessage.Index(id: EngineMessage.Id(peerId: item.peerId, namespace: Namespaces.Message.Cloud, id: item.messageId), timestamp: item.sentAt)
         case let .MessageEntry(message, _, _, _, _, _):
             return message.index
         case let .MessageGroupEntry(_, messages, _):
@@ -130,6 +138,8 @@ public enum ChatHistoryEntry: Identifiable, Comparable {
     
     public var firstIndex: EngineMessage.Index {
         switch self {
+            case let .LocalArchiveEntry(item, _):
+                return EngineMessage.Index(id: EngineMessage.Id(peerId: item.peerId, namespace: Namespaces.Message.Cloud, id: item.messageId), timestamp: item.sentAt)
             case let .MessageEntry(message, _, _, _, _, _):
                 return message.index
             case let .MessageGroupEntry(_, messages, _):
@@ -150,6 +160,8 @@ public enum ChatHistoryEntry: Identifiable, Comparable {
     
     public var timestamp: Int32? {
         switch self {
+        case let .LocalArchiveEntry(item, _):
+            return item.sentAt
         case let .MessageEntry(message, _, _, _, _, _):
             return message.timestamp
         case let .MessageGroupEntry(_, messages, _):
@@ -161,6 +173,11 @@ public enum ChatHistoryEntry: Identifiable, Comparable {
 
     public static func ==(lhs: ChatHistoryEntry, rhs: ChatHistoryEntry) -> Bool {
         switch lhs {
+            case let .LocalArchiveEntry(lhsItem, lhsPresentationData):
+                if case let .LocalArchiveEntry(rhsItem, rhsPresentationData) = rhs {
+                    return lhsItem == rhsItem && lhsPresentationData === rhsPresentationData
+                }
+                return false
             case let .MessageEntry(lhsMessage, lhsPresentationData, lhsRead, _, lhsSelection, lhsAttributes):
                 switch rhs {
                     case let .MessageEntry(rhsMessage, rhsPresentationData, rhsRead, _, rhsSelection, rhsAttributes) where lhsMessage.index == rhsMessage.index && lhsMessage.flags == rhsMessage.flags && lhsRead == rhsRead:

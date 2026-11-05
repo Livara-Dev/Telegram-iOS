@@ -42,6 +42,114 @@ final class ArchiveStoreTests: XCTestCase {
         return store
     }
 
+    private func history(_ store: ArchiveStore, peer: Int64 = 42, ids: ClosedRange<Int32> = 1...Int32.max,
+                         sent: ClosedRange<Int64> = 0...Int64(Int32.max), excluding: Set<Int64> = [], limit: Int = 40) throws -> ArchiveDeletedHistoryPage {
+        return try self.awaitResult { store.deletedHistory(peerId: peer, namespace: 0, messageIds: ids, sentAt: sent,
+            excludingAuthors: excluding, limit: limit, completion: $0) }
+    }
+
+    func testInlineDeletedHistoryReturnsLatestDeletionPerIdWithinCanonicalWindow() throws {
+        let store = try self.open()
+        _ = try self.write(store, [self.event("first", text: "old", message: 10), self.event("latest", text: "new", message: 10),
+            self.event("only-edit", message: 11, kind: .edited), self.event("inside", message: 12), self.event("outside", message: 14),
+            self.event("other-peer", peer: 43, message: 12)])
+        let page = try self.history(store, ids: 10...12, sent: 800...800)
+        XCTAssertEqual(page.records.map(\.event.eventKey), ["inside", "latest"])
+        XCTAssertEqual(page.records.last?.event.content.text, "new")
+        XCTAssertFalse(page.isTruncated)
+        XCTAssertTrue(try self.history(store, ids: 10...12, sent: 801...900).records.isEmpty)
+    }
+
+    func testInlineDeletedHistoryBoundReportsMoreAndRetainsFullSeparateTimeline() throws {
+        let store = try self.open()
+        _ = try self.write(store, (1...45).map { self.event("bounded-\($0)", message: Int32($0)) })
+        let page = try self.history(store)
+        XCTAssertEqual(page.records.count, 40)
+        XCTAssertEqual(page.records.first?.event.message.messageId, 45)
+        XCTAssertEqual(page.records.last?.event.message.messageId, 6)
+        XCTAssertTrue(page.isTruncated)
+        XCTAssertEqual(try self.records(store).count, 45, "a presentation bound must not delete stored history")
+    }
+
+    func testInlineDeletedHistoryAuthorExclusionHappensBeforeReturningPlaintext() throws {
+        let store = try self.open()
+        _ = try self.write(store, [self.event("blocked", text: "excluded-author-canary", message: 1, author: 7),
+            self.event("unknown", text: "unknown-author-canary", message: 2, author: nil),
+            self.event("allowed", text: "allowed body", message: 3, author: 8)])
+        XCTAssertEqual(try self.history(store, excluding: [7]).records.map(\.event.eventKey), ["allowed"])
+        let maximumExclusions = Set((10000..<14095).map(Int64.init)).union([7])
+        XCTAssertEqual(maximumExclusions.count, ArchiveDeletedHistoryPage.maximumExcludedAuthors)
+        XCTAssertEqual(try self.history(store, excluding: maximumExclusions).records.map(\.event.eventKey), ["allowed"])
+        XCTAssertEqual(try self.history(store).records.count, 3)
+    }
+
+    func testInlineDeletedHistoryHasAnAccountBoundAfterReopen() throws {
+        let first = try self.open(account: 1)
+        let second = try self.open(account: 2, keys: Keys(0x74))
+        _ = try self.write(first, [self.event("account-one", text: "one")])
+        _ = try self.write(second, [self.event("account-two", text: "two", account: 2)])
+        self.close(first)
+        XCTAssertEqual(try self.history(self.open(account: 1)).records.map(\.event.content.text), ["one"])
+        XCTAssertEqual(try self.history(second).records.map(\.event.content.text), ["two"])
+    }
+
+    func testInlineDeletedExcerptAndSavedMediaRemainEncryptedAndFullTimelineUnchanged() throws {
+        let store = try self.open()
+        let body = String(repeating: "encrypted-inline-canary-", count: 200)
+        _ = try self.write(store, [self.event("excerpt-media", text: body)])
+        XCTAssertTrue(try self.awaitResult { store.recordMedia(eventKey: "excerpt-media", slot: 0, kind: "video", mimeType: "video/mp4",
+            data: Data("independent-media-canary".utf8), generation: 0, completion: $0) })
+        let page = try self.history(store)
+        XCTAssertEqual(page.records.first?.event.content.text, String(body.prefix(2048)))
+        XCTAssertEqual(page.records.first?.storedMediaCount, 1)
+        XCTAssertEqual(try self.records(store).first?.event.content.text, body)
+        for path in [store.databaseURL.path, store.databaseURL.path + "-wal", store.databaseURL.path + "-shm"] where FileManager.default.fileExists(atPath: path) {
+            XCTAssertNil(try Data(contentsOf: URL(fileURLWithPath: path)).range(of: Data("encrypted-inline-canary-".utf8)))
+        }
+    }
+
+    func testInlineDeletedReadHonorsAgePolicyWithoutCreatingOrPruningRowsOnRead() throws {
+        var now: Int64 = 1000
+        let store = try self.open(retention: ArchiveRetentionPolicy(maxAgeSeconds: 200), clock: { now })
+        _ = try self.write(store, [self.event("age-bound", observed: 900)])
+        XCTAssertEqual(try self.history(store).records.count, 1)
+        now = 1200
+        XCTAssertTrue(try self.history(store).records.isEmpty)
+        XCTAssertEqual(try self.records(store).count, 1, "inline history reads do not write or change the canonical archive")
+    }
+
+    func testInlineDeletedHistoryRejectsUnboundedOrNonCloudRequests() throws {
+        let store = try self.open()
+        for limit in [0, 41] {
+            self.assertError(.invalidInput) { _ = try self.history(store, limit: limit) }
+        }
+        self.assertError(.invalidInput) { _ = try self.history(store, ids: 0...1) }
+        self.assertError(.invalidInput) { _ = try self.history(store, sent: -1...1) }
+        self.assertError(.invalidInput) { _ = try self.history(store, sent: 0...(Int64(Int32.max) + 1)) }
+        self.assertError(.invalidInput) {
+            _ = try self.awaitResult { store.deletedHistory(peerId: 42, namespace: 1, messageIds: 1...100, sentAt: 0...1000,
+                excludingAuthors: [], completion: $0) }
+        }
+        self.assertError(.invalidInput) { _ = try self.history(store, excluding: Set((1...4097).map(Int64.init))) }
+    }
+
+    func testPathologicalVersionCountFailsClosedAndDoesNotLeaveProgressHandlerInstalled() throws {
+        let store = try self.open()
+        // One repeatedly observed id forces the query to inspect old versions;
+        // normal one-row reads must remain usable after the bounded failure.
+        for batch in 0..<32 {
+            _ = try self.write(store, (0..<256).map { self.event("work-\(batch)-\($0)", text: "version-\(batch)-\($0)") })
+        }
+        do {
+            _ = try self.history(store)
+            XCTFail("pathological query must hit its independent VM-work budget")
+        } catch let error as ArchiveError {
+            XCTAssertEqual(error, .unavailable(SQLITE_INTERRUPT))
+        }
+        XCTAssertEqual(try self.usage(store).records, 8192)
+        XCTAssertEqual(try self.awaitResult { store.timeline(for: ArchiveMessageID(accountId: 1, peerId: 42, namespace: 0, messageId: 10), limit: 1, completion: $0) }.count, 1)
+    }
+
     private final class MutationLog {
         private let lock = NSLock()
         private var value = 0

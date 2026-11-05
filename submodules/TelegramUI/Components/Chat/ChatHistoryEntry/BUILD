@@ -27,11 +27,15 @@ swift_library(
 swift_library(
     name = "ChatLocalTextFilterProjectionTestsLib",
     testonly = True,
-    srcs = glob(["Tests/**/*.swift"], exclude = ["Tests/ChatLocalTextFilterTestHost.swift"]),
+    srcs = glob(["Tests/**/*.swift"], exclude = ["Tests/ChatLocalTextFilterTestHost.swift"]) + [
+        "//submodules/TelegramUI/Components/Chat/ChatMessageItemImpl:LocalArchiveRowRendererSource",
+    ],
     deps = [
         ":ChatHistoryEntry",
         "//submodules/TelegramCore",
         "//submodules/TelegramPresentationData",
+        "//submodules/Display",
+        "//submodules/SSignalKit/SwiftSignalKit",
     ],
 )
 
