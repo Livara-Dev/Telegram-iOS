@@ -138,15 +138,15 @@ final class LocalGhostMessagePrivacyTests: XCTestCase {
         XCTAssertEqual(selected, Array(ids.dropFirst()) + [missing])
     }
 
-    func testOrdinaryContentTransportIsNotConstructed() throws {
+    func testSuppressedMentionPageReturnsOnlyAnEndCursorSoRestartLoopTerminates() throws {
         try self.configure(LocalGhostSettings(enabled: true))
         let ids = try self.insertContent([(1, [ConsumableContentMessageAttribute(consumed: false)])])
         let calls = Atomic<Int>(value: 0)
-        let values = self.completedValues(localGhostContentReadReceipt(postbox: self.fixture.postbox, messageIds: ids, request: { _ in
+        let values: [Int32?] = self.completedValues(localGhostContentReadReceiptPage(postbox: self.fixture.postbox, messageIds: ids, request: { _ -> Signal<Int32?, NoError> in
             let _ = calls.modify { $0 + 1 }
-            return Signal<Int, NoError>.single(1)
+            return .single(50)
         }))
-        XCTAssertTrue(values.isEmpty)
+        XCTAssertEqual(values, [nil])
         XCTAssertEqual(calls.with { $0 }, 0)
     }
 

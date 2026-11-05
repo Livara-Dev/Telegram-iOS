@@ -144,33 +144,35 @@ private func synchronizeMarkAllUnseen(transaction: Transaction, postbox: Postbox
             if filteredIds.isEmpty {
                 return .single(ids.min()?.id)
             }
-            if peerId.namespace == Namespaces.Peer.CloudChannel {
-                guard let inputChannel = inputChannel else {
-                    return .single(nil)
-                }
-                return localGhostContentReadReceipt(postbox: postbox, messageIds: filteredIds, request: { allowedIds in network.request(Api.functions.channels.readMessageContents(channel: inputChannel, id: allowedIds.map { $0.id })) })
-                |> map { result -> Int32? in
-                    if ids.count < limit {
-                        return nil
-                    } else {
-                        return ids.min()?.id
+            return localGhostContentReadReceiptPage(postbox: postbox, messageIds: filteredIds, request: { allowedIds -> Signal<Int32?, MTRpcError> in
+                if peerId.namespace == Namespaces.Peer.CloudChannel {
+                    guard let inputChannel = inputChannel else {
+                        return .single(nil)
+                    }
+                    return network.request(Api.functions.channels.readMessageContents(channel: inputChannel, id: allowedIds.map { $0.id }))
+                    |> map { result -> Int32? in
+                        if ids.count < limit {
+                            return nil
+                        } else {
+                            return ids.min()?.id
+                        }
+                    }
+                } else {
+                    return network.request(Api.functions.messages.readMessageContents(id: allowedIds.map { $0.id }))
+                    |> map { result -> Int32? in
+                        switch result {
+                            case let .affectedMessages(affectedMessagesData):
+                                let (pts, ptsCount) = (affectedMessagesData.pts, affectedMessagesData.ptsCount)
+                                stateManager.addUpdateGroups([.updatePts(pts: pts, ptsCount: ptsCount)])
+                        }
+                        if ids.count < limit {
+                            return nil
+                        } else {
+                            return ids.min()?.id
+                        }
                     }
                 }
-            } else {
-                return localGhostContentReadReceipt(postbox: postbox, messageIds: filteredIds, request: { allowedIds in network.request(Api.functions.messages.readMessageContents(id: allowedIds.map { $0.id })) })
-                |> map { result -> Int32? in
-                    switch result {
-                        case let .affectedMessages(affectedMessagesData):
-                            let (pts, ptsCount) = (affectedMessagesData.pts, affectedMessagesData.ptsCount)
-                            stateManager.addUpdateGroups([.updatePts(pts: pts, ptsCount: ptsCount)])
-                    }
-                    if ids.count < limit {
-                        return nil
-                    } else {
-                        return ids.min()?.id
-                    }
-                }
-            }
+            })
         }
     }
     let currentMaxId = Atomic<Int32>(value: 0)

@@ -1002,6 +1002,11 @@ func enqueueMessages(transaction: Transaction, account: Account, peerId: PeerId,
             }
             attributes.append(OutgoingMessageInfoAttribute(uniqueId: randomId, flags: infoFlags, acknowledged: false, correlationId: message.correlationId, bubbleUpEmojiOrStickersets: message.bubbleUpEmojiOrStickersets, partialReference: partialReference))
             globallyUniqueIds.append(randomId)
+
+            // Snapshot the Cloud read bound before any outgoing insertion.
+            // Only a real, matched send ACK may consume this local permission.
+            captureLocalGhostReadAfterSend(transaction: transaction, accountPeerId: account.peerId,
+                peerId: peerId, uniqueId: randomId, message: message)
             
             switch message {
                 case let .message(text, requestedAttributes, inlineStickers, mediaReference, threadId, replyToMessageId, replyToStoryId, localGroupingKey, _, _):

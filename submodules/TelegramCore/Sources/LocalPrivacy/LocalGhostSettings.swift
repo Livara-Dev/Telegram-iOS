@@ -177,9 +177,11 @@ func localGhostReadReceipt<T, E>(postbox: Postbox, peerId: PeerId,
     |> mapToSignal { allowed -> Signal<T, E> in allowed ? request() : .complete() }
 }
 
-func localGhostContentReadReceipt<T, E>(postbox: Postbox, messageIds: [MessageId],
-                                       request: @escaping ([MessageId]) -> Signal<T, E>) -> Signal<T, E> {
+/// Pagination must terminate, not restart, when a whole page is suppressed.
+/// nil is the caller's end-of-pages cursor, never a fabricated Telegram result.
+func localGhostContentReadReceiptPage<T, E>(postbox: Postbox, messageIds: [MessageId],
+                                          request: @escaping ([MessageId]) -> Signal<T?, E>) -> Signal<T?, E> {
     return postbox.transaction { transaction in localGhostContentReadIds(transaction: transaction, messageIds: messageIds) }
     |> castError(E.self)
-    |> mapToSignal { ids -> Signal<T, E> in ids.isEmpty ? .complete() : request(ids) }
+    |> mapToSignal { ids -> Signal<T?, E> in ids.isEmpty ? .single(nil) : request(ids) }
 }

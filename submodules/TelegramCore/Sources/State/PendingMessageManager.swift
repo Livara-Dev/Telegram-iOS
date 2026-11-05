@@ -244,6 +244,8 @@ public final class PendingMessageManager {
     private let allTypingDraftsDisposable = MetaDisposable()
     private var forwardSendGateGroups: [PeerAndThreadId: [[(PendingMessageContext, Message, ForwardSourceInfoAttribute)]]] = [:]
     private let beginSendingMessagesDisposables = DisposableSet()
+    private let localGhostReadDisposables = DisposableSet()
+    private var localGhostReadTaskCount = 0
     
     private var newTopicDisposables: [PeerId: Disposable] = [:]
     
@@ -275,6 +277,7 @@ public final class PendingMessageManager {
     
     deinit {
         self.beginSendingMessagesDisposables.dispose()
+        self.localGhostReadDisposables.dispose()
         for (_, disposable) in self.newTopicDisposables {
             disposable.dispose()
         }
@@ -2266,7 +2269,14 @@ public final class PendingMessageManager {
         }
         
         let queue = self.queue
+        let confirmed = Atomic<[LocalGhostConfirmedSend]>(value: [])
+        let accountPeerId = self.accountPeerId
+        let network = self.network
         return applyUpdateMessage(postbox: postbox, stateManager: stateManager, message: message, cacheReferenceKey: content.cacheReferenceKey, result: result, accountPeerId: self.accountPeerId, pendingMessageEvent: { [weak self] pendingMessageDelivered in
+            if message.threadId == nil, !message.isSelfExpiring,
+               let outgoing = message.attributes.first(where: { $0 is OutgoingMessageInfoAttribute }) as? OutgoingMessageInfoAttribute {
+                let _ = confirmed.swap([LocalGhostConfirmedSend(uniqueId: outgoing.uniqueId, deliveredId: pendingMessageDelivered.id)])
+            }
             queue.async {
                 if let strongSelf = self {
                     if let context = strongSelf.peerSummaryContexts[message.id.peerId] {
@@ -2276,6 +2286,11 @@ public final class PendingMessageManager {
                     }
                 }
             }
+        })
+        |> readAfterLocalGhostSendCommit(postbox: postbox, accountPeerId: accountPeerId, confirmed: { confirmed.with { $0 } }, send: { scope in
+            sendLocalGhostReadAfterSend(postbox: postbox, network: network, stateManager: stateManager, scope: scope)
+        }, start: { [weak self] operation in
+            self?.startLocalGhostReadAfterSend(operation)
         })
     }
     
@@ -2314,8 +2329,21 @@ public final class PendingMessageManager {
             }
         }
         let queue = self.queue
-        
+        let confirmed = Atomic<[LocalGhostConfirmedSend]>(value: [])
+        let accountPeerId = self.accountPeerId
+        let network = self.network
+        let updatedRawMessageIds = result.updatedRawMessageIds
+
         return applyUpdateGroupMessages(postbox: postbox, stateManager: stateManager, messages: messages, result: result, pendingMessageEvents: { [weak self] pendingMessagesDelivered in
+            let deliveredIds = Set(pendingMessagesDelivered.map { $0.id })
+            let _ = confirmed.swap(messages.compactMap { message -> LocalGhostConfirmedSend? in
+                guard message.threadId == nil, !message.isSelfExpiring,
+                      let outgoing = message.attributes.first(where: { $0 is OutgoingMessageInfoAttribute }) as? OutgoingMessageInfoAttribute,
+                      let rawId = updatedRawMessageIds[outgoing.uniqueId] else { return nil }
+                let id = MessageId(peerId: message.id.peerId, namespace: Namespaces.Message.Cloud, id: rawId)
+                guard deliveredIds.contains(id) else { return nil }
+                return LocalGhostConfirmedSend(uniqueId: outgoing.uniqueId, deliveredId: id)
+            })
             queue.async {
                 if let strongSelf = self {
                     if let message = messages.first, let context = strongSelf.peerSummaryContexts[message.id.peerId], !pendingMessagesDelivered.isEmpty {
@@ -2326,6 +2354,30 @@ public final class PendingMessageManager {
                 }
             }
         })
+        |> readAfterLocalGhostSendCommit(postbox: postbox, accountPeerId: accountPeerId, confirmed: { confirmed.with { $0 } }, send: { scope in
+            sendLocalGhostReadAfterSend(postbox: postbox, network: network, stateManager: stateManager, scope: scope)
+        }, start: { [weak self] operation in
+            self?.startLocalGhostReadAfterSend(operation)
+        })
+    }
+
+    private func startLocalGhostReadAfterSend(_ operation: Signal<Void, NoError>) {
+        self.queue.async { [weak self] in
+            guard let self, self.localGhostReadTaskCount < 16 else { return }
+            self.localGhostReadTaskCount += 1
+            let queue = self.queue
+            let disposable = MetaDisposable()
+            self.localGhostReadDisposables.add(disposable)
+            disposable.set((operation
+            |> timeout(8.0, queue: queue, alternate: .complete())
+            |> afterDisposed { [weak self, weak disposable] in
+                queue.async {
+                    guard let self, let disposable else { return }
+                    self.localGhostReadDisposables.remove(disposable)
+                    self.localGhostReadTaskCount -= 1
+                }
+            }).start())
+        }
     }
     
     public func deliveredMessageEvents(peerId: PeerId) -> Signal<[PeerPendingMessageDelivered], NoError> {

@@ -24,6 +24,9 @@ public final class LocalGhostContext {
             var updated = value
             update(&updated)
             guard updated.schemaVersion == 2, let entry = PreferencesEntry(updated) else { return false }
+            if value.enabled != updated.enabled || value.suppressReadReceipts != updated.suppressReadReceipts {
+                guard invalidateLocalGhostReadAfterSend(transaction: transaction) else { return false }
+            }
             transaction.setPreferencesEntry(key: localGhostSettingsKey, value: entry)
             return true
         }
@@ -41,13 +44,35 @@ public final class LocalGhostContext {
         return self.postbox.transaction { transaction in
             guard case .available = localGhostSettings(transaction: transaction),
                   case let .available(story) = localStoryPrivacySettings(transaction: transaction),
+                  case .available = localStoryOpeningWarningSettings(transaction: transaction),
+                  let warningEntry = PreferencesEntry(LocalStoryOpeningWarningSettings()),
                   let ghostEntry = PreferencesEntry(LocalGhostSettings()),
                   let storyEntry = PreferencesEntry(LocalStoryPrivacySettings(suppressViewReceipts: false,
-                    suppressionGeneration: story.suppressionGeneration)) else { return false }
+                    suppressionGeneration: story.suppressionGeneration)),
+                  invalidateLocalGhostReadAfterSend(transaction: transaction, enabled: false) else { return false }
             transaction.setPreferencesEntry(key: localGhostSettingsKey, value: ghostEntry)
             transaction.setPreferencesEntry(key: localStoryPrivacySettingsKey, value: storyEntry)
+            transaction.setPreferencesEntry(key: localStoryOpeningWarningKey, value: warningEntry)
             return true
         }
     }
 
+
+    public var storyOpeningWarningSettings: Signal<LocalStoryOpeningWarningSettingsState, NoError> {
+        return localStoryOpeningWarningSettingsSignal(postbox: self.postbox)
+    }
+
+    public func setStoryOpeningWarningEnabled(_ enabled: Bool) -> Signal<Bool, NoError> {
+        return updateLocalStoryOpeningWarning(postbox: self.postbox, enabled: enabled)
+    }
+
+    public var readAfterSendSettings: Signal<LocalGhostReadAfterSendSettingsState, NoError> {
+        return localGhostReadAfterSendSettingsSignal(postbox: self.postbox)
+    }
+
+    public func setReadAfterSendEnabled(_ enabled: Bool) -> Signal<Bool, NoError> {
+        return self.postbox.transaction { transaction in
+            invalidateLocalGhostReadAfterSend(transaction: transaction, enabled: enabled)
+        }
+    }
 }

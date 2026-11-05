@@ -19,6 +19,8 @@ private enum LocalGhostSetting: Int {
     case readReceipts
     case onlineStatus
     case automaticOffline
+    case storyOpeningWarning
+    case readAfterSend
 }
 
 private struct LocalGhostRow: ItemListNodeEntry {
@@ -82,6 +84,10 @@ public func localGhostSettingsController(context: AccountContext) -> ViewControl
         let operation: Signal<Bool, NoError>
         if case .storyViews = setting {
             operation = storyPrivacy.setSuppressed(value)
+        } else if case .storyOpeningWarning = setting {
+            operation = ghost.setStoryOpeningWarningEnabled(value)
+        } else if case .readAfterSend = setting {
+            operation = ghost.setReadAfterSendEnabled(value)
         } else {
             operation = ghost.updateSettings { settings in
                 switch setting {
@@ -103,7 +109,7 @@ public func localGhostSettingsController(context: AccountContext) -> ViewControl
                     settings.suppressOnlineStatus = value
                 case .automaticOffline:
                     settings.automaticOffline = value
-                case .storyViews:
+                case .storyViews, .storyOpeningWarning, .readAfterSend:
                     break
                 }
             }
@@ -113,7 +119,7 @@ public func localGhostSettingsController(context: AccountContext) -> ViewControl
         }))
     }, reset: {
         let presentationData = context.sharedContext.currentPresentationData.with { $0 }
-        presentController?(textAlertController(context: context, title: "Reset Ghost Mode?", text: "This turns Ghost Mode and story-view suppression off for this account. New reads and activity may be visible to other people.", actions: [
+        presentController?(textAlertController(context: context, title: "Reset Ghost Mode?", text: "This turns Ghost Mode and story-view suppression off for this account, and restores the story-opening warning. New reads and activity may be visible to other people.", actions: [
             TextAlertAction(type: .genericAction, title: presentationData.strings.Common_Cancel, action: {}),
             TextAlertAction(type: .defaultAction, title: "Reset", action: {
                 actionState.set(.single((true, false)))
@@ -124,8 +130,8 @@ public func localGhostSettingsController(context: AccountContext) -> ViewControl
         ]))
     })
 
-    let signal = combineLatest(queue: .mainQueue(), context.sharedContext.presentationData, ghost.settings, storyPrivacy.settings, actionState.get())
-    |> map { presentationData, state, storyState, actionState -> (ItemListControllerState, (ItemListNodeState, Any)) in
+    let signal = combineLatest(queue: .mainQueue(), context.sharedContext.presentationData, ghost.settings, storyPrivacy.settings, ghost.storyOpeningWarningSettings, ghost.readAfterSendSettings, actionState.get())
+    |> map { presentationData, state, storyState, warningState, readAfterSendState, actionState -> (ItemListControllerState, (ItemListNodeState, Any)) in
         let settings: LocalGhostSettings
         let supported: Bool
         switch state {
@@ -156,6 +162,26 @@ public func localGhostSettingsController(context: AccountContext) -> ViewControl
             canChangeStoryViews = false
             storyStatus = "This version cannot read the saved story-privacy settings. Story-view receipt sending is blocked and those settings have been kept unchanged."
         }
+        let warnBeforeOpening: Bool
+        let canChangeWarning: Bool
+        switch warningState {
+        case let .available(settings):
+            warnBeforeOpening = settings.enabled
+            canChangeWarning = !actionState.0
+        case .unsupported:
+            warnBeforeOpening = true
+            canChangeWarning = false
+        }
+        let readAfterSend: Bool
+        let canChangeReadAfterSend: Bool
+        switch readAfterSendState {
+        case let .available(settings):
+            readAfterSend = settings.enabled
+            canChangeReadAfterSend = !actionState.0
+        case .unsupported:
+            readAfterSend = false
+            canChangeReadAfterSend = false
+        }
         var active: [String] = []
         if settings.enabled {
             if settings.suppressReadReceipts { active.append("ordinary message read receipts") }
@@ -184,6 +210,8 @@ public func localGhostSettingsController(context: AccountContext) -> ViewControl
             LocalGhostRow(stableId: 20, section: 1, content: .heading("MESSAGE READ RECEIPTS")),
             LocalGhostRow(stableId: 21, section: 1, content: .toggle(.readReceipts, "Suppress ordinary message read receipts", settings.suppressReadReceipts, canChange)),
             LocalGhostRow(stableId: 22, section: 1, content: .text("Covers ordinary cloud chat, group, channel and discussion reads from this client. Messages can be read locally without sending those receipts. Secret Chat reads, timed/view-once consumption and messages with unavailable expiry metadata remain upstream so required expiry cannot be stopped. Reading later with suppression off can reveal earlier cumulative reads.")),
+            LocalGhostRow(stableId: 31, section: 1, content: .toggle(.readAfterSend, "Read after a confirmed send", readAfterSend, canChange && canChangeReadAfterSend)),
+            LocalGhostRow(stableId: 32, section: 1, content: .text("Optional exception while ordinary read suppression is active: after Telegram confirms your send, attempt a read up to the Cloud message id saved before sending, in this account and chat only. Greater ids stay outside that bound; delayed older messages can be cumulatively read. Excludes Secret Chats, forums, threads, story replies, scheduled/quick-reply sends and disappearing outgoing messages. Best effort: failures, restart gaps or sends taking over 15 minutes can miss the read. Turning this option or receipt suppression off invalidates pending permissions.")),
             LocalGhostRow(stableId: 23, section: 2, content: .heading("ONLINE STATUS")),
             LocalGhostRow(stableId: 24, section: 2, content: .toggle(.onlineStatus, "Suppress online-status updates", settings.suppressOnlineStatus, canChange)),
             LocalGhostRow(stableId: 25, section: 2, content: .toggle(.automaticOffline, "Attempt to return offline automatically", settings.automaticOffline, canChange && settings.suppressOnlineStatus)),
@@ -198,11 +226,13 @@ public func localGhostSettingsController(context: AccountContext) -> ViewControl
             LocalGhostRow(stableId: 14, section: 4, content: .toggle(.storyViews, "Suppress story view receipts", suppressStoryViews, canChangeStoryViews)),
             LocalGhostRow(stableId: 15, section: 4, content: .text(storyStatus)),
             LocalGhostRow(stableId: 16, section: 4, content: .text("Independent of the Ghost Mode master switch and its quick toggle. When suppression is turned off, viewing a later story can mark earlier stories as read on Telegram. Story reactions, replies and other Telegram clients can reveal activity.")),
+            LocalGhostRow(stableId: 29, section: 4, content: .toggle(.storyOpeningWarning, "Warn before opening stories", warnBeforeOpening, canChangeWarning)),
+            LocalGhostRow(stableId: 30, section: 4, content: .text("The viewer waits for your choice before rendering a story or starting its seen-receipt path. Cancel leaves it unopened. You can enable story-view privacy before continuing. This warning applies independently of Ghost Mode; an unreadable saved warning policy also asks for confirmation.")),
             LocalGhostRow(stableId: 9, section: 5, content: .heading("LIMITS OF THIS BUILD")),
-            LocalGhostRow(stableId: 10, section: 5, content: .text("Calls, emoji interactions, mandatory expiry notifications and other Telegram clients remain visible. Read-on-interaction, scheduled sending and a story-opening warning are not implemented. These settings do not grant Telegram Premium or guarantee invisibility.")),
+            LocalGhostRow(stableId: 10, section: 5, content: .text("Calls, emoji interactions, mandatory expiry notifications and other Telegram clients remain visible. Reactions and polls do not trigger the optional read-after-send exception. Automatic scheduled sending has not been qualified and is unavailable. These settings do not grant Telegram Premium or guarantee invisibility.")),
             LocalGhostRow(stableId: 11, section: 5, content: .text("Settings apply to new work in this account. A request already sent cannot be recalled. Telegram API policy restricts read-status and presence tampering; no API-compliance or invisibility claim is made.")),
-            LocalGhostRow(stableId: 27, section: 6, content: .reset(canChange && canChangeStoryViews)),
-            LocalGhostRow(stableId: 28, section: 6, content: .text("Reset turns all protections off while preserving invalidation of old story receipts. It does not delete chats, messages or archive data."))
+            LocalGhostRow(stableId: 27, section: 6, content: .reset(canChange && canChangeStoryViews && canChangeWarning && canChangeReadAfterSend)),
+            LocalGhostRow(stableId: 28, section: 6, content: .text("Reset turns receipt/activity protections off, restores the story-opening warning and preserves invalidation of old story receipts. It does not delete chats, messages or archive data."))
         ]
         if actionState.1 {
             entries.append(LocalGhostRow(stableId: 12, section: 5, content: .text("The setting could not be saved. Existing privacy settings have been kept.")))

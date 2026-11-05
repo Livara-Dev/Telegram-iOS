@@ -32,6 +32,62 @@ func hasFirstResponder(_ view: UIView) -> Bool {
     return false
 }
 
+/// A real pending viewer remains legible while its account policy loads. Story
+/// content is not subscribed/rendered underneath this view or the warning.
+private final class StoryOpeningPendingView: UIView {
+    private let indicator = UIActivityIndicatorView(style: .large)
+    private let label = UILabel()
+    private let reviewButton = UIButton(type: .system)
+    private let cancelButton = UIButton(type: .system)
+    private var review: (() -> Void)?
+    private var cancel: (() -> Void)?
+
+    override init(frame: CGRect) {
+        super.init(frame: frame)
+        self.backgroundColor = UIColor(white: 0.04, alpha: 1.0)
+        self.indicator.color = .white
+        self.label.textColor = .white
+        self.label.font = UIFont.systemFont(ofSize: 16.0, weight: .medium)
+        self.label.textAlignment = .center
+        self.label.numberOfLines = 0
+        self.label.accessibilityIdentifier = "AyuGram.StoryOpening.PrivacyCheck"
+        self.addSubview(self.indicator)
+        self.addSubview(self.label)
+        self.reviewButton.setTitle("Review Story Privacy", for: .normal)
+        self.reviewButton.titleLabel?.font = UIFont.systemFont(ofSize: 17.0, weight: .semibold)
+        self.reviewButton.tintColor = UIColor(red: 0.70, green: 0.62, blue: 1.0, alpha: 1.0)
+        self.reviewButton.accessibilityIdentifier = "AyuGram.StoryOpening.Review"
+        self.reviewButton.addTarget(self, action: #selector(self.reviewPressed), for: .touchUpInside)
+        self.cancelButton.setTitle("Cancel", for: .normal)
+        self.cancelButton.titleLabel?.font = UIFont.systemFont(ofSize: 17.0, weight: .regular)
+        self.cancelButton.tintColor = .white
+        self.cancelButton.accessibilityIdentifier = "AyuGram.StoryOpening.Cancel"
+        self.cancelButton.addTarget(self, action: #selector(self.cancelPressed), for: .touchUpInside)
+        self.addSubview(self.reviewButton)
+        self.addSubview(self.cancelButton)
+    }
+
+    @objc private func reviewPressed() { self.review?() }
+    @objc private func cancelPressed() { self.cancel?() }
+
+    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+
+    func update(size: CGSize, text: String, loading: Bool, review: @escaping () -> Void, cancel: @escaping () -> Void) {
+        self.review = review
+        self.cancel = cancel
+        self.label.text = text
+        let labelSize = self.label.sizeThatFits(CGSize(width: max(0.0, size.width - 48.0), height: size.height))
+        let centerY = floor(size.height * 0.5)
+        self.label.frame = CGRect(x: floor((size.width - labelSize.width) * 0.5), y: centerY + (loading ? 20.0 : -labelSize.height * 0.5), width: labelSize.width, height: labelSize.height)
+        self.indicator.frame = CGRect(x: floor((size.width - 40.0) * 0.5), y: centerY - 40.0, width: 40.0, height: 40.0)
+        self.indicator.isHidden = !loading
+        self.reviewButton.isHidden = loading
+        self.reviewButton.frame = CGRect(x: 24.0, y: self.label.frame.maxY + 20.0, width: max(0.0, size.width - 48.0), height: 44.0)
+        self.cancelButton.frame = CGRect(x: 24.0, y: self.label.frame.maxY + (loading ? 20.0 : 64.0), width: max(0.0, size.width - 48.0), height: 44.0)
+        if loading { self.indicator.startAnimating() } else { self.indicator.stopAnimating() }
+    }
+}
+
 private final class MuteMonitor {
     private let updated: (Bool) -> Void
     
@@ -382,6 +438,12 @@ private final class StoryContainerScreenComponent: Component {
         
         private let storyItemSharedState = StoryContentItem.SharedState()
         private var visibleItemSetViews: [EnginePeer.Id: ItemSetView] = [:]
+        private var openingPendingView: StoryOpeningPendingView?
+
+        var isReadyForOpeningAnimation: Bool {
+            return self.stateValue?.slice != nil && !self.visibleItemSetViews.isEmpty
+        }
+
         // Holds the item set views. It keeps this view's coordinate space (bounds origin = frame origin) and, on
         // iPhone Duo, clips the cube to the band beside the side strip.
         private let itemSetsContainerView: UIView
@@ -1275,6 +1337,29 @@ private final class StoryContainerScreenComponent: Component {
         }
         
         func update(component: StoryContainerScreenComponent, availableSize: CGSize, state: EmptyComponentState, environment: Environment<ViewControllerComponentContainer.Environment>, transition: ComponentTransition) -> CGSize {
+            // This is the shared render entry for every viewer constructor. The
+            // guard precedes all content subscriptions, child story components
+            // and the markAsSeen closure. Cancellation cannot render/consume.
+            let openingEnvironment = environment[ViewControllerComponentContainer.Environment.self].value
+            guard let openingController = openingEnvironment.controller() as? StoryContainerScreen else { return availableSize }
+            guard openingController.authorizeInitialStoryRenderIfVisible() else {
+                let pending: StoryOpeningPendingView
+                if let current = self.openingPendingView {
+                    pending = current
+                } else {
+                    pending = StoryOpeningPendingView(frame: .zero)
+                    self.openingPendingView = pending
+                    self.addSubview(pending)
+                }
+                pending.frame = CGRect(origin: .zero, size: availableSize)
+                let status = openingController.storyOpeningStatus
+                pending.update(size: availableSize, text: status.text, loading: status.loading, review: { [weak openingController] in
+                    openingController?.reviewStoryOpeningWarning()
+                }, cancel: { [weak openingController] in openingController?.dismiss() })
+                return availableSize
+            }
+            self.openingPendingView?.removeFromSuperview()
+            self.openingPendingView = nil
             if self.didAnimateOut {
                 return availableSize
             }
@@ -1779,9 +1864,9 @@ private final class StoryContainerScreenComponent: Component {
                                     }
                                 },
                                 markAsSeen: { [weak self] id in
-                                    guard let self, let component = self.component else {
-                                        return
-                                    }
+                                    guard let self, let component = self.component,
+                                          let controller = self.environment?.controller() as? StoryContainerScreen,
+                                          controller.allowsStorySeenReceipt else { return }
                                     component.content.markAsSeen(id: id)
                                 },
                                 reorder: { [weak self] in
@@ -2094,6 +2179,9 @@ private final class StoryContainerScreenComponent: Component {
                 })
             }
             
+            if environment.isVisible, self.isReadyForOpeningAnimation {
+                (environment.controller() as? StoryContainerScreen)?.scheduleStoryOpeningAnimation()
+            }
             return availableSize
         }
     }
@@ -2187,6 +2275,42 @@ public class StoryContainerScreen: ViewControllerComponentContainer, KeyShortcut
     private let context: AccountContext
     private var didAnimateIn: Bool = false
     private var isDismissed: Bool = false
+
+    private let storyOpeningGate = LocalStoryOpeningGate()
+    private let openingPolicyDisposable = MetaDisposable()
+    private let openingPrivacyDisposable = MetaDisposable()
+    private let openingContent: StoryContentContext
+    private let openingTransitionIn: TransitionIn?
+    private let openingTransitionOut: (EnginePeer.Id, AnyHashable) -> TransitionOut?
+    private var didRestoreOpeningTransition = false
+    private var hasAppearedForStoryOpening = false
+    private var openingAlertIsPresented = false
+    private weak var openingAlert: UIAlertController?
+    private var openingAnimationIsScheduled = false
+    private var openingPrivacySaveFailed = false
+    private var didAuthorizeInitialStoryRender = false
+
+    fileprivate var allowsStorySeenReceipt: Bool {
+        return self.storyOpeningGate.allowsContent && self.didAuthorizeInitialStoryRender && !self.isDismissed
+    }
+
+    fileprivate func authorizeInitialStoryRenderIfVisible() -> Bool {
+        guard self.storyOpeningGate.allowsContent else { return false }
+        if self.didAuthorizeInitialStoryRender { return true }
+        guard self.hasAppearedForStoryOpening, self.viewIfLoaded?.window != nil, !self.isDismissed else { return false }
+        self.didAuthorizeInitialStoryRender = true
+        return true
+    }
+
+    fileprivate var storyOpeningStatus: (text: String, loading: Bool) {
+        switch self.storyOpeningGate.state {
+        case .waitingForPolicy: return ("Checking story privacy…", true)
+        case .savingPrivacy: return ("Saving story-view privacy…", true)
+        case .confirmationRequired: return ("Choose how to open this story", false)
+        case .cancelled: return ("Story opening cancelled", false)
+        case .allowed: return ("Opening story…", true)
+        }
+    }
     
     private let focusedItemPromise = Promise<EngineStoryId?>()
     public var focusedItem: Signal<EngineStoryId?, NoError> {
@@ -2203,7 +2327,10 @@ public class StoryContainerScreen: ViewControllerComponentContainer, KeyShortcut
         transitionOut: @escaping (EnginePeer.Id, AnyHashable) -> TransitionOut?
     ) {
         self.context = context
-        
+        self.openingContent = content
+        self.openingTransitionIn = transitionIn
+        self.openingTransitionOut = transitionOut
+
         super.init(context: context, component: StoryContainerScreenComponent(
             context: context,
             content: content,
@@ -2219,6 +2346,13 @@ public class StoryContainerScreen: ViewControllerComponentContainer, KeyShortcut
         self.supportedOrientations = ViewControllerSupportedOrientations(regularSize: .all, compactSize: [.portrait])
         
         self.context.sharedContext.hasPreloadBlockingContent.set(.single(true))
+        self.openingPolicyDisposable.set((context.account.localGhost.storyOpeningWarningSettings
+        |> take(1)
+        |> deliverOnMainQueue).start(next: { [weak self] policy in
+            guard let self, !self.isDismissed else { return }
+            self.storyOpeningGate.resolve(policy)
+            self.refreshStoryOpeningGate()
+        }))
     }
     
     required public init(coder aDecoder: NSCoder) {
@@ -2226,6 +2360,8 @@ public class StoryContainerScreen: ViewControllerComponentContainer, KeyShortcut
     }
     
     deinit {
+        self.openingPolicyDisposable.dispose()
+        self.openingPrivacyDisposable.dispose()
         self.context.sharedContext.hasPreloadBlockingContent.set(.single(false))
         self.focusedItemPromise.set(.single(nil))
     }
@@ -2236,15 +2372,104 @@ public class StoryContainerScreen: ViewControllerComponentContainer, KeyShortcut
     
     override public func viewDidAppear(_ animated: Bool) {
         super.viewDidAppear(animated)
-        
         self.view.disablesInteractiveModalDismiss = true
-        
-        if !self.didAnimateIn {
+        self.hasAppearedForStoryOpening = true
+        self.refreshStoryOpeningGate()
+        self.scheduleStoryOpeningAnimation()
+    }
+
+    override public func viewWillDisappear(_ animated: Bool) {
+        // Display presents UIKit alerts through the window root. Its appearance
+        // forwarding must not strand this viewer after our own alert closes.
+        if !self.openingAlertIsPresented { self.hasAppearedForStoryOpening = false }
+        super.viewWillDisappear(animated)
+    }
+
+    private func refreshStoryOpeningGate() {
+        guard !self.isDismissed else { return }
+        if self.hasAppearedForStoryOpening, self.viewIfLoaded?.window != nil {
+            self.requestLayout(forceUpdate: true, transition: ComponentTransition.immediate)
+        }
+        if self.storyOpeningGate.state == .confirmationRequired,
+           self.hasAppearedForStoryOpening, self.viewIfLoaded?.window != nil,
+           !self.openingAlertIsPresented {
+            self.presentStoryOpeningWarning()
+        }
+        if self.storyOpeningGate.allowsContent { self.scheduleStoryOpeningAnimation() }
+    }
+
+    fileprivate func reviewStoryOpeningWarning() {
+        guard self.viewIfLoaded?.window != nil, !self.isDismissed else { return }
+        self.hasAppearedForStoryOpening = true
+        if self.openingAlert?.presentingViewController == nil { self.openingAlertIsPresented = false }
+        self.refreshStoryOpeningGate()
+    }
+
+    private func presentStoryOpeningWarning() {
+        guard self.viewIfLoaded?.window?.rootViewController?.presentedViewController == nil else { return }
+        self.openingAlertIsPresented = true
+        let text = self.openingPrivacySaveFailed
+            ? "Story-view privacy could not be saved. Cancel, try again, or explicitly continue with your current settings."
+            : "Opening a story can send a view receipt. You can enable story-view privacy before continuing. Replies, reactions and other clients can still reveal activity."
+        let alert = UIAlertController(title: "Open this story?", message: text, preferredStyle: .alert)
+        alert.addAction(UIAlertAction(title: "Cancel", style: .cancel, handler: { [weak self] _ in
+            guard let self else { return }
+            self.openingAlertIsPresented = false
+            self.storyOpeningGate.cancel()
+            self.dismiss()
+        }))
+        alert.addAction(UIAlertAction(title: "Open with Current Settings", style: .default, handler: { [weak self] _ in
+            guard let self, !self.isDismissed else { return }
+            self.openingAlertIsPresented = false
+            guard self.storyOpeningGate.approve() else { return }
+            self.refreshStoryOpeningGate()
+        }))
+        alert.addAction(UIAlertAction(title: "Enable Story Privacy and Open", style: .default, handler: { [weak self] _ in
+            guard let self, !self.isDismissed else { return }
+            self.openingAlertIsPresented = false
+            guard self.storyOpeningGate.beginEnablingPrivacy() else { return }
+            self.refreshStoryOpeningGate()
+            self.openingPrivacyDisposable.set((self.context.account.localStoryPrivacy.setSuppressed(true)
+            |> deliverOnMainQueue).start(next: { [weak self] saved in
+                guard let self, !self.isDismissed, self.storyOpeningGate.finishEnablingPrivacy(saved) else { return }
+                self.openingPrivacySaveFailed = !saved
+                // Present again only after the previous UIKit alert finishes
+                // dismissing. Failed persistence never approves the viewer.
+                Queue.mainQueue().after(0.3, { [weak self] in self?.refreshStoryOpeningGate() })
+            }))
+        }))
+        self.openingAlert = alert
+        self.present(alert, animated: true)
+    }
+
+    fileprivate func scheduleStoryOpeningAnimation() {
+        guard self.hasAppearedForStoryOpening, self.viewIfLoaded?.window != nil,
+              self.storyOpeningGate.allowsContent, !self.didAnimateIn, !self.openingAnimationIsScheduled, !self.isDismissed else { return }
+        self.openingAnimationIsScheduled = true
+        Queue.mainQueue().async { [weak self] in
+            guard let self else { return }
+            self.openingAnimationIsScheduled = false
+            guard self.hasAppearedForStoryOpening, self.viewIfLoaded?.window != nil,
+                  self.storyOpeningGate.allowsContent, !self.didAnimateIn, !self.isDismissed,
+                  let componentView = self.node.hostView.componentView as? StoryContainerScreenComponent.View,
+                  componentView.isReadyForOpeningAnimation else { return }
             self.didAnimateIn = true
-            
-            if let componentView = self.node.hostView.componentView as? StoryContainerScreenComponent.View {
-                componentView.animateIn()
-            }
+            componentView.animateIn()
+        }
+    }
+
+    private func restoreCancelledStoryOpeningTransition() {
+        guard !self.didRestoreOpeningTransition else { return }
+        self.didRestoreOpeningTransition = true
+        if let slice = self.openingContent.stateValue?.slice,
+           let transition = self.openingTransitionOut(slice.peer.id, slice.item.storyItem.id) {
+            transition.completed()
+        } else if let sourceView = self.openingTransitionIn?.sourceView {
+            // The source avatar can already have been hidden by the caller,
+            // before this controller was constructed. No content is needed to
+            // restore that source when policy loading or consent is cancelled.
+            if let node = sourceView.asyncdisplaykit_node { node.isHidden = false }
+            sourceView.isHidden = false
         }
     }
 
@@ -2348,6 +2573,17 @@ public class StoryContainerScreen: ViewControllerComponentContainer, KeyShortcut
     }
     
     override public func dismiss(completion: (() -> Void)? = nil) {
+        if !self.storyOpeningGate.allowsContent || !self.didAnimateIn {
+            guard !self.isDismissed else { completion?(); return }
+            self.storyOpeningGate.cancel()
+            self.openingPolicyDisposable.dispose()
+            self.openingPrivacyDisposable.dispose()
+            self.restoreCancelledStoryOpeningTransition()
+            self.isDismissed = true
+            self.statusBar.updateStatusBarStyle(.Ignore, animated: true)
+            self.dismiss(animated: false, completion: completion)
+            return
+        }
         if !self.isDismissed {
             self.isDismissed = true
             
