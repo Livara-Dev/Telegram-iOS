@@ -105,7 +105,7 @@ public final class LocalMessageFilterContext {
 
     public func setChatExcluded(peerId: Int64, excluded: Bool) -> Signal<Bool, NoError> {
         return self.update { current in
-            guard validLocalMessageFilterPeerId(peerId) else { return nil }
+            guard telegramCorePeerIdIsSafelyDecodable(peerId) else { return nil }
             var peers = current.excludedPeerIds
             if excluded {
                 guard peers.contains(peerId) || peers.count < LocalMessageFilterLimits.maximumExcludedPeers else { return nil }

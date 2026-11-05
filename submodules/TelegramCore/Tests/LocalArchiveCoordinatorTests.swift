@@ -296,6 +296,89 @@ final class LocalArchiveCoordinatorTests: XCTestCase {
         try self.assertUnsupportedPreferencesRemainUnchanged(try XCTUnwrap(PreferencesEntry(invalid)))
     }
 
+    func testMalformedExcludedIdentitiesRemainReadOnlyAcrossReopenAndEveryMutation() throws {
+        for value in [Int64.min, -1, Int64.max, 0x0000000700000000] {
+            for sender in [false, true] {
+                // Restore test setup explicitly; production must not reset an
+                // unreadable policy to make the following mutation succeed.
+                let _ = try self.localArchiveValue(self.fixture.postbox.transaction { transaction in
+                    setLocalArchiveSettings(transaction: transaction, settings: LocalArchiveSettings(enabled: true))
+                })
+                let settings = LocalArchiveSettings(enabled: true, excludedPeerIds: sender ? [] : [value], excludedSenderIds: sender ? [value] : [])
+                XCTAssertFalse(settings.isSupported)
+                try self.assertUnsupportedPreferencesRemainUnchanged(try XCTUnwrap(PreferencesEntry(settings)))
+            }
+        }
+    }
+
+    func testMalformedNewExclusionMutationsLeaveValidAccountPolicyUnchanged() throws {
+        let instance = self.start(protectedData: .single(false))
+        let coordinator = try XCTUnwrap(instance.coordinator)
+        let before = try self.localArchiveValue(self.fixture.postbox.transaction { $0.getPreferencesEntry(key: localArchiveSettingsKey)?.data })
+        for value in [Int64.min, -1, Int64.max, 0x0000000700000000] {
+            for excluded in [true, false] {
+                XCTAssertFalse(try self.localArchiveValue(coordinator.setPeerExcluded(peerId: value, excluded: excluded)))
+                XCTAssertFalse(try self.localArchiveValue(coordinator.setSenderExcluded(senderId: value, excluded: excluded)))
+            }
+        }
+        XCTAssertEqual(try self.localArchiveValue(self.fixture.postbox.transaction { $0.getPreferencesEntry(key: localArchiveSettingsKey)?.data }), before)
+        XCTAssertNil(instance.storage.with { $0 })
+    }
+
+    func testMalformedOutboxPeerDecoderPreservesRawIdentityAndWorkerDoesNotAcknowledgeIt() throws {
+        _ = try self.queueDeletion(text: "valid control content")
+        let valid = try XCTUnwrap(self.pending().first?.operation)
+        func withPeer(_ peerId: Int64?) -> LocalArchiveCaptureOperation {
+            let encoder = PostboxEncoder()
+            encoder.encodeInt32(valid.version, forKey: "v")
+            encoder.encodeString(valid.eventKey, forKey: "k")
+            encoder.encodeInt64(valid.generation, forKey: "g")
+            if let peerId { encoder.encodeInt64(peerId, forKey: "p") }
+            encoder.encodeInt32(valid.messageId.namespace, forKey: "n")
+            encoder.encodeInt32(valid.messageId.id, forKey: "i")
+            encoder.encodeInt32(valid.kindRawValue, forKey: "t")
+            encoder.encodeString(valid.text, forKey: "x")
+            encoder.encodeData(valid.entities, forKey: "e")
+            if let author = valid.authorId { encoder.encodeInt64(author, forKey: "a") } else { encoder.encodeNil(forKey: "a") }
+            encoder.encodeInt64(valid.sentAt, forKey: "s")
+            encoder.encodeInt64(valid.observedAt, forKey: "o")
+            if let edited = valid.serverEditAt { encoder.encodeInt64(edited, forKey: "d") } else { encoder.encodeNil(forKey: "d") }
+            encoder.encodeBool(valid.botConversation, forKey: "b")
+            return LocalArchiveCaptureOperation(decoder: PostboxDecoder(buffer: MemoryBuffer(data: encoder.makeData())))
+        }
+        XCTAssertNotNil(withPeer(valid.messageId.peerId.toInt64()).makeCapture(accountId: 17), "all other fixture fields must form a valid production capture")
+        XCTAssertNil(withPeer(nil).makeCapture(accountId: 17), "a missing peer field cannot become a guessed peer-zero identity")
+        let invalid: [Int64] = [Int64.min, -1, 0, Int64.max, 0x0000000700000000]
+        let operations = invalid.map { withPeer($0) }
+        for operation in operations { XCTAssertNil(operation.makeCapture(accountId: 17)) }
+        let accountPeerId = self.accountPeerId
+        let _ = try self.localArchiveValue(self.fixture.postbox.transaction { transaction in
+            transaction.operationLogRemoveAllEntries(peerId: accountPeerId, tag: OperationLogTags.LocalArchiveCapture)
+            for operation in operations {
+                transaction.operationLogAddEntry(peerId: accountPeerId, tag: OperationLogTags.LocalArchiveCapture, tagLocalIndex: .automatic, tagMergedIndex: .automatic, contents: operation)
+            }
+        })
+        try self.fixture.reopen()
+        let first = self.start()
+        try self.awaitStatus(.invalidPendingCapture, in: first)
+        XCTAssertEqual(try self.pending().count, invalid.count)
+        let usage = try XCTUnwrap(self.localArchiveValue(try XCTUnwrap(first.coordinator).usage()))
+        XCTAssertEqual(usage.snapshots, 0)
+        try self.stop(first)
+        try self.fixture.reopen()
+        for (pending, original) in zip(try self.pending(), invalid) {
+            let operation = try XCTUnwrap(pending.operation)
+            XCTAssertNil(operation.makeCapture(accountId: 17))
+            let encoder = PostboxEncoder()
+            operation.encode(encoder)
+            let decoder = PostboxDecoder(buffer: MemoryBuffer(data: encoder.makeData()))
+            XCTAssertEqual(decoder.decodeInt64ForKey("p", orElse: 0), original)
+        }
+        let restarted = self.start()
+        try self.awaitStatus(.invalidPendingCapture, in: restarted)
+        XCTAssertEqual(try self.pending().count, invalid.count)
+    }
+
     func testAbsentPreferencesRemainEditableWithoutResettingConfiguredFields() throws {
         let _ = try self.localArchiveValue(self.fixture.postbox.transaction { transaction in
             transaction.setPreferencesEntry(key: localArchiveSettingsKey, value: nil)

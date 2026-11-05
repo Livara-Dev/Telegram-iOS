@@ -30,6 +30,9 @@ public struct LocalArchiveSettings: Codable, Equatable {
             && self.generation >= 0 && self.droppedCaptures >= 0
             && self.maxAgeSeconds > 0 && self.maxPayloadBytes > 0
             && self.maxPayloadBytes <= 1024 * 1024 * 1024
+            && self.excludedPeerIds.count <= 4096 && self.excludedSenderIds.count <= 4096
+            && self.excludedPeerIds.allSatisfy(telegramCorePeerIdIsSafelyDecodable)
+            && self.excludedSenderIds.allSatisfy(telegramCorePeerIdIsSafelyDecodable)
     }
 
     fileprivate static var unsupported: LocalArchiveSettings {
@@ -98,7 +101,8 @@ func localArchiveSettings(entry: PreferencesEntry?) -> LocalArchiveSettings {
     // Absence is editable. Existing unknown/malformed preferences are disabled
     // and read-only: silently replacing them could lose exclusions or a purge epoch.
     guard let entry else { return LocalArchiveSettings() }
-    guard let settings = entry.get(LocalArchiveSettings.self), settings.isSupported else {
+    guard entry.data.count <= 128 * 1024,
+          let settings = entry.get(LocalArchiveSettings.self), settings.isSupported else {
         return .unsupported
     }
     return settings

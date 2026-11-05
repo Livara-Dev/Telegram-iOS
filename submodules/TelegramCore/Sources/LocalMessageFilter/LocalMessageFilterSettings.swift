@@ -149,7 +149,7 @@ let localMessageFilterSettingsKey = ValueBoxKey("ayugram.message-filter.v1")
 func validLocalMessageFilterRule(_ rule: LocalMessageFilterRule) -> Bool {
     let idLength = rule.id.utf8.prefix(LocalMessageFilterLimits.maximumRuleIdUTF8Length + 1).count
     guard idLength > 0, idLength <= LocalMessageFilterLimits.maximumRuleIdUTF8Length, !rule.id.contains("\0") else { return false }
-    if let peerId = rule.peerId, !validLocalMessageFilterPeerId(peerId) { return false }
+    if let peerId = rule.peerId, !telegramCorePeerIdIsSafelyDecodable(peerId) { return false }
     if rule.mediaType != nil {
         return rule.text.isEmpty && !rule.caseSensitive && rule.matchingMode == .literal
     }
@@ -164,7 +164,7 @@ func validLocalMessageFilterRule(_ rule: LocalMessageFilterRule) -> Bool {
 func validLocalMessageFilterSettings(_ settings: LocalMessageFilterSettings) -> Bool {
     guard settings.schemaVersion == 3, settings.rules.count <= LocalMessageFilterLimits.maximumRules,
           settings.excludedPeerIds.count <= LocalMessageFilterLimits.maximumExcludedPeers,
-          settings.excludedPeerIds.allSatisfy(validLocalMessageFilterPeerId),
+          settings.excludedPeerIds.allSatisfy(telegramCorePeerIdIsSafelyDecodable),
           settings.hiddenSenderIds.count <= LocalMessageFilterLimits.maximumHiddenSenders,
           settings.hiddenSenderIds.allSatisfy(validLocalMessageFilterSenderId) else { return false }
     var seenIds = Set<String>()
@@ -174,21 +174,8 @@ func validLocalMessageFilterSettings(_ settings: LocalMessageFilterSettings) -> 
     return true
 }
 
-func validLocalMessageFilterPeerId(_ value: Int64) -> Bool {
-    // PeerId's decoder asserts on impossible high identifier bits. Reject
-    // untrusted preference values before invoking that invariant-bearing init.
-    // Preserve all safely decodable namespaces and the legacy empty sentinel;
-    // message eligibility remains a separate, stricter cloud-message boundary.
-    if value == 0x7fffffff00000000 { return true }
-    guard value >= 0, UInt64(bitPattern: value) >> 35 <= 0x00ffffff else { return false }
-    // Namespace.max/id.zero has a special sentinel representation; the normal
-    // bit layout would fail PeerId's round-trip assertion for this one value.
-    return value != 0x0000000700000000
-}
-
 func validLocalMessageFilterSenderId(_ value: Int64) -> Bool {
-    guard value > 0, validLocalMessageFilterPeerId(value) else { return false }
-    let id = PeerId(value)
+    guard value > 0, let id = telegramCoreDecodePeerId(value) else { return false }
     return (id.namespace == Namespaces.Peer.CloudUser || id.namespace == Namespaces.Peer.CloudChannel)
         && id.id._internalGetInt64Value() > 0
 }

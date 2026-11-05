@@ -466,7 +466,7 @@ public final class LocalArchiveCoordinator {
     public func setPeerExcluded(peerId: Int64, excluded: Bool) -> Signal<Bool, NoError> {
         return self.postbox.transaction { transaction in
             var settings = localArchiveSettings(transaction: transaction)
-            guard settings.isSupported, !settings.pendingPurge else { return false }
+            guard settings.isSupported, !settings.pendingPurge, telegramCorePeerIdIsSafelyDecodable(peerId) else { return false }
             if excluded {
                 guard settings.excludedPeerIds.count < 4096 || settings.excludedPeerIds.contains(peerId) else { return false }
                 settings.excludedPeerIds.insert(peerId)
@@ -481,7 +481,7 @@ public final class LocalArchiveCoordinator {
     public func setSenderExcluded(senderId: Int64, excluded: Bool) -> Signal<Bool, NoError> {
         return self.postbox.transaction { transaction in
             var settings = localArchiveSettings(transaction: transaction)
-            guard settings.isSupported, !settings.pendingPurge else { return false }
+            guard settings.isSupported, !settings.pendingPurge, telegramCorePeerIdIsSafelyDecodable(senderId) else { return false }
             if excluded {
                 guard settings.excludedSenderIds.count < 4096 || settings.excludedSenderIds.contains(senderId) else { return false }
                 settings.excludedSenderIds.insert(senderId)

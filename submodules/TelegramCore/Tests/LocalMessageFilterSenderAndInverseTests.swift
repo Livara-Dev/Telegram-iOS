@@ -184,7 +184,7 @@ final class LocalMessageFilterSenderAndInverseTests: XCTestCase {
             0x0000000700000001, 0x7fffffff00000000
         ]
         for (index, value) in values.enumerated() {
-            XCTAssertTrue(validLocalMessageFilterPeerId(value))
+            XCTAssertTrue(telegramCorePeerIdIsSafelyDecodable(value))
             // Mirrors the native settings peer-name conversion after validation.
             XCTAssertEqual(EnginePeer.Id(value).toInt64(), value)
             let rule = LocalMessageFilterRule(id: "safe-\(index)", text: "body", peerId: value)

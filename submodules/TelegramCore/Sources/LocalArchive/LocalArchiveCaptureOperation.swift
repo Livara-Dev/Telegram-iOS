@@ -7,6 +7,7 @@ import LocalMessageArchive
 /// Its identity and generation are fixed in the same transaction as the message change.
 final class LocalArchiveCaptureOperation: PostboxCoding {
     private let hasRequiredFields: Bool
+    private let encodedPeerId: Int64
     let version: Int32
     let eventKey: String
     let generation: Int64
@@ -24,6 +25,7 @@ final class LocalArchiveCaptureOperation: PostboxCoding {
          kindRawValue: Int32, text: String, entities: Data, authorId: Int64?, sentAt: Int64,
          observedAt: Int64, serverEditAt: Int64?, botConversation: Bool) {
         self.hasRequiredFields = true
+        self.encodedPeerId = messageId.peerId.toInt64()
         self.version = 1
         self.eventKey = eventKey
         self.generation = generation
@@ -39,11 +41,14 @@ final class LocalArchiveCaptureOperation: PostboxCoding {
     }
 
     init(decoder: PostboxDecoder) {
-        self.hasRequiredFields = decoder.decodeOptionalStringForKey("x") != nil && decoder.decodeOptionalBoolForKey("b") != nil
+        let rawPeerId = decoder.decodeOptionalInt64ForKey("p")
+        let peerId = rawPeerId.flatMap(telegramCoreDecodePeerId)
+        self.hasRequiredFields = decoder.decodeOptionalStringForKey("x") != nil && decoder.decodeOptionalBoolForKey("b") != nil && peerId != nil
+        self.encodedPeerId = rawPeerId ?? 0
         self.version = decoder.decodeInt32ForKey("v", orElse: -1)
         self.eventKey = decoder.decodeStringForKey("k", orElse: "")
         self.generation = decoder.decodeInt64ForKey("g", orElse: -1)
-        self.messageId = MessageId(peerId: PeerId(decoder.decodeInt64ForKey("p", orElse: 0)), namespace: decoder.decodeInt32ForKey("n", orElse: -1), id: decoder.decodeInt32ForKey("i", orElse: 0))
+        self.messageId = MessageId(peerId: peerId ?? PeerId(0), namespace: decoder.decodeInt32ForKey("n", orElse: -1), id: decoder.decodeInt32ForKey("i", orElse: 0))
         self.kindRawValue = decoder.decodeInt32ForKey("t", orElse: -1)
         self.text = decoder.decodeStringForKey("x", orElse: "")
         self.entities = decoder.decodeDataForKey("e") ?? Data()
@@ -58,7 +63,7 @@ final class LocalArchiveCaptureOperation: PostboxCoding {
         encoder.encodeInt32(self.version, forKey: "v")
         encoder.encodeString(self.eventKey, forKey: "k")
         encoder.encodeInt64(self.generation, forKey: "g")
-        encoder.encodeInt64(self.messageId.peerId.toInt64(), forKey: "p")
+        encoder.encodeInt64(self.encodedPeerId, forKey: "p")
         encoder.encodeInt32(self.messageId.namespace, forKey: "n")
         encoder.encodeInt32(self.messageId.id, forKey: "i")
         encoder.encodeInt32(self.kindRawValue, forKey: "t")
@@ -82,7 +87,7 @@ final class LocalArchiveCaptureOperation: PostboxCoding {
         guard self.hasRequiredFields, self.version == 1, self.generation >= 0, !self.eventKey.isEmpty, !self.eventKey.contains("\0"),
               self.eventKey.utf8.count <= 128, self.messageId.namespace == Namespaces.Message.Cloud,
               peerNamespace == Namespaces.Peer.CloudUser || peerNamespace == Namespaces.Peer.CloudGroup || peerNamespace == Namespaces.Peer.CloudChannel,
-              self.messageId.id > 0, self.sentAt >= 0, self.observedAt >= 0,
+              self.messageId.peerId.id._internalGetInt64Value() > 0, self.messageId.id > 0, self.sentAt >= 0, self.observedAt >= 0,
               self.serverEditAt.map({ $0 >= 0 }) ?? true,
               self.text.utf8.count <= 256 * 1024, localArchiveEntityMetadataIsValid(self.entities),
               let kind = ArchiveEventKind(rawValue: self.kindRawValue) else {

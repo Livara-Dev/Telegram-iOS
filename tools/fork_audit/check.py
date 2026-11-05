@@ -23,6 +23,8 @@ ADDED_PREFIXES = (
     "submodules/TelegramUI/Components/Chat/ChatMessageLocalFilterBubbleContentNode/",
 )
 ADDED_FILES = {
+    'submodules/TelegramCore/Sources/Utils/SafePeerId.swift',
+    'submodules/SettingsUI/Tests/LocalArchivePeerReferenceTests.swift',
     'docs/AYUGRAM_INLINE_HISTORY.md',
     'submodules/SettingsUI/Tests/LocalArchiveInlineHistoryStatusTests.swift',
     'submodules/SettingsUI/Sources/LocalFolderAppearanceController.swift',

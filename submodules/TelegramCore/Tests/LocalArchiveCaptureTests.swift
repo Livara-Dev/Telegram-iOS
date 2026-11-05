@@ -128,9 +128,13 @@ final class LocalArchiveCaptureTests: XCTestCase {
     }
 
     func testPreferencesCodecRoundTripPreservesNonemptySettingsAfterReopen() throws {
+        // Exercise actual fixed-width encoded Telegram identities. Arbitrary
+        // Int64 extrema are not decodable PeerIds and must remain read-only.
+        let excludedChannel = PeerId(namespace: Namespaces.Peer.CloudChannel, id: ._internalFromInt64Value(0x00ffffffffffffff)).toInt64()
+        let excludedGroup = PeerId(namespace: Namespaces.Peer.CloudGroup, id: ._internalFromInt64Value(4_294_967_300)).toInt64()
         var configured = LocalArchiveSettings(
             enabled: true, excludeBots: false,
-            excludedPeerIds: [Int64.max - 1, -4_294_967_300],
+            excludedPeerIds: [excludedChannel, excludedGroup],
             excludedSenderIds: [4_294_967_301, 7],
             maxAgeSeconds: 4_294_967_302, maxPayloadBytes: 512 * 1024 * 1024
         )

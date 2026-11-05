@@ -353,12 +353,15 @@ private func localArchiveExclusionsController(context: AccountContext, archive: 
         let ids = (senders ? settings.excludedSenderIds : settings.excludedPeerIds).sorted()
         let page = min(requested, max(0, (ids.count - 1) / pageSize))
         let visible = Array(ids.dropFirst(page * pageSize).prefix(pageSize))
-        guard !visible.isEmpty else { return .single((settings, page, [], [:])) }
-        return combineLatest(visible.map { id in
-            context.engine.data.get(TelegramEngine.EngineData.Item.Peer.Peer(id: EnginePeer.Id(id)))
+        let lookups = visible.compactMap { id -> (Int64, EnginePeer.Id)? in
+            return localArchiveDisplayPeerId(id).map { (id, $0) }
+        }
+        guard !lookups.isEmpty else { return .single((settings, page, visible, [:])) }
+        return combineLatest(lookups.map { _, id in
+            context.engine.data.get(TelegramEngine.EngineData.Item.Peer.Peer(id: id))
         }) |> map { peers in
             var names: [Int64: String] = [:]
-            for (id, peer) in zip(visible, peers) {
+            for ((id, _), peer) in zip(lookups, peers) {
                 if let peer { names[id] = peer.compactDisplayTitle }
             }
             return (settings, page, visible, names)
@@ -427,13 +430,19 @@ public func localArchiveMessageHistoryController(context: AccountContext, messag
     return localArchiveMessagesController(context: context, archive: archive, peerId: messageId.peerId.toInt64(), message: LocalArchiveMessageReference(messageId))
 }
 
-private struct LocalArchiveMessageReference {
+struct LocalArchiveMessageReference {
     let peerId: Int64
     let namespace: Int32
     let messageId: Int32
 
-    var engineMessageId: EngineMessage.Id {
-        return EngineMessage.Id(peerId: EnginePeer.Id(self.peerId), namespace: self.namespace, id: self.messageId)
+    var engineMessageId: EngineMessage.Id? {
+        return localArchiveDisplayMessageId(peerId: self.peerId, namespace: self.namespace, messageId: self.messageId)
+    }
+
+    init(peerId: Int64, namespace: Int32, messageId: Int32) {
+        self.peerId = peerId
+        self.namespace = namespace
+        self.messageId = messageId
     }
 
     init(_ id: EngineMessage.Id) {
@@ -497,11 +506,11 @@ private final class LocalArchiveBrowserModel {
         self.peerId = peerId
         self.message = message
         self.initialQuery = localArchiveBoundedSearchQuery(initialQuery)
-        if let message {
+        if let messageId = message?.engineMessageId {
             self.currentVersionLoader = LocalArchiveCurrentVersionLoader(source: {
                 // This engine data item observes only Postbox's local message
                 // view. It sends no fetch/read RPC and never writes the archive.
-                context.engine.data.subscribe(TelegramEngine.EngineData.Item.Messages.Message(id: message.engineMessageId))
+                context.engine.data.subscribe(TelegramEngine.EngineData.Item.Messages.Message(id: messageId))
             }, changed: { [weak self] value in
                 guard let self, !self.disposed else { return }
                 self.state.currentVersion = value
@@ -643,14 +652,16 @@ private final class LocalArchiveBrowserModel {
             let records = Array(page.records.sorted(by: { $0.sequence > $1.sequence }).prefix(20))
             self.state.records = self.message == nil ? records : Array(records.reversed())
             self.statePromise.set(.single(self.state))
-            let peerIds = Array(Set(records.map { $0.peerId }))
+            let peerIds = Array(Set(records.map { $0.peerId })).compactMap { id -> (Int64, EnginePeer.Id)? in
+                return localArchiveDisplayPeerId(id).map { (id, $0) }
+            }
             if !peerIds.isEmpty {
-                let queries = peerIds.map { self.context.engine.data.get(TelegramEngine.EngineData.Item.Peer.Peer(id: EnginePeer.Id($0))) }
+                let queries = peerIds.map { _, id in self.context.engine.data.get(TelegramEngine.EngineData.Item.Peer.Peer(id: id)) }
                 self.peersDisposable.set((combineLatest(queries) |> deliverOnMainQueue).start(next: { [weak self] peers in
                     guard let self, self.readable, self.requestId == requestId else {
                         return
                     }
-                    for (id, peer) in zip(peerIds, peers) {
+                    for ((id, _), peer) in zip(peerIds, peers) {
                         if let peer {
                             self.state.peerNames[id] = peer.compactDisplayTitle
                         }
