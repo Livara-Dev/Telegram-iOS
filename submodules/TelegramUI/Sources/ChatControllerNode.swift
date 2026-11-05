@@ -75,6 +75,7 @@ import RichTextEditorCore
 import RichTextEditorUIKit
 import RichTextEditorMediaView
 import InstantPageUI
+import SettingsUI
 import ChatRichTextEditorComposer
 
 final class VideoNavigationControllerDropContentItem: NavigationControllerDropContentItem {
@@ -3874,6 +3875,12 @@ class ChatControllerNode: ASDisplayNode, ASScrollViewDelegate {
                         activate = true
                     }
                     self.searchNavigationNode = ChatSearchNavigationContentNode(context: self.context, theme: self.chatPresentationInterfaceState.theme, strings: self.chatPresentationInterfaceState.strings, chatLocation: self.chatPresentationInterfaceState.chatLocation, interaction: interfaceInteraction, presentationInterfaceState: self.chatPresentationInterfaceState)
+                    if self.context.account.localArchive != nil, let peerId = self.chatPresentationInterfaceState.chatLocation.peerId, localArchiveSupportsPeer(peerId) {
+                        self.searchNavigationNode?.searchLocalArchive = { [weak self] query in
+                            guard let self, let controller = self.controller else { return }
+                            controller.push(localArchiveChatSearchController(context: self.context, peerId: peerId, query: query))
+                        }
+                    }
                 }
                 if let navigationBar = self.navigationBar {
                     navigationBar.setContentNode(self.searchNavigationNode, animated: transitionIsAnimated)

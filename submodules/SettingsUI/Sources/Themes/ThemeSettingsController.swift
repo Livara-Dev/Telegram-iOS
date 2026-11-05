@@ -408,6 +408,7 @@ private func themeSettingsControllerEntries(
     availableAppIcons: [PresentationAppIcon],
     currentAppIconName: String?,
     isPremium: Bool,
+    localPremiumIconsAllowed: Bool,
     chatThemes: [PresentationThemeReference],
     animatedEmojiStickers: [String: [StickerPackItem]],
     accountPeer: EnginePeer?,
@@ -484,7 +485,8 @@ private func themeSettingsControllerEntries(
     
     if !availableAppIcons.isEmpty {
         entries.append(.iconHeader(presentationData.theme, strings.Appearance_AppIcon.uppercased()))
-        entries.append(.iconItem(presentationData.theme, presentationData.strings, availableAppIcons, isPremium, currentAppIconName))
+        let premiumIconsAllowed = isPremium || localPremiumIconsAllowed
+        entries.append(.iconItem(presentationData.theme, presentationData.strings, availableAppIcons, premiumIconsAllowed, currentAppIconName))
     }
     
     entries.append(.otherHeader(presentationData.theme, strings.Appearance_Other.uppercased()))
@@ -523,7 +525,7 @@ public func themeSettingsController(context: AccountContext, focusOnItemTag: The
     let _ = context.engine.themes.wallpapers().start()
     
     let currentAppIcon: PresentationAppIcon?
-    var appIcons = context.sharedContext.applicationBindings.getAvailableAlternateIcons()
+    let appIcons = context.sharedContext.applicationBindings.getAvailableAlternateIcons()
     if let alternateIconName = context.sharedContext.applicationBindings.getAlternateIconName() {
         currentAppIcon = appIcons.filter { $0.name == alternateIconName }.first
     } else {
@@ -531,11 +533,19 @@ public func themeSettingsController(context: AccountContext, focusOnItemTag: The
     }
     
     let premiumConfiguration = PremiumConfiguration.with(appConfiguration: context.currentAppConfiguration.with { $0 })
-    if premiumConfiguration.isPremiumDisabled || context.account.testingEnvironment {
-        appIcons = appIcons.filter { !$0.isPremium } 
+    let localPremiumIconsAllowed = context.account.localClientCosmetics.settings
+    |> map { state -> Bool in
+        if case let .available(settings) = state { return settings.allowBundledPremiumIcons }
+        return false
     }
-    
-    let availableAppIcons: Signal<[PresentationAppIcon], NoError> = .single(appIcons)
+    |> distinctUntilChanged
+    let availableAppIcons: Signal<[PresentationAppIcon], NoError> = localPremiumIconsAllowed
+    |> map { locallyAllowed in
+        if (premiumConfiguration.isPremiumDisabled || context.account.testingEnvironment) && !locallyAllowed {
+            return appIcons.filter { !$0.isPremium }
+        }
+        return appIcons
+    }
     let currentAppIconName = ValuePromise<String?>()
     currentAppIconName.set(currentAppIcon?.name ?? "Blue")
     
@@ -620,10 +630,14 @@ public func themeSettingsController(context: AccountContext, focusOnItemTag: The
             return current.withUpdatedShowNextMediaOnTap(value)
         }).start()
     }, selectAppIcon: { icon in
-        let _ = (context.engine.data.get(TelegramEngine.EngineData.Item.Peer.Peer(id: context.account.peerId))
-        |> deliverOnMainQueue).start(next: { peer in
+        let _ = (combineLatest(context.engine.data.get(TelegramEngine.EngineData.Item.Peer.Peer(id: context.account.peerId)),
+            context.account.localClientCosmetics.settings |> take(1))
+        |> deliverOnMainQueue).start(next: { peer, localSettings in
             let isPremium = peer?.isPremium ?? false
-            if icon.isPremium && !isPremium {
+            // Validate the current bundle inventory and use its own metadata;
+            // the callback cannot authorize a fabricated name or Premium flag.
+            guard let bundledIcon = context.sharedContext.applicationBindings.getAvailableAlternateIcons().first(where: { $0.name == icon.name }) else { return }
+            if !localClientAllowsBundledAppIcon(isBundled: true, isPremiumIcon: bundledIcon.isPremium, accountIsPremium: isPremium, settings: localSettings) {
                 var replaceImpl: ((ViewController) -> Void)?
                 let controller = PremiumDemoScreen(context: context, subject: .appIcons, source: .other, action: {
                     let controller = PremiumIntroScreen(context: context, source: .appIcons)
@@ -634,8 +648,15 @@ public func themeSettingsController(context: AccountContext, focusOnItemTag: The
                 }
                 pushControllerImpl?(controller)
             } else {
-                currentAppIconName.set(icon.name)
-                context.sharedContext.applicationBindings.requestSetAlternateIconName(icon.isDefault ? nil : icon.name, { _ in
+                context.sharedContext.applicationBindings.requestSetAlternateIconName(bundledIcon.isDefault ? nil : bundledIcon.name, { succeeded in
+                    Queue.mainQueue().async {
+                        if succeeded {
+                            currentAppIconName.set(bundledIcon.name)
+                        } else {
+                            let presentation = context.sharedContext.currentPresentationData.with { $0 }
+                            presentControllerImpl?(textAlertController(context: context, title: "App icon not changed", text: "iOS did not accept the bundled icon. The currently selected device-wide icon was kept.", actions: [TextAlertAction(type: .defaultAction, title: presentation.strings.Common_OK, action: {})]), nil)
+                        }
+                    }
                 })
             }
         })
@@ -1106,9 +1127,10 @@ public func themeSettingsController(context: AccountContext, focusOnItemTag: The
         removedThemeIndexesPromise.get(),
         animatedEmojiStickers,
         context.account.postbox.peerView(id: context.account.peerId),
-        context.engine.data.subscribe(TelegramEngine.EngineData.Item.Peer.Peer(id: context.account.peerId))
+        context.engine.data.subscribe(TelegramEngine.EngineData.Item.Peer.Peer(id: context.account.peerId)),
+        localPremiumIconsAllowed
     )
-    |> map { presentationData, sharedData, cloudThemes, availableAppIcons, currentAppIconName, removedThemeIndexes, animatedEmojiStickers, peerView, accountPeer -> (ItemListControllerState, (ItemListNodeState, Any)) in
+    |> map { presentationData, sharedData, cloudThemes, availableAppIcons, currentAppIconName, removedThemeIndexes, animatedEmojiStickers, peerView, accountPeer, localPremiumIconsAllowed -> (ItemListControllerState, (ItemListNodeState, Any)) in
         let settings = sharedData.entries[ApplicationSpecificSharedDataKeys.presentationThemeSettings]?.get(PresentationThemeSettings.self) ?? PresentationThemeSettings.defaultSettings
         let chatSettings = sharedData.entries[ApplicationSpecificSharedDataKeys.chatSettings]?.get(ChatSettings.self) ?? ChatSettings.defaultSettings
         let mediaSettings = sharedData.entries[ApplicationSpecificSharedDataKeys.mediaDisplaySettings]?.get(MediaDisplaySettings.self) ?? MediaDisplaySettings.defaultSettings
@@ -1150,7 +1172,7 @@ public func themeSettingsController(context: AccountContext, focusOnItemTag: The
         chatThemes.insert(.builtin(.dayClassic), at: 0)
         
         let controllerState = ItemListControllerState(presentationData: ItemListPresentationData(presentationData), title: .text(presentationData.strings.Appearance_Title), leftNavigationButton: nil, rightNavigationButton: nil, backNavigationButton: ItemListBackButton(title: presentationData.strings.Common_Back))
-        let listState = ItemListNodeState(presentationData: ItemListPresentationData(presentationData), entries: themeSettingsControllerEntries(presentationData: presentationData, presentationThemeSettings: settings, chatSettings: chatSettings, mediaSettings: mediaSettings, themeReference: themeReference, availableThemes: availableThemes, availableAppIcons: availableAppIcons, currentAppIconName: currentAppIconName, isPremium: isPremium, chatThemes: chatThemes, animatedEmojiStickers: animatedEmojiStickers, accountPeer: accountPeer, nameColors: context.peerNameColors), style: .blocks, ensureVisibleItemTag: focusOnItemTag, animateChanges: false)
+        let listState = ItemListNodeState(presentationData: ItemListPresentationData(presentationData), entries: themeSettingsControllerEntries(presentationData: presentationData, presentationThemeSettings: settings, chatSettings: chatSettings, mediaSettings: mediaSettings, themeReference: themeReference, availableThemes: availableThemes, availableAppIcons: availableAppIcons, currentAppIconName: currentAppIconName, isPremium: isPremium, localPremiumIconsAllowed: localPremiumIconsAllowed, chatThemes: chatThemes, animatedEmojiStickers: animatedEmojiStickers, accountPeer: accountPeer, nameColors: context.peerNameColors), style: .blocks, ensureVisibleItemTag: focusOnItemTag, animateChanges: false)
         
         return (controllerState, (listState, arguments))
     }

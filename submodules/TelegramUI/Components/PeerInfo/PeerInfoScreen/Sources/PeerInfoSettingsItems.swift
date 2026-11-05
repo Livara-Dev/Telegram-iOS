@@ -13,9 +13,11 @@ import DeviceAccess
 import TelegramStringFormatting
 import PeerNameColorItem
 import WalletContext
+import SettingsUI
 
 enum SettingsSection: Int, CaseIterable {
     case edit
+    case customeOptions
     case phone
     case accounts
     case myProfile
@@ -38,6 +40,14 @@ func settingsItems(data: PeerInfoScreenData?, context: AccountContext, presentat
     for section in SettingsSection.allCases {
         items[section] = []
     }
+
+    // A separate leading section makes the fork's functional dashboard visible
+    // without digging through Telegram's Data and Storage settings.
+    items[.customeOptions]!.append(PeerInfoScreenDisclosureItem(id: 0,
+        label: .text("AyuGram"), text: CustomeOptionsCatalog.title,
+        icon: UIImage(systemName: "sparkles")?.withTintColor(UIColor(red: 0.39, green: 0.31, blue: 0.91, alpha: 1.0), renderingMode: .alwaysOriginal), action: {
+            interaction.openSettings(.customeOptions)
+        }))
     
     let setPhotoTitle: String
     if let peer = data.peer, !peer.profileImageRepresentations.isEmpty {

@@ -3186,6 +3186,35 @@ private func privacySearchableItems(context: AccountContext, privacySettings: Ac
     return items
 }
 
+private func customeOptionsSearchableItems() -> [SettingsSearchableItem] {
+    var items = [SettingsSearchableItem(id: "ayugram/custom-options", title: CustomeOptionsCatalog.title,
+        alternate: ["AyuGram", "custom options", "customization", "local settings"], icon: .appearance,
+        breadcrumbs: [], present: { context, _, present in
+            present(.push, customeOptionsController(context: context))
+        })]
+    for category in CustomeOptionsCategory.allCases {
+        items.append(SettingsSearchableItem(id: "ayugram/custom-options/" + category.rawValue,
+            title: category.title, alternate: category.keywords.split(separator: " ").map(String.init),
+            icon: .appearance, breadcrumbs: [CustomeOptionsCatalog.title], present: { context, _, present in
+                present(.push, customeOptionsController(context: context, category: category))
+            }))
+    }
+    for (id, title, aliases) in [
+        ("accent", "Custome options accent", ["Ayu", "violet", "ocean", "forest", "sunset", "rose", "local colors"]),
+        ("motion", "Reduce dashboard motion", ["reduced motion", "animations", "local cosmetics"]),
+        ("icons", "Bundled Premium icons", ["local Premium", "app icons", "client cosmetics"])
+    ] {
+        items.append(SettingsSearchableItem(id: "ayugram/local-cosmetics/" + id, title: title,
+            alternate: aliases, icon: .appearance, breadcrumbs: [CustomeOptionsCatalog.title, "Local Premium"],
+            present: { context, _, present in present(.push, localClientCosmeticsController(context: context)) }))
+    }
+    items.append(SettingsSearchableItem(id: "ayugram/archive-transfer", title: "Encrypted archive import & export",
+        alternate: ["backup", "password", "restore", "archive file"], icon: .data,
+        breadcrumbs: [CustomeOptionsCatalog.title, "Storage & Backup"],
+        present: { context, _, present in present(.push, localArchiveTransferController(context: context)) }))
+    return items
+}
+
 private func dataSearchableItems(context: AccountContext) -> [SettingsSearchableItem] {
     let icon: SettingsSearchableItemIcon = .data
     let strings = context.sharedContext.currentPresentationData.with { $0 }.strings
@@ -4421,6 +4450,8 @@ func settingsSearchableItems(
         let privacyItems = privacySearchableItems(context: context, privacySettings: privacySettings, activeSessionsContext: activeSessionsContext, webSessionsContext: activeWebSessionsContext)
         allItems.append(contentsOf: privacyItems)
         
+        allItems.append(contentsOf: customeOptionsSearchableItems())
+
         let dataItems = dataSearchableItems(context: context)
         allItems.append(contentsOf: dataItems)
         

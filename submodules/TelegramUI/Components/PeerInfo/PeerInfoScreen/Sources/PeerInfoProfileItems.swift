@@ -16,6 +16,7 @@ import WebUI
 import AvatarNode
 import PeerNameColorItem
 import BoostLevelIconComponent
+import SettingsUI
 
 private let enabledPublicBioEntities: EnabledEntityTypes = [.allUrl, .mention, .hashtag]
 private let enabledPrivateBioEntities: EnabledEntityTypes = [.internalUrl, .mention, .hashtag]
@@ -49,6 +50,7 @@ enum InfoSection: Int, CaseIterable {
     case permissions
     case peerInfoTrailing
     case peerSettings
+    case localArchive
     case peerMembers
     case channelMonoforum
     case botAffiliateProgram
@@ -900,6 +902,19 @@ func infoItems(
         }
     }
     
+    // These routes address the actual conversation, not a Secret Chat's
+    // displayed user. Archived records remain separate from Telegram media.
+    if context.account.localArchive != nil, let peerId = chatLocation.peerId, localArchiveSupportsPeer(peerId) {
+        items[.localArchive]!.append(PeerInfoScreenDisclosureItem(id: 9000, label: .text("Local archive"), text: "Deleted Messages / History", icon: PresentationResourcesSettings.chatHistory, action: {
+            guard let controller = interaction.getController(), let navigationController = controller.navigationController as? NavigationController else { return }
+            navigationController.pushViewController(localArchiveChatController(context: context, peerId: peerId))
+        }))
+        items[.localArchive]!.append(PeerInfoScreenDisclosureItem(id: 9001, label: .text("Local archive"), text: "Saved Media", icon: PresentationResourcesSettings.chatHistory, action: {
+            guard let controller = interaction.getController(), let navigationController = controller.navigationController as? NavigationController else { return }
+            navigationController.pushViewController(localArchiveMediaGalleryController(context: context, peerId: peerId.toInt64()))
+        }))
+    }
+
     var result: [(AnyHashable, [PeerInfoScreenItem])] = []
     for section in InfoSection.allCases {
         if let sectionItems = items[section], !sectionItems.isEmpty {

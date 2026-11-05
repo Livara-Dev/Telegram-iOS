@@ -6415,26 +6415,16 @@ public final class ChatControllerImpl: TelegramBaseController, ChatController, G
                 // Observe this account's persisted policy; never infer it from a
                 // global toggle or from another chat/account's presentation state.
                 let localFilterReveal = strongSelf.controllerInteraction?.localTextFilterRevealed.get() ?? .single(false)
-                let itemsWithGhost = combineLatest(items, context.account.localGhost.settings, localFilterReveal)
+                let itemsWithGhost = combineLatest(items, context.account.localGhost.settings, context.account.localStoryPrivacy.settings, localFilterReveal)
+                |> take(1)
                 |> deliverOnMainQueue
-                |> map { [weak self] items, ghostState, filterRevealed -> [ContextMenuItem] in
+                |> map { [weak self] items, ghostState, storyState, filterRevealed -> [ContextMenuItem] in
                     var items = items
                     items.append(.separator)
-                    var detail = "Activity indicators only"
+                    let detail = localGhostMenuSummary(ghostState, storyState: storyState)
                     switch ghostState {
                     case let .available(settings):
-                        var active: [String] = []
-                        if settings.enabled {
-                            if settings.suppressTyping { active.append("typing") }
-                            if settings.suppressStickerSelection { active.append("stickers") }
-                            if settings.suppressRecording { active.append("recording") }
-                            if settings.suppressUploads { active.append("uploads") }
-                            if settings.suppressGamePlay { active.append("games") }
-                            detail = active.isEmpty ? "On · no indicators selected" : "Suppression: " + active.joined(separator: ", ")
-                        } else {
-                            detail = "Off · activity indicators only"
-                        }
-                        items.append(.action(ContextMenuActionItem(text: settings.enabled ? "Turn Off Ghost Activity" : "Turn On Ghost Activity", textLayout: .secondLineWithValue("All chats in this account"), icon: { _ in nil }, action: { [weak self] _, complete in
+                        items.append(.action(ContextMenuActionItem(text: settings.enabled ? "Pause Ghost Mode" : "Enable Ghost Mode", textLayout: .secondLineWithValue("All chats in this account"), icon: { _ in nil }, action: { [weak self] _, complete in
                             complete(.dismissWithoutContent)
                             let _ = (context.account.localGhost.setEnabled(!settings.enabled)
                             |> deliverOnMainQueue).startStandalone(next: { [weak self] success in
@@ -6443,15 +6433,15 @@ public final class ChatControllerImpl: TelegramBaseController, ChatController, G
                                 if !success {
                                     text = "The privacy setting could not be saved. Existing settings have been kept."
                                 } else if settings.enabled {
-                                    text = "Ghost activity disabled for this account."
+                                    text = "Ghost Mode paused for this account. Story receipt settings remain independent."
                                 } else {
-                                    text = "Ghost activity enabled for this account. Read receipts, story views and online status are unchanged."
+                                    text = "Ghost Mode enabled for this account. Selected protections apply; perfect invisibility is not guaranteed. Story receipt settings remain independent."
                                 }
                                 self.present(UndoOverlayController(presentationData: self.presentationData, content: .info(title: nil, text: text, timeout: nil, customUndoText: nil), action: { _ in false }), in: .current)
                             })
                         })))
                     case .unsupported:
-                        detail = "Settings unavailable · activity restricted"
+                        break
                     }
                     items.append(.action(ContextMenuActionItem(text: "Ghost Mode Settings", textLayout: .secondLineWithValue(detail), icon: { _ in nil }, action: { [weak self] _, complete in
                         complete(.dismissWithoutContent)

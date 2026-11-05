@@ -28,6 +28,17 @@ public final class ChatSearchNavigationContentNode: NavigationBarContentNode {
     private var activityIndicator: ActivityIndicator?
     private let searchBar: SearchBarNode
     private let close: (background: GlassBackgroundView, icon: UIImageView)
+    private let archive: (background: GlassBackgroundView, button: UIButton)
+
+    /// Optional local destination. The owner decides availability and validates
+    /// the query; this component neither reads archive data nor changes search.
+    public var searchLocalArchive: ((String) -> Void)? {
+        didSet {
+            if let params = self.params {
+                let _ = self.updateLayout(size: params.size, leftInset: params.leftInset, rightInset: params.rightInset, transition: .immediate)
+            }
+        }
+    }
     
     private let interaction: ChatPanelInterfaceInteraction
     
@@ -52,6 +63,12 @@ public final class ChatSearchNavigationContentNode: NavigationBarContentNode {
         
         self.close = (GlassBackgroundView(), UIImageView())
         self.close.background.contentView.addSubview(self.close.icon)
+        self.archive = (GlassBackgroundView(), UIButton(type: .system))
+        self.archive.background.contentView.addSubview(self.archive.button)
+        self.archive.button.setImage(UIImage(systemName: "archivebox"), for: .normal)
+        self.archive.button.accessibilityLabel = "Search Local Archive"
+        self.archive.button.accessibilityHint = "Search saved deleted messages and earlier versions in this conversation."
+        self.archive.button.accessibilityIdentifier = "Chat.SearchLocalArchive"
         
         self.searchBar = SearchBarNode(
             theme: SearchBarNodeTheme(
@@ -93,6 +110,8 @@ public final class ChatSearchNavigationContentNode: NavigationBarContentNode {
         self.view.addSubview(self.backgroundContainer)
         self.backgroundView.contentView.addSubview(self.searchBar.view)
         
+        self.backgroundContainer.contentView.addSubview(self.archive.background)
+        self.archive.button.addTarget(self, action: #selector(self.onArchivePressed), for: .touchUpInside)
         self.backgroundContainer.contentView.addSubview(self.close.background)
         self.close.background.contentView.addGestureRecognizer(UITapGestureRecognizer(target: self, action: #selector(self.onCloseTapGesture(_:))))
         
@@ -149,12 +168,21 @@ public final class ChatSearchNavigationContentNode: NavigationBarContentNode {
         }
     }
     
+    @objc private func onArchivePressed() {
+        self.searchBar.deactivate(clear: false)
+        self.searchLocalArchive?(self.searchBar.text)
+    }
+
     override public func updateLayout(size: CGSize, leftInset: CGFloat, rightInset: CGFloat, transition: ContainedViewLayoutTransition) -> CGSize {
         self.params = (size, leftInset, rightInset)
         
         let transition = ComponentTransition(transition)
         
-        let backgroundFrame = CGRect(origin: CGPoint(x: leftInset + 16.0, y: 6.0), size: CGSize(width: size.width - 16.0 * 2.0 - leftInset - rightInset - 44.0 - 8.0, height: 44.0))
+        // Keep both controls at 44 points and reserve their width on every
+        // layout pass, including rotation and side-column inset changes.
+        let hasArchive = self.searchLocalArchive != nil
+        let archiveWidth: CGFloat = hasArchive ? 52.0 : 0.0
+        let backgroundFrame = CGRect(origin: CGPoint(x: leftInset + 16.0, y: 6.0), size: CGSize(width: max(0.0, size.width - 16.0 * 2.0 - leftInset - rightInset - 44.0 - 8.0 - archiveWidth), height: 44.0))
         let closeFrame = CGRect(origin: CGPoint(x: size.width - 16.0 - rightInset - 44.0, y: backgroundFrame.minY), size: CGSize(width: 44.0, height: 44.0))
         
         transition.setFrame(view: self.backgroundContainer, frame: CGRect(origin: CGPoint(), size: size))
@@ -197,7 +225,7 @@ public final class ChatSearchNavigationContentNode: NavigationBarContentNode {
         }
         self.iconView.isHidden = self.hasActivity
         
-        let searchBarFrame = CGRect(origin: CGPoint(x: 36.0, y: 0.0), size: CGSize(width: backgroundFrame.width - 36.0 - 4.0, height: 44.0))
+        let searchBarFrame = CGRect(origin: CGPoint(x: 36.0, y: 0.0), size: CGSize(width: max(0.0, backgroundFrame.width - 36.0 - 4.0), height: 44.0))
         transition.setFrame(view: self.searchBar.view, frame: searchBarFrame)
         self.searchBar.updateLayout(boundingSize: searchBarFrame.size, leftInset: 0.0, rightInset: 0.0, transition: transition.containedViewLayoutTransition)
         
@@ -226,6 +254,16 @@ public final class ChatSearchNavigationContentNode: NavigationBarContentNode {
         transition.setFrame(view: self.close.background, frame: closeFrame)
         self.close.background.update(size: closeFrame.size, cornerRadius: closeFrame.height * 0.5, isDark: self.theme.overallDarkAppearance, tintColor: .init(kind: self.preferClearGlass ? .clear : .panel), isInteractive: true, transition: transition)
         
+        self.archive.background.isHidden = !hasArchive
+        self.archive.button.isEnabled = hasArchive
+        if hasArchive {
+            let archiveFrame = CGRect(x: closeFrame.minX - 52.0, y: closeFrame.minY, width: 44.0, height: 44.0)
+            transition.setFrame(view: self.archive.background, frame: archiveFrame)
+            transition.setFrame(view: self.archive.button, frame: CGRect(origin: .zero, size: archiveFrame.size))
+            self.archive.button.tintColor = self.theme.chat.inputPanel.panelControlColor
+            self.archive.background.update(size: archiveFrame.size, cornerRadius: archiveFrame.height * 0.5, isDark: self.theme.overallDarkAppearance, tintColor: .init(kind: self.preferClearGlass ? .clear : .panel), isInteractive: true, transition: transition)
+        }
+
         return size
     }
     
