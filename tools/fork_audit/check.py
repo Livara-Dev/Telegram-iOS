@@ -13,6 +13,8 @@ BASELINE = "279f89e4d4f63f17227bf877dc3d8990f22ecd58"
 REFERENCE = "7013145676d36d82ee13c02a89f72097b7490dcd"
 MANIFESTS = ("versions.json", ".gitmodules", "MODULE.bazel", "MODULE.bazel.lock", ".bazelrc")
 ADDED_PREFIXES = (
+    "Tests/CustomeOptionsHost/", "Telegram/Telegram-iOS/AyuGram.icon/",
+    "submodules/TelegramCore/Sources/LocalAppearance/", "submodules/TelegramCore/Tests/LocalClientCosmetics",
     "docs/fork/", "tools/fork_audit/", "tools/fork_baseline/", "submodules/LocalMessageArchive/",
     "submodules/TelegramCore/Sources/LocalArchive/", "submodules/TelegramCore/Tests/LocalArchive",
     "submodules/TelegramCore/Sources/LocalPrivacy/", "submodules/TelegramCore/Tests/LocalGhost", "submodules/TelegramCore/Tests/LocalTelemetry",
@@ -21,6 +23,22 @@ ADDED_PREFIXES = (
     "submodules/TelegramUI/Components/Chat/ChatMessageLocalFilterBubbleContentNode/",
 )
 ADDED_FILES = {
+    'submodules/SettingsUI/Sources/LocalArchiveTransferController.swift',
+    'submodules/SettingsUI/Sources/LocalClientCosmeticsController.swift',
+    'submodules/SettingsUI/Sources/LocalClientNavigation.swift',
+    'submodules/SettingsUI/Sources/LocalArchivePresentation.swift',
+    'submodules/SettingsUI/Sources/LocalArchivePresentationController.swift',
+    'submodules/SettingsUI/Tests/LocalClientNavigationTests.swift',
+    'submodules/SettingsUI/Tests/LocalArchivePresentationTests.swift',
+    'submodules/TelegramCore/Tests/LocalStoryOpeningWarningTests.swift',
+
+    "submodules/SettingsUI/Sources/CustomeOptionsAccountController.swift",
+    "submodules/SettingsUI/Sources/CustomeOptionsCatalog.swift",
+    "submodules/SettingsUI/Sources/CustomeOptionsController.swift",
+    "submodules/SettingsUI/Sources/LocalPrivacyAdsSettingsController.swift",
+    "submodules/SettingsUI/Sources/LocalTimedMediaInformationController.swift",
+    "submodules/SettingsUI/Tests/CustomeOptionsCatalogTests.swift",
+    "submodules/TelegramCore/Tests/LocalPrivacyAdsTests.swift",
     "Tests/NativeSecurityHost/BUILD",
     "Tests/NativeSecurityHost/NativeSecurityTestHost.swift",
     "docs/SIDESTORE_INSTALL.md",
@@ -44,6 +62,31 @@ ADDED_FILES = {
 # gitlinks, stays pinned. An allowlist is a scope tripwire, not a semantic audit of
 # every change within these files; reviewers must inspect their Git diffs.
 REVIEWED_MODIFICATIONS = {
+    'submodules/SettingsUI/Sources/Themes/ThemeSettingsController.swift': 'explicit per-account bundled-icon UI permission, real Premium unchanged, validated OS icon completion',
+    'submodules/TelegramUI/Components/Chat/ChatSearchNavigationContentNode/Sources/ChatSearchNavigationContentNode.swift': 'accessible local-archive search action with reserved native search-field geometry',
+    'submodules/TelegramUI/Components/PeerInfo/PeerInfoScreen/Sources/PeerInfoProfileItems.swift': 'chat-scoped separate local saved-media and deleted-history destinations',
+    'submodules/TelegramUI/Sources/ChatControllerNode.swift': 'hand the current native search query to local encrypted archive search',
+    'submodules/TelegramUI/Components/Stories/StoryContainerScreen/Sources/StoryContainerScreen.swift': 'central account-policy confirmation before viewer subscriptions or story-view receipts',
+    'submodules/TelegramCore/Sources/State/PendingMessageManager.swift': 'observe actual mapped send acknowledgement for a separately bounded explicit read task',
+    'submodules/TelegramCore/Sources/PendingMessages/EnqueueMessage.swift': 'capture bounded account/peer/max-cloud-id intent before eligible local enqueue',
+
+    'submodules/RMIntro/Sources/platform/ios/RMIntroViewController.m': 'fork-specific displayed title and Telegram API attribution without changing authorization callbacks',
+    'Telegram/Telegram-iOS/ar.lproj/InfoPlist.strings': 'preserve AyuGram display identity under Arabic localization',
+    'Telegram/Telegram-iOS/ko.lproj/InfoPlist.strings': 'preserve AyuGram display identity under Korean localization',
+    'submodules/SettingsUI/Sources/Search/SettingsSearchableItems.swift': 'index the actual Custome options categories in native Settings search',
+    'submodules/TelegramCore/Sources/State/AccountViewTracker.swift': 'ordinary read privacy suppresses view-count increments while preserving count fetches',
+    'submodules/TelegramCore/Sources/State/ManagedAccountPresence.swift': 'observe account policy before online refresh and bounded foreground offline attempts',
+    'submodules/TelegramCore/Sources/State/ManagedConsumePersonalMessagesActions.swift': 'preserve local content consumption and mandatory expiry while gating ordinary outgoing receipts',
+    'submodules/TelegramCore/Sources/State/ManagedSynchronizeConsumeMessageContentsOperations.swift': 'final ordinary-content receipt policy check without fabricated network results',
+    'submodules/TelegramCore/Sources/State/ManagedSynchronizeMarkAllUnseenPersonalMessagesOperations.swift': 'do not enqueue all-unseen receipts under ordinary read privacy',
+    'submodules/TelegramCore/Sources/State/SynchronizePeerReadState.swift': 'account-local outgoing read synchronization decision with canonical local transitions retained',
+    'submodules/TelegramCore/Sources/TelegramEngine/Messages/ApplyMaxReadIndexInteractively.swift': 'local read updates preserved independently of ordinary cloud receipt dispatch',
+    'submodules/TelegramCore/Sources/TelegramEngine/Messages/MarkAllChatsAsRead.swift': 'account-scoped receipt policy at read-all producer',
+    'submodules/TelegramCore/Sources/TelegramEngine/Messages/ReplyThreadHistory.swift': 'discussion and saved-history receipt producers observe account policy',
+    'submodules/TelegramUI/Components/PeerInfo/PeerInfoScreen/Sources/PeerInfoScreen.swift': 'dedicated top-level customization action identifier',
+    'submodules/TelegramUI/Components/PeerInfo/PeerInfoScreen/Sources/PeerInfoScreenSettingsActions.swift': 'route top-level entry to the real account-bound dashboard',
+    'submodules/TelegramUI/Components/PeerInfo/PeerInfoScreen/Sources/PeerInfoSettingsItems.swift': 'prominent separate Custome options Settings section',
+
     "Telegram/Telegram-iOS/InfoBazel.plist": "stable fork bundle identity for signing-aware container selection",
     "submodules/PasscodeCore/BUILD": "wire native storage and Keychain isolation regression tests",
     "submodules/PasscodeCore/Sources/Passcode.swift": "explicit private installation Keychain namespace without weakening existing shared mode",
@@ -79,7 +122,7 @@ REVIEWED_MODIFICATIONS = {
     "submodules/TelegramUI/Sources/ChatInterfaceStateContextMenus.swift": "create local literal rule from eligible message text",
     "submodules/TelegramUI/Components/Chat/ChatMessageBubbleItemNode/Sources/ChatMessageBubbleItemNode.swift": "render local text placeholder and guard hidden-message actions",
     "submodules/TelegramUI/Components/Chat/ChatMessageItemView/Sources/ChatMessageItemView.swift": "redact hidden message accessibility data",
-    "Telegram/BUILD": "allow the isolated filter projection test host to bundle existing string resources",
+    "Telegram/BUILD": "fork display/icon/base-bundle metadata and isolated test-host string resources",
     "submodules/TelegramCore/BUILD": "link the local archive and its integration tests",
     "submodules/TelegramCore/Tests/EngineMessageReplyQuoteTests.swift": "repair stale rich-quote fixture to use the production rich initializer",
     "submodules/TelegramCore/Sources/Account/Account.swift": "account-owned archive lifecycle",
