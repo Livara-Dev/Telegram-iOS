@@ -9,7 +9,7 @@ on:
       validation_scope:
         description: Focused native repair tests only, or full app qualification
         type: choice
-        options: [full, focused]
+        options: [full, focused, probe]
         default: full
       unsigned_device:
         description: Compile an unsigned device IPA alongside exact-commit integration tests
