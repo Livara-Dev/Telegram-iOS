@@ -286,7 +286,20 @@ final class LocalArchiveReplayTests: XCTestCase {
         let ids = (1...260).map { MessageId(peerId: channel, namespace: Namespaces.Message.Cloud, id: Int32($0)) }
         try self.store(ids.map { localArchiveTestMessage($0, text: "range item") })
         _ = try XCTUnwrap(self.replay(self.finalState([.UpdateMinAvailableMessage(try XCTUnwrap(ids.last))], including: [channel])))
-        XCTAssertEqual(try self.pending().count, 256)
+        // The consumer reads bounded pages, not the entire durable outbox.
+        XCTAssertEqual(try self.pending().count, 64)
+        let accountPeerId = self.accountPeerId
+        let queuedCount = try self.localArchiveValue(self.fixture.postbox.transaction { transaction -> Int in
+            var count = 0
+            transaction.operationLogEnumerateEntries(peerId: accountPeerId, tag: OperationLogTags.LocalArchiveCapture) { entry in
+                if entry.contents is LocalArchiveCaptureOperation {
+                    count += 1
+                }
+                return true
+            }
+            return count
+        })
+        XCTAssertEqual(queuedCount, 256)
         let remaining = try self.localArchiveValue(self.fixture.postbox.transaction { transaction in ids.compactMap { transaction.getMessage($0) } })
         XCTAssertTrue(remaining.isEmpty)
         let settings = try self.localArchiveValue(self.fixture.postbox.transaction { localArchiveSettings(transaction: $0) })
