@@ -66,6 +66,14 @@ binary. No proprietary exteraGram components are copied.
   from Bazel/SwiftPM. All encryption flags and dependency versions remain
   unchanged. Native requalification is required; portable ABI contracts alone
   do not establish successful linking or cancellation behavior.
+- [42106358713](https://github.com/Livara-Dev/Telegram-iOS/actions/runs/42106358713)
+  compiled the repaired renderer harness and executed eight unit cases at
+  b490ba13: seven passed. The positive actual light/dark table/window/color
+  checks passed, but the appearance test's deliberate light-trait negative
+  control sampled UIKit before its update cycle and failed. The follow-up
+  waits for that actual transition with a bounded run-loop condition while
+  retaining the original assertion. XCUI interaction, video and screenshot
+  export were not attempted in this run; visual dark-mode proof is still open.
 
 ## Core features and native integration
 

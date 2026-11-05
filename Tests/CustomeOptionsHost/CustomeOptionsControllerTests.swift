@@ -137,6 +137,15 @@ final class CustomeOptionsControllerTests: XCTestCase {
                 table.backgroundColor = .white
                 XCTAssertFalse(fixture.appearanceObservation()["background_dark"] ?? true)
                 table.overrideUserInterfaceStyle = .light
+                // UIKit propagates resolved traits during the next update
+                // cycle. Observe that real transition before testing the
+                // negative control; the requested override alone is not proof.
+                table.setNeedsLayout()
+                let traitDeadline = Date(timeIntervalSinceNow: 3)
+                while table.traitCollection.userInterfaceStyle != .light && Date() < traitDeadline {
+                    root.view.layoutIfNeeded()
+                    RunLoop.main.run(until: Date(timeIntervalSinceNow: 0.02))
+                }
                 XCTAssertFalse(fixture.appearanceObservation()["table_dark"] ?? true)
                 root.updateAppearance(palette: .standard(dark: true))
             }
