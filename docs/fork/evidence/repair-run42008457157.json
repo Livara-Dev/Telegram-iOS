@@ -92,7 +92,7 @@
       "run_id": 42031063759,
       "event": "push",
       "manually_dispatched_full_build": false,
-      "status_at_evidence_collection": "in_progress",
+      "status_at_evidence_collection": "completed",
       "unsigned_device": {
         "job_id": 127257336871,
         "result": "success",
@@ -100,7 +100,8 @@
           "id": 13421543948,
           "outer_sha256": "bebd5868106589fa415a5817196532499cd3d485002a6ab676f0f671b901978b",
           "ipa_sha256": "da12c38d0a14f6331b381b9b71f25fe191e1ad6f2034109c751e2e5799101d4b",
-          "outer_and_inner_checksums_verified": true
+          "outer_and_inner_checksums_verified": true,
+          "url": "https://github.com/Livara-Dev/Telegram-iOS/actions/runs/42031063759/artifacts/13421543948"
         },
         "build_number": 54,
         "bundle_id": "org.livara.ayugram",
@@ -110,9 +111,11 @@
         "embedded_code_signature_commands": 0,
         "embedded_provisioning_profiles": 0,
         "signature_verified": false,
-        "runtime_verified": false
+        "runtime_verified": false,
+        "installable_signed_ipa": false,
+        "physical_device_verified": false
       },
-      "native_integration_status_at_evidence_collection": "in_progress",
+      "native_integration_status_at_evidence_collection": "failure_projection_startup",
       "simulator_startup_smoke_status_at_evidence_collection": "failed_prelaunch",
       "release_qualified": false,
       "physical_device_verified": false,
@@ -153,7 +156,70 @@
           "apple_installd_verified": false,
           "runtime_verified": false
         },
-        "original_app_groups_entitlement_present": false
+        "original_app_groups_entitlement_present": false,
+        "original_app_groups_entitlement_scope": "code-signature entitlement blob only; does not describe embedded Mach-O entitlements",
+        "embedded_macho_app_groups_present": true,
+        "embedded_group_matches_configured_candidate": true
+      },
+      "result": "failure",
+      "native_integration": {
+        "job_id": 127257336542,
+        "result": "failure",
+        "executed_cases": 1134,
+        "executed_case_failures": 0,
+        "passing_suites": 7,
+        "runner_startup_failures": 1,
+        "suites": {
+          "PasscodeCore": {
+            "executed": 16,
+            "failures": 0,
+            "result": "passed"
+          },
+          "Postbox": {
+            "executed": 201,
+            "failures": 0,
+            "result": "passed"
+          },
+          "LocalMessageArchive": {
+            "executed": 77,
+            "failures": 0,
+            "result": "passed"
+          },
+          "TelegramCore": {
+            "executed": 543,
+            "failures": 0,
+            "result": "passed"
+          },
+          "LocalArchivePlayback": {
+            "executed": 11,
+            "failures": 0,
+            "result": "passed"
+          },
+          "TextFormat": {
+            "executed": 270,
+            "failures": 0,
+            "result": "passed"
+          },
+          "SettingsUI": {
+            "executed": 16,
+            "failures": 0,
+            "result": "passed"
+          }
+        },
+        "projection": {
+          "executed": 0,
+          "result": "runner_startup_failed",
+          "xctestrunner_exit_code": 12,
+          "usable_xcresult_produced": false,
+          "cause_resolved": false
+        },
+        "artifact": {
+          "id": 13429425501,
+          "outer_sha256": "32209ba644e580ad8aeb90c4961eb9835e2f9c875600530c275cab661702ce53",
+          "inner_payloads_verified": 31,
+          "outer_and_inner_checksums_verified": true
+        },
+        "physical_device_verified": false
       }
     },
     "repository_actions_blocker": "resolved by owner; automatic canonical push run observed",
@@ -165,8 +231,8 @@
     },
     "physical_black_screen_fix_confirmed": false,
     "diagnostic_startup_replay": {
-      "status": "prepared_not_run",
-      "run_id": null,
+      "status": "explicit_private_control_passed_variant_ipa_published",
+      "run_id": 42075783146,
       "source_commit": "62546557807ee5d8ff468ea3d7d46ce1a090c8cf",
       "new_full_application_compilation": false,
       "reuses_verified_simulator_artifact": 13426711346,
@@ -176,11 +242,320 @@
         "docs/**"
       ],
       "application_and_bazel_and_submodule_changes_allowed": false,
-      "preflight": "Apple codesign --verify --deep --strict on original extracted simulator package required before launch",
-      "normal_control": "Fresh simulator, two real launches with private storage required because original App Groups are absent",
-      "redundant_no_app_groups_variant": "Skipped when already absent; otherwise only attempted after normal control passes",
-      "queue": "source-scoped startup replay group preserves active full qualification",
+      "preflight": "Apple codesign --verify --deep --strict passed on the original extracted simulator package in replays",
+      "observations": [
+        {
+          "run_id": 42054044158,
+          "mode": "original",
+          "result": "failed_prelaunch_install_timeout",
+          "source_codesign_verified": true,
+          "observed_launches": 0,
+          "install_timeout_seconds": 120
+        },
+        {
+          "run_id": 42059353808,
+          "mode": "main-app-only",
+          "result": "failed_interpreted_screenshot_checker_timeout",
+          "extensions_removed": 6,
+          "main_code_unchanged": true,
+          "framework_files_preserved": 77,
+          "welcome_screen_visually_observed": true,
+          "ready_marker_retained": false,
+          "completed_launch_checks": 0
+        },
+        {
+          "run_id": 42063434737,
+          "mode": "main-app-only",
+          "result": "failed_strict_private_storage_check",
+          "native_headless_checker_compiled": true,
+          "native_checker_controls_passed": 3,
+          "ready_marker": {
+            "stage": "authorizationVisible",
+            "failure": null
+          },
+          "private_storage_verified": false,
+          "completed_private_launch_checks": 0
+        },
+        {
+          "run_id": 42068575839,
+          "mode": "main-app-only-adaptive",
+          "result": "second_simulator_failed_before_private_control",
+          "automatic_group_selection_observed": true,
+          "group_schema_and_expected_identity_verified": true,
+          "storage_diagnostics_boolean_fields": 17,
+          "ready_marker": {
+            "stage": "authorizationVisible",
+            "failure": null
+          },
+          "automatic_private_fallback_verified": false,
+          "private_control_seeded": false,
+          "private_control_observed_launches": 0,
+          "private_control_failure_phase": "installApplication",
+          "install_timeout_seconds": 120
+        }
+      ],
+      "private_control_only": {
+        "run_id": 42075783146,
+        "job_id": 127415479042,
+        "tool_source_commit": "a3533da1e1352b602f5705b75488a98616c389d1",
+        "status_at_evidence_collection": "completed",
+        "result": "passed",
+        "startup_variant": "main-app-only",
+        "private_control_only": true,
+        "simulators_to_create": 1,
+        "automatic_control_run": false,
+        "automatic_group_selection_observed": false,
+        "automatic_fallback_verified": false,
+        "required_checks": [
+          "no existing preferences, launch marker or telegram-data before seeding",
+          "public private-selection preference seeded before first launch",
+          "real application creates private accounts-metadata",
+          "two real ready markers without startup failure",
+          "two nonblank screenshots after three native checker controls",
+          "private selection persists on both launches",
+          "account-store directory identity is stable after restart"
+        ],
+        "filesystem_identity_values_retained": false,
+        "message_content_persistence_verified": false,
+        "new_unsigned_variant_ipa_published": true,
+        "physical_device_verified": false,
+        "private_control_seeded": true,
+        "observed_launches": 2,
+        "private_mode_control": "explicitFreshPinnedSelection",
+        "account_store_directory_stable_after_restart": true,
+        "launch_timing_is_cold_start_benchmark": false,
+        "launches": [
+          {
+            "attempt": 1,
+            "marker": {
+              "failure": null,
+              "stage": "authorizationVisible"
+            },
+            "seconds_to_marker": 12.44,
+            "storage_kind": "private",
+            "private_account_store_present": true,
+            "screenshot": {
+              "height": 2622,
+              "nonblank": true,
+              "width": 1206
+            }
+          },
+          {
+            "attempt": 2,
+            "marker": {
+              "failure": null,
+              "stage": "authorizationVisible"
+            },
+            "seconds_to_marker": 5.53,
+            "storage_kind": "private",
+            "private_account_store_present": true,
+            "private_account_store_stable_after_restart": true,
+            "screenshot": {
+              "height": 2622,
+              "nonblank": true,
+              "width": 1206
+            }
+          }
+        ],
+        "authentication_codes_used": false,
+        "screenshot_checker": {
+          "compiled": true,
+          "self_test_passed": true,
+          "self_test_cases": 3
+        },
+        "recording_return_code": 0,
+        "source_application_recompiled": false,
+        "source_application_commit": "62546557807ee5d8ff468ea3d7d46ce1a090c8cf",
+        "source_codesign_preflight_passed": true,
+        "source_ipa_unchanged": true,
+        "proof_artifact": {
+          "id": 13438242692,
+          "outer_sha256": "6da972ae784fe24e5614d042d59aa9c4ae8578ad382b521b063c10f125f9a0dd",
+          "inner_payloads_verified": 10,
+          "outer_and_inner_checksums_verified": true
+        },
+        "startup_proof_sha256": "bbb05e48e682ff70b88be0a55026a302745e1ac32f2d965721849ca8ce02ee30",
+        "startup_result_sha256": "ba76017c60a3e3b377f298a49cdae22a134d1f2868839a58220fa95c482cfeff",
+        "proof_hash_bindings_to_variant_manifest_verified": true
+      },
+      "queue": "source-scoped startup replay group preserves unrelated active jobs",
+      "full_application_recompiled_for_replays": false,
       "release_qualified": false,
+      "physical_device_verified": false,
+      "previous_private_control_only": {
+        "run_id": 42073351166,
+        "job_id": 127406917880,
+        "tool_source_commit": "2d378cafce144fcfa4aa312f27d6dd3a60da0815",
+        "status_at_evidence_collection": "completed",
+        "result": "failed_before_seed_or_launch",
+        "startup_variant": "main-app-only",
+        "private_control_only": true,
+        "simulators_to_create": 1,
+        "automatic_control_run": false,
+        "automatic_group_selection_observed": false,
+        "automatic_fallback_verified": false,
+        "required_checks": [
+          "no existing preferences, launch marker or telegram-data before seeding",
+          "public private-selection preference seeded before first launch",
+          "real application creates private accounts-metadata",
+          "two real ready markers without startup failure",
+          "two nonblank screenshots after three native checker controls",
+          "private selection persists on both launches",
+          "account-store directory identity is stable after restart"
+        ],
+        "filesystem_identity_values_retained": false,
+        "message_content_persistence_verified": false,
+        "new_unsigned_variant_ipa_published": false,
+        "physical_device_verified": false,
+        "failure_phase": "installApplication",
+        "install_timeout_seconds": 120,
+        "private_control_seeded": false,
+        "observed_launches": 0,
+        "native_headless_checker_compiled": true,
+        "native_checker_controls_passed": 3,
+        "cleanup_shutdown_timeout_seconds": 30,
+        "cleanup_delete_timeout_seconds": 30,
+        "command_timeout_cause_confirmed": false,
+        "artifact": {
+          "id": 13435994713,
+          "outer_sha256": "a70bf6eec1f6f60d4f917751371f180a58feeabb10fa127422bcf33f70a8155e",
+          "outer_and_inner_checksums_verified": true,
+          "inner_payloads_verified": 6
+        }
+      },
+      "unsigned_main_app_only_variant": {
+        "run_id": 42075783146,
+        "artifact_id": 13438212892,
+        "url": "https://github.com/Livara-Dev/Telegram-iOS/actions/runs/42075783146/artifacts/13438212892",
+        "outer_sha256": "fd9d1097c7f3d7f75ecc8ed8ab52dc1e80ee1ec589cda4797524cf5aacb1eaa0",
+        "inner_payloads_verified": 2,
+        "outer_and_inner_checksums_verified": true,
+        "filename": "AyuGram-62546557-main-app-only-unsigned-device.ipa",
+        "ipa_sha256": "9ee09c4396af01b8c6d6fc521ecd767b16d9a0ef4e90d630785eb5fbc3931f05",
+        "bundle_id": "org.livara.ayugram",
+        "source_commit": "62546557807ee5d8ff468ea3d7d46ce1a090c8cf",
+        "source_run": 42031063759,
+        "source_artifact_id": 13421543948,
+        "source_ipa_sha256": "da12c38d0a14f6331b381b9b71f25fe191e1ad6f2034109c751e2e5799101d4b",
+        "source_ipa_unchanged": true,
+        "application_recompiled": false,
+        "build_number_changed": false,
+        "extensions_removed": 6,
+        "extensions_available": false,
+        "retained_entries": 880,
+        "retained_member_bytes_unchanged": true,
+        "retained_metadata_unchanged": true,
+        "main_code_unchanged": true,
+        "framework_files_unchanged": true,
+        "mode": "unsigned-device",
+        "signing": "disabled",
+        "signature_verified": false,
+        "runtime_verified": false,
+        "installable_signed_ipa": false,
+        "physical_device_verified": false,
+        "release_qualified": false,
+        "simulator_private_mode_control": "explicitFreshPinnedSelection",
+        "automatic_private_fallback_verified": false,
+        "simulator_private_selection_seeded": true,
+        "simulator_private_account_store_stable_after_restart": true,
+        "independent_device_inspection": {
+          "ipa_bytes": 74724581,
+          "unsigned_arm64_iphoneos_binaries": 6,
+          "frameworks": 5,
+          "resolved_rpath_load_edges": 19,
+          "embedded_profiles": 0,
+          "code_signatures": 0,
+          "all_880_retained_entry_bytes_and_metadata_match_original": true,
+          "startup_proof_and_result_hashes_match_downloaded_evidence": true,
+          "actual_two_screenshots_reviewed": "Telegram Welcome/Start Messaging visible",
+          "physical_device_verified": false
+        }
+      }
+    },
+    "targeted_native_repeat": {
+      "run_id": 42058341829,
+      "source_commit": "c484babe67fcb1d9a87ed9a034edc3f292516e0d",
+      "validation_scope": "projection",
+      "result": "failure_projection_startup",
+      "executed_cases": 104,
+      "executed_case_failures": 0,
+      "suites": {
+        "PasscodeCore": {
+          "executed": 16,
+          "failures": 0,
+          "result": "passed"
+        },
+        "LocalMessageArchive": {
+          "executed": 77,
+          "failures": 0,
+          "result": "passed"
+        },
+        "LocalArchivePlayback": {
+          "executed": 11,
+          "failures": 0,
+          "result": "passed"
+        },
+        "ChatLocalTextFilterProjection": {
+          "executed": 0,
+          "result": "runner_startup_failed",
+          "cause_resolved": false
+        }
+      },
+      "artifact": {
+        "id": 13435545451,
+        "outer_sha256": "e74e786b1344e7e81c3db1ead00075851a664c466c327dec93c4091a570cf916",
+        "inner_payloads_verified": 19,
+        "outer_and_inner_checksums_verified": true
+      },
+      "full_application_built": false,
+      "physical_device_verified": false
+    },
+    "command_supervision_repair": {
+      "tool_source_commit": "a3533da1e1352b602f5705b75488a98616c389d1",
+      "integrated_source_commit": "12b7f9864dc406564951d524de69b1f1894e27b6",
+      "reproduced_bug": "exited direct child was classified as timed out while a descendant retained stdout/stderr pipes",
+      "fix": "poll direct child while capturing output; drain for at most 0.2 seconds after exit; preserve exit status and output limit",
+      "post_exit_drain_seconds": 0.2,
+      "install_timeout_seconds_unchanged": 120,
+      "new_subprocess_regressions": [
+        "exited success with inherited open pipes",
+        "nonzero exit with inherited open pipes",
+        "noisy descendant retains output-limit failure",
+        "live child with closed pipes still times out"
+      ],
+      "application_storage_and_readiness_gates_changed": false,
+      "cause_of_previous_ci_timeouts_confirmed": false
+    },
+    "latest_portable_tool_validation": {
+      "source_commit": "12b7f9864dc406564951d524de69b1f1894e27b6",
+      "executed": 221,
+      "failures": 0,
+      "result": "passed",
+      "scope": "portable Python build, diagnostics and artifact-tool tests",
+      "native_ios_test_cases": false,
+      "full_application_built": false,
+      "physical_device_verified": false
+    },
+    "projection_capture": {
+      "first_attempt": {
+        "run_id": 42073979469,
+        "source_commit": "89ebdaf28946c44180f175d2970c29718d20d313",
+        "job_id": 127409119548,
+        "result": "failure_bazel_analysis",
+        "executed_test_cases": 0,
+        "cause": "diagnostic test-runner target needed a testonly designation",
+        "full_application_built": false
+      },
+      "testonly_fix_source_commit": "f48c9b04822b166a7f4938297a739790c1f34f11",
+      "current_attempt": {
+        "run_id": 42075582797,
+        "source_commit": "f48c9b04822b166a7f4938297a739790c1f34f11",
+        "status_at_evidence_collection": "in_progress",
+        "result": "pending",
+        "validation_scope": "projection-only",
+        "full_application_built": false
+      },
+      "original_projection_startup_failure_resolved": false,
       "physical_device_verified": false
     }
   }

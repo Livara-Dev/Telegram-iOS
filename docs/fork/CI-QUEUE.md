@@ -7,7 +7,9 @@ branch push automatically started
 This verifies the automatic push trigger; no full workflow was manually started.
 The device job succeeded. Simulator compilation and 270 TextFormat cases passed,
 but startup smoke failed before an observed app launch. Full native integration
-remains active; this is not yet a qualified release.
+finished with 1,134 passing cases across seven suites; the Projection suite
+executed zero cases because its XCTest host did not start. This is not a
+qualified release.
 
 The automatic build entry point is `ci/verify-latest`. Development branches and
 PR updates do not automatically start hosted macOS work. Advance the verification
@@ -46,14 +48,46 @@ claim the backlog was canceled or that GitHub guarantees FIFO priority. The new
 policy prevents additional feature-push fan-out and limits subsequent submissions
 to one active qualification plus its latest pending successor.
 
-A manual `startup` scope is prepared to replay an existing simulator artifact
-without compiling Telegram again. It requires the original run ID and full
-source SHA, validates the successful compile step and artifact provenance/hashes,
-and permits only tooling/workflow/documentation differences in the replay
-checkout. It can inspect startup even when the original job failed its smoke
-step; that prior failure remains explicit. The replay has not run at this
-checkpoint. Its source-scoped queue does not cancel or replace the healthy full
-native job, and its outcome cannot be substituted for full release qualification.
+The manual `startup` scope replays an existing compiled simulator artifact.
+It verifies the source run, successful compile step, outer and inner hashes,
+platform and bundle identity, then rejects product-source differences in the
+replay checkout. Tooling, this workflow and documentation may differ. The original
+full simulator bundle repeatedly timed out during installation. A main-app-only
+control, preserving the executable and resources, reached Telegram's actual
+Welcome/Start Messaging screen. Embedded simulator entitlements still enabled a
+valid App Group; absence from the outer signature alone did not establish private
+storage. These diagnostic runs did not compile Telegram again.
+
+Run 42073351166's private-only control timed out during installation before
+seeding preferences or launching. Its image checker compiled and passed all
+three controls. No device variant was published. Separately, a portable
+subprocess reproducer proved a supervision defect: waiting for pipe EOF could
+misreport a successfully exited command as timed out if a descendant inherited
+its output descriptors. The corrected wrapper honors the direct child's exit
+status, drains for a bounded 0.2 seconds and preserves output limits and actual
+timeouts. This defect's role in that particular simulator timeout is unproven.
+
+Run 42075783146 uses the corrected helper with the same compiled app, one fresh
+simulator, the same 120-second install limit and unchanged two-launch private
+storage gates. It passed both actual private authorization-screen launches and
+published the separately named unsigned main-app-only device artifact
+13438212892. All original device members outside PlugIns were preserved.
+Explicitly seeding a private
+selection in an empty disposable test container does not prove automatic
+fallback or physical SideStore behavior. Replay cannot qualify the failed full
+native suite. Its separate source-scoped queue preserves native qualification.
+
+Run 42073979469 stopped at Bazel analysis because the diagnostic runner lacked
+`testonly = True` while depending on its test-only capture hook. The runner
+attribute was corrected without changing application code. Run 42075582797
+validates that revision in `projection-only` scope; it is active at this
+checkpoint. No full application rebuild was submitted for either tool repair.
+
+The `focused` scope selects only PasscodeCore, archive and encrypted playback.
+The `projection` scope retains those three suites plus Projection;
+`projection-only` selects the single Projection suite for diagnosing its host.
+All three scopes skip simulator/device application compilation. No throwaway
+canonical-branch push is needed to diagnose a test harness.
 
 An unsigned device artifact is build output only. Its source commit, device
 Mach-O platform and SHA-256 must match its manifest; same-commit integration,

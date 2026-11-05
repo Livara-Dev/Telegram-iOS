@@ -1,19 +1,47 @@
 # Windows build download and iPhone installation
 
-An unsigned ARM64 device build succeeded for commit
-`9a040579b79b2a055c3d83e2d1e703af8362c07d` in
-[run 41896517472](https://github.com/Livara-Dev/Telegram-iOS/actions/runs/41896517472).
-Download the [device artifact](https://github.com/Livara-Dev/Telegram-iOS/actions/runs/41896517472/artifacts/13361534875)
-and extract `fork-baseline-unsigned-device/Telegram.ipa`. The IPA SHA-256 is
-`192ad471031a6d274cc9740448ea54c0f58501c3dc3007e2c47f132341e92e69`.
-The artifact ZIP has a different checksum. The package's checksums, bundle ID
-and ARM64 iPhoneOS platform were independently checked; it contains no embedded
-provisioning profiles or code signatures. It has not been installed or run on a
-physical iPhone. Native integration qualification is separate from this successful
-device compilation. That job failed on an archive pagination assertion,
-encrypted-video decoding and projection-host startup; the package is not a
-qualified release. See [the native test result](fork/evidence/native-9a040579.json).
-GitHub retains this artifact until November 11, 2026, unless removed earlier.
+The newest SideStore candidate is the **main-app-only unsigned ARM64 device IPA**
+from [run 42075783146](https://github.com/Livara-Dev/Telegram-iOS/actions/runs/42075783146).
+Download [artifact 13438212892](https://github.com/Livara-Dev/Telegram-iOS/actions/runs/42075783146/artifacts/13438212892)
+and extract `AyuGram-62546557-main-app-only-unsigned-device.ipa`.
+Its IPA SHA-256 is
+`9ee09c4396af01b8c6d6fc521ecd767b16d9a0ef4e90d630785eb5fbc3931f05`.
+Verify it with Windows PowerShell:
+
+```powershell
+Get-FileHash .\AyuGram-62546557-main-app-only-unsigned-device.ipa -Algorithm SHA256
+```
+
+The startup/Keychain/video repairs are included, and the matching simulator
+variant passed two authorization-screen launches with private storage retained.
+Six extensions are omitted; app/framework bytes are preserved. This IPA is
+unsigned, requires independent signing, and has not been physically verified on
+the owner's iPhone. It does not establish automatic private fallback or a logged-in
+Telegram session. Read [SideStore installation and update precautions](SIDESTORE_INSTALL.md)
+for the precise evidence and feature limits. Keep the same app identity and
+Apple account when updating; do not delete the existing app to install an update.
+
+The original full unsigned ARM64 device package is build **54**, source
+`62546557807ee5d8ff468ea3d7d46ce1a090c8cf`, from
+[run 42031063759](https://github.com/Livara-Dev/Telegram-iOS/actions/runs/42031063759).
+Download its [device artifact 13421543948](https://github.com/Livara-Dev/Telegram-iOS/actions/runs/42031063759/artifacts/13421543948)
+and extract `fork-baseline-unsigned-device/Telegram.ipa`. Its IPA SHA-256 is
+`da12c38d0a14f6331b381b9b71f25fe191e1ad6f2034109c751e2e5799101d4b`.
+The artifact ZIP has a different checksum. The package contains no code signatures
+or embedded provisioning profiles. All twelve executable binaries were checked
+as ARM64 iPhoneOS, and their embedded framework dependencies resolve. It still
+requires signing before installation; static inspection is not a runtime test.
+
+The same application source passed 104 focused native repair tests before device
+compilation. Full native testing passed 1,134 cases across seven suites, while
+Projection executed zero because the XCTest host did not start. Later startup
+replays displayed the actual authorization screen with the simulator extensions
+removed. The new startup repair has not been physically verified on the owner's
+iPhone. The older `9a040579` installation was reported to remain black at launch;
+it is not the current recommended candidate. See [SideStore startup evidence and
+update precautions](SIDESTORE_INSTALL.md) for the current main-app-only control
+and any separately published extension-free package. This is not a qualified
+release or a claim of feature parity.
 
 Use **Archive application integration (hosted macOS)** on the single
 `ci/verify-latest` verification branch. Feature/PR commits no longer start three
@@ -34,6 +62,7 @@ embedding for the unsigned build only. No signing credentials are synthesized.
 | --- | --- | --- |
 | iOS integration tests | `archive-integration-tests-<commit>` | Test logs and checksums, not an app package. Available before full application compilation finishes. |
 | Simulator application compilation | `archive-integration-<commit>` | On success, `fork-baseline-simulator/Telegram.ipa` and its manifest/checksum. This package is for the simulator and cannot run on a physical iPhone. |
+| Verified startup variant | `startup-main-app-only-unsigned-device-<source>` | Root-level named IPA, manifest and checksums; six extensions removed. Simulator startup passed; device signing and physical verification remain required. |
 | Unsigned device compilation | `archive-unsigned-device-<commit>` | On success, `fork-baseline-unsigned-device/Telegram.ipa` and its manifest/checksum. It still requires independent signing before installation. |
 | Windows signing and physical installation | Produced locally by your chosen signing tool | A different, signed package. Installation, entitlements and runtime behavior must be verified separately on the iPhone. |
 
@@ -43,6 +72,10 @@ not establish build success. The separate **Archive engine draft tests** workflo
 publishes library test evidence only. Earlier **Fork baseline (hosted macOS)**
 runs retain their `fork-baseline-<commit>` artifact name and their original job
 layout. A successful run of one branch does not validate another branch.
+
+The numbered build-output paths below describe the original full package. For
+the new extension-free candidate, use its root-level filename and checksum
+listed at the start of this document, then follow the same local signing steps.
 
 1. Open the authorized fork `Livara-Dev/Telegram-iOS`. In Settings →
    Secrets and variables → Actions, set repository secrets `TELEGRAM_API_ID` and
@@ -85,8 +118,8 @@ layout. A successful run of one branch does not validate another branch.
    app/device limits; check current Apple/Sideloadly rules. An unsigned IPA is
    not independently signed until this process actually succeeds.
 
-Sideloadly re-signing is **unverified for this fork**. Telegram includes several
-extensions and a watch app and depends on matching App Groups, keychain groups
+Sideloadly re-signing is **unverified for this fork**. The full package includes
+extensions and depends on matching App Groups, keychain groups
 and profiles. Free-account signing or extension removal can break notifications,
 sharing, widgets, watch support or startup. Do not describe a stripped/re-signed
 package as equivalent to the tested artifact. It has a new hash and needs its own

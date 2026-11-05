@@ -4,18 +4,36 @@ The owner reports that the `9a040579` device IPA installed on an iPhone 15 Pro
 running iOS 27.2, then remained black at launch. Installation is user-reported;
 we have no device crash log or proof of the re-signed entitlements.
 
-A newer unsigned ARM64 device IPA is now available for source
+A new **main-app-only unsigned ARM64 device IPA** is available from
+[successful run 42075783146](https://github.com/Livara-Dev/Telegram-iOS/actions/runs/42075783146):
+[download artifact 13438212892](https://github.com/Livara-Dev/Telegram-iOS/actions/runs/42075783146/artifacts/13438212892).
+Extract `AyuGram-62546557-main-app-only-unsigned-device.ipa`. Its SHA-256 is:
+
+`9ee09c4396af01b8c6d6fc521ecd767b16d9a0ef4e90d630785eb5fbc3931f05`
+
+The artifact ZIP has a different checksum. The IPA contains the existing startup,
+Keychain and encrypted-video repairs from application source
 `62546557807ee5d8ff468ea3d7d46ce1a090c8cf`, build `54`, bundle
-`org.livara.ayugram`, from
-[artifact 13421543948](https://github.com/Livara-Dev/Telegram-iOS/actions/runs/42031063759/artifacts/13421543948).
-Its IPA SHA-256 is
+`org.livara.ayugram`. Its six extensions are removed; all 880 retained entries
+match the original device package's bytes and metadata. All six remaining binaries
+are unsigned ARM64 iPhoneOS; all five frameworks and their dependency paths are
+present. It needs SideStore or another valid signer before installation.
+
+The matching main-app-only simulator control passed two real launches with the
+native authorization UI visible, nonblank screenshots and the same private
+account-store directory after restart. That test explicitly pinned the public
+private-storage selection before first launch in an empty disposable simulator.
+It does **not** establish automatic fallback, successful Telegram login,
+physical iPhone behavior or archive-content recovery. No authentication codes or
+session material were used. The physical black-screen repair remains unverified.
+
+The 104 focused native repair cases passed before device compilation and passed
+again in a later native repeat. Full native integration passed 1,134 cases across
+seven suites, but Projection executed zero because its XCTest host did not start.
+A separate Projection diagnostic is still running. This is an unsigned candidate,
+not a fully qualified release. The [original full device package](https://github.com/Livara-Dev/Telegram-iOS/actions/runs/42031063759/artifacts/13421543948)
+remains available, with IPA SHA-256
 `da12c38d0a14f6331b381b9b71f25fe191e1ad6f2034109c751e2e5799101d4b`.
-The 104 focused native repair cases passed before the full automatic build.
-Device compilation succeeded. Simulator compilation and 270 TextFormat cases
-passed, but startup smoke failed before any observed app launch; its report has
-zero launches and no screenshots/video. The create/boot/install cause remains
-unknown. Full native integration is still running. The IPA is not release-qualified,
-signed or verified to fix the physical iPhone's black screen.
 
 A source audit found an early return when `group.<runtime bundle identifier>`
 is unavailable. It occurs before account/authentication initialization and tries
@@ -52,25 +70,40 @@ real authorization/conversation controller and an attached visible window, and
 records screenshots/video. A nonblank-screen check is additional evidence; it is
 not authentication, SideStore or physical-device verification.
 
-A targeted artifact replay is prepared to diagnose that prelaunch failure without
-another full app compilation. It will verify the existing simulator package and
-Apple code-signing checks, then try a fresh normal startup. That package already
-has no App Group entitlement, so the normal control must observe private storage
-on two launches; a duplicate re-signing control is unnecessary. The replay has
-not run yet. Static package/hash checks alone do not prove installation or startup.
+Targeted artifact replays verified the existing package, Apple code-signing
+checks and its resources without recompiling Telegram. The original full bundle
+timed out during installation. A separate main-app-only simulator control
+installed and displayed Telegram's actual Welcome/Start Messaging screen.
+Later diagnostics observed `authorizationVisible` without a failure. The simulator
+honored an embedded Mach-O App Group even though that group was absent from the
+outer code signature; that signature alone does not prove private fallback.
+
+[Run 42075783146](https://github.com/Livara-Dev/Telegram-iOS/actions/runs/42075783146)
+passed the strict private-only control after the command-supervision helper was
+corrected. Earlier installation timeouts remain recorded; the helper defect's
+role in those particular failures is unproven. The successful replay used the
+same compiled app without another Telegram build. Its public private-storage
+selection was seeded only into a fresh disposable test container. Both actual
+launches reached `authorizationVisible` without failure, retained private storage
+and displayed Telegram's Welcome/Start Messaging screen. The app created the
+account-store directory and retained its identity across restart. Screenshots,
+video and closed diagnostics are in [startup evidence artifact 13438242692](https://github.com/Livara-Dev/Telegram-iOS/actions/runs/42075783146/artifacts/13438242692).
+The original full package is retained separately.
 
 ## Installing a new device artifact
 
-1. Download the unsigned **device** artifact for the chosen source commit. A
+1. Download the new unsigned **main-app-only device** artifact linked above. A
    simulator package will not work on an iPhone even when its CPU is ARM64.
-2. Extract `fork-baseline-unsigned-device/Telegram.ipa`. Verify its SHA-256 against
+2. Extract `AyuGram-62546557-main-app-only-unsigned-device.ipa`. Verify its SHA-256 against
    `manifest.json` and `SHA256SUMS`. The artifact ZIP has a different hash.
 3. Import the IPA into SideStore using the same Apple account and app identity
    used for the existing installation. Do not delete the app to update it.
    Replacing an app under the same identity normally preserves its data container;
    changing the bundle identifier/team, removing the app, or losing Keychain/App
    Group capabilities can make existing data unavailable. Keep a device backup.
-4. SideStore must sign the main app and every retained extension correctly.
+4. SideStore must sign the main app and all five frameworks correctly. The new
+   candidate contains no extensions. The original full package also requires
+   correct signing for every retained extension.
    Private-container mode is main-app-only: sharing, widgets, notification
    extensions and other shared-container functions cannot access that data.
    APNs and other restricted capabilities still require valid Apple provisioning.
