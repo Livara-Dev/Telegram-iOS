@@ -5,6 +5,13 @@ import Darwin
 import SwiftSignalKit
 
 public struct PasscodeConfiguration: Equatable, Sendable {
+    public enum KeychainAccess: Equatable, Sendable {
+        case sharedAppGroup
+        /// Main-app-only installations without an App Group entitlement.
+        /// Uses the existing signed private access-group resolver, never an
+        /// unscoped search or a retry after another group's access failed.
+        case applicationPrivate
+    }
     public enum ProcessRole: Equatable, Sendable {
         case mainApp
         case appExtension
@@ -14,12 +21,16 @@ public struct PasscodeConfiguration: Equatable, Sendable {
     public let processRole: ProcessRole
     public let biometricKeychainService: String?
     public let keychainScope: String?
+    public let keychainAccess: KeychainAccess
+    public let privateBundleIdentifier: String?
 
-    public init(appGroupIdentifier: String, processRole: ProcessRole, biometricKeychainService: String? = nil, keychainScope: String? = nil) {
+    public init(appGroupIdentifier: String, processRole: ProcessRole, biometricKeychainService: String? = nil, keychainScope: String? = nil, keychainAccess: KeychainAccess = .sharedAppGroup, privateBundleIdentifier: String? = nil) {
         self.appGroupIdentifier = appGroupIdentifier
         self.processRole = processRole
         self.biometricKeychainService = biometricKeychainService
         self.keychainScope = keychainScope
+        self.keychainAccess = keychainAccess
+        self.privateBundleIdentifier = privateBundleIdentifier
     }
 }
 
@@ -52,6 +63,7 @@ public final class PasscodeEnvironment: @unchecked Sendable {
             return
         }
         guard configuration.processRole != .mainApp || privateAccessGroup != nil else { throw PasscodeError.unavailable }
+        guard configuration.keychainAccess != .applicationPrivate || configuration.processRole == .mainApp else { throw PasscodeError.unavailable }
         self.configuration = configuration
         self.resolvePrivateAccessGroup = privateAccessGroup
     }
@@ -76,6 +88,56 @@ public final class PasscodeEnvironment: @unchecked Sendable {
         return configuration.appGroupIdentifier
     }
 
+    /// Separate a main-app-only installation from credentials previously used
+    /// by a shared-container installation under the same signing identity.
+    public func scopedKeychainService(_ service: String) -> String {
+        self.mutex.lock()
+        let applicationPrivate = self.configuration?.keychainAccess == .applicationPrivate
+        self.mutex.unlock()
+        if applicationPrivate {
+            return "org.livara.ayugram.private.v1/" + service
+        }
+        #if os(macOS)
+        return PasscodeKeychainScope.service(service, environment: self)
+        #else
+        return service
+        #endif
+    }
+
+    func credentialAccessGroup() throws -> String {
+        self.mutex.lock()
+        let access = self.configuration?.keychainAccess
+        self.mutex.unlock()
+        guard let access else { throw PasscodeError.unavailable }
+        switch access {
+        case .sharedAppGroup:
+            return try self.sharedAccessGroup()
+        case .applicationPrivate:
+            return try self.privateAccessGroup()
+        }
+    }
+
+    /// Probe only a dedicated non-secret item before account initialization can reset
+    /// installation-local secrets. Failure never retries in another group.
+    @available(macOS 10.15, *)
+    public func validateKeychainAccess() throws {
+        let account = "org.livara.ayugram.startup-probe.v1"
+        let keychain = PasscodeKeychain(environment: self)
+        var query = try keychain.query(account)
+        query[kSecUseAuthenticationUI as String] = kSecUseAuthenticationUIFail
+        // At most one non-secret probe can survive termination. Never enumerate
+        // or remove other service/account pairs during launch preflight.
+        let cleanup = SecItemDelete(query as CFDictionary)
+        guard cleanup == errSecSuccess || cleanup == errSecItemNotFound else { throw PasscodeError.keychain(cleanup) }
+        var insert = query
+        insert[kSecValueData as String] = Data([0])
+        insert[kSecAttrAccessible as String] = kSecAttrAccessibleWhenUnlockedThisDeviceOnly
+        let status = SecItemAdd(insert as CFDictionary, nil)
+        guard status == errSecSuccess else { throw PasscodeError.keychain(status) }
+        let removed = SecItemDelete(query as CFDictionary)
+        guard removed == errSecSuccess || removed == errSecItemNotFound else { throw PasscodeError.keychain(removed) }
+    }
+
     func biometricKeychainService() throws -> String {
         self.mutex.lock()
         defer { self.mutex.unlock() }
@@ -95,8 +157,10 @@ public final class PasscodeEnvironment: @unchecked Sendable {
             throw PasscodeError.unavailable
         }
         #if !os(macOS)
+        let privateBundleIdentifier = configuration.privateBundleIdentifier ?? String(configuration.appGroupIdentifier.dropFirst("group.".count))
         guard !group.hasPrefix("group."),
-              group.hasSuffix("." + configuration.appGroupIdentifier.dropFirst("group.".count)) else {
+              !privateBundleIdentifier.isEmpty,
+              group.hasSuffix("." + privateBundleIdentifier) else {
             throw PasscodeError.unavailable
         }
         #endif
@@ -124,18 +188,14 @@ final class PasscodeKeychain: PasscodeStorage {
             kSecAttrSynchronizable as String: false
         ]
         #if !os(macOS)
-        query[kSecAttrAccessGroup as String] = try account.hasPrefix("biometric.") ? self.environment.privateAccessGroup() : self.environment.sharedAccessGroup()
+        query[kSecAttrAccessGroup as String] = try account.hasPrefix("biometric.") ? self.environment.privateAccessGroup() : self.environment.credentialAccessGroup()
         #endif
         return query
     }
 
     private func service(_ account: String) throws -> String {
         let service = try account.hasPrefix("biometric.") ? self.environment.biometricKeychainService() : "org.telegram.passcode.v1"
-        #if os(macOS)
-        return PasscodeKeychainScope.service(service, environment: self.environment)
-        #else
-        return service
-        #endif
+        return self.environment.scopedKeychainService(service)
     }
 
     func read(_ account: String, context: LAContext? = nil) throws -> Data? {

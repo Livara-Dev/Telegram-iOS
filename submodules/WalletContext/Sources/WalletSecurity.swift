@@ -96,11 +96,7 @@ enum WalletVault {
     static let unscopedServicePrefix = "org.telegram.ton-wallet."
 
     static func servicePrefix(environment: PasscodeEnvironment) -> String {
-        #if os(macOS)
-        return PasscodeKeychainScope.service(self.unscopedServicePrefix, environment: environment)
-        #else
-        return self.unscopedServicePrefix
-        #endif
+        return environment.scopedKeychainService(self.unscopedServicePrefix)
     }
 
     static func removeAll(environment: PasscodeEnvironment = .shared) throws {

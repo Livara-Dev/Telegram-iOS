@@ -245,6 +245,8 @@ private func extractAccountManagerState(records: AccountRecordsView<TelegramAcco
     private var statusBarHost: ApplicationStatusBarHost?
     private var dataImportSplash: LegacyDataImportSplash?
     private var memoryUsageOverlayView: UILabel?
+    private let launchDiagnostics = LocalLaunchDiagnostics()
+    private let launchLockStatusDisposable = MetaDisposable()
     
     private let crashReportPromptDisposable = MetaDisposable()
     private var buildConfig: BuildConfig?
@@ -306,17 +308,15 @@ private func extractAccountManagerState(records: AccountRecordsView<TelegramAcco
     }
     private let firebaseRequestVerificationSecretStream = Promise<[String: String]>([:])
     
+    private var startupSharedContainerIdentifier: String?
     private var urlSessions: [URLSession] = []
     private func urlSession(identifier: String) -> URLSession {
         if let existingSession = self.urlSessions.first(where: { $0.configuration.identifier == identifier }) {
             return existingSession
         }
         
-        let baseAppBundleId = Bundle.main.bundleIdentifier!
-        let appGroupName = "group.\(baseAppBundleId)"
-
         let configuration = URLSessionConfiguration.background(withIdentifier: identifier)
-        configuration.sharedContainerIdentifier = appGroupName
+        configuration.sharedContainerIdentifier = self.startupSharedContainerIdentifier
         configuration.isDiscretionary = false
         let session = URLSession(configuration: configuration, delegate: self, delegateQueue: .main)
         self.urlSessions.append(session)
@@ -350,6 +350,7 @@ private func extractAccountManagerState(records: AccountRecordsView<TelegramAcco
     func application(_ application: UIApplication, didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]? = nil) -> Bool {
         precondition(!testIsLaunched)
         testIsLaunched = true
+        self.launchDiagnostics.begin()
         CrashReportCollector.shared.start()
         
         let _ = voipTokenPromise.get().start(next: { token in
@@ -447,6 +448,8 @@ private func extractAccountManagerState(records: AccountRecordsView<TelegramAcco
         }
         self.window = window
         self.nativeWindow = window
+        self.launchDiagnostics.attach(window: window)
+        self.launchDiagnostics.mark(.windowCreated)
         
         hostView.containerView.layer.addSublayer(MetalEngine.shared.rootLayer)
         // On the first start after an update, compile the pipelines that would otherwise stall their first use.
@@ -566,11 +569,37 @@ private func extractAccountManagerState(records: AccountRecordsView<TelegramAcco
         let appVersion = (Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String) ?? "unknown"
         
         let baseAppBundleId = Bundle.main.bundleIdentifier!
-        let appGroupName = "group.\(baseAppBundleId)"
-        try! PasscodeEnvironment.shared.configure(PasscodeConfiguration(appGroupIdentifier: appGroupName, processRole: .mainApp, biometricKeychainService: walletBiometricKeychainService), privateAccessGroup: {
-            BuildConfig.keychainAccessGroup(baseAppBundleId: baseAppBundleId)
-        })
-        let maybeAppGroupUrl = FileManager.default.containerURL(forSecurityApplicationGroupIdentifier: appGroupName)
+        let storageLocation: ApplicationStorageLocation
+        do {
+            storageLocation = try ApplicationStorage.resolve(bundleIdentifier: baseAppBundleId,
+                configuredBundleIdentifier: Bundle.main.object(forInfoDictionaryKey: "AyuGramBaseBundleIdentifier") as? String)
+        } catch ApplicationStorageError.invalidConfiguration {
+            self.launchDiagnostics.fail(.storageConfiguration)
+            return true
+        } catch {
+            self.launchDiagnostics.fail(.storageUnavailable)
+            return true
+        }
+        self.startupSharedContainerIdentifier = storageLocation.appGroupIdentifier
+        let appGroupName = storageLocation.appGroupIdentifier ?? "group.\(baseAppBundleId)"
+        do {
+            try PasscodeEnvironment.shared.configure(PasscodeConfiguration(appGroupIdentifier: appGroupName,
+                processRole: .mainApp, biometricKeychainService: walletBiometricKeychainService,
+                keychainAccess: storageLocation.usesPrivateContainer ? .applicationPrivate : .sharedAppGroup,
+                privateBundleIdentifier: baseAppBundleId), privateAccessGroup: {
+                    BuildConfig.keychainAccessGroup(baseAppBundleId: baseAppBundleId)
+                })
+        } catch {
+            self.launchDiagnostics.fail(.storageConfiguration)
+            return true
+        }
+        do {
+            try PasscodeEnvironment.shared.validateKeychainAccess()
+        } catch {
+            self.launchDiagnostics.fail(.keychainUnavailable)
+            return true
+        }
+        let maybeAppGroupUrl: URL? = storageLocation.baseURL
         
         let buildConfig = BuildConfig(baseAppBundleId: baseAppBundleId)
         self.buildConfig = buildConfig
@@ -694,9 +723,10 @@ private func extractAccountManagerState(records: AccountRecordsView<TelegramAcco
         )
         
         guard let appGroupUrl = maybeAppGroupUrl else {
-            self.mainWindow?.presentNative(UIAlertController(title: nil, message: "Error 2", preferredStyle: .alert))
+            self.launchDiagnostics.fail(.storageUnavailable)
             return true
         }
+        self.launchDiagnostics.mark(.storageReady)
         
         var isDebugConfiguration = false
         #if DEBUG
@@ -1060,9 +1090,14 @@ private func extractAccountManagerState(records: AccountRecordsView<TelegramAcco
         })
         
         let accountManager: AccountManager<TelegramAccountManagerTypes> = setupAccountManager(basePath: rootPath + "/accounts-metadata", isTemporary: false, isReadOnly: false, useCaches: true, removeDatabaseOnError: true, resetLocalSecrets: {
-            try resetWalletLocalSecrets()
+            // A new private sandbox is not evidence that the old shared store
+            // was deleted. Never reset its legacy wallet/passcode credentials.
+            if !storageLocation.usesPrivateContainer {
+                try resetWalletLocalSecrets()
+            }
         })
         self.accountManager = accountManager
+        self.launchDiagnostics.mark(.accountManagerReady)
 
         telegramUIDeclareEncodables()
         initializeAccountManagement()
@@ -1128,6 +1163,7 @@ private func extractAccountManagerState(records: AccountRecordsView<TelegramAcco
         }
         |> deliverOnMainQueue
         |> mapToSignal { [self] accountManager, initialPresentationDataAndSettings -> Signal<(SharedApplicationContext, LoggingSettings), NoError> in
+            self.launchDiagnostics.mark(.sharedContextReady)
             self.mainWindow?.hostView.containerView.backgroundColor =  initialPresentationDataAndSettings.presentationData.theme.chatList.backgroundColor
             
             let legacyBasePath = appGroupUrl.path
@@ -1136,6 +1172,10 @@ private func extractAccountManagerState(records: AccountRecordsView<TelegramAcco
             let appLockContext = AppLockContextImpl(rootPath: rootPath, window: self.mainWindow!, rootController: self.window?.rootViewController, applicationBindings: applicationBindings, accountManager: accountManager, presentationDataSignal: presentationDataPromise.get(), lockIconInitialFrame: {
                 return (self.mainWindow?.viewController as? TelegramRootController)?.chatListController?.lockViewFrame
             })
+            self.launchLockStatusDisposable.set((appLockContext.isCurrentlyLocked
+            |> deliverOnMainQueue).start(next: { [weak self] isLocked in
+                self?.launchDiagnostics.protectedInterfaceChanged(isLocked: isLocked)
+            }))
             
             var setPresentationCall: ((PresentationCall?) -> Void)?
             let sharedContext = SharedAccountContextImpl(mainWindow: self.mainWindow, sharedContainerPath: legacyBasePath, basePath: rootPath, encryptionParameters: encryptionParameters, accountManager: accountManager, appLockContext: appLockContext, notificationController: nil, applicationBindings: applicationBindings, initialPresentationDataAndSettings: initialPresentationDataAndSettings, networkArguments: networkArguments, hasInAppPurchases: buildConfig.isAppStoreBuild && buildConfig.apiId == 1, rootPath: rootPath, legacyBasePath: legacyBasePath, apsNotificationToken: self.notificationTokenPromise.get() |> map(Optional.init), voipNotificationToken: self.voipTokenPromise.get() |> map(Optional.init), firebaseSecretStream: self.firebaseSecretStream.get(), setNotificationCall: { call in
@@ -1423,6 +1463,7 @@ private func extractAccountManagerState(records: AccountRecordsView<TelegramAcco
 
                     self.mainWindow.debugAction = nil
                     self.mainWindow.viewController = context.rootController
+                    self.launchDiagnostics.ready(.conversations)
                     
                     if firstTime {
                         let layer = context.rootController.view.layer
@@ -1514,6 +1555,7 @@ private func extractAccountManagerState(records: AccountRecordsView<TelegramAcco
                 |> deliverOnMainQueue).start(next: { _ in
                     progressDisposable.dispose()
                     self.mainWindow.present(context.rootController, on: .root)
+                    self.launchDiagnostics.ready(.authorization)
                 }))
             } else {
                 authContextReadyDisposable.set(nil)
@@ -1809,6 +1851,7 @@ private func extractAccountManagerState(records: AccountRecordsView<TelegramAcco
 
         self.mainWindow?.updateDeviceMetrics()
         self.window?.makeKeyAndVisible()
+        self.launchDiagnostics.mark(.sceneAttached)
 
         for context in connectionOptions.urlContexts {
             let url = context.url

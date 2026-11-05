@@ -21,6 +21,11 @@ ADDED_PREFIXES = (
     "submodules/TelegramUI/Components/Chat/ChatMessageLocalFilterBubbleContentNode/",
 )
 ADDED_FILES = {
+    "docs/SIDESTORE_INSTALL.md",
+    "submodules/PasscodeCore/Sources/ApplicationStorage.swift",
+    "submodules/PasscodeCore/Tests/PasscodeCoreTests/ApplicationStorageTests.swift",
+    "submodules/PasscodeCore/Tests/PasscodeCoreTests/PrivateInstallationKeychainTests.swift",
+    "submodules/TelegramUI/Sources/LocalLaunchDiagnostics.swift",
     ".github/workflows/archive-integration.yml",
     ".github/workflows/archive-compatibility.yml",
     ".github/workflows/archive-tests.yml",
@@ -37,6 +42,11 @@ ADDED_FILES = {
 # gitlinks, stays pinned. An allowlist is a scope tripwire, not a semantic audit of
 # every change within these files; reviewers must inspect their Git diffs.
 REVIEWED_MODIFICATIONS = {
+    "Telegram/Telegram-iOS/InfoBazel.plist": "stable fork bundle identity for signing-aware container selection",
+    "submodules/PasscodeCore/BUILD": "wire native storage and Keychain isolation regression tests",
+    "submodules/PasscodeCore/Sources/Passcode.swift": "explicit private installation Keychain namespace without weakening existing shared mode",
+    "submodules/WalletContext/Sources/WalletSecurity.swift": "isolate private-installation wallet Keychain services from legacy shared items",
+    "submodules/WalletContext/Sources/WalletStorage.swift": "retain upstream wallet namespace except for isolated private installation",
     "submodules/TelegramCore/Sources/State/Fetch.swift": "pass an optional, disabled statistics collector through existing fetch routing",
     "submodules/TelegramCore/Sources/State/FetchSecretFileResource.swift": "preserve secret-file fetch behavior with optional statistics collection",
     "submodules/Postbox/Sources/Postbox.swift": "optional transaction-scoped range-removal snapshot callback; existing callers unchanged",
@@ -44,7 +54,7 @@ REVIEWED_MODIFICATIONS = {
     'submodules/TelegramCore/Sources/TelegramEngine/Calls/RateCall.swift': 'remove automatic diagnostic RPC and file upload sinks while preserving explicit rating',
     'submodules/TelegramCore/Sources/TelegramEngine/Messages/TelegramEngineMessages.swift': 'disable optional viewport and listening analytics facades',
     'submodules/TelegramUI/Sources/MediaManager.swift': 'stop collecting optional music-listening analytics',
-    'submodules/TelegramUI/Sources/AppDelegate.swift': 'remove AppCenter startup',
+    'submodules/TelegramUI/Sources/AppDelegate.swift': 'remove AppCenter startup; fail-visible signing-aware storage initialization and bounded local diagnostics',
     'submodules/TelegramUI/BUILD': 'remove optional AppCenter dependencies',
     'submodules/TelegramCallsUI/Sources/CallRatingController.swift': 'explicit rating without diagnostic attachments or support-account messages',
     'submodules/TelegramCallsUI/Sources/CallFeedbackController.swift': 'remove diagnostic attachment controls',
