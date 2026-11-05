@@ -117,9 +117,9 @@ public func customeOptionsController(context: AccountContext, category: CustomeO
             case .privacyAds: navigation.push(localPrivacyAdsSettingsController(context: context))
             case .privacySettings: navigation.push(makePrivacyAndSecurityController(context: context))
             case .messageFilters: navigation.push(localMessageFilterSettingsController(context: context))
-            case .appearance: navigation.push(themeSettingsController(context: context))
+            case .appearance: navigation.push(localAppearanceOptionsController(context: context))
             case .chatFolders:
-                navigation.push(context.sharedContext.makeFilterSettingsController(context: context, modal: false, scrollToTags: false, dismissed: nil))
+                navigation.push(localFolderAppearanceController(context: context))
             case .animationSettings: navigation.push(energySavingSettingsScreen(context: context))
             case .localCosmetics: navigation.push(localClientCosmeticsController(context: context))
             case .archiveBackup: navigation.push(localArchiveTransferController(context: context))

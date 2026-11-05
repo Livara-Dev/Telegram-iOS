@@ -1,5 +1,6 @@
 import Foundation
 import UIKit
+import SwiftSignalKit
 import AsyncDisplayKit
 import Display
 import TelegramCore
@@ -205,13 +206,16 @@ private final class ItemNode: ASDisplayNode {
         self.pressed(self.isDisabled)
     }
     
-    func updateText(strings: PresentationStrings, title: ChatFolderTitle, shortTitle: ChatFolderTitle, unreadCount: Int, unreadHasUnmuted: Bool, isNoFilter: Bool, selectionFraction: CGFloat, isEditing: Bool, isReordering: Bool, canReorderAllChats: Bool, isDisabled: Bool, presentationData: PresentationData, transition: ContainedViewLayoutTransition) {
+    private var localColor: UInt32?
+
+    func updateText(strings: PresentationStrings, title: ChatFolderTitle, shortTitle: ChatFolderTitle, localColor: UInt32?, unreadCount: Int, unreadHasUnmuted: Bool, isNoFilter: Bool, selectionFraction: CGFloat, isEditing: Bool, isReordering: Bool, canReorderAllChats: Bool, isDisabled: Bool, presentationData: PresentationData, transition: ContainedViewLayoutTransition) {
         self.isEditing = isEditing
         self.isDisabled = isDisabled
         
         var themeUpdated = false
-        if self.theme !== presentationData.theme {
+        if self.theme !== presentationData.theme || self.localColor != localColor {
             self.theme = presentationData.theme
+            self.localColor = localColor
             
             self.badgeBackgroundActiveNode.image = generateStretchableFilledCircleImage(diameter: 18.0, color: presentationData.theme.list.itemCheckColors.fillColor)
             self.badgeBackgroundInactiveNode.image = generateStretchableFilledCircleImage(diameter: 18.0, color: presentationData.theme.chatList.unreadBadgeInactiveBackgroundColor)
@@ -301,11 +305,12 @@ private final class ItemNode: ASDisplayNode {
         self.shortTitleActiveNode.visibility = title.enableAnimations
         
         if themeUpdated || titleUpdated {
-            self.titleNode.attributedText = title.attributedString(font: Font.medium(14.0), textColor: presentationData.theme.chat.inputPanel.panelControlColor)
-            self.titleActiveNode.attributedText = title.attributedString(font: Font.medium(14.0), textColor: presentationData.theme.chat.inputPanel.panelControlColor)
+            let textColor = localColor.map { UIColor(rgb: $0) } ?? presentationData.theme.chat.inputPanel.panelControlColor
+            self.titleNode.attributedText = title.attributedString(font: Font.medium(14.0), textColor: textColor)
+            self.titleActiveNode.attributedText = title.attributedString(font: Font.medium(14.0), textColor: textColor)
             
-            self.shortTitleNode.attributedText = shortTitle.attributedString(font: Font.medium(14.0), textColor: presentationData.theme.chat.inputPanel.panelControlColor)
-            self.shortTitleActiveNode.attributedText = shortTitle.attributedString(font: Font.medium(14.0), textColor: presentationData.theme.chat.inputPanel.panelControlColor)
+            self.shortTitleNode.attributedText = shortTitle.attributedString(font: Font.medium(14.0), textColor: textColor)
+            self.shortTitleActiveNode.attributedText = shortTitle.attributedString(font: Font.medium(14.0), textColor: textColor)
         }
         
         if unreadCount != 0 {
@@ -484,6 +489,8 @@ public enum ChatListFilterTabEntry: Equatable {
 
 public final class ChatListFilterTabContainerNode: ASDisplayNode {
     private let context: AccountContext
+    private var localAppearance: LocalFolderAppearanceSettingsState = .available(LocalFolderAppearanceSettings())
+    private let localAppearanceDisposable = MetaDisposable()
     private let backgroundContainerView: GlassBackgroundContainerView
     private let backgroundView: GlassBackgroundView
     private let scrollNode: ASScrollNode
@@ -684,6 +691,24 @@ public final class ChatListFilterTabContainerNode: ASDisplayNode {
         self.reorderingGesture = reorderingGesture
         self.view.addGestureRecognizer(reorderingGesture)
         reorderingGesture.isEnabled = false
+
+        // Each tab surface observes its own account. Re-layout uses original
+        // currentParams, so repeated preferences/theme changes never append a
+        // second tag or change the canonical filter/order/Premium limits.
+        self.localAppearanceDisposable.set((context.account.localFolderAppearance.settings |> deliverOnMainQueue).start(next: { [weak self] settings in
+            guard let self, self.localAppearance != settings else { return }
+            self.localAppearance = settings
+            if let params = self.currentParams {
+                self.update(size: params.size, sideInset: params.sideInset, filters: params.filters,
+                    selectedFilter: params.selectedFilter, isReordering: params.isReordering, isEditing: params.isEditing,
+                    canReorderAllChats: params.canReorderAllChats, filtersLimit: params.filtersLimit,
+                    transitionFraction: params.transitionFraction, presentationData: params.presentationData, transition: .immediate)
+            }
+        }))
+    }
+
+    deinit {
+        self.localAppearanceDisposable.dispose()
     }
     
     private var previousSelectedAbsFrame: CGRect?
@@ -829,7 +854,11 @@ public final class ChatListFilterTabContainerNode: ASDisplayNode {
                 selectionFraction = 0.0
             }
             
-            itemNode.updateText(strings: presentationData.strings, title: filter.title(strings: presentationData.strings), shortTitle: i == 0 ? filter.shortTitle(strings: presentationData.strings) : filter.title(strings: presentationData.strings), unreadCount: unreadCount, unreadHasUnmuted: unreadHasUnmuted, isNoFilter: isNoFilter, selectionFraction: selectionFraction, isEditing: isEditing, isReordering: isReordering, canReorderAllChats: canReorderAllChats, isDisabled: isDisabled, presentationData: presentationData, transition: itemNodeTransition)
+            let folderId: Int32
+            switch filter.id { case .all: folderId = 0; case let .filter(id): folderId = id }
+            let title = localFolderAppearanceProjection(folderId: folderId, canonicalTitle: filter.title(strings: presentationData.strings), settings: self.localAppearance, dark: presentationData.theme.overallDarkAppearance)
+            let shortTitle = localFolderAppearanceProjection(folderId: folderId, canonicalTitle: i == 0 ? filter.shortTitle(strings: presentationData.strings) : filter.title(strings: presentationData.strings), settings: self.localAppearance, dark: presentationData.theme.overallDarkAppearance)
+            itemNode.updateText(strings: presentationData.strings, title: title.title, shortTitle: shortTitle.title, localColor: title.rgb, unreadCount: unreadCount, unreadHasUnmuted: unreadHasUnmuted, isNoFilter: isNoFilter, selectionFraction: selectionFraction, isEditing: isEditing, isReordering: isReordering, canReorderAllChats: canReorderAllChats, isDisabled: isDisabled, presentationData: presentationData, transition: itemNodeTransition)
         }
         var removeKeys: [ChatListFilterTabEntryId] = []
         for (id, _) in self.itemNodes {

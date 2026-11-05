@@ -23,6 +23,8 @@ ADDED_PREFIXES = (
     "submodules/TelegramUI/Components/Chat/ChatMessageLocalFilterBubbleContentNode/",
 )
 ADDED_FILES = {
+    'submodules/SettingsUI/Sources/LocalFolderAppearanceController.swift',
+    'submodules/TelegramCore/Tests/LocalFolderAppearanceTests.swift',
     'submodules/SettingsUI/Sources/LocalArchiveMediaPreview.swift',
     'submodules/SettingsUI/Tests/LocalArchiveMediaPreviewTests.swift',
 
@@ -66,6 +68,9 @@ ADDED_FILES = {
 # gitlinks, stays pinned. An allowlist is a scope tripwire, not a semantic audit of
 # every change within these files; reviewers must inspect their Git diffs.
 REVIEWED_MODIFICATIONS = {
+    'submodules/ChatListUI/Sources/ChatListFilterPresetListController.swift': 'account-local folder title/color projection; canonical filters and Premium limits remain unchanged',
+    'submodules/TelegramUI/Components/ChatList/ChatListFilterTabContainerNode/BUILD': 'direct dependency on the existing pinned SwiftSignalKit for account preference observation',
+    'submodules/TelegramUI/Components/ChatList/ChatListFilterTabContainerNode/Sources/ChatListFilterTabContainerNode.swift': 'observe immutable account context and project local folder tags/colors without rewriting canonical titles or order',
     'submodules/SettingsUI/Sources/Themes/ThemeSettingsController.swift': 'explicit per-account bundled-icon UI permission, real Premium unchanged, validated OS icon completion',
     'submodules/TelegramUI/Components/Chat/ChatSearchNavigationContentNode/Sources/ChatSearchNavigationContentNode.swift': 'accessible local-archive search action with reserved native search-field geometry',
     'submodules/TelegramUI/Components/PeerInfo/PeerInfoScreen/Sources/PeerInfoProfileItems.swift': 'chat-scoped separate local saved-media and deleted-history destinations',
@@ -111,7 +116,7 @@ REVIEWED_MODIFICATIONS = {
     "submodules/TelegramCore/Sources/TelegramEngine/Feed/FeedPageStorage.swift": "capture before the existing feed server-body merge result is stored; do not enable the feed",
     "submodules/TelegramCore/Sources/TelegramEngine/Messages/LoadMessagesIfNecessary.swift": "observe replacements in ordinary server message-load storage",
     "submodules/TelegramCore/Sources/TelegramEngine/Messages/SparseMessageList.swift": "observe server calendar-page body replacements without changing page results",
-    "submodules/TelegramCore/Sources/TelegramEngine/Peers/ChatListFiltering.swift": "observe existing bodies replaced by fetched dialog information",
+    "submodules/TelegramCore/Sources/TelegramEngine/Peers/ChatListFiltering.swift": "observe replaced dialog bodies and atomically prune local appearance for removed folder IDs; server payloads remain canonical",
     "submodules/TelegramCore/Sources/TelegramEngine/Peers/UpdateCachedPeerData.swift": "capture cached full-channel minimum-ID range removal and defer only queued media unlink",
     "submodules/TelegramCore/Sources/TelegramEngine/Messages/SearchMessages.swift": "preserve previous body during media-reference refetch only for the original ordinary cloud request identity",
     'submodules/TelegramCore/Sources/TelegramEngine/Calls/RateCall.swift': 'remove automatic diagnostic RPC and file upload sinks while preserving explicit rating',

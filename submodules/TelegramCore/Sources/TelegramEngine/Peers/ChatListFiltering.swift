@@ -1135,6 +1135,7 @@ func _internal_updateChatListFiltersInteractively(postbox: Postbox, _ f: @escapi
             return PreferencesEntry(state)
         })
         if hasUpdates {
+            pruneLocalFolderAppearance(transaction: transaction, remainingFolderIds: Set(updated.map(\.id)))
             requestChatListFiltersSync(transaction: transaction)
         }
         return updated
@@ -1191,6 +1192,7 @@ func _internal_updateChatListFiltersInteractively(transaction: Transaction, _ f:
         return PreferencesEntry(state)
     })
     if hasUpdates {
+        pruneLocalFolderAppearance(transaction: transaction, remainingFolderIds: Set(_internal_currentChatListFilters(transaction: transaction).map(\.id)))
         requestChatListFiltersSync(transaction: transaction)
     }
 }
@@ -1265,6 +1267,9 @@ func updateChatListFiltersState(transaction: Transaction, _ f: (ChatListFiltersS
         result = updated
         return PreferencesEntry(updated)
     })
+    if let result {
+        pruneLocalFolderAppearance(transaction: transaction, remainingFolderIds: Set(result.filters.map(\.id)))
+    }
     return result ?? .default
 }
 
