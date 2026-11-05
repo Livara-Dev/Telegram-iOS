@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 import Foundation
 import Security
+import LocalAuthentication
 import XCTest
 @testable import PasscodeCore
 
@@ -58,6 +59,23 @@ final class PrivateInstallationKeychainTests: XCTestCase {
             XCTAssertEqual(query[kSecAttrAccessGroup as String] as? String, self.privateGroup)
             #endif
             XCTAssertEqual(query[kSecAttrSynchronizable as String] as? Bool, false)
+        }
+    }
+
+    func testStartupProbePreventsAuthenticationUIWithoutChangingCredentialScope() throws {
+        for mode in [PasscodeConfiguration.KeychainAccess.sharedAppGroup, .applicationPrivate] {
+            let keychain = PasscodeKeychain(environment: try self.environment(access: mode))
+            let ordinary = try keychain.query("org.livara.ayugram.startup-probe.v1")
+            let probe = try keychain.noninteractiveQuery("org.livara.ayugram.startup-probe.v1")
+            let context = try XCTUnwrap(probe[kSecUseAuthenticationContext as String] as? LAContext)
+            XCTAssertTrue(context.interactionNotAllowed)
+            XCTAssertNil(ordinary[kSecUseAuthenticationContext as String])
+            XCTAssertEqual(probe[kSecAttrService as String] as? String, ordinary[kSecAttrService as String] as? String)
+            XCTAssertEqual(probe[kSecAttrAccount as String] as? String, ordinary[kSecAttrAccount as String] as? String)
+            XCTAssertEqual(probe[kSecAttrSynchronizable as String] as? Bool, false)
+            #if os(iOS)
+            XCTAssertEqual(probe[kSecAttrAccessGroup as String] as? String, ordinary[kSecAttrAccessGroup as String] as? String)
+            #endif
         }
     }
 }

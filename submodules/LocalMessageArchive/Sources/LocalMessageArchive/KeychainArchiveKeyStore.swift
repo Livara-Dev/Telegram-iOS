@@ -3,6 +3,7 @@
 
 import Foundation
 import Security
+import LocalAuthentication
 
 /// Synchronous Keychain access. Invoke from the archive's storage worker, never
 /// from the main UI queue. Keys are unrelated to Telegram authentication material.
@@ -59,13 +60,15 @@ public final class KeychainArchiveKeyStore: ArchiveKeyProvider {
     }
 
     private func identity(accountId: Int64) -> [String: Any] {
+        let context = LAContext()
+        context.interactionNotAllowed = true
         return [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: Self.service,
             kSecAttrAccount as String: String(accountId),
             kSecAttrSynchronizable as String: false,
             kSecUseDataProtectionKeychain as String: true,
-            kSecUseAuthenticationUI as String: kSecUseAuthenticationUIFail
+            kSecUseAuthenticationContext as String: context
         ]
     }
 

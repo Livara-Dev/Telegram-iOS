@@ -123,8 +123,7 @@ public final class PasscodeEnvironment: @unchecked Sendable {
     public func validateKeychainAccess() throws {
         let account = "org.livara.ayugram.startup-probe.v1"
         let keychain = PasscodeKeychain(environment: self)
-        var query = try keychain.query(account)
-        query[kSecUseAuthenticationUI as String] = kSecUseAuthenticationUIFail
+        let query = try keychain.noninteractiveQuery(account)
         // At most one non-secret probe can survive termination. Never enumerate
         // or remove other service/account pairs during launch preflight.
         let cleanup = SecItemDelete(query as CFDictionary)
@@ -190,6 +189,16 @@ final class PasscodeKeychain: PasscodeStorage {
         #if !os(macOS)
         query[kSecAttrAccessGroup as String] = try account.hasPrefix("biometric.") ? self.environment.privateAccessGroup() : self.environment.credentialAccessGroup()
         #endif
+        return query
+    }
+
+    /// Startup preflight must never display an authentication prompt. Keep this
+    /// separate from ordinary reads, which may use an interactive caller context.
+    func noninteractiveQuery(_ account: String) throws -> [String: Any] {
+        let context = LAContext()
+        context.interactionNotAllowed = true
+        var query = try self.query(account)
+        query[kSecUseAuthenticationContext as String] = context
         return query
     }
 

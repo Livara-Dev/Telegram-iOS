@@ -2,6 +2,7 @@
 
 import Foundation
 import Security
+import LocalAuthentication
 import XCTest
 @testable import LocalMessageArchive
 
@@ -81,7 +82,8 @@ final class KeychainArchiveKeyStoreTests: XCTestCase {
         XCTAssertEqual(attributes[kSecAttrAccessible as String] as? String, kSecAttrAccessibleWhenUnlockedThisDeviceOnly as String)
         XCTAssertEqual(attributes[kSecAttrSynchronizable as String] as? Bool, false)
         XCTAssertEqual(attributes[kSecUseDataProtectionKeychain as String] as? Bool, true)
-        XCTAssertEqual(attributes[kSecUseAuthenticationUI as String] as? String, kSecUseAuthenticationUIFail as String)
+        let context = try XCTUnwrap(attributes[kSecUseAuthenticationContext as String] as? LAContext)
+        XCTAssertTrue(context.interactionNotAllowed)
         XCTAssertNil(attributes[kSecAttrAccessGroup as String])
     }
 
@@ -94,7 +96,8 @@ final class KeychainArchiveKeyStoreTests: XCTestCase {
         XCTAssertTrue(operations.additions.isEmpty)
         let query = try XCTUnwrap(operations.reads.first)
         XCTAssertEqual(query[kSecAttrSynchronizable as String] as? Bool, false)
-        XCTAssertEqual(query[kSecUseAuthenticationUI as String] as? String, kSecUseAuthenticationUIFail as String)
+        let context = try XCTUnwrap(query[kSecUseAuthenticationContext as String] as? LAContext)
+        XCTAssertTrue(context.interactionNotAllowed)
         XCTAssertEqual(query[kSecReturnAttributes as String] as? Bool, true)
         XCTAssertEqual(query[kSecReturnData as String] as? Bool, true)
     }
