@@ -9,7 +9,7 @@ on:
       validation_scope:
         description: Startup replay, native diagnostics, or full app qualification
         type: choice
-        options: [full, focused, probe, startup, projection, projection-only, custom-options-ui]
+        options: [full, native-only, focused, probe, startup, projection, projection-only, custom-options-ui]
         default: full
       replay_run:
         description: Startup replay; source simulator run ID
