@@ -31,11 +31,14 @@ public struct LocalMessageFilterEvaluator {
         self.regularExpressions = expressions
     }
 
-    public func evaluate(text: String, peerId: Int64, mediaType: LocalMessageFilterMediaType? = nil, senderIsLocallyBlocked: Bool = false) -> LocalMessageFilterEvaluation {
+    public func evaluate(text: String, peerId: Int64, mediaType: LocalMessageFilterMediaType? = nil, senderIsLocallyBlocked: Bool = false, senderId: Int64? = nil) -> LocalMessageFilterEvaluation {
         guard self.valid else { return .unavailable }
         guard self.settings.enabled else { return .noMatch }
 
         let skipsGlobal = self.settings.excludedPeerIds.contains(peerId)
+        if !skipsGlobal, let senderId, self.settings.hiddenSenderIds.contains(senderId) {
+            return .matched(ruleId: "local-hidden-sender")
+        }
         if self.settings.hideBlockedSenders && senderIsLocallyBlocked && !skipsGlobal {
             return .matched(ruleId: "local-blocked-sender")
         }
@@ -45,7 +48,11 @@ public struct LocalMessageFilterEvaluator {
         }
         guard !applicable.isEmpty else { return .noMatch }
         for rule in applicable {
-            if let type = rule.mediaType, type == mediaType { return .matched(ruleId: rule.id) }
+            // Nil media means text-only or unavailable classification; never
+            // turn absence of metadata into a successful inverse predicate.
+            if let type = rule.mediaType, let mediaType, (type == mediaType) != rule.isInverted {
+                return .matched(ruleId: rule.id)
+            }
         }
         let textRules = applicable.filter { $0.mediaType == nil }
         guard !textRules.isEmpty else { return .noMatch }
@@ -63,8 +70,12 @@ public struct LocalMessageFilterEvaluator {
             if rule.matchingMode == .regularExpression {
                 guard let expression = self.regularExpressions[rule.id] else { return .unavailable }
                 switch expression.evaluate(text, remainingWork: &remainingWork) {
-                case .matched: return .matched(ruleId: rule.id)
-                case .noMatch: continue
+                case .matched:
+                    if !rule.isInverted { return .matched(ruleId: rule.id) }
+                    continue
+                case .noMatch:
+                    if rule.isInverted { return .matched(ruleId: rule.id) }
+                    continue
                 case .workLimit: return .skippedWorkLimit
                 }
             }
@@ -72,7 +83,8 @@ public struct LocalMessageFilterEvaluator {
             // canonical Unicode equivalence applies; case folding uses a fixed
             // locale rather than the device's current language.
             let options: NSString.CompareOptions = rule.caseSensitive ? [] : [.caseInsensitive]
-            if value.range(of: rule.text, options: options, range: fullRange, locale: locale).location != NSNotFound {
+            let matches = value.range(of: rule.text, options: options, range: fullRange, locale: locale).location != NSNotFound
+            if matches != rule.isInverted {
                 return .matched(ruleId: rule.id)
             }
         }

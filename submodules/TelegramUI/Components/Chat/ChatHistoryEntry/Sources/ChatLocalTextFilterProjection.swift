@@ -22,6 +22,12 @@ public struct ChatLocalTextFilterSnapshot {
         return self.id == message.id && self.stableVersion == message.stableVersion && self.text == message.text
             && self.authorId == message.author?.id && self.mediaType == localMessageFilterMediaType(message)
     }
+
+    /// Shared production bridge for background evaluation. The caller must
+    /// first apply the ordinary-message eligibility boundary below.
+    public func evaluate(using evaluator: LocalMessageFilterEvaluator, senderIsLocallyBlocked: Bool = false) -> LocalMessageFilterEvaluation {
+        return evaluator.evaluate(text: self.text, peerId: self.id.peerId.toInt64(), mediaType: self.mediaType, senderIsLocallyBlocked: senderIsLocallyBlocked, senderId: self.authorId?.toInt64())
+    }
 }
 
 /// Ordinary incoming text and single generic-bubble media are supported. Keep

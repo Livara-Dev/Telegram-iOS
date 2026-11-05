@@ -125,7 +125,7 @@ final class LocalMessageFilterRegularExpressionTests: XCTestCase {
         context = LocalMessageFilterContext(postbox: fixture.postbox)
         guard case let .available(settings) = try self.localArchiveValue(context.settings) else { return XCTFail("legacy policy unavailable") }
         XCTAssertEqual(settings.rules, [oldRule])
-        XCTAssertEqual(settings.schemaVersion, 2)
+        XCTAssertEqual(settings.schemaVersion, 3)
         XCTAssertEqual(LocalMessageFilterEvaluator(settings: settings).evaluate(text: "aZZb", peerId: 1), .noMatch)
         XCTAssertEqual(try self.localArchiveValue(fixture.postbox.transaction { $0.getPreferencesEntry(key: localMessageFilterSettingsKey)?.data }), entry.data)
         XCTAssertTrue(try self.localArchiveValue(context.setEnabled(false)))
@@ -133,7 +133,7 @@ final class LocalMessageFilterRegularExpressionTests: XCTestCase {
         try fixture.reopen()
         guard case let .available(updated) = try self.localArchiveValue(LocalMessageFilterContext(postbox: fixture.postbox).settings) else { return XCTFail("updated policy unavailable") }
         XCTAssertEqual(updated.rules, [oldRule])
-        XCTAssertEqual(updated.schemaVersion, 2)
+        XCTAssertEqual(updated.schemaVersion, 3)
         XCTAssertFalse(updated.enabled)
         XCTAssertEqual(updated.excludedPeerIds, [123])
     }

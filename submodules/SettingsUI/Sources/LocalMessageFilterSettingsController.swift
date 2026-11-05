@@ -11,6 +11,7 @@ import LocalizedPeerData
 private enum LocalFilterRowId: Hashable {
     case fixed(Int)
     case rule(String)
+    case sender(Int64)
 }
 
 private struct LocalFilterRow: ItemListNodeEntry {
@@ -132,10 +133,24 @@ public func localMessageFilterSettingsController(context: AccountContext, peerId
             let sheet = ActionSheetController(presentationData: presentationData)
             sheet.setItemGroups([
                 ActionSheetItemGroup(items: [
-                    ActionSheetTextItem(title: "Disable local filtering and remove this account’s rules and global-chat exceptions? Telegram messages and the archive stay unchanged."),
+                    ActionSheetTextItem(title: "Disable local filtering and remove this account’s rules, locally hidden senders and global-chat exceptions? Telegram messages, server block settings and the archive stay unchanged."),
                     ActionSheetButtonItem(title: "Reset Message Filters", color: .destructive, action: { [weak sheet] in
                         sheet?.dismissAnimated()
                         apply(filter.reset())
+                    })
+                ]),
+                ActionSheetItemGroup(items: [ActionSheetButtonItem(title: presentationData.strings.Common_Cancel, color: .accent, action: { [weak sheet] in sheet?.dismissAnimated() })])
+            ])
+            presentController?(sheet)
+        case let .sender(id):
+            let presentationData = context.sharedContext.currentPresentationData.with { $0 }
+            let sheet = ActionSheetController(presentationData: presentationData)
+            sheet.setItemGroups([
+                ActionSheetItemGroup(items: [
+                    ActionSheetTextItem(title: "Show this sender’s supported messages again? This only removes the local sender filter. Other matching rules still apply."),
+                    ActionSheetButtonItem(title: "Remove Local Sender Filter", color: .accent, action: { [weak sheet] in
+                        sheet?.dismissAnimated()
+                        apply(filter.setSenderHidden(senderId: EnginePeer.Id(id), hidden: false))
                     })
                 ]),
                 ActionSheetItemGroup(items: [ActionSheetButtonItem(title: presentationData.strings.Common_Cancel, color: .accent, action: { [weak sheet] in sheet?.dismissAnimated() })])
@@ -150,6 +165,7 @@ public func localMessageFilterSettingsController(context: AccountContext, peerId
     |> mapToSignal { state in
         guard case let .available(settings) = state else { return .single((state, [:])) }
         var ids = Set(settings.rules.compactMap { $0.peerId })
+        ids.formUnion(settings.hiddenSenderIds)
         if let peerId { ids.insert(peerId) }
         let peerIds = Array(ids)
         guard !peerIds.isEmpty else { return .single((state, [:])) }
@@ -211,8 +227,8 @@ public func localMessageFilterSettingsController(context: AccountContext, peerId
             } else {
                 scope = "All chats"
             }
-            let kind = rule.mediaType == nil ? (rule.matchingMode == .regularExpression ? "Expression" : "Literal") + " · " + (rule.caseSensitive ? "Case-sensitive" : "Ignore case") : "Media type"
-            let title = rule.mediaType.map { "Hide " + localFilterMediaTypeTitle($0) } ?? localFilterRulePreview(rule.text)
+            let kind = (rule.mediaType == nil ? (rule.matchingMode == .regularExpression ? "Expression" : "Literal") + " · " + (rule.caseSensitive ? "Case-sensitive" : "Ignore case") : "Media type") + (rule.isInverted ? " · Inverse" : "")
+            let title = rule.mediaType.map { (rule.isInverted ? "Hide Other Media · " : "Hide ") + localFilterMediaTypeTitle($0) } ?? localFilterRulePreview(rule.text)
             entries.append(LocalFilterRow(stableId: .rule(rule.id), order: nextOrder, section: 3, content: .action(title, scope + " · " + kind, canChange)))
             nextOrder += 1
         }
@@ -220,9 +236,17 @@ public func localMessageFilterSettingsController(context: AccountContext, peerId
             entries.append(LocalFilterRow(stableId: .fixed(6), order: nextOrder, section: 3, content: .text("No saved rules for this view.")))
             nextOrder += 1
         }
+        entries.append(LocalFilterRow(stableId: .fixed(17), order: nextOrder, section: 4, content: .heading("LOCALLY HIDDEN SENDERS · \(settings.hiddenSenderIds.count)/\(LocalMessageFilterLimits.maximumHiddenSenders)")))
+        nextOrder += 1
+        entries.append(LocalFilterRow(stableId: .fixed(18), order: nextOrder, section: 4, content: .text("Open a supported message’s filter editor to hide its sender locally. No Telegram block request is sent. Global-chat exceptions apply; sender filters require a known author. Tap a sender below to remove their local filter.")))
+        nextOrder += 1
+        for id in settings.hiddenSenderIds.sorted() {
+            entries.append(LocalFilterRow(stableId: .sender(id), order: nextOrder, section: 4, content: .action(data.1[id] ?? "Sender \(id)", "Show again…", canChange)))
+            nextOrder += 1
+        }
         entries.append(LocalFilterRow(stableId: .fixed(7), order: nextOrder, section: 4, content: .text("Supports ordinary incoming text and single photos, videos, GIFs, voice/video messages and files in generic bubbles. Forwarded or grouped messages, stickers, large emoji, rich/unknown attributes, secret, protected and disappearing content stay visible. Filtering does not stop already playing media, block receipts, remove unread counts or delete server messages.")))
         entries.append(LocalFilterRow(stableId: .fixed(9), order: nextOrder + 1, section: 4, content: .text("Tap a hidden-message placeholder to show filtered messages in that chat. Use Hide Filtered Messages Again in the chat menu to restore the placeholders.")))
-        entries.append(LocalFilterRow(stableId: .fixed(13), order: nextOrder + 2, section: 4, content: .text("Oversized messages and expressions that exceed the work limit remain visible. Matching uses a finite-state evaluator, not unrestricted backtracking.")))
+        entries.append(LocalFilterRow(stableId: .fixed(13), order: nextOrder + 2, section: 4, content: .text("Text rules skip oversized bodies and expressions that exceed the work limit. Independent sender and media-type rules may still apply. Expressions use a finite-state evaluator, not unrestricted backtracking.")))
         entries.append(LocalFilterRow(stableId: .fixed(14), order: nextOrder + 3, section: 5, content: .destructive("Reset Message Filters", canChange)))
         if actionState.1 {
             entries.append(LocalFilterRow(stableId: .fixed(8), order: nextOrder + 4, section: 5, content: .text("The filter change could not be saved. Existing rules have been kept.")))
@@ -246,10 +270,11 @@ private struct LocalFilterDraft: Equatable {
     var onlyThisChat: Bool
     var regularExpression: Bool
     var mediaType: LocalMessageFilterMediaType?
+    var isInverted: Bool
 }
 
 private func localFilterRule(id: String, peerId: Int64?, draft: LocalFilterDraft) -> LocalMessageFilterRule {
-    return LocalMessageFilterRule(id: id, text: draft.mediaType == nil ? draft.text : "", caseSensitive: draft.mediaType == nil && draft.caseSensitive, peerId: draft.onlyThisChat ? peerId : nil, matchingMode: draft.mediaType == nil && draft.regularExpression ? .regularExpression : .literal, mediaType: draft.mediaType)
+    return LocalMessageFilterRule(id: id, text: draft.mediaType == nil ? draft.text : "", caseSensitive: draft.mediaType == nil && draft.caseSensitive, peerId: draft.onlyThisChat ? peerId : nil, matchingMode: draft.mediaType == nil && draft.regularExpression ? .regularExpression : .literal, mediaType: draft.mediaType, isInverted: draft.isInverted)
 }
 
 private func localFilterBoundedTextLength(_ text: String) -> Int {
@@ -280,14 +305,14 @@ private func localFilterPrefill(_ text: String) -> String {
 
 /// Creating a rule only pre-fills an editor. It neither saves the rule nor enables
 /// filtering until the user explicitly confirms the respective action.
-public func localMessageFilterRuleEditorController(context: AccountContext, peerId: Int64?, initialText: String, initialMediaType: LocalMessageFilterMediaType? = nil) -> ViewController {
-    return localFilterRuleEditor(context: context, peerId: peerId, rule: nil, initialText: initialText, fromMessage: !initialText.isEmpty || initialMediaType != nil, initialMediaType: initialMediaType)
+public func localMessageFilterRuleEditorController(context: AccountContext, peerId: Int64?, initialText: String, initialMediaType: LocalMessageFilterMediaType? = nil, initialSenderId: EnginePeer.Id? = nil) -> ViewController {
+    return localFilterRuleEditor(context: context, peerId: peerId, rule: nil, initialText: initialText, fromMessage: !initialText.isEmpty || initialMediaType != nil, initialMediaType: initialMediaType, initialSenderId: initialSenderId)
 }
 
-private func localFilterRuleEditor(context: AccountContext, peerId: Int64?, rule: LocalMessageFilterRule?, initialText: String, fromMessage: Bool, initialMediaType: LocalMessageFilterMediaType? = nil) -> ViewController {
+private func localFilterRuleEditor(context: AccountContext, peerId: Int64?, rule: LocalMessageFilterRule?, initialText: String, fromMessage: Bool, initialMediaType: LocalMessageFilterMediaType? = nil, initialSenderId: EnginePeer.Id? = nil) -> ViewController {
     let filter = context.account.localMessageFilter
     let ruleId = rule?.id ?? UUID().uuidString
-    var draft = LocalFilterDraft(text: rule?.text ?? localFilterPrefill(initialText), caseSensitive: rule?.caseSensitive ?? false, onlyThisChat: rule.map { $0.peerId != nil } ?? (peerId != nil), regularExpression: rule?.matchingMode == .regularExpression, mediaType: rule?.mediaType ?? initialMediaType)
+    var draft = LocalFilterDraft(text: rule?.text ?? localFilterPrefill(initialText), caseSensitive: rule?.caseSensitive ?? false, onlyThisChat: rule.map { $0.peerId != nil } ?? (peerId != nil), regularExpression: rule?.matchingMode == .regularExpression, mediaType: rule?.mediaType ?? initialMediaType, isInverted: rule?.isInverted ?? false)
     let draftValue = ValuePromise<LocalFilterDraft>(draft, ignoreRepeated: true)
     let actionState = Promise<(Bool, Bool)>((false, false))
     let actionDisposable = MetaDisposable()
@@ -314,6 +339,13 @@ private func localFilterRuleEditor(context: AccountContext, peerId: Int64?, rule
         if id == .fixed(3), draft.mediaType == nil { draft.caseSensitive = value }
         if id == .fixed(4), peerId != nil { draft.onlyThisChat = value }
         if id == .fixed(12), draft.mediaType == nil { draft.regularExpression = value }
+        if id == .fixed(17) { draft.isInverted = value }
+        if id == .fixed(19), let initialSenderId {
+            actionState.set(.single((true, false)))
+            actionDisposable.set((filter.setSenderHidden(senderId: initialSenderId, hidden: value) |> deliverOnMainQueue).start(next: { success in
+                actionState.set(.single((false, !success)))
+            }))
+        }
         draftValue.set(draft)
     }, action: { id in
         switch id {
@@ -363,13 +395,16 @@ private func localFilterRuleEditor(context: AccountContext, peerId: Int64?, rule
     let signal = combineLatest(queue: .mainQueue(), context.sharedContext.presentationData, filter.settings, draftValue.get(), actionState.get())
     |> map { presentationData, state, value, actionState -> (ItemListControllerState, (ItemListNodeState, Any)) in
         let enabled: Bool
+        let senderIsHidden: Bool
         switch state {
         case let .available(settings):
             supported = true
             enabled = settings.enabled
+            senderIsHidden = initialSenderId.map { settings.hiddenSenderIds.contains($0.toInt64()) } ?? false
         case .unsupported:
             supported = false
             enabled = false
+            senderIsHidden = false
         }
         busy = actionState.0
         let canChange = supported && !busy
@@ -380,8 +415,8 @@ private func localFilterRuleEditor(context: AccountContext, peerId: Int64?, rule
         if let type = value.mediaType {
             title = "MEDIA RULE · " + localFilterMediaTypeTitle(type)
             bodyId = .fixed(15)
-            body = .text("Hide supported incoming " + localFilterMediaTypeTitle(type).lowercased() + " in the selected scope. Captions and media bytes are kept unchanged on Telegram.")
-            explanation = "Media rules apply by type, including messages with no caption. Unsupported, protected, grouped and disappearing content stays visible."
+            body = .text(value.isInverted ? "Hide other recognized incoming media types in the selected scope; keep " + localFilterMediaTypeTitle(type).lowercased() + "." : "Hide supported incoming " + localFilterMediaTypeTitle(type).lowercased() + " in the selected scope. Captions and media bytes are kept unchanged on Telegram.")
+            explanation = "Media rules apply by type, including messages with no caption. Inverse media rules do not hide text-only messages. Unsupported, protected, grouped and disappearing content stays visible."
         } else {
             title = "\(value.regularExpression ? "REGULAR EXPRESSION" : "TEXT OR CAPTION") · \(localFilterBoundedTextLength(value.text))/\(LocalMessageFilterLimits.maximumLiteralUTF16Length)"
             bodyId = .fixed(1)
@@ -395,26 +430,32 @@ private func localFilterRuleEditor(context: AccountContext, peerId: Int64?, rule
             LocalFilterRow(stableId: supported ? bodyId : .fixed(10), order: 2, section: 0, content: supported ? body : .text("Saved filter settings are unsupported. This version cannot change them.")),
             LocalFilterRow(stableId: .fixed(2), order: 3, section: 0, content: .text(explanation))
         ]
+        entries.append(LocalFilterRow(stableId: .fixed(17), order: 4, section: 1, content: .toggle("Invert This Rule", value.isInverted, canChange)))
+        entries.append(LocalFilterRow(stableId: .fixed(18), order: 5, section: 1, content: .text("Inverse text rules hide supported nonempty text or captions that do not match. Inverse media rules hide other recognized media types. This is not an allowlist: another rule may also hide matching messages. Unknown, empty, oversized or work-limited text stays visible.")))
         if value.mediaType == nil {
-            entries.append(LocalFilterRow(stableId: .fixed(12), order: 4, section: 1, content: .toggle("Regular expression · safe subset", value.regularExpression, canChange)))
-            entries.append(LocalFilterRow(stableId: .fixed(3), order: 5, section: 1, content: .toggle("Case-sensitive matching", value.caseSensitive, canChange)))
+            entries.append(LocalFilterRow(stableId: .fixed(12), order: 6, section: 1, content: .toggle("Regular expression · safe subset", value.regularExpression, canChange)))
+            entries.append(LocalFilterRow(stableId: .fixed(3), order: 7, section: 1, content: .toggle("Case-sensitive matching", value.caseSensitive, canChange)))
         }
         if peerId != nil {
-            entries.append(LocalFilterRow(stableId: .fixed(4), order: 6, section: 1, content: .toggle("Only apply to this chat", value.onlyThisChat, canChange)))
+            entries.append(LocalFilterRow(stableId: .fixed(4), order: 8, section: 1, content: .toggle("Only apply to this chat", value.onlyThisChat, canChange)))
         }
         let scope = value.onlyThisChat ? "This rule applies only to its selected chat. Excluding that chat from global rules does not disable this rule." : "This global rule applies to all chats except chats excluded from global rules. To create a rule for one chat, open Message Filters from that chat."
-        entries.append(LocalFilterRow(stableId: .fixed(5), order: 7, section: 1, content: .text(scope)))
-        entries.append(LocalFilterRow(stableId: .fixed(6), order: 8, section: 2, content: .text(enabled ? "Filtering is enabled. Saving updates this account’s local rules." : "Filtering is off. Saving this rule will not turn it on.")))
-        entries.append(LocalFilterRow(stableId: .fixed(7), order: 9, section: 2, content: .action("Filter Settings", "This account", !busy)))
+        entries.append(LocalFilterRow(stableId: .fixed(5), order: 9, section: 1, content: .text(scope)))
+        entries.append(LocalFilterRow(stableId: .fixed(6), order: 10, section: 2, content: .text(enabled ? "Filtering is enabled. Saving updates this account’s local rules." : "Filtering is off. Saving this rule will not turn it on.")))
+        entries.append(LocalFilterRow(stableId: .fixed(7), order: 11, section: 2, content: .action("Filter Settings", "This account", !busy)))
+        if let initialSenderId, initialSenderId.namespace == Namespaces.Peer.CloudUser || initialSenderId.namespace == Namespaces.Peer.CloudChannel {
+            entries.append(LocalFilterRow(stableId: .fixed(19), order: 12, section: 2, content: .toggle("Hide This Sender Locally", senderIsHidden, canChange)))
+            entries.append(LocalFilterRow(stableId: .fixed(20), order: 13, section: 2, content: .text("Saved immediately for this account, independently of the draft rule. Hides this author’s supported messages in all chats except global-chat exceptions when filtering is on. Does not block the sender on Telegram.")))
+        }
         if rule != nil {
-            entries.append(LocalFilterRow(stableId: .fixed(8), order: 10, section: 3, content: .destructive("Remove Rule", canChange)))
+            entries.append(LocalFilterRow(stableId: .fixed(8), order: 14, section: 3, content: .destructive("Remove Rule", canChange)))
         }
         if actionState.1 {
-            entries.append(LocalFilterRow(stableId: .fixed(9), order: 11, section: 3, content: .text("The rule could not be saved. Check the expression syntax, text limit and the account’s 64-rule limit.")))
+            entries.append(LocalFilterRow(stableId: .fixed(9), order: 15, section: 3, content: .text("The change could not be saved. Check the expression syntax, text limit and this account’s rule or sender limit.")))
         }
         let ruleIsSupported = localFilterRule(id: ruleId, peerId: peerId, draft: value).isSupported
         if value.regularExpression && !ruleIsSupported {
-            entries.append(LocalFilterRow(stableId: .fixed(11), order: 12, section: 3, content: .text("This expression is invalid or uses unsupported syntax. Save is disabled; existing rules stay unchanged.")))
+            entries.append(LocalFilterRow(stableId: .fixed(11), order: 16, section: 3, content: .text("This expression is invalid or uses unsupported syntax. Save is disabled; existing rules stay unchanged.")))
         }
         let canSave = canChange && (value.mediaType != nil || localFilterTextFits(value.text)) && ruleIsSupported
         let data = ItemListPresentationData(presentationData)

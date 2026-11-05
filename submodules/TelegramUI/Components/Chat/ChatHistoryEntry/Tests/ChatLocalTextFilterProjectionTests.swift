@@ -169,6 +169,69 @@ final class ChatLocalTextFilterProjectionTests: XCTestCase {
         }
     }
 
+    func testProductionSnapshotBridgeAppliesLocalSenderIdentityAndAllowsReveal() {
+        let author = self.author(7711)
+        let message = self.message(text: "ordinary sender text", author: author)
+        let evaluator = LocalMessageFilterEvaluator(settings: LocalMessageFilterSettings(enabled: true, hiddenSenderIds: [author.id.toInt64()]))
+        let snapshot = ChatLocalTextFilterSnapshot(message: message)
+        XCTAssertTrue(chatHistoryMessageSupportsLocalTextFiltering(message))
+        XCTAssertEqual(snapshot.evaluate(using: evaluator), .matched(ruleId: "local-hidden-sender"))
+        let row = self.row(message)
+        let hidden = chatHistoryApplyingLocalTextFilter([row], matches: [message.id: snapshot], revealed: false)
+        self.assertRow(hidden[0], preserves: row, state: .hidden)
+        let revealed = chatHistoryApplyingLocalTextFilter(hidden, matches: [message.id: snapshot], revealed: true)
+        self.assertRow(revealed[0], preserves: row, state: .revealed)
+        let unknown = self.message(text: message.text)
+        XCTAssertEqual(ChatLocalTextFilterSnapshot(message: unknown).evaluate(using: evaluator), .noMatch)
+        let excluded = LocalMessageFilterEvaluator(settings: LocalMessageFilterSettings(enabled: true, excludedPeerIds: [message.id.peerId.toInt64()], hiddenSenderIds: [author.id.toInt64()]))
+        XCTAssertEqual(snapshot.evaluate(using: excluded), .noMatch)
+    }
+
+    func testInverseRulesAndSenderMatchesCannotHideIneligibleMetadata() {
+        let author = self.author(7712)
+        let inverse = LocalMessageFilterRule(id: "inverse-media", text: "", mediaType: .photo, isInverted: true)
+        let evaluator = LocalMessageFilterEvaluator(settings: LocalMessageFilterSettings(enabled: true, rules: [inverse], hiddenSenderIds: [author.id.toInt64()]))
+        let inverseOnly = LocalMessageFilterEvaluator(settings: LocalMessageFilterSettings(enabled: true, rules: [inverse]))
+        let cases = [
+            self.message(flags: [.Incoming, .CopyProtected], media: [self.media(.video)], author: author),
+            self.message(attributes: [UnknownFilterTestAttribute()], media: [self.media(.video)], author: author),
+            self.message(attributes: [AutoclearTimeoutMessageAttribute(timeout: Int32.max, countdownBeginTime: nil)], media: [self.media(.video)], author: author),
+            self.message(attributes: [AutoremoveTimeoutMessageAttribute(timeout: 30, countdownBeginTime: nil)], media: [self.media(.video)], author: author),
+            self.message(peerNamespace: Namespaces.Peer.SecretChat, media: [self.media(.video)], author: author),
+            self.message(groupingKey: 10, media: [self.media(.video)], author: author),
+            self.message(media: [self.media(.video), self.media(.photo)], author: author)
+        ]
+        for message in cases {
+            let snapshot = ChatLocalTextFilterSnapshot(message: message)
+            // Even stale/injected matches are rejected again at projection time.
+            XCTAssertEqual(snapshot.evaluate(using: evaluator), .matched(ruleId: "local-hidden-sender"))
+            XCTAssertFalse(chatHistoryMessageSupportsLocalTextFiltering(message))
+            let row = self.row(message)
+            let result = chatHistoryApplyingLocalTextFilter([row], matches: [message.id: snapshot], revealed: false)
+            self.assertRow(result[0], preserves: row, state: .none)
+            let inverseMatches = snapshot.evaluate(using: inverseOnly) == .matched(ruleId: inverse.id)
+            XCTAssertEqual(inverseMatches, message.media.count == 1)
+            let inverseResult = chatHistoryApplyingLocalTextFilter([row], matches: inverseMatches ? [message.id: snapshot] : [:], revealed: false)
+            self.assertRow(inverseResult[0], preserves: row, state: .none)
+        }
+    }
+
+    func testInverseMediaProjectionUsesKnownTypesAndKeepsTextAndAllowedMediaVisible() {
+        let evaluator = LocalMessageFilterEvaluator(settings: LocalMessageFilterSettings(enabled: true, rules: [LocalMessageFilterRule(id: "inverse-media", text: "", mediaType: .photo, isInverted: true)]))
+        for type in LocalMessageFilterMediaType.allCases {
+            let attributes: [EngineMessage.Attribute] = type == .voiceMessage || type == .videoMessage ? [ConsumableContentMessageAttribute(consumed: false)] : []
+            let message = self.message(text: "", attributes: attributes, media: [self.media(type)])
+            let snapshot = ChatLocalTextFilterSnapshot(message: message)
+            XCTAssertTrue(chatHistoryMessageSupportsLocalTextFiltering(message))
+            let matches = snapshot.evaluate(using: evaluator) == .matched(ruleId: "inverse-media")
+            XCTAssertEqual(matches, type != .photo)
+            let row = self.row(message)
+            let result = chatHistoryApplyingLocalTextFilter([row], matches: matches ? [message.id: snapshot] : [:], revealed: false)
+            self.assertRow(result[0], preserves: row, state: matches ? .hidden : .none)
+        }
+        XCTAssertEqual(ChatLocalTextFilterSnapshot(message: self.message(text: "ordinary text")).evaluate(using: evaluator), .noMatch)
+    }
+
     func testStickerAndCustomEmojiNodesCannotBePromotedIntoFilterBubbles() throws {
         let file = try XCTUnwrap(self.media(.document) as? TelegramMediaFile)
         let cases: [[TelegramMediaFileAttribute]] = [

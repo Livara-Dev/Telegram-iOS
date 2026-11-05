@@ -72,14 +72,17 @@ final class LocalMessageFilterTests: XCTestCase {
     }
 
     func testFacadePersistsRulesAndFixedWidthPeerIdsAcrossReopen() throws {
+        let localPeer = PeerId(namespace: Namespaces.Peer.CloudChannel, id: ._internalFromInt64Value(0x00fffffffffffffe)).toInt64()
+        let firstExcluded = PeerId(namespace: Namespaces.Peer.CloudGroup, id: ._internalFromInt64Value(4_294_967_300)).toInt64()
+        let secondExcluded = PeerId(namespace: Namespaces.Peer.CloudChannel, id: ._internalFromInt64Value(4_294_967_301)).toInt64()
         let global = LocalMessageFilterRule(id: "global", text: "offer", caseSensitive: true)
-        let local = LocalMessageFilterRule(id: "local", text: "🙂", peerId: Int64.max - 1)
+        let local = LocalMessageFilterRule(id: "local", text: "🙂", peerId: localPeer)
         XCTAssertTrue(try self.localArchiveValue(self.context.upsertRule(global)))
         XCTAssertTrue(try self.localArchiveValue(self.context.upsertRule(local)))
-        XCTAssertTrue(try self.localArchiveValue(self.context.setChatExcluded(peerId: -4_294_967_300, excluded: true)))
-        XCTAssertTrue(try self.localArchiveValue(self.context.setChatExcluded(peerId: 4_294_967_301, excluded: true)))
+        XCTAssertTrue(try self.localArchiveValue(self.context.setChatExcluded(peerId: firstExcluded, excluded: true)))
+        XCTAssertTrue(try self.localArchiveValue(self.context.setChatExcluded(peerId: secondExcluded, excluded: true)))
         XCTAssertTrue(try self.localArchiveValue(self.context.setEnabled(true)))
-        let expected = LocalMessageFilterSettings(enabled: true, rules: [global, local], excludedPeerIds: [-4_294_967_300, 4_294_967_301])
+        let expected = LocalMessageFilterSettings(enabled: true, rules: [global, local], excludedPeerIds: [firstExcluded, secondExcluded])
         XCTAssertEqual(try self.settings(), expected)
         let entry = try XCTUnwrap(PreferencesEntry(expected))
         XCTAssertEqual(entry.get(LocalMessageFilterSettings.self), expected)
@@ -282,9 +285,9 @@ final class LocalMessageFilterTests: XCTestCase {
     func testLargestValidPolicyFitsPersistenceBudget() throws {
         let rules = (0..<64).map { index in
             LocalMessageFilterRule(id: String(repeating: "a", count: 61) + String(format: "%03d", index),
-                text: String(repeating: "界", count: 256), peerId: Int64.max - Int64(index))
+                text: String(repeating: "界", count: 256), peerId: PeerId(namespace: Namespaces.Peer.CloudChannel, id: ._internalFromInt64Value(0x00ffffffffffffff - Int64(index))).toInt64())
         }
-        let excluded = Set((0..<4096).map { Int64.min + Int64($0) })
+        let excluded = Set((0..<4096).map { PeerId(namespace: Namespaces.Peer.CloudUser, id: ._internalFromInt64Value(0x00ffffffffffffff - Int64($0))).toInt64() })
         let value = LocalMessageFilterSettings(enabled: true, rules: rules, excludedPeerIds: excluded)
         let entry = try XCTUnwrap(PreferencesEntry(value))
         XCTAssertLessThanOrEqual(entry.data.count, 128 * 1024)

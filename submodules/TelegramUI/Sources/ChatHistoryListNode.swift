@@ -2117,7 +2117,7 @@ public final class ChatHistoryListNodeImpl: ASDisplayNode, ChatHistoryNode, Chat
                         for candidate in candidates {
                             if cancelled.with({ $0 }) { return }
                             let senderIsBlocked = candidate.authorId.map { blocked.contains($0) } ?? false
-                            if case .matched = evaluator.evaluate(text: candidate.text, peerId: candidate.id.peerId.toInt64(), mediaType: candidate.mediaType, senderIsLocallyBlocked: senderIsBlocked) {
+                            if case .matched = candidate.evaluate(using: evaluator, senderIsLocallyBlocked: senderIsBlocked) {
                                 matches[candidate.id] = candidate
                             }
                         }

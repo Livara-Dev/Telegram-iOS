@@ -29,7 +29,7 @@ public final class LocalMessageFilterContext {
 
     public func setEnabled(_ enabled: Bool) -> Signal<Bool, NoError> {
         return self.update { current in
-            LocalMessageFilterSettings(enabled: enabled, rules: current.rules, excludedPeerIds: current.excludedPeerIds, hideBlockedSenders: current.hideBlockedSenders)
+            LocalMessageFilterSettings(enabled: enabled, rules: current.rules, excludedPeerIds: current.excludedPeerIds, hideBlockedSenders: current.hideBlockedSenders, hiddenSenderIds: current.hiddenSenderIds)
         }
     }
 
@@ -39,7 +39,26 @@ public final class LocalMessageFilterContext {
 
     public func setHideBlockedSenders(_ hide: Bool) -> Signal<Bool, NoError> {
         return self.update { current in
-            LocalMessageFilterSettings(enabled: current.enabled, rules: current.rules, excludedPeerIds: current.excludedPeerIds, hideBlockedSenders: hide)
+            LocalMessageFilterSettings(enabled: current.enabled, rules: current.rules, excludedPeerIds: current.excludedPeerIds, hideBlockedSenders: hide, hiddenSenderIds: current.hiddenSenderIds)
+        }
+    }
+
+    /// A local presentation preference only: no block/unblock RPC, history
+    /// deletion or archive exclusion is performed. Global-chat exceptions apply.
+    public func setSenderHidden(senderId: EnginePeer.Id, hidden: Bool) -> Signal<Bool, NoError> {
+        guard (senderId.namespace == Namespaces.Peer.CloudUser || senderId.namespace == Namespaces.Peer.CloudChannel),
+              senderId.id._internalGetInt64Value() > 0 else { return .single(false) }
+        return self.update { current in
+            let value = senderId.toInt64()
+            guard validLocalMessageFilterSenderId(value) else { return nil }
+            var ids = current.hiddenSenderIds
+            if hidden {
+                guard ids.contains(value) || ids.count < LocalMessageFilterLimits.maximumHiddenSenders else { return nil }
+                ids.insert(value)
+            } else {
+                ids.remove(value)
+            }
+            return LocalMessageFilterSettings(enabled: current.enabled, rules: current.rules, excludedPeerIds: current.excludedPeerIds, hideBlockedSenders: current.hideBlockedSenders, hiddenSenderIds: ids)
         }
     }
 
@@ -74,18 +93,19 @@ public final class LocalMessageFilterContext {
                 guard rules.count < LocalMessageFilterLimits.maximumRules else { return nil }
                 rules.append(rule)
             }
-            return LocalMessageFilterSettings(enabled: current.enabled, rules: rules, excludedPeerIds: current.excludedPeerIds, hideBlockedSenders: current.hideBlockedSenders)
+            return LocalMessageFilterSettings(enabled: current.enabled, rules: rules, excludedPeerIds: current.excludedPeerIds, hideBlockedSenders: current.hideBlockedSenders, hiddenSenderIds: current.hiddenSenderIds)
         }
     }
 
     public func removeRule(id: String) -> Signal<Bool, NoError> {
         return self.update { current in
-            LocalMessageFilterSettings(enabled: current.enabled, rules: current.rules.filter { $0.id != id }, excludedPeerIds: current.excludedPeerIds, hideBlockedSenders: current.hideBlockedSenders)
+            LocalMessageFilterSettings(enabled: current.enabled, rules: current.rules.filter { $0.id != id }, excludedPeerIds: current.excludedPeerIds, hideBlockedSenders: current.hideBlockedSenders, hiddenSenderIds: current.hiddenSenderIds)
         }
     }
 
     public func setChatExcluded(peerId: Int64, excluded: Bool) -> Signal<Bool, NoError> {
         return self.update { current in
+            guard validLocalMessageFilterPeerId(peerId) else { return nil }
             var peers = current.excludedPeerIds
             if excluded {
                 guard peers.contains(peerId) || peers.count < LocalMessageFilterLimits.maximumExcludedPeers else { return nil }
@@ -93,7 +113,7 @@ public final class LocalMessageFilterContext {
             } else {
                 peers.remove(peerId)
             }
-            return LocalMessageFilterSettings(enabled: current.enabled, rules: current.rules, excludedPeerIds: peers, hideBlockedSenders: current.hideBlockedSenders)
+            return LocalMessageFilterSettings(enabled: current.enabled, rules: current.rules, excludedPeerIds: peers, hideBlockedSenders: current.hideBlockedSenders, hiddenSenderIds: current.hiddenSenderIds)
         }
     }
 }

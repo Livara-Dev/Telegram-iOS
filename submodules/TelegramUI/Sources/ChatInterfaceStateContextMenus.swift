@@ -1357,7 +1357,7 @@ func contextMenuForChatPresentationInterfaceState(chatPresentationInterfaceState
             }, action: { _, completion in
                 completion(.dismissWithoutContent)
                 controllerInteraction.navigationController()?.pushViewController(
-                    localMessageFilterRuleEditorController(context: context, peerId: message.id.peerId.toInt64(), initialText: message.text, initialMediaType: filterMediaType)
+                    localMessageFilterRuleEditorController(context: context, peerId: message.id.peerId.toInt64(), initialText: message.text, initialMediaType: filterMediaType, initialSenderId: message.author?.id)
                 )
             })))
         }
