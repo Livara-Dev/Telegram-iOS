@@ -182,7 +182,12 @@ class FocusedWorkflowRoutingTests(unittest.TestCase):
         workflow = WORKFLOW.read_text()
         self.assertIn('      startup_variant:\n', workflow)
         self.assertIn('        options: [original, main-app-only]\n        default: original', workflow)
+        self.assertIn('      startup_private_only:\n', workflow)
+        self.assertIn('        description: Run only a fresh explicitly pinned private-storage main-app control\n        type: boolean\n        default: false', workflow)
         source = workflow.split('  startup-artifact-replay:\n', 1)[1]
+        self.assertIn("STARTUP_PRIVATE_ONLY: ${{ inputs.startup_private_only && 'true' || 'false' }}", source)
+        self.assertIn('startup_args=(--startup-variant "$STARTUP_VARIANT")', source)
+        self.assertIn('startup_args+=(--private-control-only)', source)
         control = source.index('      - name: Replay the selected startup control')
         fetch = source.index('      - name: Fetch the matching device package')
         package = source.index('      - name: Package the verified unsigned main app')

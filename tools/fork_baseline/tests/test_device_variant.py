@@ -60,6 +60,7 @@ def evidence(device_digest='d' * 64):
     simulator = {**common, 'mode': 'simulator', 'ipa_sha256': 'a' * 64}
     proof = {'mode': 'main_app_only', 'startup_variant': 'main-app-only', 'passed': True, 'phase': 'complete',
              'private_mode_control': 'automaticSelection', 'automatic_fallback_verified': True,
+             'private_control_only': False, 'automatic_control_run': True,
              'pinned_private_control_attempted': False, 'automatic_group_selection_observed': False,
              'main_app_only_control_passed': True,
              'source_codesign_verified': True, 'main_code_unchanged': True, 'source_ipa_unchanged': True,
@@ -195,6 +196,24 @@ class DeviceVariantTests(unittest.TestCase):
             if kind == 'missing_actual_store': rs['launches'][1]['private_account_store_present'] = False
             if kind == 'replaced_store': rs['launches'][1]['private_account_store_stable_after_restart'] = False
             if kind == 'no_group_observation': pr['automatic_group_selection_observed'] = False
+            with self.subTest(kind=kind), self.assertRaises(replay.ReplayError): variant.validate_startup(*values)
+
+    def test_standalone_private_control_does_not_claim_an_automatic_group_observation(self):
+        device, simulator, proof, result = evidence()
+        proof.update(private_mode_control='explicitFreshPinnedSelection', private_control_only=True,
+                     automatic_control_run=False, automatic_fallback_verified=False,
+                     pinned_private_control_attempted=True, automatic_group_selection_observed=False)
+        result.update(storage_test_setup='freshPinnedPrivate', private_selection_seeded_before_launch=True,
+                      private_account_store_absent_before_launch=True)
+        self.assertEqual(variant.validate_startup(device, simulator, proof, result), (SOURCE, RUN, 6))
+        for kind in ('automatic_run', 'automatic_observation', 'automatic_fallback', 'wrong_flag', 'missing_store', 'replaced_store'):
+            values = copy.deepcopy((device, simulator, proof, result)); _, _, pr, rs = values
+            if kind == 'automatic_run': pr['automatic_control_run'] = True
+            if kind == 'automatic_observation': pr['automatic_group_selection_observed'] = True
+            if kind == 'automatic_fallback': pr['automatic_fallback_verified'] = True
+            if kind == 'wrong_flag': pr['private_control_only'] = False
+            if kind == 'missing_store': rs['launches'][0]['private_account_store_present'] = False
+            if kind == 'replaced_store': rs['launches'][1]['private_account_store_stable_after_restart'] = False
             with self.subTest(kind=kind), self.assertRaises(replay.ReplayError): variant.validate_startup(*values)
 
     def test_package_is_atomic_distinct_unsigned_and_published_only_after_startup_passes(self):

@@ -23,6 +23,10 @@ on:
         type: choice
         options: [original, main-app-only]
         default: original
+      startup_private_only:
+        description: Run only a fresh explicitly pinned private-storage main-app control
+        type: boolean
+        default: false
       unsigned_device:
         description: Compile an unsigned device IPA alongside exact-commit integration tests
         type: boolean
@@ -733,9 +737,16 @@ jobs:
       - name: Replay the selected startup control without compiling
         env:
           STARTUP_VARIANT: ${{ inputs.startup_variant || 'original' }}
+          STARTUP_PRIVATE_ONLY: ${{ inputs.startup_private_only && 'true' || 'false' }}
         run: |
           set -euo pipefail
-          python3 tools/fork_baseline/startup_replay.py --ipa build/fork-evidence/startup-replay/Telegram.ipa --output build/fork-evidence/startup-replay/replay-controls --startup-variant "$STARTUP_VARIANT"
+          startup_args=(--startup-variant "$STARTUP_VARIANT")
+          if [[ "$STARTUP_PRIVATE_ONLY" == 'true' ]]; then
+            startup_args+=(--private-control-only)
+          elif [[ "$STARTUP_PRIVATE_ONLY" != 'false' ]]; then
+            exit 2
+          fi
+          python3 tools/fork_baseline/startup_replay.py --ipa build/fork-evidence/startup-replay/Telegram.ipa --output build/fork-evidence/startup-replay/replay-controls "${startup_args[@]}"
 
       - name: Fetch the matching device package only after variant startup passes
         if: success() && inputs.startup_variant == 'main-app-only'

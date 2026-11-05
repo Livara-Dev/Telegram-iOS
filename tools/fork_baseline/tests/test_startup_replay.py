@@ -86,6 +86,48 @@ class Codesign:
 
 
 class StartupReplayTests(unittest.TestCase):
+    def test_private_only_flag_rejects_original_mode_and_nonboolean_values_before_tool_invocation(self):
+        for variant, flag in (('original', True), ('main-app-only', 'true')):
+            with self.subTest(variant=variant, flag=flag), mock.patch.object(replay.platform, 'system', return_value='Darwin'), \
+                 mock.patch.object(replay, 'private_command') as command, mock.patch.object(replay, 'smoke') as launch:
+                with self.assertRaisesRegex(replay.ReplayError, 'invalid_private_control_mode'):
+                    replay.replay(Path('source.ipa'), Path('evidence'), variant, private_control_only=flag)
+                command.assert_not_called(); launch.assert_not_called()
+
+    def test_explicit_private_mode_runs_one_fresh_control_and_no_automatic_launch(self):
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d).resolve(); app = signed_application(root); ipa = root / 'source.ipa'; replay.repack_app(app, ipa)
+            with mock.patch.object(replay.platform, 'system', return_value='Darwin'), \
+                 mock.patch.object(replay, 'private_command', return_value=plistlib.dumps({'get-task-allow': True})), \
+                 mock.patch.object(replay, 'main_app_only', return_value={'extensions_removed': 2, 'main_code_unchanged': True}), \
+                 mock.patch.object(replay, 'smoke', return_value={'passed': True}) as launch:
+                result = replay.replay(ipa, root / 'evidence', 'main-app-only', private_control_only=True)
+            self.assertEqual(launch.call_count, 1)
+            self.assertEqual(launch.call_args.kwargs, {'expected_storage_kind': 'private', 'seed_private_storage': True})
+            self.assertTrue(result['passed'])
+            self.assertEqual(result['private_mode_control'], 'explicitFreshPinnedSelection')
+            self.assertFalse(result['automatic_control_run'])
+            self.assertFalse(result['automatic_group_selection_observed'])
+            self.assertFalse(result['automatic_fallback_verified'])
+            self.assertEqual(result['automatic_storage_kind'], 'notObserved')
+            self.assertFalse((root / 'evidence/main-app-only-automatic').exists())
+
+    def test_explicit_private_mode_failure_never_retries_or_claims_a_pass(self):
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d).resolve(); app = signed_application(root); ipa = root / 'source.ipa'; replay.repack_app(app, ipa)
+            with mock.patch.object(replay.platform, 'system', return_value='Darwin'), \
+                 mock.patch.object(replay, 'private_command', return_value=plistlib.dumps({'get-task-allow': True})), \
+                 mock.patch.object(replay, 'main_app_only', return_value={'extensions_removed': 2, 'main_code_unchanged': True}), \
+                 mock.patch.object(replay, 'smoke', side_effect=replay.SmokeError('invalidStorageEvidence', 'checkPrivateAccountStore')) as launch:
+                with self.assertRaises(replay.SmokeError):
+                    replay.replay(ipa, root / 'evidence', 'main-app-only', private_control_only=True)
+            self.assertEqual(launch.call_count, 1)
+            report = json.loads((root / 'evidence/replay.json').read_text())
+            self.assertFalse(report['passed'])
+            self.assertFalse(report['automatic_control_run'])
+            self.assertFalse(report['automatic_group_selection_observed'])
+            self.assertEqual(report['phase'], 'explicitPrivateControl')
+
     def test_group_failure_admission_rejects_missing_malformed_or_wrong_identity_preferences(self):
         with tempfile.TemporaryDirectory() as d:
             root = Path(d).resolve(); value = group_storage_failure(root); path = root / 'result.json'

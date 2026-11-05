@@ -241,14 +241,16 @@ def automatic_group_failure(error, result_path):
             launch.get('storage_kind') == 'group' and valid_group(launch.get('storage_evidence')))
 
 
-def replay(ipa, output, startup_variant='original'):
+def replay(ipa, output, startup_variant='original', private_control_only=False):
     if platform.system() != 'Darwin': raise ReplayError('macos_simulator_required')
     if startup_variant not in {'original', 'main-app-only'}: raise ReplayError('invalid_startup_variant')
+    if type(private_control_only) is not bool or (private_control_only and startup_variant != 'main-app-only'):
+        raise ReplayError('invalid_private_control_mode')
     ipa, output = Path(ipa), Path(output)
     if ipa.is_symlink() or not ipa.is_file() or output.is_symlink(): raise ReplayError('invalid_replay_paths')
     output.mkdir(parents=True, exist_ok=False, mode=0o700)
     report = {'mode': 'main_app_only' if startup_variant == 'main-app-only' else 'without_app_groups', 'physical_device_verified': False,
-              'startup_variant': startup_variant,
+              'startup_variant': startup_variant, 'private_control_only': private_control_only,
               'application_recompiled': False, 'passed': False, 'normal_control_passed': False,
               'no_app_groups_control_attempted': False, 'source_codesign_verified': False,
               'phase': 'extractApplication'}
@@ -280,24 +282,34 @@ def replay(ipa, output, startup_variant='original'):
                 report['automatic_group_selection_observed'] = False
                 report['pinned_private_control_attempted'] = False
                 report['private_mode_control'] = 'automaticSelection'
-                try:
-                    launched = smoke(repacked, output / 'main-app-only/launch-smoke', expected_storage_kind='private')
-                    if not launched.get('passed'): raise ReplayError('main_app_only_control_failed')
-                    report['automatic_storage_kind'] = 'private'
-                    report['automatic_fallback_verified'] = True
-                except SmokeError as error:
-                    if not automatic_group_failure(error, output / 'main-app-only/launch-smoke/result.json'): raise
-                    # The simulator can expose its embedded group even when the
-                    # code signature lacks that capability. Preserve that result
-                    # and vary only the saved selection in a separate new device.
-                    (output / 'main-app-only').rename(output / 'main-app-only-automatic')
-                    report['automatic_storage_kind'] = 'group'
-                    report['automatic_group_selection_observed'] = True
+                report['automatic_control_run'] = not private_control_only
+                if private_control_only:
+                    # An explicitly requested control uses one new simulator on
+                    # this host. It makes no claim about automatic selection.
+                    report['automatic_storage_kind'] = 'notObserved'
                     report['pinned_private_control_attempted'] = True
-                    report['private_mode_control'] = 'freshPinnedSelection'
-                    report['phase'] = 'pinnedPrivateControl'
+                    report['private_mode_control'] = 'explicitFreshPinnedSelection'
+                    report['phase'] = 'explicitPrivateControl'
                     launched = smoke(repacked, output / 'main-app-only/launch-smoke',
                                      expected_storage_kind='private', seed_private_storage=True)
+                else:
+                    try:
+                        launched = smoke(repacked, output / 'main-app-only/launch-smoke', expected_storage_kind='private')
+                        if not launched.get('passed'): raise ReplayError('main_app_only_control_failed')
+                        report['automatic_storage_kind'] = 'private'
+                        report['automatic_fallback_verified'] = True
+                    except SmokeError as error:
+                        if not automatic_group_failure(error, output / 'main-app-only/launch-smoke/result.json'): raise
+                        # Preserve the automatic result before varying the saved
+                        # selection in a separate, newly created simulator.
+                        (output / 'main-app-only').rename(output / 'main-app-only-automatic')
+                        report['automatic_storage_kind'] = 'group'
+                        report['automatic_group_selection_observed'] = True
+                        report['pinned_private_control_attempted'] = True
+                        report['private_mode_control'] = 'freshPinnedSelection'
+                        report['phase'] = 'pinnedPrivateControl'
+                        launched = smoke(repacked, output / 'main-app-only/launch-smoke',
+                                         expected_storage_kind='private', seed_private_storage=True)
                 if not launched.get('passed'): raise ReplayError('main_app_only_control_failed')
                 report['main_app_only_control_passed'] = True
                 if digest(ipa) != report['source_simulator_ipa_sha256']: raise ReplayError('source_package_changed')
@@ -341,8 +353,9 @@ def main():
     parser.add_argument('--ipa', required=True, type=Path)
     parser.add_argument('--output', required=True, type=Path)
     parser.add_argument('--startup-variant', choices=['original', 'main-app-only'], default='original')
+    parser.add_argument('--private-control-only', action='store_true')
     arguments = parser.parse_args()
-    try: result = replay(arguments.ipa, arguments.output, arguments.startup_variant)
+    try: result = replay(arguments.ipa, arguments.output, arguments.startup_variant, arguments.private_control_only)
     except (OSError, ValueError, RuntimeError, subprocess.SubprocessError):
         print(json.dumps({'mode': 'main_app_only' if arguments.startup_variant == 'main-app-only' else 'without_app_groups',
                           'passed': False, 'error': 'startup_replay_failed', 'physical_device_verified': False}))
