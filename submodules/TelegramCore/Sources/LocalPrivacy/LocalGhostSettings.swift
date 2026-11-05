@@ -5,8 +5,8 @@ import SwiftSignalKit
 
 let localGhostSettingsKey = ValueBoxKey("ayugram.ghost.activity.v1")
 
-/// This experimental policy covers outgoing activity indicators only. It does
-/// not suppress message/story receipts or presence and does not imply invisibility.
+/// Account-scoped application policy. These controls do not alter MTProto or
+/// authentication, and cannot prevent server inference or other-client activity.
 public struct LocalGhostSettings: Codable, Equatable {
     let schemaVersion: Int32
     public var enabled: Bool
@@ -15,17 +15,54 @@ public struct LocalGhostSettings: Codable, Equatable {
     public var suppressRecording: Bool
     public var suppressUploads: Bool
     public var suppressGamePlay: Bool
+    public var suppressReadReceipts: Bool
+    public var suppressOnlineStatus: Bool
+    public var automaticOffline: Bool
 
     public init(enabled: Bool = false, suppressTyping: Bool = true,
                 suppressStickerSelection: Bool = true, suppressRecording: Bool = true,
-                suppressUploads: Bool = true, suppressGamePlay: Bool = true) {
-        self.schemaVersion = 1
+                suppressUploads: Bool = true, suppressGamePlay: Bool = true,
+                suppressReadReceipts: Bool = true, suppressOnlineStatus: Bool = true,
+                automaticOffline: Bool = true) {
+        self.schemaVersion = 2
         self.enabled = enabled
         self.suppressTyping = suppressTyping
         self.suppressStickerSelection = suppressStickerSelection
         self.suppressRecording = suppressRecording
         self.suppressUploads = suppressUploads
         self.suppressGamePlay = suppressGamePlay
+        self.suppressReadReceipts = suppressReadReceipts
+        self.suppressOnlineStatus = suppressOnlineStatus
+        self.automaticOffline = automaticOffline
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case schemaVersion, enabled, suppressTyping, suppressStickerSelection
+        case suppressRecording, suppressUploads, suppressGamePlay
+        case suppressReadReceipts, suppressOnlineStatus, automaticOffline
+    }
+
+    public init(from decoder: Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        let storedVersion = try values.decode(Int32.self, forKey: .schemaVersion)
+        self.schemaVersion = storedVersion == 1 ? 2 : storedVersion
+        self.enabled = try values.decode(Bool.self, forKey: .enabled)
+        self.suppressTyping = try values.decode(Bool.self, forKey: .suppressTyping)
+        self.suppressStickerSelection = try values.decode(Bool.self, forKey: .suppressStickerSelection)
+        self.suppressRecording = try values.decode(Bool.self, forKey: .suppressRecording)
+        self.suppressUploads = try values.decode(Bool.self, forKey: .suppressUploads)
+        self.suppressGamePlay = try values.decode(Bool.self, forKey: .suppressGamePlay)
+        // An existing activity-only policy must not silently acquire extra
+        // protections. New installations select these options, with Ghost off.
+        if storedVersion == 1 {
+            self.suppressReadReceipts = false
+            self.suppressOnlineStatus = false
+            self.automaticOffline = false
+        } else {
+            self.suppressReadReceipts = try values.decode(Bool.self, forKey: .suppressReadReceipts)
+            self.suppressOnlineStatus = try values.decode(Bool.self, forKey: .suppressOnlineStatus)
+            self.automaticOffline = try values.decode(Bool.self, forKey: .automaticOffline)
+        }
     }
 }
 
@@ -38,7 +75,7 @@ public enum LocalGhostSettingsState: Equatable {
 
 func localGhostSettings(entry: PreferencesEntry?) -> LocalGhostSettingsState {
     guard let entry else { return .available(LocalGhostSettings()) }
-    guard let value = entry.get(LocalGhostSettings.self), value.schemaVersion == 1 else {
+    guard entry.data.count <= 4096, let value = entry.get(LocalGhostSettings.self), value.schemaVersion == 2 else {
         return .unsupported
     }
     return .available(value)
@@ -81,4 +118,68 @@ func localGhostAllowsActivity(_ activity: PeerInputActivity?, settings: LocalGho
         // These are explicit interaction/call behavior, outside this increment.
         return true
     }
+}
+
+
+/// Only ordinary cloud receipts are covered. Secret-chat read operations and
+/// timed/view-once consumption remain upstream so Ghost cannot stop expiry.
+func localGhostSuppressesReadReceipts(_ settings: LocalGhostSettingsState, peerId: PeerId) -> Bool {
+    guard peerId.namespace != Namespaces.Peer.SecretChat else { return false }
+    switch settings {
+    case let .available(value):
+        return value.enabled && value.suppressReadReceipts
+    case .unsupported:
+        return true
+    }
+}
+
+func localGhostSuppressesReadReceipts(transaction: Transaction, peerId: PeerId) -> Bool {
+    return localGhostSuppressesReadReceipts(localGhostSettings(transaction: transaction), peerId: peerId)
+}
+
+/// Unknown message metadata is allowed through deliberately: suppressing a
+/// mandatory consumed-content notification could stop the server expiry flow.
+func localGhostContentReadIds(transaction: Transaction, messageIds: [MessageId]) -> [MessageId] {
+    let settings = localGhostSettings(transaction: transaction)
+    return messageIds.filter { id in
+        guard localGhostSuppressesReadReceipts(settings, peerId: id.peerId) else { return true }
+        guard let message = transaction.getMessage(id) else { return true }
+        return message.isSelfExpiring
+    }
+}
+
+func localGhostSuppressesOnline(_ settings: LocalGhostSettingsState) -> Bool {
+    switch settings {
+    case let .available(value): return value.enabled && value.suppressOnlineStatus
+    case .unsupported: return true
+    }
+}
+
+func localGhostAttemptsAutomaticOffline(_ settings: LocalGhostSettingsState) -> Bool {
+    guard case let .available(value) = settings else { return false }
+    return value.enabled && value.suppressOnlineStatus && value.automaticOffline
+}
+
+/// Complete suppressed work locally without constructing an RPC or fabricating
+/// a Telegram result/PTS. A request already dispatched cannot be recalled.
+func localGhostReadReceipt<T, E>(transaction: Transaction, peerId: PeerId,
+                                request: () -> Signal<T, E>) -> Signal<T, E> {
+    if localGhostSuppressesReadReceipts(transaction: transaction, peerId: peerId) { return .complete() }
+    return request()
+}
+
+func localGhostReadReceipt<T, E>(postbox: Postbox, peerId: PeerId,
+                                request: @escaping () -> Signal<T, E>) -> Signal<T, E> {
+    return postbox.transaction { transaction in
+        return !localGhostSuppressesReadReceipts(transaction: transaction, peerId: peerId)
+    }
+    |> castError(E.self)
+    |> mapToSignal { allowed -> Signal<T, E> in allowed ? request() : .complete() }
+}
+
+func localGhostContentReadReceipt<T, E>(postbox: Postbox, messageIds: [MessageId],
+                                       request: @escaping ([MessageId]) -> Signal<T, E>) -> Signal<T, E> {
+    return postbox.transaction { transaction in localGhostContentReadIds(transaction: transaction, messageIds: messageIds) }
+    |> castError(E.self)
+    |> mapToSignal { ids -> Signal<T, E> in ids.isEmpty ? .complete() : request(ids) }
 }

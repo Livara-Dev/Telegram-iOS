@@ -728,7 +728,8 @@ public final class AccountViewTracker {
                             guard let peer = transaction.getPeer(peerId), let inputPeer = apiInputPeer(peer) else {
                                 return .complete()
                             }
-                            return account.network.request(Api.functions.messages.getMessagesViews(peer: inputPeer, id: messageIds.map { $0.id }, increment: .boolTrue))
+                            let increment: Api.Bool = localGhostSuppressesReadReceipts(transaction: transaction, peerId: peerId) ? .boolFalse : .boolTrue
+                            return account.network.request(Api.functions.messages.getMessagesViews(peer: inputPeer, id: messageIds.map { $0.id }, increment: increment))
                             |> map(Optional.init)
                             |> `catch` { _ -> Signal<Api.messages.MessageViews?, NoError> in
                                 return .single(nil)
@@ -968,15 +969,17 @@ public final class AccountViewTracker {
                     
                     if let account = self.account {
                         let signal = (account.postbox.transaction { transaction -> Signal<Void, NoError> in
+                            let allowedIds = localGhostContentReadIds(transaction: transaction, messageIds: messageIds)
+                            guard !allowedIds.isEmpty else { return .complete() }
                             if let peer = transaction.getPeer(peerId), let inputPeer = apiInputPeer(peer) {
                                 let request: Signal<Bool, MTRpcError>
                                 switch inputPeer {
                                 case .inputPeerChat, .inputPeerSelf, .inputPeerUser:
-                                    request = account.network.request(Api.functions.messages.readMessageContents(id: messageIds.map { $0.id }))
+                                    request = account.network.request(Api.functions.messages.readMessageContents(id: allowedIds.map { $0.id }))
                                     |> map { _ in true }
                                 case let .inputPeerChannel(inputPeerChannelData):
                                     let (channelId, accessHash) = (inputPeerChannelData.channelId, inputPeerChannelData.accessHash)
-                                    request = account.network.request(Api.functions.channels.readMessageContents(channel: .inputChannel(.init(channelId: channelId, accessHash: accessHash)), id: messageIds.map { $0.id }))
+                                    request = account.network.request(Api.functions.channels.readMessageContents(channel: .inputChannel(.init(channelId: channelId, accessHash: accessHash)), id: allowedIds.map { $0.id }))
                                     |> map { _ in true }
                                 default:
                                     return .complete()

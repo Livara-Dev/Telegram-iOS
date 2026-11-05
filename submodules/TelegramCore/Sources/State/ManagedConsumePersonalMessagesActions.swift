@@ -251,7 +251,40 @@ func managedReadReactionOrPollVoteActions(postbox: Postbox, network: Network, st
     }
 }
 
+/// Finish only ordinary local read flags. No RPC result or PTS is invented,
+/// and timed/unknown messages never reach this branch.
+private func finishGhostSuppressedRead(transaction: Transaction, id: MessageId, personalMention: Bool) {
+    transaction.updateMessage(id, update: { currentMessage in
+        let attributes: [MessageAttribute] = currentMessage.attributes.map { attribute in
+            if personalMention, attribute is ConsumablePersonalMentionMessageAttribute {
+                return ConsumablePersonalMentionMessageAttribute(consumed: true, pending: false)
+            }
+            if !personalMention, let reactions = attribute as? ReactionsMessageAttribute {
+                return reactions.withAllSeen()
+            }
+            return attribute
+        }
+        var tags = currentMessage.tags
+        var media = currentMessage.media
+        if personalMention {
+            tags.remove(.unseenPersonalMessage)
+        } else {
+            tags.remove(.unseenReaction)
+            tags.remove(.unseenPollVote)
+            media = media.map { item -> Media in
+                if let poll = item as? TelegramMediaPoll { return poll.withoutUnreadResults() }
+                return item
+            }
+        }
+        return .update(StoreMessage(id: currentMessage.id, customStableId: nil, globallyUniqueId: currentMessage.globallyUniqueId, groupingKey: currentMessage.groupingKey, threadId: currentMessage.threadId, timestamp: currentMessage.timestamp, flags: StoreMessageFlags(currentMessage.flags), tags: tags, globalTags: currentMessage.globalTags, localTags: currentMessage.localTags, forwardInfo: currentMessage.forwardInfo.flatMap(StoreMessageForwardInfo.init), authorId: currentMessage.author?.id, text: currentMessage.text, attributes: attributes, media: media))
+    })
+}
+
 private func synchronizeConsumeMessageContents(transaction: Transaction, postbox: Postbox, network: Network, stateManager: AccountStateManager, id: MessageId) -> Signal<Void, NoError> {
+    if localGhostContentReadIds(transaction: transaction, messageIds: [id]).isEmpty {
+        finishGhostSuppressedRead(transaction: transaction, id: id, personalMention: true)
+        return .complete()
+    }
     if id.peerId.namespace == Namespaces.Peer.CloudUser || id.peerId.namespace == Namespaces.Peer.CloudGroup {
         return network.request(Api.functions.messages.readMessageContents(id: [id.id]))
             |> map(Optional.init)
@@ -321,6 +354,10 @@ private func synchronizeConsumeMessageContents(transaction: Transaction, postbox
 }
 
 private func synchronizeReadMessageReactionsOrPollVotes(transaction: Transaction, postbox: Postbox, network: Network, stateManager: AccountStateManager, id: MessageId) -> Signal<Void, NoError> {
+    if localGhostContentReadIds(transaction: transaction, messageIds: [id]).isEmpty {
+        finishGhostSuppressedRead(transaction: transaction, id: id, personalMention: false)
+        return .complete()
+    }
     if id.peerId.namespace == Namespaces.Peer.CloudUser || id.peerId.namespace == Namespaces.Peer.CloudGroup {
         return network.request(Api.functions.messages.readMessageContents(id: [id.id]))
         |> map(Optional.init)

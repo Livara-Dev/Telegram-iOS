@@ -23,7 +23,7 @@ public final class LocalGhostContext {
             guard case let .available(value) = current else { return false }
             var updated = value
             update(&updated)
-            guard updated.schemaVersion == 1, let entry = PreferencesEntry(updated) else { return false }
+            guard updated.schemaVersion == 2, let entry = PreferencesEntry(updated) else { return false }
             transaction.setPreferencesEntry(key: localGhostSettingsKey, value: entry)
             return true
         }
@@ -34,4 +34,20 @@ public final class LocalGhostContext {
             current.enabled = enabled
         }
     }
+
+    /// Reset only understood privacy preferences. Keep the story generation so
+    /// old queued story receipts can never become valid after reset/restart.
+    public func resetSettings() -> Signal<Bool, NoError> {
+        return self.postbox.transaction { transaction in
+            guard case .available = localGhostSettings(transaction: transaction),
+                  case let .available(story) = localStoryPrivacySettings(transaction: transaction),
+                  let ghostEntry = PreferencesEntry(LocalGhostSettings()),
+                  let storyEntry = PreferencesEntry(LocalStoryPrivacySettings(suppressViewReceipts: false,
+                    suppressionGeneration: story.suppressionGeneration)) else { return false }
+            transaction.setPreferencesEntry(key: localGhostSettingsKey, value: ghostEntry)
+            transaction.setPreferencesEntry(key: localStoryPrivacySettingsKey, value: storyEntry)
+            return true
+        }
+    }
+
 }

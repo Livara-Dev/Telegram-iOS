@@ -148,7 +148,7 @@ private func synchronizeMarkAllUnseen(transaction: Transaction, postbox: Postbox
                 guard let inputChannel = inputChannel else {
                     return .single(nil)
                 }
-                return network.request(Api.functions.channels.readMessageContents(channel: inputChannel, id: filteredIds.map { $0.id }))
+                return localGhostContentReadReceipt(postbox: postbox, messageIds: filteredIds, request: { allowedIds in network.request(Api.functions.channels.readMessageContents(channel: inputChannel, id: allowedIds.map { $0.id })) })
                 |> map { result -> Int32? in
                     if ids.count < limit {
                         return nil
@@ -157,7 +157,7 @@ private func synchronizeMarkAllUnseen(transaction: Transaction, postbox: Postbox
                     }
                 }
             } else {
-                return network.request(Api.functions.messages.readMessageContents(id: filteredIds.map { $0.id }))
+                return localGhostContentReadReceipt(postbox: postbox, messageIds: filteredIds, request: { allowedIds in network.request(Api.functions.messages.readMessageContents(id: allowedIds.map { $0.id })) })
                 |> map { result -> Int32? in
                     switch result {
                         case let .affectedMessages(affectedMessagesData):

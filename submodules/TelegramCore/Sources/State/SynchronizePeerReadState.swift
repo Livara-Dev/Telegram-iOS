@@ -290,7 +290,7 @@ private func pushPeerReadState(network: Network, postbox: Postbox, stateManager:
                 let (channelId, accessHash) = (inputPeerChannelData.channelId, inputPeerChannelData.accessHash)
                 switch readState {
                 case let .idBased(maxIncomingReadId, _, _, _, markedUnread):
-                    var pushSignal: Signal<Void, NoError> = network.request(Api.functions.channels.readHistory(channel: Api.InputChannel.inputChannel(.init(channelId: channelId, accessHash: accessHash)), maxId: maxIncomingReadId))
+                    var pushSignal: Signal<Void, NoError> = localGhostReadReceipt(postbox: postbox, peerId: peerId, request: { network.request(Api.functions.channels.readHistory(channel: Api.InputChannel.inputChannel(.init(channelId: channelId, accessHash: accessHash)), maxId: maxIncomingReadId)) })
                     |> `catch` { _ -> Signal<Api.Bool, NoError> in
                         return .complete()
                     }
@@ -320,7 +320,7 @@ private func pushPeerReadState(network: Network, postbox: Postbox, stateManager:
             default:
                 switch readState {
                 case let .idBased(maxIncomingReadId, _, _, _, markedUnread):
-                    var pushSignal: Signal<Void, NoError> = network.request(Api.functions.messages.readHistory(peer: inputPeer, maxId: maxIncomingReadId))
+                    var pushSignal: Signal<Void, NoError> = localGhostReadReceipt(postbox: postbox, peerId: peerId, request: { network.request(Api.functions.messages.readHistory(peer: inputPeer, maxId: maxIncomingReadId)) })
                     |> map(Optional.init)
                     |> `catch` { _ -> Signal<Api.messages.AffectedMessages?, NoError> in
                         return .single(nil)
@@ -429,9 +429,11 @@ func synchronizePeerReadState(network: Network, postbox: Postbox, stateManager: 
     // (NonMemberChannelReadState.swift): nothing is pushed or validated, and the queued operation
     // is confirmed so the manager does not pick it up again. This also covers paths that queue one
     // without going through the interactive read (a support account's send, the chat list's
-    // read toggle, operations persisted by earlier builds).
+    // read toggle, operations persisted by earlier builds). Ghost suppression also
+    // confirms work only locally: no RPC/PTS is fabricated and local read/expiry
+    // changes are preserved. Secret Chat protocol reads remain upstream.
     let keepsReadState = postbox.transaction { transaction -> Bool in
-        return peerKeepsReadState(transaction.getPeer(peerId))
+        return peerKeepsReadState(transaction.getPeer(peerId)) && !localGhostSuppressesReadReceipts(transaction: transaction, peerId: peerId)
     }
     |> castError(PeerReadStateValidationError.self)
 
