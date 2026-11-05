@@ -4,6 +4,7 @@ import UIKit
 import ImageIO
 import AVFoundation
 import AVKit
+import QuartzCore
 import LocalArchivePlayback
 import AsyncDisplayKit
 import Display
@@ -23,6 +24,8 @@ private enum LocalArchiveRowId: Hashable {
     case recordHeading(Int64)
     case media(Int64, Int)
     case deleteSnapshot(Int64)
+    case excludedPeer(Int64)
+    case excludeSender(Int64)
 }
 
 private struct LocalArchiveRow: ItemListNodeEntry {
@@ -81,7 +84,9 @@ private final class LocalArchiveArguments {
 private func localArchiveStatusText(_ status: LocalArchiveStatus) -> String {
     switch status {
     case .disabled:
-        return "Capture is off. Existing archived text is kept. Enable capture to browse this experimental archive."
+        return "Capture is off. Previously saved messages stay on this device. No new messages are being archived."
+    case .browsing:
+        return "Capture is off. You can browse saved messages; no new messages are being archived."
     case .locked:
         return "Archive locked. Unlock this iPhone to continue."
     case .opening:
@@ -101,11 +106,44 @@ private func localArchiveStatusText(_ status: LocalArchiveStatus) -> String {
 
 private func localArchiveCanRead(_ status: LocalArchiveStatus) -> Bool {
     switch status {
-    case .ready, .writing:
+    case .ready, .writing, .browsing:
         return true
     default:
         return false
     }
+}
+
+/// Scoped to archive screens. Pausing or leaving the UI releases read access;
+/// the coordinator independently enforces protected-data and account settings.
+private final class LocalArchiveReadLease {
+    private let archive: LocalArchiveCoordinator
+    private var access: Disposable?
+    private var observers: [NSObjectProtocol] = []
+
+    init(archive: LocalArchiveCoordinator) {
+        self.archive = archive
+        if UIApplication.shared.applicationState == .active {
+            self.access = archive.acquireReadAccess()
+        }
+        let center = NotificationCenter.default
+        self.observers.append(center.addObserver(forName: UIApplication.willResignActiveNotification, object: nil, queue: .main) { [weak self] _ in
+            self?.access?.dispose()
+            self?.access = nil
+        })
+        self.observers.append(center.addObserver(forName: UIApplication.didBecomeActiveNotification, object: nil, queue: .main) { [weak self] _ in
+            guard let self, self.access == nil else { return }
+            self.access = self.archive.acquireReadAccess()
+        })
+    }
+
+    func dispose() {
+        self.access?.dispose()
+        self.access = nil
+        for observer in self.observers { NotificationCenter.default.removeObserver(observer) }
+        self.observers.removeAll()
+    }
+
+    deinit { self.dispose() }
 }
 
 /// Account-scoped entry point. No global preferences or direct Postbox access.
@@ -115,6 +153,7 @@ func localArchiveSettingsController(context: AccountContext, peerId: Int64? = ni
     let actionDisposable = MetaDisposable()
     let actionState = Promise<(Bool, Bool)>((false, false))
     let archive = context.account.localArchive
+    let readLease = archive.map { LocalArchiveReadLease(archive: $0) }
     var currentSettings = LocalArchiveSettings()
     let apply: (Signal<Bool, NoError>) -> Void = { operation in
         actionState.set(.single((true, false)))
@@ -153,9 +192,15 @@ func localArchiveSettingsController(context: AccountContext, peerId: Int64? = ni
         guard let archive else { return }
         switch id {
         case .fixed(3):
-            pushController?(localArchiveMessagesController(context: context, archive: archive, peerId: nil, message: nil))
+            pushController?(localArchiveMessagesController(context: context, archive: archive, peerId: peerId, message: nil))
         case .fixed(19):
             pushController?(LocalArchiveGalleryController(context: context, archive: archive, peerId: peerId))
+        case .fixed(20):
+            pushController?(localArchiveExclusionsController(context: context, archive: archive, senders: false))
+        case .fixed(21):
+            pushController?(localArchiveExclusionsController(context: context, archive: archive, senders: true))
+        case .fixed(23):
+            pushController?(localArchivePresentationController(context: context))
         case .fixed(9):
             selectRetention(true)
         case .fixed(10):
@@ -194,19 +239,23 @@ func localArchiveSettingsController(context: AccountContext, peerId: Int64? = ni
             LocalArchiveRow(stableId: .fixed(0), order: 0, section: 0, content: .heading("EXPERIMENTAL · THIS ACCOUNT")),
             LocalArchiveRow(stableId: .fixed(1), order: 1, section: 0, content: .toggle("Preserve deleted messages and cached media", settings.enabled, canChange)),
             LocalArchiveRow(stableId: .fixed(2), order: 2, section: 0, content: .text(statusText)),
-            LocalArchiveRow(stableId: .fixed(3), order: 3, section: 1, content: .action("View Deleted Messages", "Messages, media and earlier versions", settings.enabled && localArchiveCanRead(status))),
+            LocalArchiveRow(stableId: .fixed(3), order: 3, section: 1, content: .action("View Deleted Messages", peerId == nil ? "All chats in this account" : "This chat only", localArchiveCanRead(status))),
             LocalArchiveRow(stableId: .fixed(4), order: 4, section: 1, content: .text("Stored on this device in a separate encrypted archive. Clearing Telegram’s cache does not clear this archive. Nothing here is uploaded or sent to other chats.")),
             LocalArchiveRow(stableId: .fixed(11), order: 5, section: 2, content: .heading("RETENTION AND EXCLUSIONS")),
             LocalArchiveRow(stableId: .fixed(9), order: 6, section: 2, content: .action("Archive retention", settings.maxAgeSeconds == Int64.max ? "No age expiry" : "\(settings.maxAgeSeconds / 86400) days", canChange)),
             LocalArchiveRow(stableId: .fixed(10), order: 7, section: 2, content: .action("Archive payload limit", "\(settings.maxPayloadBytes / (1024 * 1024)) MiB", canChange)),
             LocalArchiveRow(stableId: .fixed(8), order: 8, section: 2, content: .toggle("Exclude bot conversations", settings.excludeBots, canChange)),
             LocalArchiveRow(stableId: .fixed(12), order: 9, section: 2, content: .text("Oldest records are removed as archive activity runs. The storage limit counts text, metadata and retained media; database files can use more disk space. Lowering either limit may permanently remove records.")),
-            LocalArchiveRow(stableId: .fixed(18), order: 10, section: 3, content: .text(usage.map { "Archived snapshots: \($0.snapshots)\nStored payload: \(ByteCountFormatter.string(fromByteCount: $0.payloadBytes, countStyle: .file))\nDatabase and search-index overhead are additional." } ?? "Storage usage is available when the archive is unlocked and enabled.")),
+            LocalArchiveRow(stableId: .fixed(18), order: 10, section: 3, content: .text(usage.map { "Archived snapshots: \($0.snapshots)\nStored payload: \(ByteCountFormatter.string(fromByteCount: $0.payloadBytes, countStyle: .file))\nDatabase and search-index overhead are additional." } ?? "Storage usage is available when an existing archive is unlocked.")),
             LocalArchiveRow(stableId: .fixed(13), order: 11, section: 3, content: .action("Clear This Account’s Archive", "Permanent local deletion", canChange)),
             LocalArchiveRow(stableId: .fixed(5), order: 12, section: 4, content: .heading("CURRENT LIMITS")),
             LocalArchiveRow(stableId: .fixed(6), order: 13, section: 4, content: .text("This preview captures supported deletion and edit updates for messages already received while capture is enabled. It cannot recover earlier deletions and does not cover every deletion path. Completed local cloud files up to 512 MiB are attempted within the storage limit; image previews are limited to 16 MiB; missing or incomplete files are not downloaded. Structured rich messages, secret chats and disappearing content are excluded. Storage failures or a locked device can leave gaps."))
         ]
         entries.append(LocalArchiveRow(stableId: .fixed(19), order: 19, section: 6, content: .action("Archived Media", "Photos, video and files", localArchiveCanRead(status))))
+        entries.append(LocalArchiveRow(stableId: .fixed(20), order: 20, section: 7, content: .action("Excluded Chats", "\(settings.excludedPeerIds.count)", canChange)))
+        entries.append(LocalArchiveRow(stableId: .fixed(21), order: 21, section: 7, content: .action("Excluded Senders", "\(settings.excludedSenderIds.count)", canChange)))
+        entries.append(LocalArchiveRow(stableId: .fixed(22), order: 22, section: 7, content: .text("Exclusions stop future captures for this account. Sender exclusions apply in every chat. Existing saved versions remain until you delete them or retention removes them.")))
+        entries.append(LocalArchiveRow(stableId: .fixed(23), order: 23, section: 8, content: .action("Archive Labels", "Deleted and edited markers", true)))
         if actionState.1 {
             entries.append(LocalArchiveRow(stableId: .fixed(7), order: 14, section: 4, content: .text("The setting could not be changed. Unlock the device and try again.")))
         }
@@ -224,6 +273,7 @@ func localArchiveSettingsController(context: AccountContext, peerId: Int64? = ni
     }
     |> afterDisposed {
         actionDisposable.dispose()
+        readLease?.dispose()
     }
 
     let controller = ItemListController(context: context, state: signal)
@@ -236,17 +286,142 @@ func localArchiveSettingsController(context: AccountContext, peerId: Int64? = ni
     return controller
 }
 
+/// Opens this account's encrypted retained media without fetching Telegram files.
+public func localArchiveMediaGalleryController(context: AccountContext, peerId: Int64? = nil) -> ViewController {
+    guard let archive = context.account.localArchive else { return localArchiveSettingsController(context: context, peerId: peerId) }
+    return LocalArchiveGalleryController(context: context, archive: archive, peerId: peerId)
+}
+
+/// Resolve only the visible page through local engine data. Exclusions never
+/// fetch message history or change Telegram's blocked-user or chat settings.
+private func localArchiveExclusionsController(context: AccountContext, archive: LocalArchiveCoordinator, senders: Bool) -> ViewController {
+    var pushController: ((ViewController) -> Void)?
+    var presentController: ((ViewController) -> Void)?
+    let actionDisposable = MetaDisposable()
+    let actionState = Promise<(Bool, Bool)>((false, false))
+    let requestedPage = ValuePromise<Int>(0, ignoreRepeated: true)
+    var currentPage = 0
+    let pageSize = 50
+    let setExcluded: (Int64, Bool) -> Signal<Bool, NoError> = { id, excluded in
+        return senders ? archive.setSenderExcluded(senderId: id, excluded: excluded) : archive.setPeerExcluded(peerId: id, excluded: excluded)
+    }
+    let apply: (Signal<Bool, NoError>, (() -> Void)?) -> Void = { operation, completion in
+        actionState.set(.single((true, false)))
+        actionDisposable.set((operation |> deliverOnMainQueue).start(next: { success in
+            actionState.set(.single((false, !success)))
+            completion?()
+        }))
+    }
+    let arguments = LocalArchiveArguments(action: { id in
+        switch id {
+        case .fixed(1):
+            var filter: ChatListNodePeersFilter = [.excludeSecretChats, .excludeRecent, .doNotSearchMessages, .removeSearchHeader]
+            if senders { filter.insert(.onlyPrivateChats) }
+            let picker = context.sharedContext.makePeerSelectionController(PeerSelectionControllerParams(context: context, filter: filter, hasContactSelector: senders, title: senders ? "Exclude Sender" : "Exclude Chat"))
+            picker.peerSelected = { [weak picker] peer, _ in
+                picker?.inProgress = true
+                apply(setExcluded(peer.id.toInt64(), true), { [weak picker] in
+                    picker?.inProgress = false
+                    picker?.dismiss()
+                })
+            }
+            pushController?(picker)
+        case .fixed(2):
+            requestedPage.set(max(0, currentPage - 1))
+        case .fixed(3):
+            requestedPage.set(currentPage + 1)
+        case let .excludedPeer(id):
+            let presentation = context.sharedContext.currentPresentationData.with { $0 }
+            let sheet = ActionSheetController(presentationData: presentation)
+            sheet.setItemGroups([
+                ActionSheetItemGroup(items: [
+                    ActionSheetTextItem(title: senders ? "Allow future messages from this sender to be archived? Chat and bot exclusions still apply." : "Allow future messages from this chat to be archived? Sender and bot exclusions still apply."),
+                    ActionSheetButtonItem(title: "Remove Exclusion", color: .accent, action: { [weak sheet] in
+                        sheet?.dismissAnimated()
+                        apply(setExcluded(id, false), nil)
+                    })
+                ]),
+                ActionSheetItemGroup(items: [ActionSheetButtonItem(title: presentation.strings.Common_Cancel, color: .accent, action: { [weak sheet] in sheet?.dismissAnimated() })])
+            ])
+            presentController?(sheet)
+        default:
+            break
+        }
+    })
+    let data: Signal<(LocalArchiveSettings, Int, [Int64], [Int64: String]), NoError> = combineLatest(archive.settings, requestedPage.get())
+    |> mapToSignal { settings, requested in
+        let ids = (senders ? settings.excludedSenderIds : settings.excludedPeerIds).sorted()
+        let page = min(requested, max(0, (ids.count - 1) / pageSize))
+        let visible = Array(ids.dropFirst(page * pageSize).prefix(pageSize))
+        guard !visible.isEmpty else { return .single((settings, page, [], [:])) }
+        return combineLatest(visible.map { id in
+            context.engine.data.get(TelegramEngine.EngineData.Item.Peer.Peer(id: EnginePeer.Id(id)))
+        }) |> map { peers in
+            var names: [Int64: String] = [:]
+            for (id, peer) in zip(visible, peers) {
+                if let peer { names[id] = peer.compactDisplayTitle }
+            }
+            return (settings, page, visible, names)
+        }
+    }
+    let signal = combineLatest(queue: .mainQueue(), context.sharedContext.presentationData, data, actionState.get())
+    |> map { presentationData, data, actionState -> (ItemListControllerState, (ItemListNodeState, Any)) in
+        let (settings, page, ids, names) = data
+        currentPage = page
+        let count = senders ? settings.excludedSenderIds.count : settings.excludedPeerIds.count
+        let canChange = settings.isSupported && !settings.pendingPurge && !actionState.0
+        var entries: [LocalArchiveRow] = [
+            LocalArchiveRow(stableId: .fixed(0), order: 0, section: 0, content: .text(senders ? "Messages authored by these senders are not captured, including their messages in groups. Telegram blocking is unchanged. Earlier saved versions are kept." : "Messages in these chats, groups and channels are not captured. Telegram history is unchanged. Earlier saved versions are kept.")),
+            LocalArchiveRow(stableId: .fixed(1), order: 1, section: 0, content: .action(senders ? "Add Sender" : "Add Chat", "\(count) of 4096 exclusions", canChange && count < 4096))
+        ]
+        if !settings.isSupported {
+            entries.append(LocalArchiveRow(stableId: .fixed(4), order: 2, section: 0, content: .text("Saved archive settings are not supported by this version. They have been kept unchanged.")))
+        } else if actionState.1 {
+            entries.append(LocalArchiveRow(stableId: .fixed(4), order: 2, section: 0, content: .text("The exclusion could not be saved. Existing settings have been kept.")))
+        } else if count == 0 {
+            entries.append(LocalArchiveRow(stableId: .fixed(4), order: 2, section: 0, content: .text(senders ? "No individually excluded senders." : "No individually excluded chats.")))
+        }
+        for (index, id) in ids.enumerated() {
+            let title = names[id] ?? "Unavailable peer (\(id))"
+            entries.append(LocalArchiveRow(stableId: .excludedPeer(id), order: 3 + index, section: 1, content: .action(title, "Remove exclusion", canChange)))
+        }
+        if page > 0 {
+            entries.append(LocalArchiveRow(stableId: .fixed(2), order: 54, section: 2, content: .action("Previous exclusions", "", !actionState.0)))
+        }
+        if (page + 1) * pageSize < count {
+            entries.append(LocalArchiveRow(stableId: .fixed(3), order: 55, section: 2, content: .action("More exclusions", "", !actionState.0)))
+        }
+        let presentation = ItemListPresentationData(presentationData)
+        let controller = ItemListControllerState(presentationData: presentation, title: .text(senders ? "Excluded Senders" : "Excluded Chats"), leftNavigationButton: nil, rightNavigationButton: nil, backNavigationButton: ItemListBackButton(title: presentationData.strings.Common_Back), animateChanges: false)
+        return (controller, (ItemListNodeState(presentationData: presentation, entries: entries, style: .blocks), arguments))
+    }
+    |> afterDisposed { actionDisposable.dispose() }
+    let controller = ItemListController(context: context, state: signal)
+    pushController = { [weak controller] next in (controller?.navigationController as? NavigationController)?.pushViewController(next) }
+    presentController = { [weak controller] next in controller?.present(next, in: .window(.root)) }
+    return controller
+}
+
 /// Opens the local archive scoped to an actual conversation.
 public func localArchiveChatController(context: AccountContext, peerId: EnginePeer.Id) -> ViewController {
+    return localArchiveChatSearchController(context: context, peerId: peerId, query: "")
+}
+
+/// Searches only this account's local archive. Telegram's sender, date, media,
+/// reaction and topic filters are not transferred into this text-only query.
+public func localArchiveChatSearchController(context: AccountContext, peerId: EnginePeer.Id, query: String) -> ViewController {
+    guard let request = LocalArchiveSearchRequest(peerId: peerId, query: query) else {
+        return localArchiveSettingsController(context: context)
+    }
     guard let archive = context.account.localArchive else {
         return localArchiveSettingsController(context: context)
     }
-    return localArchiveMessagesController(context: context, archive: archive, peerId: peerId.toInt64(), message: nil)
+    return localArchiveMessagesController(context: context, archive: archive, peerId: request.peerId.toInt64(), message: nil, initialQuery: request.query)
 }
 
 /// Opens prior snapshots without reconstructing or sending a Telegram message.
 public func localArchiveMessageHistoryController(context: AccountContext, messageId: EngineMessage.Id) -> ViewController {
-    guard let archive = context.account.localArchive else {
+    guard localArchiveSupportsPeer(messageId.peerId), messageId.namespace == Namespaces.Message.Cloud, let archive = context.account.localArchive else {
         return localArchiveSettingsController(context: context)
     }
     return localArchiveMessagesController(context: context, archive: archive, peerId: messageId.peerId.toInt64(), message: LocalArchiveMessageReference(messageId))
@@ -256,6 +431,10 @@ private struct LocalArchiveMessageReference {
     let peerId: Int64
     let namespace: Int32
     let messageId: Int32
+
+    var engineMessageId: EngineMessage.Id {
+        return EngineMessage.Id(peerId: EnginePeer.Id(self.peerId), namespace: self.namespace, id: self.messageId)
+    }
 
     init(_ id: EngineMessage.Id) {
         self.peerId = id.peerId.toInt64()
@@ -284,6 +463,7 @@ private struct LocalArchiveBrowserState {
     var unavailable = false
     var hasOlder = false
     var hasNewer = false
+    var currentVersion: LocalArchiveCurrentVersionState = .hidden
 }
 
 /// Retains a single bounded page. Cursor history contains numbers, not message text.
@@ -301,16 +481,41 @@ private final class LocalArchiveBrowserModel {
     private var cursor: Int64?
     private var previousCursors: [Int64?] = []
     private var searchText = ""
+    private var initialQuery: String?
     private var searchGeneration = 0
     private var disposed = false
+    private var visible = false
+    private var foreground = UIApplication.shared.applicationState == .active
+    private var currentVersionLoader: LocalArchiveCurrentVersionLoader?
+    private var observers: [NSObjectProtocol] = []
     private(set) var state = LocalArchiveBrowserState()
     let statePromise = Promise<LocalArchiveBrowserState>(LocalArchiveBrowserState())
 
-    init(context: AccountContext, archive: LocalArchiveCoordinator, peerId: Int64?, message: LocalArchiveMessageReference?) {
+    init(context: AccountContext, archive: LocalArchiveCoordinator, peerId: Int64?, message: LocalArchiveMessageReference?, initialQuery: String) {
         self.context = context
         self.archive = archive
         self.peerId = peerId
         self.message = message
+        self.initialQuery = localArchiveBoundedSearchQuery(initialQuery)
+        if let message {
+            self.currentVersionLoader = LocalArchiveCurrentVersionLoader(source: {
+                // This engine data item observes only Postbox's local message
+                // view. It sends no fetch/read RPC and never writes the archive.
+                context.engine.data.subscribe(TelegramEngine.EngineData.Item.Messages.Message(id: message.engineMessageId))
+            }, changed: { [weak self] value in
+                guard let self, !self.disposed else { return }
+                self.state.currentVersion = value
+                self.statePromise.set(.single(self.state))
+            })
+        }
+        self.observers.append(NotificationCenter.default.addObserver(forName: UIApplication.willResignActiveNotification, object: nil, queue: .main) { [weak self] _ in
+            self?.foreground = false
+            self?.updateCurrentVersionAccess()
+        })
+        self.observers.append(NotificationCenter.default.addObserver(forName: UIApplication.didBecomeActiveNotification, object: nil, queue: .main) { [weak self] _ in
+            self?.foreground = true
+            self?.updateCurrentVersionAccess()
+        })
         self.statusDisposable.set((archive.status |> deliverOnMainQueue).start(next: { [weak self] status in
             guard let self else {
                 return
@@ -318,6 +523,10 @@ private final class LocalArchiveBrowserModel {
             let readable = localArchiveCanRead(status)
             if readable && !self.readable {
                 self.readable = true
+                if let initialQuery = self.initialQuery {
+                    self.searchText = initialQuery
+                    self.initialQuery = nil
+                }
                 self.refresh()
             } else if !readable {
                 self.readable = false
@@ -331,7 +540,17 @@ private final class LocalArchiveBrowserModel {
                 self.state = LocalArchiveBrowserState()
                 self.statePromise.set(.single(self.state))
             }
+            self.updateCurrentVersionAccess()
         }))
+    }
+
+    func setVisible(_ visible: Bool) {
+        self.visible = visible
+        self.updateCurrentVersionAccess()
+    }
+
+    private func updateCurrentVersionAccess() {
+        self.currentVersionLoader?.setActive(self.readable && self.visible && self.foreground && !self.disposed)
     }
 
     deinit {
@@ -340,6 +559,9 @@ private final class LocalArchiveBrowserModel {
 
     func dispose() {
         self.disposed = true
+        self.currentVersionLoader?.dispose()
+        for observer in self.observers { NotificationCenter.default.removeObserver(observer) }
+        self.observers.removeAll()
         self.searchGeneration += 1
         self.requestDisposable.dispose()
         self.peersDisposable.dispose()
@@ -348,8 +570,7 @@ private final class LocalArchiveBrowserModel {
 
     func setSearchText(_ value: String) {
         guard !self.disposed, self.message == nil, self.readable else { return }
-        var bounded = String(decoding: value.utf8.prefix(512), as: UTF8.self)
-        while bounded.utf8.count > 512 { bounded.removeLast() }
+        let bounded = localArchiveBoundedSearchQuery(value)
         guard bounded != self.searchText else { return }
         self.searchText = bounded
         self.searchGeneration += 1
@@ -397,7 +618,9 @@ private final class LocalArchiveBrowserModel {
         self.requestId += 1
         let requestId = self.requestId
         self.peersDisposable.set(nil)
+        let currentVersion = self.state.currentVersion
         self.state = LocalArchiveBrowserState()
+        self.state.currentVersion = currentVersion
         self.state.searchText = self.searchText
         self.state.loading = true
         self.state.hasNewer = !self.previousCursors.isEmpty
@@ -439,10 +662,20 @@ private final class LocalArchiveBrowserModel {
     }
 }
 
-private func localArchiveMessagesController(context: AccountContext, archive: LocalArchiveCoordinator, peerId: Int64?, message: LocalArchiveMessageReference?) -> ViewController {
-    let model = LocalArchiveBrowserModel(context: context, archive: archive, peerId: peerId, message: message)
+private func localArchiveMessagesController(context: AccountContext, archive: LocalArchiveCoordinator, peerId: Int64?, message: LocalArchiveMessageReference?, initialQuery: String = "") -> ViewController {
+    let readLease = LocalArchiveReadLease(archive: archive)
+    let model = LocalArchiveBrowserModel(context: context, archive: archive, peerId: peerId, message: message, initialQuery: initialQuery)
     let mediaDisposable = MetaDisposable()
     let mutationDisposable = MetaDisposable()
+    var mediaVisible = false
+    var mediaReadable = false
+    let mediaStatus = (archive.status |> deliverOnMainQueue).start(next: { status in
+        mediaReadable = localArchiveCanRead(status)
+        if !mediaReadable { mediaDisposable.set(nil) }
+    })
+    let mediaInactiveObserver = NotificationCenter.default.addObserver(forName: UIApplication.willResignActiveNotification, object: nil, queue: .main) { _ in
+        mediaDisposable.set(nil)
+    }
     var presentController: ((ViewController) -> Void)?
     let formatter = DateFormatter()
     formatter.dateStyle = .medium
@@ -456,32 +689,39 @@ private func localArchiveMessagesController(context: AccountContext, archive: Lo
             model.older()
         case .fixed(3):
             pushController?(localArchiveSettingsController(context: context, peerId: peerId))
+        case let .excludeSender(sequence):
+            guard let record = model.state.records.first(where: { $0.sequence == sequence }), let senderId = record.authorId else { return }
+            let presentation = context.sharedContext.currentPresentationData.with { $0 }
+            let sheet = ActionSheetController(presentationData: presentation)
+            sheet.setItemGroups([
+                ActionSheetItemGroup(items: [
+                    ActionSheetTextItem(title: "Stop archiving future messages authored by this sender in every chat on this account? Existing saved versions are kept. You can remove this exclusion in Archive Settings."),
+                    ActionSheetButtonItem(title: "Exclude Sender", color: .accent, action: { [weak sheet] in
+                        sheet?.dismissAnimated()
+                        mutationDisposable.set((archive.setSenderExcluded(senderId: senderId, excluded: true) |> deliverOnMainQueue).start(next: { success in
+                            if !success {
+                                presentController?(textAlertController(context: context, title: "Exclusion unavailable", text: "The exclusion could not be saved. Existing archive settings have been kept.", actions: [TextAlertAction(type: .defaultAction, title: presentation.strings.Common_OK, action: {})]))
+                            }
+                        }))
+                    })
+                ]),
+                ActionSheetItemGroup(items: [ActionSheetButtonItem(title: presentation.strings.Common_Cancel, color: .accent, action: { [weak sheet] in sheet?.dismissAnimated() })])
+            ])
+            presentController?(sheet)
         case let .media(sequence, slot):
-            guard let record = model.state.records.first(where: { $0.sequence == sequence }) else { return }
-            let kind = record.mediaKinds.indices.contains(slot) ? record.mediaKinds[slot] : "unsupported"
-            if kind == "video" || kind == "videoMessage" || kind == "voice" {
-                pushController?(LocalArchivedPlaybackController(archive: archive, eventKey: record.eventKey, slot: slot, presentationData: context.sharedContext.currentPresentationData.with { $0 }))
-                return
-            }
-            mediaDisposable.set((archive.mediaData(eventKey: record.eventKey, slot: slot)
-            |> deliverOn(Queue.concurrentDefaultQueue())
-            |> map { data -> UIImage? in
-                guard let data, let source = CGImageSourceCreateWithData(data as CFData, [kCGImageSourceShouldCache: false] as CFDictionary),
-                      let properties = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [String: Any],
-                      let width = (properties[kCGImagePropertyPixelWidth as String] as? NSNumber)?.uint64Value,
-                      let height = (properties[kCGImagePropertyPixelHeight as String] as? NSNumber)?.uint64Value,
-                      width > 0, height > 0, width <= 20_000, height <= 20_000, width * height <= 80_000_000,
-                      let image = CGImageSourceCreateThumbnailAtIndex(source, 0, [kCGImageSourceCreateThumbnailFromImageAlways: true, kCGImageSourceThumbnailMaxPixelSize: 2048, kCGImageSourceCreateThumbnailWithTransform: true] as CFDictionary) else { return nil }
-                return UIImage(cgImage: image)
-            }
-            |> deliverOnMainQueue).start(next: { image in
-                if let image {
-                    pushController?(LocalArchivedImageController(image: image, archive: archive, presentationData: context.sharedContext.currentPresentationData.with { $0 }))
-                } else {
-                    let data = context.sharedContext.currentPresentationData.with { $0 }
-                    presentController?(textAlertController(context: context, title: "Preview unavailable", text: "This attachment is missing or cannot be previewed as an image.", actions: [TextAlertAction(type: .defaultAction, title: data.strings.Common_OK, action: {})]))
-                }
-            }))
+            guard mediaVisible, mediaReadable,
+                  let record = model.state.records.first(where: { $0.sequence == sequence }) else { return }
+            mediaDisposable.set((localArchiveLoadMediaPreview(archive: archive, eventKey: record.eventKey, slot: slot)
+                |> deliverOnMainQueue).start(next: { result in
+                    guard mediaVisible, mediaReadable, UIApplication.shared.applicationState == .active,
+                          model.state.records.contains(where: { $0.sequence == sequence }) else { return }
+                    let presentation = context.sharedContext.currentPresentationData.with { $0 }
+                    localArchiveOpenMediaPreview(result, archive: archive, eventKey: record.eventKey, slot: slot,
+                        presentationData: presentation, push: { pushController?($0) }, information: { text in
+                            presentController?(textAlertController(context: context, title: "Preview unavailable", text: text,
+                                actions: [TextAlertAction(type: .defaultAction, title: presentation.strings.Common_OK, action: {})]))
+                        })
+                }))
         case let .deleteSnapshot(sequence):
             guard let record = model.state.records.first(where: { $0.sequence == sequence }) else { return }
             let presentation = context.sharedContext.currentPresentationData.with { $0 }
@@ -508,8 +748,8 @@ private func localArchiveMessagesController(context: AccountContext, archive: Lo
             break
         }
     })
-    let signal = combineLatest(queue: .mainQueue(), context.sharedContext.presentationData, archive.status, model.statePromise.get())
-    |> map { presentationData, status, state -> (ItemListControllerState, (ItemListNodeState, Any)) in
+    let signal = combineLatest(queue: .mainQueue(), context.sharedContext.presentationData, archive.status, model.statePromise.get(), archive.settings, context.account.localArchivePresentation.settings)
+    |> map { presentationData, status, state, settings, markers -> (ItemListControllerState, (ItemListNodeState, Any)) in
         var entries: [LocalArchiveRow] = []
         let ready = localArchiveCanRead(status)
         let information: String
@@ -522,9 +762,9 @@ private func localArchiveMessagesController(context: AccountContext, archive: Lo
         } else if state.records.isEmpty {
             information = "No captured messages on this page. Only text received and captured by this client can appear here."
         } else if !state.searchText.isEmpty {
-            information = "Local word and phrase matches in deleted messages and earlier versions. Search is case-insensitive; no query or result is sent to Telegram."
+            information = "Local text matches in deleted messages and earlier versions across \(peerId == nil ? "this account" : "this chat"). Sender, topic, date and media filters from Telegram search do not apply. Queries are limited to 512 UTF-8 bytes. No archive query or result is sent to Telegram."
         } else if message != nil {
-            information = "Earlier versions in capture order, oldest first on this page. Times reflect this device’s observation; they may differ from the server’s event time."
+            information = "Saved versions appear oldest first on this page. A separate current version from Telegram’s local cache appears after the newest page; it is not archived by viewing. Capture times reflect this device’s observation."
         } else {
             information = "Most recently captured deletions first. Tap a message to see its captured versions."
         }
@@ -542,7 +782,7 @@ private func localArchiveMessagesController(context: AccountContext, archive: Lo
         if ready {
             for (index, record) in state.records.enumerated() {
                 let date = formatter.string(from: Date(timeIntervalSince1970: TimeInterval(record.observedAt)))
-                let kind = record.isDeleted ? "Deleted" : "Before edit"
+                let kind = markers.marker(isDeleted: record.isDeleted) + (record.isDeleted ? "" : " · previous version")
                 let peerName = state.peerNames[record.peerId] ?? "Unavailable chat"
                 if message == nil {
                     let preview = record.text.isEmpty ? (record.storedMediaCount > 0 ? "[Archived attachment]" : (record.unavailableMediaCount > 0 ? "[Attachment file not archived]" : "[No text]")) : String(record.text.prefix(160))
@@ -567,14 +807,35 @@ private func localArchiveMessagesController(context: AccountContext, archive: Lo
                     }
                     entries.append(LocalArchiveRow(stableId: .record(record.sequence), order: 6 + index * 20, section: Int32(1 + index), content: .text(text)))
                     for (slot, kind) in record.mediaKinds.enumerated() {
-                        if kind == "photo" || kind == "animation" {
-                            entries.append(LocalArchiveRow(stableId: .media(record.sequence, slot), order: 7 + index * 20 + slot, section: Int32(1 + index), content: .action("Preview archived image \(slot + 1)", "Local archive", true)))
-                        } else if kind == "video" || kind == "videoMessage" || kind == "voice" {
-                            entries.append(LocalArchiveRow(stableId: .media(record.sequence, slot), order: 7 + index * 20 + slot, section: Int32(1 + index), content: .action("Play archived \(kind == "voice" ? "voice message" : "video") \(slot + 1)", "Supported iOS formats", true)))
-                        }
+                        let title = kind == "voice" ? "voice message" : kind == "videoMessage" ? "video message" : kind
+                        entries.append(LocalArchiveRow(stableId: .media(record.sequence, slot), order: 7 + index * 20 + slot, section: Int32(1 + index), content: .action("Open archived \(title) \(slot + 1)", "Local archive · preview where supported", true)))
+                    }
+                    if let senderId = record.authorId {
+                        let excluded = settings.excludedSenderIds.contains(senderId)
+                        entries.append(LocalArchiveRow(stableId: .excludeSender(record.sequence), order: 17 + index * 20, section: Int32(1 + index), content: .action(excluded ? "Sender Is Excluded" : "Exclude This Sender", "Future captures in all chats", settings.isSupported && !settings.pendingPurge && !excluded)))
                     }
                     entries.append(LocalArchiveRow(stableId: .deleteSnapshot(record.sequence), order: 18 + index * 20, section: Int32(1 + index), content: .action("Delete Saved Version", "This version and its attachments", true)))
                 }
+            }
+        }
+        if ready, message != nil, !state.hasNewer {
+            let detail: String?
+            switch state.currentVersion {
+            case .hidden:
+                detail = nil
+            case .loading:
+                detail = "Loading the current version from this account’s Telegram cache…"
+            case .unavailable:
+                detail = "No current version is available in Telegram’s local cache. Saved snapshots above are unchanged."
+            case .unsupportedContent:
+                detail = "The current message is not eligible for a preview here. Timed content and Secret Chats remain in their original Telegram view."
+            case let .available(current):
+                let date = formatter.string(from: Date(timeIntervalSince1970: TimeInterval(current.serverEditAt ?? current.timestamp)))
+                entries.append(LocalArchiveRow(stableId: .fixed(30), order: 10000, section: 10000, content: .heading("Current version · \(date)")))
+                detail = current.text + "\n\n[Read from Telegram’s local cache; not an archived snapshot.]"
+            }
+            if let detail {
+                entries.append(LocalArchiveRow(stableId: .fixed(31), order: 10001, section: 10000, content: .text(detail)))
             }
         }
         let data = ItemListPresentationData(presentationData)
@@ -585,9 +846,14 @@ private func localArchiveMessagesController(context: AccountContext, archive: Lo
     |> afterDisposed {
         model.dispose()
         mediaDisposable.dispose()
+        mediaStatus.dispose()
+        NotificationCenter.default.removeObserver(mediaInactiveObserver)
         mutationDisposable.dispose()
+        readLease.dispose()
     }
     let controller = ItemListController(context: context, state: signal)
+    controller.didAppear = { _ in mediaVisible = true; model.setVisible(true) }
+    controller.willDisappear = { _ in mediaVisible = false; mediaDisposable.set(nil); model.setVisible(false) }
     presentController = { [weak controller] next in controller?.present(next, in: .window(.root)) }
     pushController = { [weak controller] next in
         (controller?.navigationController as? NavigationController)?.pushViewController(next)
@@ -595,45 +861,291 @@ private func localArchiveMessagesController(context: AccountContext, archive: Lo
     return controller
 }
 
+private enum LocalArchiveMediaPreviewResult {
+    case image(UIImage)
+    case animatedGIF(LocalArchiveGIFPreview)
+    case playback
+    case pdf(LocalArchivePDFPreview)
+    case unavailable(String)
+}
+
+/// One routing/loading path for history and gallery. All parsing, decompression
+/// and PDF work stays on a utility worker, with an independently cancellable
+/// request. The coordinator separately verifies account/read access on each read.
+private func localArchiveLoadMediaPreview(archive: LocalArchiveCoordinator, eventKey: String, slot: Int) -> Signal<LocalArchiveMediaPreviewResult, NoError> {
+    return archive.mediaInfo(eventKey: eventKey, slot: slot)
+    |> mapToSignal { info -> Signal<LocalArchiveMediaPreviewResult, NoError> in
+        guard let info else { return .single(.unavailable("The file bytes were not retained or are no longer available in this archive.")) }
+        let route = localArchiveMediaRoute(kind: info.kind, mimeType: info.mimeType)
+        if route == .playback { return .single(.playback) }
+        if route == .unsupported { return .single(.unavailable("This file is preserved locally, but a preview is not available for its format.")) }
+        return archive.mediaData(eventKey: eventKey, slot: slot)
+        |> mapToSignal { data -> Signal<LocalArchiveMediaPreviewResult, NoError> in
+            return Signal { subscriber in
+                let cancellation = LocalArchivePreviewCancellation()
+                Queue.concurrentDefaultQueue().async {
+                    guard !cancellation.isCancelled else { return }
+                    let result: LocalArchiveMediaPreviewResult
+                    if let data {
+                        switch route {
+                        case .image:
+                            if let image = localArchiveGalleryImage(data, maximumDimension: 2048) { result = .image(image) }
+                            else { result = .unavailable("This image is invalid or exceeds the safe preview limits.") }
+                        case .animatedGIF:
+                            if let animation = localArchiveGIFPreview(data, cancelled: { cancellation.isCancelled }) { result = .animatedGIF(animation) }
+                            else { result = .unavailable("This animation is invalid or exceeds preview limits: 80 frames and 24 MiB of decoded images.") }
+                        case .pdf:
+                            if let pdf = LocalArchivePDFPreview(data: data, cancelled: { cancellation.isCancelled }) { result = .pdf(pdf) }
+                            else { result = .unavailable("This PDF is invalid, password-protected, or exceeds the preview limits of 16 MiB and 200 pages.") }
+                        case .playback, .unsupported:
+                            result = .unavailable("A preview is not available for this format.")
+                        }
+                    } else {
+                        result = .unavailable("This file is missing or too large for an in-memory preview.")
+                    }
+                    guard !cancellation.isCancelled else { return }
+                    subscriber.putNext(result)
+                    subscriber.putCompletion()
+                }
+                return ActionDisposable { cancellation.cancel() }
+            }
+        }
+    }
+}
+
+private func localArchiveOpenMediaPreview(_ result: LocalArchiveMediaPreviewResult, archive: LocalArchiveCoordinator,
+                                         eventKey: String, slot: Int, presentationData: PresentationData,
+                                         push: (ViewController) -> Void, information: (String) -> Void) {
+    switch result {
+    case let .image(image):
+        push(LocalArchivedImageController(image: image, archive: archive, presentationData: presentationData))
+    case let .animatedGIF(animation):
+        guard let first = animation.frames.first else { information("The animation has no decodable frames."); return }
+        push(LocalArchivedImageController(image: first, animation: animation, archive: archive, presentationData: presentationData))
+    case .playback:
+        push(LocalArchivedPlaybackController(archive: archive, eventKey: eventKey, slot: slot, presentationData: presentationData))
+    case let .pdf(pdf):
+        push(LocalArchivedPDFController(preview: pdf, archive: archive, presentationData: presentationData))
+    case let .unavailable(message):
+        information(message)
+    }
+}
+
+private final class LocalArchiveAnimationTarget: NSObject {
+    weak var owner: LocalArchivedImageController?
+    @objc func tick(_ link: CADisplayLink) { self.owner?.advanceAnimation(at: link.timestamp) }
+}
+
 private final class LocalArchivedImageController: ViewController {
     private let imageView: UIImageView
+    private let closedLabel = UILabel()
+    private var animation: LocalArchiveGIFPreview?
+    private let animationTarget = LocalArchiveAnimationTarget()
+    private var displayLink: CADisplayLink?
+    private var animationStartedAt: CFTimeInterval?
+    private var animationElapsed: CFTimeInterval = 0
+    private var lastTick: CFTimeInterval = 0
+    private var closed = false
     private let statusDisposable = MetaDisposable()
     private var inactiveObserver: NSObjectProtocol?
 
-    init(image: UIImage, archive: LocalArchiveCoordinator, presentationData: PresentationData) {
+    init(image: UIImage, animation: LocalArchiveGIFPreview? = nil, archive: LocalArchiveCoordinator, presentationData: PresentationData) {
         self.imageView = UIImageView(image: image)
+        self.animation = animation
         super.init(navigationBarPresentationData: NavigationBarPresentationData(presentationTheme: presentationData.theme, presentationStrings: presentationData.strings))
-        self.title = "Archived image"
+        self.animationTarget.owner = self
+        self.title = animation == nil ? "Archived image" : "Archived animation"
         self.imageView.contentMode = .scaleAspectFit
-        self.imageView.accessibilityLabel = "Locally archived image"
+        self.imageView.accessibilityLabel = animation == nil ? "Locally archived image" : "Locally archived animation"
         self.imageView.isAccessibilityElement = true
+        self.closedLabel.text = "Preview closed. Reopen the attachment to continue."
+        self.closedLabel.textColor = .white
+        self.closedLabel.textAlignment = .center
+        self.closedLabel.numberOfLines = 0
+        self.closedLabel.isHidden = true
+        if (animation?.frames.count ?? 0) > 1 {
+            self.navigationItem.rightBarButtonItem = UIBarButtonItem(title: "Play", style: .plain, target: self, action: #selector(self.toggleAnimation))
+        }
         self.statusDisposable.set((archive.status |> deliverOnMainQueue).start(next: { [weak self] status in
-            if !localArchiveCanRead(status) { self?.imageView.image = nil }
+            if !localArchiveCanRead(status) { self?.closeMedia() }
         }))
         self.inactiveObserver = NotificationCenter.default.addObserver(forName: UIApplication.willResignActiveNotification, object: nil, queue: .main) { [weak self] _ in
-            self?.imageView.image = nil
+            self?.closeMedia()
         }
     }
 
     deinit {
+        self.displayLink?.invalidate()
         self.statusDisposable.dispose()
         if let observer = self.inactiveObserver { NotificationCenter.default.removeObserver(observer) }
     }
 
     required init(coder: NSCoder) { fatalError("init(coder:) is not supported") }
 
+    private func closeMedia() {
+        self.closed = true
+        self.displayLink?.invalidate(); self.displayLink = nil
+        self.animation = nil
+        self.imageView.image = nil
+        self.closedLabel.isHidden = false
+        self.navigationItem.rightBarButtonItem = nil
+    }
+
+    @objc private func toggleAnimation() {
+        guard !self.closed else { return }
+        if self.displayLink != nil {
+            if let started = self.animationStartedAt { self.animationElapsed = max(0, self.lastTick - started) }
+            self.displayLink?.invalidate(); self.displayLink = nil
+            self.navigationItem.rightBarButtonItem?.title = "Play"
+        } else if (self.animation?.frames.count ?? 0) > 1 {
+            self.animationStartedAt = nil
+            let link = CADisplayLink(target: self.animationTarget, selector: #selector(LocalArchiveAnimationTarget.tick(_:)))
+            link.preferredFrameRateRange = CAFrameRateRange(minimum: 10, maximum: 30, preferred: 30)
+            link.add(to: .main, forMode: .common)
+            self.displayLink = link
+            self.navigationItem.rightBarButtonItem?.title = "Pause"
+        }
+    }
+
+    fileprivate func advanceAnimation(at timestamp: CFTimeInterval) {
+        guard !self.closed, let animation = self.animation, timestamp.isFinite else { return }
+        if self.animationStartedAt == nil { self.animationStartedAt = timestamp - self.animationElapsed }
+        self.lastTick = timestamp
+        let elapsed = timestamp - (self.animationStartedAt ?? timestamp)
+        self.imageView.image = animation.frames[animation.frameIndex(at: elapsed)]
+    }
+
+    override func viewDidAppear(_ animated: Bool) {
+        super.viewDidAppear(animated)
+        if !UIAccessibility.isReduceMotionEnabled, self.displayLink == nil { self.toggleAnimation() }
+    }
+
+    override func viewWillDisappear(_ animated: Bool) {
+        super.viewWillDisappear(animated)
+        self.closeMedia()
+    }
+
     override func loadDisplayNode() {
         super.loadDisplayNode()
         self.displayNode.backgroundColor = .black
         self.displayNode.view.addSubview(self.imageView)
+        self.displayNode.view.addSubview(self.closedLabel)
     }
 
     override func containerLayoutUpdated(_ layout: ContainerViewLayout, transition: ContainedViewLayoutTransition) {
         super.containerLayoutUpdated(layout, transition: transition)
         self.imageView.frame = CGRect(origin: .zero, size: layout.size)
+        self.closedLabel.frame = CGRect(x: 24, y: max(0, layout.size.height - 120) * 0.5, width: max(0, layout.size.width - 48), height: 120)
     }
 }
 
+
+private final class LocalArchivedPDFController: ViewController {
+    private var preview: LocalArchivePDFPreview?
+    private let picture = UIImageView()
+    private let pageLabel = UILabel()
+    private let previous = UIButton(type: .system)
+    private let next = UIButton(type: .system)
+    private let renderDisposable = MetaDisposable()
+    private let statusDisposable = MetaDisposable()
+    private var inactiveObserver: NSObjectProtocol?
+    private var pageIndex = 0
+    private var renderGeneration = 0
+    private var closed = false
+
+    init(preview: LocalArchivePDFPreview, archive: LocalArchiveCoordinator, presentationData: PresentationData) {
+        self.preview = preview
+        super.init(navigationBarPresentationData: NavigationBarPresentationData(presentationTheme: presentationData.theme, presentationStrings: presentationData.strings))
+        self.title = "Archived PDF"
+        self.picture.contentMode = .scaleAspectFit
+        self.picture.accessibilityLabel = "Locally archived PDF page"
+        self.picture.isAccessibilityElement = true
+        self.pageLabel.textColor = .white
+        self.pageLabel.font = .preferredFont(forTextStyle: .footnote)
+        self.pageLabel.textAlignment = .center
+        self.pageLabel.numberOfLines = 2
+        self.previous.setTitle("Previous page", for: .normal)
+        self.next.setTitle("Next page", for: .normal)
+        self.previous.addTarget(self, action: #selector(self.previousPage), for: .touchUpInside)
+        self.next.addTarget(self, action: #selector(self.nextPage), for: .touchUpInside)
+        self.statusDisposable.set((archive.status |> deliverOnMainQueue).start(next: { [weak self] status in
+            if !localArchiveCanRead(status) { self?.closeMedia() }
+        }))
+        self.inactiveObserver = NotificationCenter.default.addObserver(forName: UIApplication.willResignActiveNotification, object: nil, queue: .main) { [weak self] _ in self?.closeMedia() }
+    }
+
+    required init(coder: NSCoder) { fatalError("init(coder:) is not supported") }
+    deinit {
+        self.renderDisposable.dispose(); self.statusDisposable.dispose()
+        if let observer = self.inactiveObserver { NotificationCenter.default.removeObserver(observer) }
+    }
+
+    private func closeMedia() {
+        self.closed = true; self.renderGeneration += 1
+        self.renderDisposable.set(nil)
+        self.preview = nil; self.picture.image = nil
+        self.previous.isEnabled = false; self.next.isEnabled = false
+        self.pageLabel.text = "Preview closed. Reopen the attachment to continue."
+    }
+
+    @objc private func previousPage() {
+        guard !self.closed, self.pageIndex > 0 else { return }
+        self.pageIndex -= 1; self.renderPage()
+    }
+
+    @objc private func nextPage() {
+        guard !self.closed, let preview = self.preview, self.pageIndex + 1 < preview.pageCount else { return }
+        self.pageIndex += 1; self.renderPage()
+    }
+
+    private func renderPage() {
+        guard !self.closed, let preview = self.preview else { return }
+        self.renderGeneration += 1
+        let generation = self.renderGeneration, page = self.pageIndex
+        self.picture.image = nil
+        self.previous.isEnabled = false; self.next.isEnabled = false
+        self.pageLabel.text = "Loading page…"
+        let signal = Signal<UIImage?, NoError> { subscriber in
+            let cancellation = LocalArchivePreviewCancellation()
+            Queue.concurrentDefaultQueue().async {
+                guard !cancellation.isCancelled else { return }
+                let image = preview.image(pageIndex: page, cancelled: { cancellation.isCancelled })
+                guard !cancellation.isCancelled else { return }
+                subscriber.putNext(image); subscriber.putCompletion()
+            }
+            return ActionDisposable { cancellation.cancel() }
+        }
+        self.renderDisposable.set((signal |> deliverOnMainQueue).start(next: { [weak self] image in
+            guard let self, !self.closed, self.renderGeneration == generation else { return }
+            self.picture.image = image
+            self.pageLabel.text = image == nil ? "This page is unavailable or exceeds preview limits." : "Page \(page + 1) of \(preview.pageCount) · Read-only preview"
+            self.previous.isEnabled = page > 0
+            self.next.isEnabled = page + 1 < preview.pageCount
+        }))
+    }
+
+    override func viewWillDisappear(_ animated: Bool) {
+        super.viewWillDisappear(animated)
+        self.closeMedia()
+    }
+
+    override func loadDisplayNode() {
+        super.loadDisplayNode()
+        self.displayNode.backgroundColor = .black
+        for view in [self.picture, self.pageLabel, self.previous, self.next] as [UIView] { self.displayNode.view.addSubview(view) }
+        self.renderPage()
+    }
+
+    override func containerLayoutUpdated(_ layout: ContainerViewLayout, transition: ContainedViewLayoutTransition) {
+        super.containerLayoutUpdated(layout, transition: transition)
+        let top = self.navigationLayout(layout: layout).navigationFrame.maxY
+        let bottom = layout.size.height - layout.intrinsicInsets.bottom
+        self.picture.frame = CGRect(x: 12, y: top, width: max(0, layout.size.width - 24), height: max(0, bottom - top - 100))
+        self.pageLabel.frame = CGRect(x: 16, y: bottom - 96, width: max(0, layout.size.width - 32), height: 40)
+        self.previous.frame = CGRect(x: 16, y: bottom - 52, width: max(0, (layout.size.width - 40) * 0.5), height: 44)
+        self.next.frame = CGRect(x: layout.size.width * 0.5 + 4, y: bottom - 52, width: max(0, (layout.size.width - 40) * 0.5), height: 44)
+    }
+}
 
 private final class LocalArchivePlaybackSource: ArchivePlaybackSource {
     private let archive: LocalArchiveCoordinator
@@ -707,6 +1219,11 @@ private final class LocalArchivedPlaybackController: ViewController {
         self.playback.player = nil
         self.loader.stop()
         self.messageLabel.text = "Preview closed. Reopen the attachment to continue."
+    }
+
+    override func viewWillDisappear(_ animated: Bool) {
+        super.viewWillDisappear(animated)
+        self.closeMedia()
     }
 
     override func loadDisplayNode() {
@@ -841,6 +1358,7 @@ private final class LocalArchiveGalleryCell: UICollectionViewCell {
 
 /// Bounded pages keep scrolling memory independent of total archive size.
 private final class LocalArchiveGalleryController: ViewController, UICollectionViewDataSource, UICollectionViewDelegate {
+    private let readLease: LocalArchiveReadLease
     private let context: AccountContext
     private let archive: LocalArchiveCoordinator
     private let peerId: Int64?
@@ -865,6 +1383,7 @@ private final class LocalArchiveGalleryController: ViewController, UICollectionV
     private var hasOlder = false
     private var token = 0
     private var theme: PresentationTheme
+    private var markers: LocalArchivePresentationSettingsState = .available(LocalArchivePresentationSettings())
     private let dateFormatter: DateFormatter = {
         let formatter = DateFormatter(); formatter.dateStyle = .short; formatter.timeStyle = .short
         return formatter
@@ -874,6 +1393,7 @@ private final class LocalArchiveGalleryController: ViewController, UICollectionV
 
     init(context: AccountContext, archive: LocalArchiveCoordinator, peerId: Int64?) {
         self.context = context; self.archive = archive; self.peerId = peerId
+        self.readLease = LocalArchiveReadLease(archive: archive)
         self.thumbnails = LocalArchiveThumbnailLoader(load: { archive.mediaData(eventKey: $0, slot: $1) })
         let presentation = context.sharedContext.currentPresentationData.with { $0 }
         self.theme = presentation.theme
@@ -898,6 +1418,11 @@ private final class LocalArchiveGalleryController: ViewController, UICollectionV
             self.empty.textColor = presentation.theme.list.itemPrimaryTextColor
             self.archiveToolbar.barTintColor = presentation.theme.list.blocksBackgroundColor
             self.archiveToolbar.tintColor = presentation.theme.list.itemAccentColor
+            self.grid.reloadData()
+        }))
+        self.subscriptions.add((context.account.localArchivePresentation.settings |> deliverOnMainQueue).start(next: { [weak self] markers in
+            guard let self else { return }
+            self.markers = markers
             self.grid.reloadData()
         }))
         self.subscriptions.add((archive.status |> deliverOnMainQueue).start(next: { [weak self] status in
@@ -929,6 +1454,12 @@ private final class LocalArchiveGalleryController: ViewController, UICollectionV
         // A version can be deleted in its history screen while this grid is
         // underneath it. Re-query before showing cached thumbnails again.
         self.load()
+    }
+
+    override func viewWillDisappear(_ animated: Bool) {
+        super.viewWillDisappear(animated)
+        self.token += 1
+        self.preview.set(nil)
     }
 
     override func loadDisplayNode() {
@@ -1033,7 +1564,7 @@ private final class LocalArchiveGalleryController: ViewController, UICollectionV
         cell.caption.textColor = self.theme.list.itemPrimaryTextColor
         cell.picture.tintColor = self.theme.list.itemAccentColor
         cell.picture.image = UIImage(systemName: item.kind == "photo" || item.kind == "animation" ? "photo" : (item.kind == "voice" ? "waveform" : (item.kind == "document" ? "doc" : "play.rectangle")))
-        let marker = item.isDeleted ? "Deleted" : "Before edit"
+        let marker = self.markers.marker(isDeleted: item.isDeleted)
         cell.caption.text = title + " · " + marker + "\n" + size
         cell.accessibilityLabel = [title, marker, self.dateFormatter.string(from: Date(timeIntervalSince1970: TimeInterval(item.observedAt))), item.caption, size].filter { !$0.isEmpty }.joined(separator: ", ")
         if item.kind == "photo" || item.mimeType.hasPrefix("image/") {
@@ -1069,22 +1600,14 @@ private final class LocalArchiveGalleryController: ViewController, UICollectionV
         guard self.readable, self.foreground, self.items.contains(where: { $0.eventKey == item.eventKey && $0.slot == item.slot }) else { return }
         let token = self.token
         let presentation = self.context.sharedContext.currentPresentationData.with { $0 }
-        if item.kind == "video" || item.kind == "videoMessage" || item.kind == "voice" || item.mimeType.hasPrefix("video/") {
-            (self.navigationController as? NavigationController)?.pushViewController(LocalArchivedPlaybackController(archive: self.archive, eventKey: item.eventKey, slot: item.slot, presentationData: presentation))
-        } else if item.kind == "photo" || item.mimeType.hasPrefix("image/") {
-            self.preview.set((self.archive.mediaData(eventKey: item.eventKey, slot: item.slot)
-                |> deliverOn(Queue.concurrentDefaultQueue())
-                |> map { $0.flatMap { localArchiveGalleryImage($0, maximumDimension: 2048) } }
-                |> deliverOnMainQueue).start(next: { [weak self] image in
-                    guard let self, self.readable, self.foreground, self.token == token else { return }
-                    if let image { (self.navigationController as? NavigationController)?.pushViewController(LocalArchivedImageController(image: image, archive: self.archive, presentationData: presentation)) }
-                    else { self.showInformation(title: "Preview unavailable", text: "This image cannot be previewed by iOS.") }
-                }))
-        } else {
-            let formatter = DateFormatter(); formatter.dateStyle = .medium; formatter.timeStyle = .short
-            let date = formatter.string(from: Date(timeIntervalSince1970: TimeInterval(item.observedAt)))
-            self.showInformation(title: "Archived document", text: [item.caption, ByteCountFormatter.string(fromByteCount: item.byteCount, countStyle: .file), "Captured " + date, "Document preview is not available for this format."].filter { !$0.isEmpty }.joined(separator: "\n\n"))
-        }
+        self.preview.set((localArchiveLoadMediaPreview(archive: self.archive, eventKey: item.eventKey, slot: item.slot)
+            |> deliverOnMainQueue).start(next: { [weak self] result in
+                guard let self, self.readable, self.foreground, self.token == token else { return }
+                localArchiveOpenMediaPreview(result, archive: self.archive, eventKey: item.eventKey, slot: item.slot,
+                    presentationData: presentation, push: { [weak self] controller in
+                        (self?.navigationController as? NavigationController)?.pushViewController(controller)
+                    }, information: { [weak self] text in self?.showInformation(title: "Preview unavailable", text: text) })
+            }))
     }
 
     private func showInformation(title: String, text: String) {

@@ -173,9 +173,9 @@ final class LocalArchiveReplayTests: XCTestCase {
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent("archive-real-replay-sink-" + UUID().uuidString)
         let opened = Atomic<ArchiveStore?>(value: nil)
         let coordinator = LocalArchiveCoordinator(postbox: self.fixture.postbox, accountPeerId: self.accountPeerId,
-            accountId: 73, baseDirectory: directory, storageFactory: { directory, accountId, retention, callbackQueue, completion in
+            accountId: 73, baseDirectory: directory, storageFactory: { directory, accountId, retention, createIfMissing, callbackQueue, completion in
                 ArchiveStore.open(baseDirectory: directory, accountId: accountId, keyProvider: LocalArchiveReplayKey(),
-                                  retention: retention, callbackQueue: callbackQueue) { result in
+                                  createIfMissing: createIfMissing, retention: retention, callbackQueue: callbackQueue) { result in
                     switch result {
                     case let .success(store):
                         let _ = opened.swap(store)

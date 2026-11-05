@@ -7,6 +7,7 @@ import LocalMessageArchive
 /// Status contains no message contents, peer identifiers, paths or underlying errors.
 public enum LocalArchiveStatus: Equatable {
     case disabled
+    case browsing
     case locked
     case opening
     case ready
@@ -109,11 +110,30 @@ protocol LocalArchiveStorage: AnyObject {
     func searchMessages(query: String, peerId: Int64?, kind: ArchiveEventKind?, beforeSequence: Int64?, limit: Int, completion: @escaping (Result<[ArchivedRecord], ArchiveError>) -> Void)
     func mediaItems(peerId: Int64?, kind: String?, beforeSequence: Int64?, beforeSlot: Int?, limit: Int, completion: @escaping (Result<[ArchivedMediaItem], ArchiveError>) -> Void)
     func usage(completion: @escaping (Result<ArchiveUsage, ArchiveError>) -> Void)
+    func exportBackup(to destination: URL, password: String, ownerId: Int64?, testingEnvironment: Bool, cancellation: ArchiveTransferCancellation,
+                      completion: @escaping (Result<ArchiveTransferExport, ArchiveTransferError>) -> Void)
+    func importPreparedBackup(_ prepared: ArchivePreparedImport, ownerId: Int64, testingEnvironment: Bool, expectedGeneration: Int64,
+                              cancellation: ArchiveTransferCancellation,
+                              completion: @escaping (Result<ArchiveTransferImport, ArchiveTransferError>) -> Void)
+}
+
+extension LocalArchiveStorage {
+    // Test/legacy storage doubles do not acquire real export capability merely
+    // by conforming to the capture interface.
+    func exportBackup(to destination: URL, password: String, ownerId: Int64?, testingEnvironment: Bool, cancellation: ArchiveTransferCancellation,
+                      completion: @escaping (Result<ArchiveTransferExport, ArchiveTransferError>) -> Void) {
+        completion(.failure(.unavailable))
+    }
+    func importPreparedBackup(_ prepared: ArchivePreparedImport, ownerId: Int64, testingEnvironment: Bool, expectedGeneration: Int64,
+                              cancellation: ArchiveTransferCancellation,
+                              completion: @escaping (Result<ArchiveTransferImport, ArchiveTransferError>) -> Void) {
+        completion(.failure(.unavailable))
+    }
 }
 
 extension ArchiveStore: LocalArchiveStorage {}
 
-typealias LocalArchiveStorageFactory = (URL, Int64, ArchiveRetentionPolicy, DispatchQueue,
+typealias LocalArchiveStorageFactory = (URL, Int64, ArchiveRetentionPolicy, Bool, DispatchQueue,
                                        @escaping (Result<LocalArchiveStorage, ArchiveError>) -> Void) -> Void
 
 /// Account-owned, opt-in handoff. Operation-log views are wakeups, never commit acknowledgements.
@@ -123,6 +143,7 @@ public final class LocalArchiveCoordinator {
     private let postbox: Postbox
     private let accountPeerId: PeerId
     private let accountId: Int64
+    private let testingEnvironment: Bool
     private let baseDirectory: URL
     private let queue = Queue(name: "LocalArchive.handoff", qos: .utility)
     private let storageFactory: LocalArchiveStorageFactory
@@ -138,6 +159,8 @@ public final class LocalArchiveCoordinator {
     private var retryScheduled = false
     private var epoch: Int64 = 0
     private var activeSettings = LocalArchiveSettings()
+    private var readAccessCount = 0
+    private var activeTransfer: ArchiveTransferCancellation?
 
     public var status: Signal<LocalArchiveStatus, NoError> {
         return self.statusValue.get()
@@ -151,14 +174,15 @@ public final class LocalArchiveCoordinator {
         |> distinctUntilChanged
     }
 
-    init(postbox: Postbox, accountPeerId: PeerId, accountId: Int64, baseDirectory: URL,
+    init(postbox: Postbox, accountPeerId: PeerId, accountId: Int64, testingEnvironment: Bool = false, baseDirectory: URL,
          storageFactory: LocalArchiveStorageFactory? = nil, protectedData: Signal<Bool, NoError>? = nil) {
         self.postbox = postbox
         self.accountPeerId = accountPeerId
         self.accountId = accountId
+        self.testingEnvironment = testingEnvironment
         self.baseDirectory = baseDirectory
-        self.storageFactory = storageFactory ?? { directory, id, retention, callbackQueue, completion in
-            ArchiveStore.open(baseDirectory: directory, accountId: id, keyProvider: KeychainArchiveKeyStore(),
+        self.storageFactory = storageFactory ?? { directory, id, retention, createIfMissing, callbackQueue, completion in
+            ArchiveStore.open(baseDirectory: directory, accountId: id, keyProvider: KeychainArchiveKeyStore(), createIfMissing: createIfMissing,
                               retention: retention, callbackQueue: callbackQueue) { result in
                 completion(result.map { $0 as LocalArchiveStorage })
             }
@@ -178,12 +202,21 @@ public final class LocalArchiveCoordinator {
                 }
             }
         }))
-        self.subscriptions.add(self.settings.start(next: { [weak self] _ in self?.wake() }))
+        self.subscriptions.add(self.settings.start(next: { [weak self] _ in
+            self?.queue.justDispatch { [weak self] in
+                guard let self else { return }
+                // A privacy, retention or purge change cancels an uncommitted
+                // transfer rather than exporting under stale account choices.
+                if self.activeTransfer != nil { self.invalidateWork() }
+                self.wake()
+            }
+        }))
         self.subscriptions.add(postbox.mergedOperationLogView(tag: OperationLogTags.LocalArchiveCapture, limit: 1)
             .start(next: { [weak self] _ in self?.wake() }))
     }
 
     deinit {
+        self.activeTransfer?.cancel()
         self.subscriptions.dispose()
         self.storage?.close(completion: {})
     }
@@ -195,6 +228,179 @@ public final class LocalArchiveCoordinator {
             self.stopped = true
             self.invalidateWork()
             self.statusValue.set(.unavailable)
+        }
+    }
+
+    /// A visible archive screen may browse existing data while capture is off.
+    /// Disposing the last lease closes that store; it never enables or drains capture.
+    public func acquireReadAccess() -> Disposable {
+        self.queue.justDispatch { [weak self] in
+            guard let self, !self.stopped else { return }
+            self.readAccessCount += 1
+            self.wake()
+        }
+        return ActionDisposable { [weak self] in
+            self?.queue.justDispatch { [weak self] in
+                guard let self, !self.stopped else { return }
+                self.readAccessCount = max(0, self.readAccessCount - 1)
+                if self.readAccessCount == 0 && !self.activeSettings.enabled && !self.activeSettings.pendingPurge {
+                    self.invalidateWork()
+                    self.needsDrain = false
+                    self.statusValue.set(self.mayAccessProtectedData ? .disabled : .locked)
+                }
+            }
+        }
+    }
+
+    private var canRead: Bool {
+        return self.activeSettings.isSupported && !self.activeSettings.pendingPurge
+            && (self.activeSettings.enabled || self.readAccessCount > 0)
+    }
+
+    /// Manual, password-protected export. A visible transfer screen must hold a
+    /// read lease and capture must be paused; this does not upload anything.
+    public func exportBackup(password: String) -> Signal<LocalArchiveTransferResult, NoError> {
+        return self.transfer { [weak self] settings, epoch, cancellation, complete in
+            guard let self, let storage = self.storage else { complete(.failed(.unavailable)); return }
+            let directory = FileManager.default.temporaryDirectory.appendingPathComponent("AyuGram-backup-" + UUID().uuidString, isDirectory: true)
+            do {
+                var attributes: [FileAttributeKey: Any] = [.posixPermissions: 0o700]
+                #if os(iOS)
+                attributes[.protectionKey] = FileProtectionType.complete
+                #endif
+                try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: false, attributes: attributes)
+                var values = URLResourceValues(); values.isExcludedFromBackup = true
+                var protected = directory; try protected.setResourceValues(values)
+            } catch { complete(.failed(.storageUnavailable)); return }
+            let destination = directory.appendingPathComponent("AyuGram-History.ayuarchive")
+            storage.currentGeneration { [weak self] result in
+                self?.queue.justDispatch { [weak self] in
+                    guard let self, self.isCurrent(epoch), !cancellation.isCancelled,
+                          case let .success(generation) = result, generation == settings.generation else {
+                        try? FileManager.default.removeItem(at: directory)
+                        complete(.failed(.cancelled)); return
+                    }
+                    storage.exportBackup(to: destination, password: password, ownerId: self.accountPeerId.toInt64(), testingEnvironment: self.testingEnvironment, cancellation: cancellation) { result in
+                        switch result {
+                        case let .success(report):
+                            complete(.exported(LocalArchiveExportFile(url: destination, byteCount: report.byteCount, directory: directory)))
+                        case let .failure(error):
+                            try? FileManager.default.removeItem(at: directory)
+                            complete(.failed(localArchiveTransferFailure(error)))
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    /// Explicit manual restore authenticates the same Telegram user before an
+    /// empty destination can be initialized. It merges archive history only.
+    public func importBackup(from source: URL, password: String) -> Signal<LocalArchiveTransferResult, NoError> {
+        return self.transfer { [weak self] settings, epoch, cancellation, complete in
+            guard let self else { complete(.failed(.unavailable)); return }
+            ArchiveStore.prepareImport(from: source, password: password, ownerId: self.accountPeerId.toInt64(), testingEnvironment: self.testingEnvironment,
+                cancellation: cancellation, callbackQueue: .global(qos: .utility)) { [weak self] prepared in
+                self?.queue.justDispatch { [weak self] in
+                    guard let self, self.isCurrent(epoch), !cancellation.isCancelled else { complete(.failed(.cancelled)); return }
+                    switch prepared {
+                    case let .failure(error): complete(.failed(localArchiveTransferFailure(error)))
+                    case let .success(snapshot):
+                        let apply: (LocalArchiveStorage) -> Void = { [weak self] storage in
+                            guard let self, self.isCurrent(epoch), !cancellation.isCancelled else { complete(.failed(.cancelled)); return }
+                            self.storage = storage
+                            storage.importPreparedBackup(snapshot, ownerId: self.accountPeerId.toInt64(), testingEnvironment: self.testingEnvironment,
+                                expectedGeneration: settings.generation, cancellation: cancellation) { result in
+                                switch result {
+                                case let .success(report):
+                                    complete(.imported(addedVersions: report.addedVersions,
+                                        duplicateVersions: report.duplicateVersions, addedMedia: report.addedMedia,
+                                        removedByRetention: report.removedByRetention))
+                                case let .failure(error): complete(.failed(localArchiveTransferFailure(error)))
+                                }
+                            }
+                        }
+                        if let storage = self.storage { apply(storage) }
+                        else {
+                            let retention = ArchiveRetentionPolicy(maxAgeSeconds: settings.maxAgeSeconds,
+                                                                  maxPayloadBytes: settings.maxPayloadBytes)
+                            // Creating a destination is permitted only for this
+                            // explicit import after password/owner/integrity checks.
+                            self.storageFactory(self.baseDirectory, self.accountId, retention, true, .global(qos: .utility)) { [weak self] opened in
+                                self?.queue.justDispatch { [weak self] in
+                                    guard let self, self.isCurrent(epoch), !cancellation.isCancelled else {
+                                        if case let .success(storage) = opened { storage.close(completion: {}) }
+                                        complete(.failed(.cancelled)); return
+                                    }
+                                    switch opened {
+                                    case let .success(storage): apply(storage)
+                                    case .failure: complete(.failed(.unavailable))
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    private func transfer(_ operation: @escaping (LocalArchiveSettings, Int64, ArchiveTransferCancellation,
+                                                   @escaping (LocalArchiveTransferResult) -> Void) -> Void) -> Signal<LocalArchiveTransferResult, NoError> {
+        return Signal { [weak self] subscriber in
+            guard let self else {
+                subscriber.putNext(.failed(.unavailable)); subscriber.putCompletion(); return EmptyDisposable
+            }
+            let cancellation = ArchiveTransferCancellation()
+            self.queue.justDispatch { [weak self] in
+                guard let self, !self.stopped, self.mayAccessProtectedData, self.readAccessCount > 0,
+                      !self.working, self.activeTransfer == nil else {
+                    subscriber.putNext(.failed(.unavailable)); subscriber.putCompletion(); return
+                }
+                self.working = true
+                self.activeTransfer = cancellation
+                let epoch = self.epoch
+                let complete: (LocalArchiveTransferResult) -> Void = { [weak self] result in
+                    guard let self else {
+                        subscriber.putNext(.failed(.cancelled)); subscriber.putCompletion(); return
+                    }
+                    self.queue.justDispatch { [weak self] in
+                        guard let self else {
+                            subscriber.putNext(.failed(.cancelled)); subscriber.putCompletion(); return
+                        }
+                        let valid = self.isCurrent(epoch) && self.activeTransfer === cancellation && !cancellation.isCancelled
+                        if self.activeTransfer === cancellation {
+                            self.activeTransfer = nil
+                            if valid && !self.activeSettings.enabled {
+                                self.statusValue.set(self.storage == nil ? .disabled : .browsing)
+                            }
+                            // Service wakeups that arrived during the transfer,
+                            // without reopening a paused store after every
+                            // completed or rejected password attempt.
+                            self.finished(epoch: epoch)
+                        }
+                        subscriber.putNext(valid ? result : .failed(.cancelled))
+                        subscriber.putCompletion()
+                    }
+                }
+                self.transactionDisposable.set((self.postbox.transaction { transaction in
+                    return localArchiveSettings(transaction: transaction)
+                } |> deliverOn(self.queue)).start(next: { [weak self] settings in
+                    guard let self, self.isCurrent(epoch), !cancellation.isCancelled else { complete(.failed(.cancelled)); return }
+                    self.activeSettings = settings
+                    guard settings.isSupported, !settings.pendingPurge else { complete(.failed(.unavailable)); return }
+                    guard !settings.enabled else { complete(.failed(.captureMustBePaused)); return }
+                    operation(settings, epoch, cancellation, complete)
+                }))
+            }
+            return ActionDisposable {
+                cancellation.cancel()
+                self.queue.justDispatch { [weak self] in
+                    guard let self, self.activeTransfer === cancellation else { return }
+                    self.invalidateWork()
+                    self.wake()
+                }
+            }
         }
     }
 
@@ -308,8 +514,7 @@ public final class LocalArchiveCoordinator {
                 return EmptyDisposable
             }
             self.queue.justDispatch { [weak self] in
-                guard let self, !self.stopped, self.mayAccessProtectedData, self.activeSettings.enabled,
-                      !self.activeSettings.pendingPurge, let storage = self.storage else {
+                guard let self, !self.stopped, self.mayAccessProtectedData, self.canRead, let storage = self.storage else {
                     subscriber.putNext(nil); subscriber.putCompletion(); return
                 }
                 let epoch = self.epoch
@@ -319,7 +524,7 @@ public final class LocalArchiveCoordinator {
                         return
                     }
                     self.queue.justDispatch { [weak self] in
-                        guard let self, self.isCurrent(epoch) else { subscriber.putNext(nil); subscriber.putCompletion(); return }
+                        guard let self, self.isCurrent(epoch), self.canRead else { subscriber.putNext(nil); subscriber.putCompletion(); return }
                         subscriber.putNext((try? result.get())?.data)
                         subscriber.putCompletion()
                     }
@@ -386,8 +591,7 @@ public final class LocalArchiveCoordinator {
                 return EmptyDisposable
             }
             self.queue.justDispatch { [weak self] in
-                guard let self, !self.stopped, self.mayAccessProtectedData, self.activeSettings.enabled,
-                      !self.activeSettings.pendingPurge, let storage = self.storage else {
+                guard let self, !self.stopped, self.mayAccessProtectedData, self.canRead, let storage = self.storage else {
                     subscriber.putNext(nil)
                     subscriber.putCompletion()
                     return
@@ -400,8 +604,7 @@ public final class LocalArchiveCoordinator {
                         return
                     }
                     self.queue.justDispatch { [weak self] in
-                        guard let self, self.isCurrent(epoch), self.activeSettings.enabled,
-                              !self.activeSettings.pendingPurge else {
+                        guard let self, self.isCurrent(epoch), self.canRead else {
                             subscriber.putNext(nil)
                             subscriber.putCompletion()
                             return
@@ -425,8 +628,7 @@ public final class LocalArchiveCoordinator {
                         return
                     }
                     self.queue.justDispatch { [weak self] in
-                        guard let self, self.isCurrent(epoch), self.activeSettings.enabled,
-                              !self.activeSettings.pendingPurge else {
+                        guard let self, self.isCurrent(epoch), self.canRead else {
                             receive(.failure(.closed))
                             return
                         }
@@ -454,6 +656,8 @@ public final class LocalArchiveCoordinator {
     }
 
     private func invalidateWork() {
+        self.activeTransfer?.cancel()
+        self.activeTransfer = nil
         self.epoch &+= 1
         self.working = false
         self.retryScheduled = false
@@ -482,7 +686,7 @@ public final class LocalArchiveCoordinator {
                 self.statusValue.set(.unavailable)
                 return
             }
-            guard settings.enabled || settings.pendingPurge else {
+            guard settings.enabled || settings.pendingPurge || self.readAccessCount > 0 else {
                 self.invalidateWork()
                 self.needsDrain = false
                 self.statusValue.set(.disabled)
@@ -492,6 +696,18 @@ public final class LocalArchiveCoordinator {
                 guard let self, self.isCurrent(epoch) else { return }
                 if settings.pendingPurge {
                     self.completePurge(storage: storage, settings: settings, epoch: epoch)
+                } else if !settings.enabled {
+                    storage.currentGeneration { [weak self] result in
+                        self?.queue.justDispatch { [weak self] in
+                            guard let self, self.isCurrent(epoch) else { return }
+                            guard case let .success(generation) = result, generation == settings.generation else {
+                                self.failed(.unavailable, epoch: epoch)
+                                return
+                            }
+                            self.statusValue.set(.browsing)
+                            self.finished(epoch: epoch)
+                        }
+                    }
                 } else {
                     self.writePending(storage: storage, settings: settings, pending: pending, epoch: epoch)
                 }
@@ -519,7 +735,7 @@ public final class LocalArchiveCoordinator {
             return
         }
         self.statusValue.set(.opening)
-        self.storageFactory(self.baseDirectory, self.accountId, retention, self.queue.queue) { [weak self] result in
+        self.storageFactory(self.baseDirectory, self.accountId, retention, settings.enabled || settings.pendingPurge, self.queue.queue) { [weak self] result in
             guard let self else {
                 if case let .success(storage) = result { storage.close(completion: {}) }
                 return
@@ -533,6 +749,9 @@ public final class LocalArchiveCoordinator {
                 case let .success(storage):
                     self.storage = storage
                     applyRetention(storage)
+                case .failure(.missingArchive):
+                    self.statusValue.set(.disabled)
+                    self.finished(epoch: epoch)
                 case .failure:
                     self.failed(.unavailable, epoch: epoch)
                 }

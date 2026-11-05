@@ -8,6 +8,7 @@ public protocol ArchiveKeyProvider {
 }
 
 public enum ArchiveError: Error, Equatable {
+    case missingArchive
     case invalidKey
     case invalidInput
     case accountMismatch
@@ -84,6 +85,7 @@ public struct ArchiveCapturePolicy {
     func allows(_ event: ArchiveEvent, context: ArchiveCaptureContext) -> Bool {
         enabled && context.ordinaryCloudMessage && !context.secretChat && !context.expiring && !context.viewOnce
         && !(excludeBots && context.botConversation) && !excludedPeers.contains(event.message.peerId)
+        && (excludedSenders.isEmpty || event.content.authorId != nil)
         && !(event.content.authorId.map { excludedSenders.contains($0) } ?? false)
     }
 }

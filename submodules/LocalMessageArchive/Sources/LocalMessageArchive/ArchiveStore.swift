@@ -26,6 +26,7 @@ public final class ArchiveStore {
     }
 
     public static func open(baseDirectory: URL, accountId: Int64, keyProvider: ArchiveKeyProvider,
+                            createIfMissing: Bool = true,
                             retention: ArchiveRetentionPolicy = ArchiveRetentionPolicy(),
                             callbackQueue: DispatchQueue = .main,
                             clock: @escaping () -> Int64 = { Int64(Date().timeIntervalSince1970) },
@@ -37,6 +38,16 @@ public final class ArchiveStore {
                 try validateRetention(retention)
                 guard baseDirectory.isFileURL else { throw ArchiveError.invalidInput }
                 let requestedRoot = baseDirectory.standardizedFileURL
+                if !createIfMissing {
+                    let database = requestedRoot.appendingPathComponent("account-\(accountId)/archive.sqlite")
+                    let files = [database] + ["-wal", "-shm", "-journal"].map { URL(fileURLWithPath: database.path + $0) }
+                    let existing = try files.filter { try entryExists($0) }
+                    guard existing.contains(database) else {
+                        // An orphan WAL/journal is damage, not an empty archive.
+                        guard existing.isEmpty else { throw ArchiveError.invalidInput }
+                        throw ArchiveError.missingArchive
+                    }
+                }
                 // Validate the caller-owned endpoint first, then resolve system parent aliases
                 // such as macOS /var -> /private/var for SQLITE_OPEN_NOFOLLOW.
                 try protectedDirectory(requestedRoot)
@@ -50,6 +61,7 @@ public final class ArchiveStore {
                 let files = [url] + ["-wal", "-shm", "-journal"].map { URL(fileURLWithPath: databasePath + $0) }
                 let existingFiles = try files.filter { try entryExists($0) }
                 let existed = existingFiles.contains(url)
+                guard existed || createIfMissing else { throw ArchiveError.missingArchive }
                 // Orphan sidecars may represent an interrupted/lost database. Never overwrite them.
                 guard existed || existingFiles.isEmpty else {
                     throw ArchiveError.invalidInput
@@ -60,7 +72,7 @@ public final class ArchiveStore {
                 let store = ArchiveStore(accountId: accountId, databasePath: databasePath, worker: worker,
                                          callbackQueue: callbackQueue, retention: retention, clock: clock)
                 do {
-                    try store.openDatabase(key: key)
+                    try store.openDatabase(key: key, createIfMissing: createIfMissing)
                     for file in files where try entryExists(file) { try protectFile(file) }
                 } catch {
                     if let handle = store.handle { sqlite3_close_v2(handle); store.handle = nil }
@@ -81,6 +93,224 @@ public final class ArchiveStore {
             if let handle = self.handle { sqlite3_close_v2(handle); self.handle = nil }
             self.callbackQueue.async(execute: completion)
         }
+    }
+
+    /// Exports this archive alone, including its encrypted media BLOBs. A fresh
+    /// transport key protects the snapshot; the account's Keychain key is never
+    /// exported. The destination must be a new file in a caller-owned directory.
+    public func exportBackup(to destination: URL, password: String, ownerId: Int64? = nil, testingEnvironment: Bool = false,
+                             cancellation: ArchiveTransferCancellation,
+                             completion: @escaping (Result<ArchiveTransferExport, ArchiveTransferError>) -> Void) {
+        self.worker.async {
+            let result: Result<ArchiveTransferExport, ArchiveTransferError>
+            do {
+                guard let handle = self.handle else { throw ArchiveTransferError.unavailable }
+                try ArchiveTransferEnvelope.checkPassword(password)
+                try cancellation.check()
+                let scratch = try ArchiveTransferFiles.scratchDirectory()
+                defer { try? FileManager.default.removeItem(at: scratch) }
+                ArchiveTransferDatabase.installCancellation(handle, cancellation)
+                defer { ArchiveTransferDatabase.clearCancellation(handle) }
+                try Self.validateTransferDatabase(handle, accountId: self.accountId, directory: scratch, cancellation: cancellation)
+                // Reads normally enforce this policy too. Do not export expired
+                // entries merely because the account has been idle.
+                _ = try self.transferTransaction(handle: handle, cancellation: cancellation) {
+                    try self.prune(now: self.clock(), policy: self.retention)
+                }
+                let snapshot = scratch.appendingPathComponent("snapshot.sqlite")
+                let key = ArchiveTransferEnvelope.randomKey()
+                try Self.writeTransferSnapshot(source: handle, destination: snapshot, key: key,
+                    accountId: self.accountId, now: self.clock(), cancellation: cancellation)
+                result = .success(try ArchiveTransferEnvelope.seal(snapshot: snapshot, destination: destination,
+                    accountId: self.accountId, ownerId: ownerId ?? self.accountId, testingEnvironment: testingEnvironment,
+                    transportKey: key, password: password, cancellation: cancellation))
+            } catch { result = .failure(Self.transferError(error, cancellation: cancellation)) }
+            self.callbackQueue.async { completion(result) }
+        }
+    }
+
+    /// Explicit manual restore merges immutable history into this account only.
+    /// Conflicts abort the entire transaction. Capture preferences, purge
+    /// generations and outbox receipts are never taken from a backup.
+    public func importBackup(from source: URL, password: String, ownerId: Int64? = nil, testingEnvironment: Bool = false, expectedGeneration: Int64,
+                             cancellation: ArchiveTransferCancellation,
+                             completion: @escaping (Result<ArchiveTransferImport, ArchiveTransferError>) -> Void) {
+        self.worker.async {
+            let result: Result<ArchiveTransferImport, ArchiveTransferError>
+            do {
+                guard let handle = self.handle else { throw ArchiveTransferError.unavailable }
+                let prepared = try Self.prepareBackup(source: source, password: password,
+                    ownerId: ownerId ?? self.accountId, testingEnvironment: testingEnvironment, cancellation: cancellation)
+                result = .success(try self.mergePreparedBackup(prepared, handle: handle,
+                    ownerId: ownerId ?? self.accountId, testingEnvironment: testingEnvironment, expectedGeneration: expectedGeneration, cancellation: cancellation))
+            } catch { result = .failure(Self.transferError(error, cancellation: cancellation)) }
+            self.callbackQueue.async { completion(result) }
+        }
+    }
+
+    /// Authenticates and validates before a coordinator creates any destination
+    /// archive/key. This also permits restore on a fresh installation of the
+    /// same Telegram account, whose local AccountRecordId may have changed.
+    public static func prepareImport(from source: URL, password: String, ownerId: Int64, testingEnvironment: Bool = false,
+                                     cancellation: ArchiveTransferCancellation,
+                                     callbackQueue: DispatchQueue = .main,
+                                     completion: @escaping (Result<ArchivePreparedImport, ArchiveTransferError>) -> Void) {
+        DispatchQueue(label: "LocalMessageArchive.backup-prepare", qos: .utility).async {
+            let result: Result<ArchivePreparedImport, ArchiveTransferError>
+            do { result = .success(try self.prepareBackup(source: source, password: password, ownerId: ownerId, testingEnvironment: testingEnvironment, cancellation: cancellation)) }
+            catch { result = .failure(self.transferError(error, cancellation: cancellation)) }
+            callbackQueue.async { completion(result) }
+        }
+    }
+
+    public func importPreparedBackup(_ prepared: ArchivePreparedImport, ownerId: Int64, testingEnvironment: Bool = false,
+                                     expectedGeneration: Int64, cancellation: ArchiveTransferCancellation,
+                                     completion: @escaping (Result<ArchiveTransferImport, ArchiveTransferError>) -> Void) {
+        self.worker.async {
+            let result: Result<ArchiveTransferImport, ArchiveTransferError>
+            do {
+                guard let handle = self.handle else { throw ArchiveTransferError.unavailable }
+                result = .success(try self.mergePreparedBackup(prepared, handle: handle, ownerId: ownerId, testingEnvironment: testingEnvironment,
+                    expectedGeneration: expectedGeneration, cancellation: cancellation))
+            } catch { result = .failure(Self.transferError(error, cancellation: cancellation)) }
+            self.callbackQueue.async { completion(result) }
+        }
+    }
+
+    private static func prepareBackup(source: URL, password: String, ownerId: Int64, testingEnvironment: Bool,
+                                      cancellation: ArchiveTransferCancellation) throws -> ArchivePreparedImport {
+        try ArchiveTransferEnvelope.checkPassword(password)
+        try cancellation.check()
+        let scratch = try ArchiveTransferFiles.scratchDirectory()
+        var opened: OpaquePointer?
+        do {
+            let snapshot = scratch.appendingPathComponent("snapshot.sqlite")
+            let unlocked = try ArchiveTransferEnvelope.unseal(source: source, snapshot: snapshot,
+                ownerId: ownerId, testingEnvironment: testingEnvironment, password: password, cancellation: cancellation)
+            let input = try ArchiveTransferDatabase.openSnapshot(snapshot, key: unlocked.key, cancellation: cancellation)
+            opened = input
+            try self.validateTransferDatabase(input, accountId: unlocked.accountId, directory: scratch, cancellation: cancellation)
+            try cancellation.check()
+            return ArchivePreparedImport(database: input, sourceAccountId: unlocked.accountId, ownerId: ownerId, testingEnvironment: testingEnvironment,
+                                          directory: scratch, cancellation: cancellation)
+        } catch {
+            if let opened { sqlite3_close_v2(opened) }
+            try? FileManager.default.removeItem(at: scratch)
+            throw error
+        }
+    }
+
+    /// Compare against the actual current module's freshly generated schema,
+    /// using only a random-key encrypted TEMP database. No Keychain provider or
+    /// destination account directory is consulted during this validation.
+    private static func validateTransferDatabase(_ input: OpaquePointer, accountId: Int64, directory: URL,
+                                                  cancellation: ArchiveTransferCancellation) throws {
+        let file = directory.appendingPathComponent("schema-validation.sqlite")
+        let fd = try ArchiveTransferFiles.create(file); Darwin.close(fd)
+        let worker = DispatchQueue(label: "LocalMessageArchive.backup-schema", qos: .utility)
+        try worker.sync {
+            let store = ArchiveStore(accountId: accountId, databasePath: file.path, worker: worker,
+                callbackQueue: .global(qos: .utility), retention: ArchiveRetentionPolicy(),
+                clock: { Int64(Date().timeIntervalSince1970) })
+            defer {
+                if let handle = store.handle { sqlite3_close_v2(handle); store.handle = nil }
+            }
+            try store.openDatabase(key: ArchiveTransferEnvelope.randomKey(), createIfMissing: true)
+            guard let expected = store.handle else { throw ArchiveTransferError.storageUnavailable }
+            try ArchiveTransferDatabase.validate(source: input, destination: expected, accountId: accountId, cancellation: cancellation)
+            try ArchiveTransferDatabase.validateBasic(source: input, accountId: accountId, cancellation: cancellation)
+        }
+    }
+
+    /// Reconstruct only retained logical rows. A physical backup would also
+    /// carry deleted FTS segments and freelist pages outside the export scope.
+    private static func writeTransferSnapshot(source: OpaquePointer, destination: URL, key: Data,
+                                               accountId: Int64, now: Int64,
+                                               cancellation: ArchiveTransferCancellation) throws {
+        let fd = try ArchiveTransferFiles.create(destination); Darwin.close(fd)
+        let physical = try ArchiveTransferFiles.physicalURL(destination)
+        let worker = DispatchQueue(label: "LocalMessageArchive.backup-snapshot", qos: .utility)
+        try worker.sync {
+            let target = ArchiveStore(accountId: accountId, databasePath: physical.path, worker: worker,
+                callbackQueue: .global(qos: .utility), retention: ArchiveRetentionPolicy(), clock: { now })
+            defer { if let handle = target.handle { sqlite3_close_v2(handle); target.handle = nil } }
+            try target.openDatabase(key: key, createIfMissing: true)
+            guard let output = target.handle else { throw ArchiveTransferError.storageUnavailable }
+            ArchiveTransferDatabase.installCancellation(output, cancellation)
+            defer { ArchiveTransferDatabase.clearCancellation(output) }
+            try ArchiveTransferDatabase.execute(source, "BEGIN")
+            defer {
+                ArchiveTransferDatabase.clearCancellation(source)
+                try? ArchiveTransferDatabase.execute(source, "ROLLBACK")
+            }
+            // Establish the source WAL read view before another connection can
+            // commit a new version while the bounded row/blob copies proceed.
+            try ArchiveTransferDatabase.validate(source: source, destination: output, accountId: accountId, cancellation: cancellation)
+            _ = try target.transferTransaction(handle: output, cancellation: cancellation) {
+                try ArchiveTransferDatabase.merge(source: source, destination: output,
+                    sourceAccountId: accountId, accountId: accountId, now: now, cancellation: cancellation)
+            }
+            // A completed payload stands alone, with no WAL sidecar required.
+            try ArchiveTransferDatabase.execute(output, "PRAGMA journal_mode=DELETE")
+            try cancellation.check()
+        }
+    }
+
+    private func mergePreparedBackup(_ prepared: ArchivePreparedImport, handle: OpaquePointer,
+                                      ownerId: Int64, testingEnvironment: Bool, expectedGeneration: Int64,
+                                      cancellation: ArchiveTransferCancellation) throws -> ArchiveTransferImport {
+        guard prepared.ownerId == ownerId, prepared.testingEnvironment == testingEnvironment, prepared.cancellation === cancellation else {
+            throw ArchiveTransferError.wrongAccount
+        }
+        try cancellation.check()
+        ArchiveTransferDatabase.installCancellation(handle, cancellation)
+        defer { ArchiveTransferDatabase.clearCancellation(handle) }
+        try ArchiveTransferDatabase.validate(source: prepared.database, destination: handle,
+            accountId: prepared.sourceAccountId, cancellation: cancellation)
+        return try self.transferTransaction(handle: handle, cancellation: cancellation) {
+            guard expectedGeneration >= 0, try self.captureGeneration() == expectedGeneration else {
+                throw ArchiveTransferError.unavailable
+            }
+            let merged = try ArchiveTransferDatabase.merge(source: prepared.database, destination: handle,
+                sourceAccountId: prepared.sourceAccountId, accountId: self.accountId,
+                now: self.clock(), cancellation: cancellation)
+            let removed = try self.prune(now: self.clock(), policy: self.retention)
+            try cancellation.check()
+            return ArchiveTransferImport(addedVersions: merged.added, duplicateVersions: merged.duplicates,
+                                         addedMedia: merged.media, removedByRetention: removed)
+        }
+    }
+
+    private func transferTransaction<Value>(handle: OpaquePointer, cancellation: ArchiveTransferCancellation,
+                                             operation: () throws -> Value) throws -> Value {
+        try self.execute("BEGIN IMMEDIATE")
+        do {
+            let value = try operation()
+            try cancellation.checkpoint(.beforeCommit)
+            try self.execute("COMMIT")
+            return value
+        } catch {
+            // A cancelled progress handler must not interrupt the rollback that
+            // protects the pre-existing archive.
+            ArchiveTransferDatabase.clearCancellation(handle)
+            try? self.execute("ROLLBACK")
+            throw error
+        }
+    }
+
+    private static func transferError(_ error: Error, cancellation: ArchiveTransferCancellation) -> ArchiveTransferError {
+        if cancellation.isCancelled { return .cancelled }
+        if let error = error as? ArchiveTransferError { return error }
+        if let error = error as? ArchiveError {
+            switch error {
+            case .accountMismatch: return .wrongAccount
+            case .eventConflict: return .conflict
+            case .invalidInput: return .invalidArchive
+            case .unsupportedSchema: return .unsupportedVersion
+            default: return .storageUnavailable
+            }
+        }
+        return .storageUnavailable
     }
 
     /// Commit all eligible events atomically. An event-key collision with different content rolls back the batch.
@@ -308,9 +538,10 @@ public final class ArchiveStore {
         }
     }
 
-    private func openDatabase(key: Data) throws {
+    private func openDatabase(key: Data, createIfMissing: Bool) throws {
         var opened: OpaquePointer?
-        let code = sqlite3_open_v2(databasePath, &opened, SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE | SQLITE_OPEN_FULLMUTEX | SQLITE_OPEN_NOFOLLOW, nil)
+        let flags = SQLITE_OPEN_READWRITE | SQLITE_OPEN_FULLMUTEX | SQLITE_OPEN_NOFOLLOW | (createIfMissing ? SQLITE_OPEN_CREATE : 0)
+        let code = sqlite3_open_v2(databasePath, &opened, flags, nil)
         guard code == SQLITE_OK, let opened = opened else {
             if let opened = opened { sqlite3_close_v2(opened) }
             throw ArchiveError.unavailable(code)

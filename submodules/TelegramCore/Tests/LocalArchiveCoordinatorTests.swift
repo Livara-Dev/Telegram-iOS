@@ -20,6 +20,18 @@ private struct LocalArchiveMalformedPreference: Codable {
     let unrelatedField: Int32
 }
 
+private final class LocalArchiveReadKeyProbe: ArchiveKeyProvider {
+    let requests = Atomic<[Bool]>(value: [])
+    let result: Result<Data, ArchiveError>
+
+    init(result: Result<Data, ArchiveError>) { self.result = result }
+
+    func key(accountId: Int64, createIfMissing: Bool) throws -> Data {
+        let _ = self.requests.modify { $0 + [createIfMissing] }
+        return try self.result.get()
+    }
+}
+
 /// Keeps all SQLCipher behavior real. Only the delivery of one write result is
 /// intercepted to reproduce the archive-commit / Postbox-acknowledgement crash window.
 private final class LocalArchiveInterceptingStorage: LocalArchiveStorage {
@@ -120,6 +132,7 @@ final class LocalArchiveCoordinatorTests: XCTestCase {
     private final class Running {
         var coordinator: LocalArchiveCoordinator?
         let storage = Atomic<LocalArchiveInterceptingStorage?>(value: nil)
+        let creationMode = ValuePromise<Bool?>(nil, ignoreRepeated: true)
     }
 
     private let accountPeerId = PeerId(namespace: Namespaces.Peer.CloudUser, id: PeerId.Id._internalFromInt64Value(1))
@@ -152,16 +165,18 @@ final class LocalArchiveCoordinatorTests: XCTestCase {
     }
 
     private func start(postbox: Postbox? = nil, accountId: Int64 = 17,
+                       clock: @escaping () -> Int64 = { 1000 },
                        behavior: LocalArchiveInterceptingStorage.WriteBehavior = .normal,
                        protectedData: Signal<Bool, NoError>? = .single(true),
                        didWrite: ((Result<ArchiveWriteResult, ArchiveError>) -> Void)? = nil) -> Running {
         let instance = Running()
         instance.coordinator = LocalArchiveCoordinator(postbox: postbox ?? self.fixture.postbox, accountPeerId: self.accountPeerId,
             accountId: accountId, baseDirectory: self.archiveDirectory,
-            storageFactory: { directory, accountId, retention, callbackQueue, completion in
+            storageFactory: { directory, accountId, retention, createIfMissing, callbackQueue, completion in
+                instance.creationMode.set(createIfMissing)
                 ArchiveStore.open(baseDirectory: directory, accountId: accountId,
-                    keyProvider: LocalArchiveIntegrationKey(), retention: retention,
-                    callbackQueue: callbackQueue, clock: { 1000 }) { result in
+                    keyProvider: LocalArchiveIntegrationKey(), createIfMissing: createIfMissing, retention: retention,
+                    callbackQueue: callbackQueue, clock: clock) { result in
                     switch result {
                     case let .success(store):
                         let intercepted = LocalArchiveInterceptingStorage(store: store, behavior: behavior, didWrite: didWrite)
@@ -540,10 +555,16 @@ final class LocalArchiveCoordinatorTests: XCTestCase {
         let removal = self.fixture.postbox.mediaBox.removeCachedResources([resource.id], force: true).start(completed: { cleared.fulfill() })
         wait(for: [cleared], timeout: 15)
         removal.dispose()
+        XCTAssertTrue(try self.localArchiveValue(try XCTUnwrap(first.coordinator).setEnabled(false)))
+        try self.awaitStatus(.disabled, in: first)
         try self.stop(first)
         try self.fixture.reopen()
         let second = self.start()
-        try self.awaitStatus(.ready, in: second)
+        let reader = try XCTUnwrap(second.coordinator)
+        let access = reader.acquireReadAccess()
+        defer { access.dispose() }
+        try self.awaitStatus(.browsing, in: second)
+        XCTAssertEqual(try self.localArchiveValue(reader.mediaItems()).items.count, 1)
         let reopened = try XCTUnwrap(second.coordinator)
         XCTAssertEqual(try self.localArchiveValue(reopened.mediaInfo(eventKey: key, slot: 0))?.byteCount, size)
         XCTAssertEqual(try self.localArchiveValue(reopened.mediaRange(eventKey: key, slot: 0, offset: size - 7, count: 64)), Data(repeating: 0x69, count: 7))
@@ -615,10 +636,19 @@ final class LocalArchiveCoordinatorTests: XCTestCase {
         let removal = self.fixture.postbox.mediaBox.removeCachedResources([resource.id], force: true).start(completed: { cleared.fulfill() })
         wait(for: [cleared], timeout: 15)
         removal.dispose()
+        XCTAssertTrue(try self.localArchiveValue(try XCTUnwrap(first.coordinator).setEnabled(false)))
+        try self.awaitStatus(.disabled, in: first)
         try self.stop(first)
         try self.fixture.reopen()
         let second = self.start()
-        try self.awaitStatus(.ready, in: second)
+        let reader = try XCTUnwrap(second.coordinator)
+        let access = reader.acquireReadAccess()
+        defer { access.dispose() }
+        try self.awaitStatus(.browsing, in: second)
+        XCTAssertEqual(try self.localArchiveValue(reader.mediaData(eventKey: eventKey, slot: 0)), bytes)
+        XCTAssertEqual(try self.localArchiveValue(reader.mediaInfo(eventKey: eventKey, slot: 0))?.byteCount, Int64(bytes.count))
+        XCTAssertEqual(try self.localArchiveValue(reader.mediaRange(eventKey: eventKey, slot: 0, offset: 0, count: 16)), Data(bytes.prefix(16)))
+        XCTAssertEqual(try self.localArchiveValue(reader.mediaItems()).items.count, 1)
         let store = try XCTUnwrap(second.storage.with { $0?.store })
         let read = expectation(description: "read archived bytes")
         var value: Result<ArchivedMedia?, ArchiveError>?
@@ -925,5 +955,246 @@ final class LocalArchiveCoordinatorTests: XCTestCase {
         try self.awaitStatus(.ready, in: first)
         XCTAssertTrue(try self.localArchiveValue(firstCoordinator.deletedMessages()).records.isEmpty)
         XCTAssertEqual(try self.localArchiveValue(otherCoordinator.deletedMessages()).records.map { $0.text }, ["second account"])
+    }
+
+    func testPausedCaptureCanBrowseRetainedHistoryWithoutDrainingOutboxAcrossRestart() throws {
+        let retainedId = try self.queueDeletion(101, text: "saved before capture was paused")
+        let first = self.start()
+        try self.awaitStatus(.ready, in: first)
+        try self.stop(first)
+        _ = try self.queueDeletion(102, text: "queued before pause, not yet archived")
+        let _ = try self.localArchiveValue(self.fixture.postbox.transaction { transaction in
+            var settings = localArchiveSettings(transaction: transaction)
+            settings.enabled = false
+            setLocalArchiveSettings(transaction: transaction, settings: settings)
+        })
+        try self.fixture.reopen()
+        let protectedData = ValuePromise<Bool>(true, ignoreRepeated: true)
+        let instance = self.start(protectedData: protectedData.get())
+        let coordinator = try XCTUnwrap(instance.coordinator)
+        let access = coordinator.acquireReadAccess()
+        defer { access.dispose() }
+        try self.awaitStatus(.browsing, in: instance)
+        XCTAssertEqual(try self.localArchiveValue(instance.creationMode.get()), false)
+        XCTAssertFalse(try self.localArchiveValue(coordinator.settings).enabled)
+        XCTAssertEqual(try self.pending().count, 1, "a read lease must not acknowledge queued capture")
+        _ = try self.queueDeletion(103, text: "must not capture while browsing")
+        XCTAssertEqual(try self.pending().count, 1)
+        let page = try self.localArchiveValue(coordinator.deletedMessages())
+        XCTAssertFalse(page.unavailable)
+        XCTAssertEqual(page.records.map { $0.messageId }, [retainedId.id])
+        XCTAssertEqual(try self.localArchiveValue(coordinator.searchMessages(query: "saved")).records.map { $0.messageId }, [retainedId.id])
+        XCTAssertEqual(try self.localArchiveValue(coordinator.timeline(peerId: retainedId.peerId.toInt64(), namespace: retainedId.namespace, messageId: retainedId.id)).records.count, 1)
+
+        protectedData.set(false)
+        try self.awaitStatus(.locked, in: instance)
+        XCTAssertTrue(try self.localArchiveValue(coordinator.deletedMessages()).unavailable)
+        protectedData.set(true)
+        try self.awaitStatus(.browsing, in: instance)
+        XCTAssertEqual(try self.pending().count, 1)
+        XCTAssertEqual(try self.localArchiveValue(coordinator.deletedMessages()).records.count, 1)
+
+        XCTAssertTrue(try self.localArchiveValue(coordinator.requestPurge()))
+        let _ = try self.localArchiveValue(coordinator.settings |> filter { $0.generation == 1 && !$0.pendingPurge })
+        try self.awaitStatus(.browsing, in: instance)
+        XCTAssertTrue(try self.pending().isEmpty)
+        XCTAssertTrue(try self.localArchiveValue(coordinator.deletedMessages()).records.isEmpty)
+        XCTAssertFalse(try self.localArchiveValue(coordinator.settings).enabled)
+        access.dispose()
+        try self.awaitStatus(.disabled, in: instance)
+        XCTAssertTrue(try self.localArchiveValue(coordinator.deletedMessages()).unavailable)
+        try self.stop(instance)
+        try self.fixture.reopen()
+        let restarted = self.start()
+        let restartedCoordinator = try XCTUnwrap(restarted.coordinator)
+        let reopenedAccess = restartedCoordinator.acquireReadAccess()
+        defer { reopenedAccess.dispose() }
+        try self.awaitStatus(.browsing, in: restarted)
+        XCTAssertFalse(try self.localArchiveValue(restartedCoordinator.settings).enabled)
+        XCTAssertTrue(try self.localArchiveValue(restartedCoordinator.deletedMessages()).records.isEmpty)
+        XCTAssertTrue(try self.pending().isEmpty)
+    }
+
+    func testChatSenderAndBotExclusionsPersistAndRetireQueuedCapturesBeforeMediaCopy() throws {
+        let sender = PeerId(namespace: Namespaces.Peer.CloudUser, id: PeerId.Id._internalFromInt64Value(2001))
+        let otherChat = PeerId(namespace: Namespaces.Peer.CloudUser, id: PeerId.Id._internalFromInt64Value(2002))
+        let bot = PeerId(namespace: Namespaces.Peer.CloudUser, id: PeerId.Id._internalFromInt64Value(2003))
+        let unknownSender = PeerId(namespace: Namespaces.Peer.CloudUser, id: PeerId.Id._internalFromInt64Value(2004))
+        let resource = CloudDocumentMediaResource(datacenterId: 1, fileId: 9910, accessHash: 1, size: 4, fileReference: nil, fileName: nil)
+        self.fixture.postbox.mediaBox.storeResourceData(resource.id, data: Data([1, 2, 3, 4]), synchronous: true)
+        let file = TelegramMediaFile(fileId: MediaId(namespace: Namespaces.Media.CloudFile, id: 9910), partialReference: nil, resource: resource, previewRepresentations: [], videoThumbnails: [], immediateThumbnailData: nil, mimeType: "application/pdf", size: 4, attributes: [], alternativeRepresentations: [])
+        let ids = [self.chatPeerId, otherChat, bot, otherChat].enumerated().map { MessageId(peerId: $0.element, namespace: Namespaces.Message.Cloud, id: Int32(110 + $0.offset)) }
+        let accountPeerId = self.accountPeerId
+        let _ = try self.localArchiveValue(self.fixture.postbox.transaction { transaction in
+            transaction.updatePeersInternal([localArchiveTestUser(sender), localArchiveTestUser(otherChat), localArchiveTestUser(bot, bot: true)], update: { _, peer in peer })
+            setLocalArchiveSettings(transaction: transaction, settings: LocalArchiveSettings(enabled: true, excludeBots: false))
+            for (index, id) in ids.enumerated() {
+                let authorId = index == 1 ? sender : (index == 3 ? unknownSender : id.peerId)
+                let _ = transaction.addMessages([localArchiveTestMessage(id, text: "excluded queued snapshot", authorId: authorId, media: [file])], location: .Random)
+                captureDeletedLocalArchiveMessages(transaction: transaction, accountPeerId: accountPeerId, ids: [id], observedAt: 200)
+                transaction.deleteMessages([id], forEachMedia: nil)
+            }
+        })
+        XCTAssertEqual(try self.pending().count, 4)
+        XCTAssertNil(try self.pending().last?.operation?.authorId, "fixture must preserve an unavailable author")
+        let locked = self.start(protectedData: .single(false))
+        let settingsController = try XCTUnwrap(locked.coordinator)
+        XCTAssertTrue(try self.localArchiveValue(settingsController.setPeerExcluded(peerId: self.chatPeerId.toInt64(), excluded: true)))
+        XCTAssertTrue(try self.localArchiveValue(settingsController.setSenderExcluded(senderId: sender.toInt64(), excluded: true)))
+        XCTAssertTrue(try self.localArchiveValue(settingsController.setExcludeBots(true)))
+        try self.stop(locked)
+        try self.fixture.reopen()
+        let restarted = self.start()
+        try self.awaitStatus(.ready, in: restarted)
+        let coordinator = try XCTUnwrap(restarted.coordinator)
+        let settings = try self.localArchiveValue(coordinator.settings)
+        XCTAssertEqual(settings.excludedPeerIds, [self.chatPeerId.toInt64()])
+        XCTAssertEqual(settings.excludedSenderIds, [sender.toInt64()])
+        XCTAssertTrue(settings.excludeBots)
+        XCTAssertEqual(settings.droppedCaptures, 0, "deliberate exclusions are not storage failures")
+        XCTAssertTrue(try self.pending().isEmpty)
+        XCTAssertTrue(try self.localArchiveValue(coordinator.deletedMessages()).records.isEmpty)
+        XCTAssertTrue(try self.localArchiveValue(coordinator.mediaItems()).items.isEmpty)
+        let store = try XCTUnwrap(restarted.storage.with { $0 })
+        XCTAssertFalse(try self.localArchiveValue(store.mediaWritten.get()), "excluded captures must never copy media")
+        let remaining = try self.localArchiveValue(self.fixture.postbox.transaction { transaction in ids.compactMap { transaction.getMessage($0) } })
+        XCTAssertTrue(remaining.isEmpty, "exclusions must not alter canonical deletion")
+        XCTAssertTrue(try self.localArchiveValue(coordinator.setPeerExcluded(peerId: self.chatPeerId.toInt64(), excluded: false)))
+        XCTAssertTrue(try self.localArchiveValue(coordinator.setSenderExcluded(senderId: sender.toInt64(), excluded: false)))
+        XCTAssertTrue(try self.localArchiveValue(coordinator.setExcludeBots(false)))
+        try self.stop(restarted)
+        try self.fixture.reopen()
+        let resumed = self.start()
+        try self.awaitStatus(.ready, in: resumed)
+        XCTAssertTrue(try self.localArchiveValue(try XCTUnwrap(resumed.coordinator).deletedMessages()).records.isEmpty, "removing exclusions must not resurrect consumed captures")
+    }
+
+    func testSenderExclusionSkipsNewCapturesButKeepsExistingHistoryAfterRestart() throws {
+        _ = try self.queueDeletion(114, text: "history predates exclusion")
+        let first = self.start()
+        try self.awaitStatus(.ready, in: first)
+        let coordinator = try XCTUnwrap(first.coordinator)
+        XCTAssertTrue(try self.localArchiveValue(coordinator.setSenderExcluded(senderId: self.chatPeerId.toInt64(), excluded: true)))
+        try self.stop(first)
+        try self.fixture.reopen()
+        _ = try self.queueDeletion(115, text: "new excluded sender text")
+        XCTAssertTrue(try self.pending().isEmpty)
+        let restarted = self.start()
+        try self.awaitStatus(.ready, in: restarted)
+        let reader = try XCTUnwrap(restarted.coordinator)
+        XCTAssertEqual(try self.localArchiveValue(reader.deletedMessages()).records.map { $0.messageId }, [114])
+        XCTAssertEqual(try self.localArchiveValue(reader.settings).droppedCaptures, 0)
+        XCTAssertTrue(try self.localArchiveValue(reader.setSenderExcluded(senderId: self.chatPeerId.toInt64(), excluded: false)))
+        try self.stop(restarted)
+        _ = try self.queueDeletion(116, text: "newly allowed sender")
+        let resumed = self.start()
+        try self.awaitStatus(.ready, in: resumed)
+        XCTAssertEqual(try self.localArchiveValue(try XCTUnwrap(resumed.coordinator).deletedMessages()).records.map { $0.messageId }, [116, 114])
+    }
+
+    func testPausedReadLeasesAreAccountScopedAndLastDisposalClosesStorage() throws {
+        _ = try self.queueDeletion(104)
+        let first = self.start()
+        try self.awaitStatus(.ready, in: first)
+        let coordinator = try XCTUnwrap(first.coordinator)
+        let firstAccess = coordinator.acquireReadAccess()
+        let secondAccess = coordinator.acquireReadAccess()
+        defer { firstAccess.dispose(); secondAccess.dispose() }
+        XCTAssertTrue(try self.localArchiveValue(coordinator.setEnabled(false)))
+        try self.awaitStatus(.browsing, in: first)
+        firstAccess.dispose()
+        XCTAssertEqual(try self.localArchiveValue(coordinator.deletedMessages()).records.count, 1)
+
+        let other = try LocalArchivePostboxFixture(test: self, name: "archive-disabled-other")
+        let second = self.start(postbox: other.postbox, accountId: 18)
+        defer { try? self.stop(second); try? other.destroy() }
+        let otherCoordinator = try XCTUnwrap(second.coordinator)
+        let otherAccess = otherCoordinator.acquireReadAccess()
+        defer { otherAccess.dispose() }
+        XCTAssertEqual(try self.localArchiveValue(second.creationMode.get() |> filter { $0 != nil }), false)
+        try self.awaitStatus(.disabled, in: second)
+        XCTAssertNil(second.storage.with { $0 })
+        XCTAssertFalse(FileManager.default.fileExists(atPath: self.archiveDirectory.appendingPathComponent("account-18").path))
+        XCTAssertTrue(try self.localArchiveValue(otherCoordinator.deletedMessages()).unavailable)
+        XCTAssertTrue(try self.localArchiveValue(coordinator.setPeerExcluded(peerId: self.chatPeerId.toInt64(), excluded: true)))
+        XCTAssertTrue(try self.localArchiveValue(otherCoordinator.settings).excludedPeerIds.isEmpty)
+        secondAccess.dispose()
+        try self.awaitStatus(.disabled, in: first)
+        XCTAssertTrue(try self.localArchiveValue(coordinator.deletedMessages()).unavailable)
+    }
+
+    func testPausedBrowsingEnforcesAgeRetentionAfterRestart() throws {
+        _ = try self.queueDeletion(105, text: "expires without any new capture")
+        let first = self.start()
+        try self.awaitStatus(.ready, in: first)
+        let coordinator = try XCTUnwrap(first.coordinator)
+        XCTAssertTrue(try self.localArchiveValue(coordinator.setRetention(maxAgeSeconds: 86400, maxPayloadBytes: 32 * 1024 * 1024)))
+        XCTAssertTrue(try self.localArchiveValue(coordinator.setEnabled(false)))
+        try self.awaitStatus(.disabled, in: first)
+        try self.stop(first)
+        try self.fixture.reopen()
+        let restarted = self.start(clock: { 100_000 })
+        let reader = try XCTUnwrap(restarted.coordinator)
+        let access = reader.acquireReadAccess()
+        defer { access.dispose() }
+        try self.awaitStatus(.browsing, in: restarted)
+        let page = try self.localArchiveValue(reader.deletedMessages())
+        XCTAssertFalse(page.unavailable)
+        XCTAssertTrue(page.records.isEmpty)
+        XCTAssertEqual(try self.localArchiveValue(reader.usage())?.snapshots, 0)
+        XCTAssertFalse(try self.localArchiveValue(reader.settings).enabled)
+    }
+
+    func testExistingOnlyOpenNeverCreatesArchiveOrKeyAndRejectsOrphanSidecar() throws {
+        let key = LocalArchiveReadKeyProbe(result: .failure(.invalidKey))
+        let missing = expectation(description: "existing-only archive is absent")
+        ArchiveStore.open(baseDirectory: self.archiveDirectory, accountId: 17, keyProvider: key, createIfMissing: false) { result in
+            guard case .failure(.missingArchive) = result else { XCTFail("must report absence without creation"); missing.fulfill(); return }
+            missing.fulfill()
+        }
+        wait(for: [missing], timeout: 15)
+        XCTAssertTrue(key.requests.with { $0 }.isEmpty)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: self.archiveDirectory.path))
+
+        let accountDirectory = self.archiveDirectory.appendingPathComponent("account-17", isDirectory: true)
+        try FileManager.default.createDirectory(at: accountDirectory, withIntermediateDirectories: true)
+        let orphan = accountDirectory.appendingPathComponent("archive.sqlite-wal")
+        let bytes = Data([1, 7, 3])
+        try bytes.write(to: orphan)
+        let damaged = expectation(description: "orphan sidecar is preserved")
+        ArchiveStore.open(baseDirectory: self.archiveDirectory, accountId: 17, keyProvider: key, createIfMissing: false) { result in
+            guard case .failure(.invalidInput) = result else { XCTFail("must distinguish orphan data from no archive"); damaged.fulfill(); return }
+            damaged.fulfill()
+        }
+        wait(for: [damaged], timeout: 15)
+        XCTAssertTrue(key.requests.with { $0 }.isEmpty)
+        XCTAssertEqual(try Data(contentsOf: orphan), bytes)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: accountDirectory.appendingPathComponent("archive.sqlite").path))
+    }
+
+    func testExistingOnlyOpenDoesNotReplaceMissingKeyOrWrongKey() throws {
+        _ = try self.queueDeletion(106)
+        let instance = self.start()
+        try self.awaitStatus(.ready, in: instance)
+        try self.stop(instance)
+        let database = self.archiveDirectory.appendingPathComponent("account-17/archive.sqlite")
+        let original = try Data(contentsOf: database)
+        let keys: [LocalArchiveReadKeyProbe] = [
+            LocalArchiveReadKeyProbe(result: .failure(.invalidKey)),
+            LocalArchiveReadKeyProbe(result: .success(Data(repeating: 0xff, count: 32)))
+        ]
+        for key in keys {
+            let done = expectation(description: "existing archive key failure")
+            ArchiveStore.open(baseDirectory: self.archiveDirectory, accountId: 17, keyProvider: key, createIfMissing: false) { result in
+                if case .success = result { XCTFail("must not open archive without its original key") }
+                done.fulfill()
+            }
+            wait(for: [done], timeout: 15)
+            XCTAssertEqual(key.requests.with { $0 }, [false])
+            XCTAssertEqual(try Data(contentsOf: database), original)
+        }
+        let restarted = self.start()
+        try self.awaitStatus(.ready, in: restarted)
+        XCTAssertEqual(try self.localArchiveValue(try XCTUnwrap(restarted.coordinator).deletedMessages()).records.map { $0.messageId }, [106])
     }
 }

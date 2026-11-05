@@ -1654,6 +1654,7 @@ public class Account {
                 postbox: postbox,
                 accountPeerId: peerId,
                 accountId: id.int64,
+                testingEnvironment: testingEnvironment,
                 baseDirectory: URL(fileURLWithPath: basePath, isDirectory: true)
                     .appendingPathComponent("local-message-archive", isDirectory: true)
             )
