@@ -7,10 +7,18 @@ on:
   workflow_dispatch:
     inputs:
       validation_scope:
-        description: Focused native repair tests only, or full app qualification
+        description: Startup replay, native diagnostics, or full app qualification
         type: choice
-        options: [full, focused, probe]
+        options: [full, focused, probe, startup]
         default: full
+      replay_run:
+        description: Startup only on integration/ayu-current; source simulator run ID
+        type: string
+        default: ''
+      replay_source:
+        description: Startup only; full compiled application source SHA
+        type: string
+        default: ''
       unsigned_device:
         description: Compile an unsigned device IPA alongside exact-commit integration tests
         type: boolean
@@ -25,5 +33,5 @@ jobs:
     steps:
       - name: Select the prepared verification revision
         run: |
-          echo "::error::Select ci/verify-latest in the Run workflow branch menu. It contains the prepared application, native tests, device IPA build and startup smoke test."
+          echo "::error::Select ci/verify-latest for full qualification, or integration/ayu-current for startup artifact replay and focused diagnostics."
           exit 1
