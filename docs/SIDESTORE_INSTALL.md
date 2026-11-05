@@ -46,9 +46,12 @@ source defect, not a confirmed diagnosis of the user's signed binary.
 The main application selects its accessible configured App Group or its private
 Application Support container. It persists that selection. If a previously
 selected shared container becomes unavailable, it fails visibly instead of
-opening a different, empty account store. No account database is migrated,
-removed or reset automatically. The private mode uses separately namespaced
-Keychain services and does not reset legacy shared-installation secrets.
+opening a different, empty account store. The storage-selection code performs
+no database migration, removal or reset. Private mode uses separately namespaced
+Keychain services and does not reset legacy shared-installation secrets. Existing
+upstream account-database recovery remains unchanged, including conditional
+recreation after an unreadable encryption-key probe. See the [storage review and
+remaining risks](SECURITY_ASSESSMENT.md#startup-and-storage-review-2026-11-05).
 Authentication, MTProto and encryption algorithms remain upstream.
 
 Build 54's active Bazel-generated metadata does not contain

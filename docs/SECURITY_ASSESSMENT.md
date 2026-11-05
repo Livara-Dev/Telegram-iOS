@@ -2,6 +2,56 @@
 
 Date: 2026-11-04. This is a source-based threat assessment and a list of acceptance requirements, **not a finding that the app is secure**. The reviewed snapshots are Telegram-iOS `279f89e4d4f63f17227bf877dc3d8990f22ecd58` and AyuGram4A `7013145676d36d82ee13c02a89f72097b7490dcd`. The companion architecture and license audits contain source references. No successful full iOS application build, signed-device test, penetration test, cryptographic review or network privacy verification is established by this document.
 
+
+## Startup and storage review, 2026-11-05
+
+This later checkpoint records bounded evidence rather than closing the earlier
+risk register. Application source `62546557` produced an unsigned device package,
+and 104 native Keychain/archive/playback cases passed twice. Artifact replay
+[42075783146](https://github.com/Livara-Dev/Telegram-iOS/actions/runs/42075783146)
+passed two actual authorization-screen launches using an explicitly pinned
+private selection in one fresh simulator. The account-store directory remained
+the same across restart. The resulting [unsigned main-app-only IPA](SIDESTORE_INSTALL.md)
+removes six extensions and preserves all other device member bytes. This is not
+an independently signed physical-device test, a Telegram login, an automatic
+fallback test, archive-message persistence proof, or full release qualification.
+The separate Projection test-host failure remains under diagnosis.
+
+Read-only review at `6c3603ee` confirms private-container selection does not reset
+legacy Keychain credentials. Existing archive initialization permits key creation
+only when the database is absent; wrong/missing keys, inaccessible storage,
+account-identity mismatches and unsupported schemas fail without recreation.
+The authorized account coordinator remains the archive entry point. Authorization
+UI startup therefore does not establish that the production archive opened.
+
+The broader account store retains **unchanged upstream recovery behavior**:
+
+- [BuildConfig.m](../submodules/BuildConfig/Sources/BuildConfig.m) treats an
+  unreadable or malformed `.tempkey` as requiring replacement, proceeds after a
+  lock timeout, and does not check its atomic-write result (lines 374–426).
+  [Account.swift](../submodules/TelegramCore/Sources/Account/Account.swift) enables
+  main-process Postbox database recovery; an unreadable keyed probe can recreate
+  that database in [SqliteValueBox.swift](../submodules/Postbox/Sources/SqliteValueBox.swift)
+  (lines 509–517). This is a conditional data-loss path, not evidence explaining
+  the owner's black screen.
+- [AccountManagerImpl.swift](../submodules/TelegramCore/Sources/AccountManager/AccountManagerImpl.swift)
+  can reconstruct malformed/unreadable metadata. Upstream account cleanup in
+  [AccountManager.swift](../submodules/TelegramCore/Sources/Account/AccountManager.swift)
+  removes account directories absent from the resulting record list. The archive
+  resides inside its account directory: cache clearing and account-directory
+  removal have different effects. Logout/account removal retention is not
+  guaranteed by the archive's independent media-cache storage.
+- Before a selection has ever been saved, choosing private storage does not prove
+  an inaccessible legacy shared store is empty. It leaves that store untouched;
+  it cannot silently recover its account data.
+
+The key-file, SqliteValueBox and account-manager recovery code matches official
+baseline `279f89e4`; no fallback-specific reset was introduced. A later fail-closed
+hardening change needs fault-injection and concurrency tests for read, lock and
+write failures, confirmed absence with existing databases, 32-byte key migration,
+and metadata recovery. These risks remain open. No production recovery behavior
+was changed to obtain the startup pass or IPA.
+
 ## Additional source review at `f295948a`
 
 The [expanded telemetry inventory](fork/TELEMETRY-REVIEW.md) identifies additional
