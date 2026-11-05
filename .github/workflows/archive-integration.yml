@@ -6,10 +6,18 @@ on:
   workflow_dispatch:
     inputs:
       validation_scope:
-        description: Host API probe, focused iOS repair tests, or full app qualification
+        description: Startup artifact replay, host API probe, focused iOS tests, or full qualification
         type: choice
-        options: [full, focused, probe]
+        options: [full, focused, probe, startup]
         default: full
+      replay_run:
+        description: Required for startup scope; simulator artifact run ID
+        type: string
+        default: ''
+      replay_source:
+        description: Required for startup scope; full source commit SHA
+        type: string
+        default: ''
       unsigned_device:
         description: Compile an unsigned device IPA alongside exact-commit integration tests
         type: boolean
@@ -23,12 +31,12 @@ permissions:
 # Development branches do not start macOS jobs; advance ci/verify-latest once
 # the next reviewed batch is ready. Existing runs retain their original policy.
 concurrency:
-  group: ayugram-qualification
+  group: ${{ github.event_name == 'workflow_dispatch' && inputs.validation_scope == 'startup' && format('ayugram-startup-replay-{0}', inputs.replay_source) || 'ayugram-qualification' }}
   cancel-in-progress: false
 
 jobs:
   integration-tests:
-    if: github.event_name == 'push' || inputs.validation_scope != 'probe'
+    if: github.event_name == 'push' || (inputs.validation_scope != 'probe' && inputs.validation_scope != 'startup')
     # macos-latest does not satisfy versions.json. This preview image does;
     # prepare_host.py additionally verifies the actual OS/Xcode versions.
     runs-on: xcode-27
@@ -641,6 +649,125 @@ jobs:
             ${{ github.workspace }}/fork-source/build/fork-evidence/native-api-probe-fixture.json
             ${{ github.workspace }}/fork-source/build/fork-evidence/native-api-probe-compile.log
             ${{ github.workspace }}/fork-source/build/fork-evidence/native-api-probe-SHA256SUMS
+          if-no-files-found: warn
+          retention-days: 7
+          include-hidden-files: false
+
+  startup-artifact-replay:
+    # Reuse one verified simulator IPA. No Telegram/Bazel compilation or API
+    # credentials; this diagnostic control cannot qualify a failed source run.
+    if: github.event_name == 'workflow_dispatch' && inputs.validation_scope == 'startup'
+    runs-on: xcode-27
+    timeout-minutes: 25
+    permissions:
+      contents: read
+      actions: read
+    defaults:
+      run:
+        shell: bash
+        working-directory: ./fork-source
+    steps:
+      - name: Check out the replay tool revision and exact artifact source
+        working-directory: ${{ github.workspace }}
+        env:
+          CHECKOUT_TOKEN: ${{ github.token }}
+          REPLAY_RUN: ${{ inputs.replay_run }}
+          REPLAY_SOURCE: ${{ inputs.replay_source }}
+        run: |
+          set -euo pipefail
+          python3 - <<'PYTHON'
+          import base64, os, pathlib, re, subprocess
+          destination = pathlib.Path(os.environ['GITHUB_WORKSPACE']) / 'fork-source'
+          sha = os.environ['GITHUB_SHA']
+          source = os.environ['REPLAY_SOURCE']
+          run_id = os.environ['REPLAY_RUN']
+          repo = os.environ['GITHUB_REPOSITORY']
+          if (not re.fullmatch(r'[0-9a-f]{40}', sha) or not re.fullmatch(r'[0-9a-f]{40}', source)
+                  or not re.fullmatch(r'[1-9][0-9]{0,18}', run_id) or int(run_id) > 2**63 - 1
+                  or repo != 'Livara-Dev/Telegram-iOS'):
+              raise SystemExit('Invalid replay coordinates')
+          destination.mkdir(mode=0o700)
+          def run(args, env=None):
+              subprocess.run(args, cwd=destination, env=env, check=True)
+          run(['git', 'init', '-q'])
+          run(['git', 'remote', 'add', 'origin', 'https://github.com/' + repo + '.git'])
+          auth_env = os.environ.copy()
+          token = auth_env.pop('CHECKOUT_TOKEN')
+          auth_env.update(GIT_CONFIG_COUNT='1', GIT_CONFIG_KEY_0='http.https://github.com/.extraheader',
+                          GIT_CONFIG_VALUE_0='AUTHORIZATION: basic ' + base64.b64encode(('x-access-token:' + token).encode()).decode())
+          run(['git', 'fetch', '--no-tags', '--depth', '1', 'origin', sha, source], auth_env)
+          run(['git', 'checkout', '--detach', sha])
+          (destination / 'build/fork-evidence').mkdir(parents=True)
+          PYTHON
+
+      - name: Select and verify the pinned replay toolchain
+        run: |
+          set -euo pipefail
+          sudo xcode-select -s /Applications/Xcode_27.1.app/Contents/Developer
+          python3 - <<'PYTHON'
+          import json, pathlib, subprocess
+          pins = json.loads(pathlib.Path('versions.json').read_text())
+          actual = subprocess.check_output(['xcodebuild', '-version'], text=True).splitlines()[0]
+          if actual != 'Xcode ' + pins['xcode']:
+              raise SystemExit('Pinned Xcode is unavailable')
+          PYTHON
+
+      - name: Download and verify the existing simulator build
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPLAY_RUN: ${{ inputs.replay_run }}
+          REPLAY_SOURCE: ${{ inputs.replay_source }}
+        run: |
+          set -euo pipefail
+          umask 077
+          python3 tools/fork_baseline/replay_artifact.py --run "$REPLAY_RUN" --source "$REPLAY_SOURCE" --output build/fork-evidence/startup-replay
+
+      - name: Replay startup without App Group capabilities
+        run: |
+          set -euo pipefail
+          python3 tools/fork_baseline/startup_replay.py --ipa build/fork-evidence/startup-replay/Telegram.ipa --output build/fork-evidence/startup-replay/replay-controls
+
+      - name: Hash startup replay diagnostics without republishing the IPA
+        if: always()
+        run: |
+          python3 - <<'PYTHON'
+          import hashlib, pathlib
+          root = pathlib.Path('build/fork-evidence/startup-replay')
+          root.mkdir(parents=True, exist_ok=True)
+          names = ['verification.json', 'archive-evidence/manifest.json', 'archive-evidence/prior-launch-result.json',
+                   'replay-controls/replay.json']
+          for control in ('normal', 'no-app-groups'):
+              for name in ('result.json', 'recording.log', 'launch.mp4', 'launch-1.png', 'launch-2.png'):
+                  names.append('replay-controls/' + control + '/launch-smoke/' + name)
+          rows = []
+          for name in names:
+              file = root / name
+              if file.is_file() and not file.is_symlink():
+                  rows.append(hashlib.sha256(file.read_bytes()).hexdigest() + '  ' + name + '\n')
+          (root / 'SHA256SUMS').write_text(''.join(rows))
+          PYTHON
+
+      - name: Publish bounded startup replay evidence only
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: startup-artifact-replay-${{ github.sha }}
+          path: |
+            ${{ github.workspace }}/fork-source/build/fork-evidence/startup-replay/verification.json
+            ${{ github.workspace }}/fork-source/build/fork-evidence/startup-replay/archive-evidence/manifest.json
+            ${{ github.workspace }}/fork-source/build/fork-evidence/startup-replay/archive-evidence/prior-launch-result.json
+            ${{ github.workspace }}/fork-source/build/fork-evidence/startup-replay/replay-controls/replay.json
+            ${{ github.workspace }}/fork-source/build/fork-evidence/startup-replay/replay-controls/normal/launch-smoke/result.json
+            ${{ github.workspace }}/fork-source/build/fork-evidence/startup-replay/replay-controls/normal/launch-smoke/recording.log
+            ${{ github.workspace }}/fork-source/build/fork-evidence/startup-replay/replay-controls/normal/launch-smoke/launch.mp4
+            ${{ github.workspace }}/fork-source/build/fork-evidence/startup-replay/replay-controls/normal/launch-smoke/launch-1.png
+            ${{ github.workspace }}/fork-source/build/fork-evidence/startup-replay/replay-controls/normal/launch-smoke/launch-2.png
+            ${{ github.workspace }}/fork-source/build/fork-evidence/startup-replay/replay-controls/no-app-groups/launch-smoke/result.json
+            ${{ github.workspace }}/fork-source/build/fork-evidence/startup-replay/replay-controls/no-app-groups/launch-smoke/recording.log
+            ${{ github.workspace }}/fork-source/build/fork-evidence/startup-replay/replay-controls/no-app-groups/launch-smoke/launch.mp4
+            ${{ github.workspace }}/fork-source/build/fork-evidence/startup-replay/replay-controls/no-app-groups/launch-smoke/launch-1.png
+            ${{ github.workspace }}/fork-source/build/fork-evidence/startup-replay/replay-controls/no-app-groups/launch-smoke/launch-2.png
+            ${{ github.workspace }}/fork-source/build/fork-evidence/startup-replay/SHA256SUMS
           if-no-files-found: warn
           retention-days: 7
           include-hidden-files: false

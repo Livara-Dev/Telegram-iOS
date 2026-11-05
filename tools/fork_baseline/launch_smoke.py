@@ -6,6 +6,9 @@ stages and synthetic first-launch screenshots/video; no authentication inputs.
 """
 import argparse
 import json
+import os
+import re
+import selectors
 from pathlib import Path, PurePosixPath
 import platform
 import plistlib
@@ -26,6 +29,34 @@ STAGES = READY | {'applicationEntered', 'windowCreated', 'sceneAttached', 'stora
                   'conversationsPrepared', 'failed'}
 FAILURES = {'storageUnavailable', 'keychainUnavailable', 'storageConfiguration', 'initializationUnavailable'}
 MARKER = 'Library/Application Support/AyuGram/LaunchDiagnostics/latest.json'
+STORAGE_SELECTION = 'org.livara.ayugram.startup-storage.v1'
+PHASES = {'extractApplication', 'createDevice', 'bootDevice', 'waitForBoot',
+          'installApplication', 'startRecording', 'launchApplication', 'getContainer',
+          'waitForInterface', 'captureScreenshot', 'checkScreenshot', 'checkStorageSelection', 'complete',
+          'shutdownDevice', 'deleteDevice', 'stopRecording', 'unknownPhase'}
+SMOKE_CODES = {'commandTimedOut', 'commandFailed', 'commandUnavailable', 'commandOutputLimit',
+               'invalidCommandOutput', 'interfaceNotVisible', 'packageExtractionFailed',
+               'invalidLaunchMarker', 'invalidScreenshotEvidence', 'invalidStorageEvidence',
+               'recordingUnavailable', 'recordingStopFailed', 'startupPreparationFailed'}
+
+
+class SmokeError(RuntimeError):
+    def __init__(self, code, phase, return_code=None, timeout=False, system_errors=None):
+        code = code if isinstance(code, str) and code in SMOKE_CODES else 'startupPreparationFailed'
+        super().__init__(code)
+        self.code = code
+        self.phase = phase if isinstance(phase, str) and phase in PHASES else 'unknownPhase'
+        self.return_code = return_code if type(return_code) is int and -(2**31) <= return_code < 2**31 else None
+        self.timeout = timeout is True
+        self.system_errors = [item for item in (system_errors or []) if isinstance(item, dict)
+                              and set(item) == {'domain', 'code'} and isinstance(item['domain'], str)
+                              and item['domain'] in ERROR_DOMAINS
+                              and type(item['code']) is int and -(2**31) <= item['code'] < 2**31][:4]
+
+    def evidence(self):
+        return {'code': self.code, 'phase': self.phase,
+                'return_code': self.return_code, 'timeout': self.timeout, 'system_errors': self.system_errors}
+
 
 
 def extract_app(ipa, destination):
@@ -82,41 +113,143 @@ def read_stage(path):
     return value
 
 
-def command(arguments, timeout=120):
-    return subprocess.check_output(arguments, stderr=subprocess.DEVNULL, text=True, timeout=timeout).strip()
+ERROR_DOMAINS = {'CoreSimulator.SimError', 'com.apple.CoreSimulator.SimError',
+                 'MIInstallerErrorDomain', 'IXUserPresentableErrorDomain',
+                 'FBSOpenApplicationServiceErrorDomain'}
+COMMAND_OUTPUT_LIMIT = 64 * 1024
 
 
-def smoke(ipa, output):
+def safe_system_errors(data):
+    # Ignore all prose, paths, UUIDs and unknown domains. Retain at most four
+    # known Apple error identifiers with numeric codes from bounded stderr.
+    text = data[:COMMAND_OUTPUT_LIMIT].decode('utf-8', errors='replace')
+    pattern = r'(?:domain=|Domain=)([A-Za-z0-9.]+)[, ]+(?:code=|Code=)(-?\d{1,10})(?!\d)'
+    errors = []
+    for domain, number in re.findall(pattern, text):
+        value = int(number)
+        item = {'domain': domain, 'code': value}
+        if domain in ERROR_DOMAINS and -(2**31) <= value < 2**31 and item not in errors:
+            errors.append(item)
+        if len(errors) == 4: break
+    return errors
+
+
+def command(arguments, timeout=120, phase='extractApplication'):
+    if phase not in PHASES:
+        raise ValueError('Unknown startup command phase')
+    process = None
+    captured = {'stdout': bytearray(), 'stderr': bytearray()}
+    deadline = time.monotonic() + timeout
+    try:
+        process = subprocess.Popen(arguments, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        with selectors.DefaultSelector() as selector:
+            selector.register(process.stdout, selectors.EVENT_READ, 'stdout')
+            selector.register(process.stderr, selectors.EVENT_READ, 'stderr')
+            while selector.get_map():
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise SmokeError('commandTimedOut', phase, timeout=True,
+                                     system_errors=safe_system_errors(captured['stderr']))
+                for key, _ in selector.select(min(0.2, remaining)):
+                    chunk = os.read(key.fileobj.fileno(), 4096)
+                    if not chunk:
+                        selector.unregister(key.fileobj)
+                        continue
+                    target = captured[key.data]
+                    room = COMMAND_OUTPUT_LIMIT - len(target)
+                    target.extend(chunk[:room])
+                    if len(chunk) > room:
+                        raise SmokeError('commandOutputLimit', phase,
+                                         system_errors=safe_system_errors(captured['stderr']))
+        try:
+            code = process.wait(timeout=max(0.01, deadline - time.monotonic()))
+        except subprocess.TimeoutExpired:
+            raise SmokeError('commandTimedOut', phase, timeout=True,
+                             system_errors=safe_system_errors(captured['stderr'])) from None
+        if code:
+            raise SmokeError('commandFailed', phase, return_code=code,
+                             system_errors=safe_system_errors(captured['stderr']))
+        return captured['stdout'].decode('utf-8').strip()
+    except OSError:
+        raise SmokeError('commandUnavailable', phase) from None
+    finally:
+        if process is not None:
+            if process.poll() is None:
+                try: process.kill()
+                except OSError: pass
+            try: process.wait(timeout=5)
+            except subprocess.SubprocessError: pass
+            if process.stdout is not None: process.stdout.close()
+            if process.stderr is not None: process.stderr.close()
+
+
+def read_storage_kind(path, expected='private'):
+    """Read fresh-app preferences without retaining any other key or value."""
+    if expected != 'private' or path.is_symlink() or path.stat().st_size > 1024 * 1024:
+        raise ValueError('Invalid storage selection evidence')
+    preferences = plistlib.loads(path.read_bytes())
+    if not isinstance(preferences, dict):
+        raise ValueError('Invalid storage selection evidence')
+    selection = preferences.get(STORAGE_SELECTION)
+    if (not isinstance(selection, dict) or set(selection) != {'version', 'kind'} or
+            type(selection.get('version')) is not int or selection['version'] != 1 or
+            selection.get('kind') != expected):
+        raise ValueError('Expected private storage was not observed')
+    return 'private'
+
+
+def smoke(ipa, output, expected_storage_kind=None):
+    if expected_storage_kind not in {None, 'private'}:
+        raise ValueError('Unsupported storage selection expectation')
     if platform.system() != 'Darwin':
         raise RuntimeError('A macOS host and the pinned simulator runtime are required')
     output = Path(output).resolve()
     output.mkdir(parents=True, exist_ok=False)
     report = {'mode': 'fresh_simulator_launch', 'physical_device_verified': False,
-              'authentication_codes_used': False, 'launches': [], 'passed': False}
+              'authentication_codes_used': False, 'launches': [], 'passed': False,
+              'phase': 'extractApplication', 'failure': None}
+    if expected_storage_kind is not None:
+        report['expected_storage_kind'] = expected_storage_kind
     identifier, recorder = None, None
     try:
         with tempfile.TemporaryDirectory(prefix='ayu-launch-smoke-') as temporary:
             app = extract_app(ipa, Path(temporary) / 'Telegram.app')
+            report['phase'] = 'createDevice'
             identifier = command(['xcrun', 'simctl', 'create', 'AYU_SMOKE_' + uuid.uuid4().hex,
                                   'com.apple.CoreSimulator.SimDeviceType.iPhone-17',
-                                  'com.apple.CoreSimulator.SimRuntime.iOS-27-0'])
+                                  'com.apple.CoreSimulator.SimRuntime.iOS-27-0'], phase='createDevice')
             # Identifier is produced by simctl, never taken from user input.
-            uuid.UUID(identifier)
-            command(['xcrun', 'simctl', 'boot', identifier])
-            command(['xcrun', 'simctl', 'bootstatus', identifier, '-b'], timeout=180)
-            command(['xcrun', 'simctl', 'install', identifier, str(app)])
+            try:
+                uuid.UUID(identifier)
+            except ValueError:
+                identifier = None
+                raise SmokeError('invalidCommandOutput', 'createDevice') from None
+            report['phase'] = 'bootDevice'
+            command(['xcrun', 'simctl', 'boot', identifier], phase='bootDevice')
+            report['phase'] = 'waitForBoot'
+            command(['xcrun', 'simctl', 'bootstatus', identifier, '-b'], timeout=180, phase='waitForBoot')
+            report['phase'] = 'installApplication'
+            command(['xcrun', 'simctl', 'install', identifier, str(app)], phase='installApplication')
+            report['phase'] = 'startRecording'
             with (output / 'recording.log').open('w') as recording_log:
+                recording_log.write('{"state":"requested"}\n')
                 recorder = subprocess.Popen(['xcrun', 'simctl', 'io', identifier, 'recordVideo',
                                              '--codec=h264', '--force', str(output / 'launch.mp4')],
-                                            stdout=recording_log, stderr=subprocess.STDOUT)
+                                            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
                 for attempt in range(2):
                     if attempt:
-                        command(['xcrun', 'simctl', 'terminate', identifier, BUNDLE])
-                    data = Path(command(['xcrun', 'simctl', 'get_app_container', identifier, BUNDLE, 'data']))
+                        report['phase'] = 'launchApplication'
+                        command(['xcrun', 'simctl', 'terminate', identifier, BUNDLE], phase='launchApplication')
+                    report['phase'] = 'getContainer'
+                    data = Path(command(['xcrun', 'simctl', 'get_app_container', identifier, BUNDLE, 'data'], phase='getContainer'))
+                    if not data.is_absolute():
+                        raise SmokeError('invalidCommandOutput', 'getContainer')
                     marker = data / MARKER
                     # Only a diagnostics marker in this newly created device is reset.
                     marker.unlink(missing_ok=True)
-                    command(['xcrun', 'simctl', 'launch', identifier, BUNDLE])
+                    report['phase'] = 'launchApplication'
+                    command(['xcrun', 'simctl', 'launch', identifier, BUNDLE], phase='launchApplication')
+                    report['phase'] = 'waitForInterface'
                     started = time.monotonic()
                     stage = {'stage': 'notObserved', 'failure': None}
                     while time.monotonic() - started < 60:
@@ -129,29 +262,60 @@ def smoke(ipa, output):
                         time.sleep(0.5)
                     time.sleep(0.5)  # Allow the newly installed root's first display frame.
                     screenshot = output / ('launch-' + str(attempt + 1) + '.png')
-                    command(['xcrun', 'simctl', 'io', identifier, 'screenshot', str(screenshot)])
-                    visual = json.loads(command(['xcrun', 'swift', str(Path(__file__).with_name('screenshot_check.swift')), str(screenshot)]))
+                    report['phase'] = 'captureScreenshot'
+                    command(['xcrun', 'simctl', 'io', identifier, 'screenshot', str(screenshot)], phase='captureScreenshot')
+                    report['phase'] = 'checkScreenshot'
+                    visual = json.loads(command(['xcrun', 'swift', str(Path(__file__).with_name('screenshot_check.swift')), str(screenshot)], phase='checkScreenshot'))
+                    if (not isinstance(visual, dict) or set(visual) != {'width', 'height', 'nonblank'} or
+                            type(visual.get('nonblank')) is not bool or
+                            any(type(visual.get(key)) is not int or not 0 < visual[key] <= 16384 for key in ('width', 'height'))):
+                        raise SmokeError('invalidScreenshotEvidence', 'checkScreenshot')
                     result = {'attempt': attempt + 1, 'marker': stage, 'screenshot': visual,
                               'seconds_to_marker': round(time.monotonic() - started, 2)}
                     report['launches'].append(result)
+                    if expected_storage_kind is not None:
+                        report['phase'] = 'checkStorageSelection'
+                        result['storage_kind'] = 'unverified'
+                        preferences = data / 'Library/Preferences' / (BUNDLE + '.plist')
+                        result['storage_kind'] = read_storage_kind(preferences, expected_storage_kind)
                     if stage['stage'] not in READY or stage['failure'] is not None or not visual['nonblank']:
-                        raise RuntimeError('Startup did not reach visible application UI')
+                        raise SmokeError('interfaceNotVisible', 'waitForInterface')
                 report['passed'] = True
+                report['phase'] = 'complete'
+    except SmokeError as error:
+        report['phase'] = error.phase
+        report['failure'] = error.evidence()
+        raise
+    except (OSError, ValueError, RuntimeError, subprocess.SubprocessError):
+        codes = {'extractApplication': 'packageExtractionFailed',
+                 'waitForInterface': 'invalidLaunchMarker',
+                 'checkScreenshot': 'invalidScreenshotEvidence',
+                 'checkStorageSelection': 'invalidStorageEvidence',
+                 'startRecording': 'recordingUnavailable'}
+        error = SmokeError(codes.get(report['phase'], 'startupPreparationFailed'), report['phase'])
+        report['failure'] = error.evidence()
+        raise error from None
     finally:
-        (output / 'result.json').write_text(json.dumps(report, indent=2) + '\n')
-        if recorder is not None and recorder.poll() is None:
-            recorder.send_signal(signal.SIGINT)
-            try:
-                recorder.wait(timeout=15)
-            except subprocess.TimeoutExpired:
-                recorder.kill()
-                recorder.wait(timeout=5)
-        if identifier is not None:
-            for action in ('shutdown', 'delete'):
+        try:
+            if recorder is not None and recorder.poll() is None:
+                recorder.send_signal(signal.SIGINT)
                 try:
-                    subprocess.run(['xcrun', 'simctl', action, identifier], capture_output=True, timeout=30)
-                except subprocess.SubprocessError:
-                    pass
+                    recorder.wait(timeout=15)
+                except subprocess.TimeoutExpired:
+                    recorder.kill()
+                    recorder.wait(timeout=5)
+        except (OSError, subprocess.SubprocessError):
+            report.setdefault('cleanup_failures', []).append(
+                SmokeError('recordingStopFailed', 'stopRecording').evidence())
+        if recorder is not None:
+            report['recording_return_code'] = recorder.poll()
+        if identifier is not None:
+            for action, phase in (('shutdown', 'shutdownDevice'), ('delete', 'deleteDevice')):
+                try:
+                    command(['xcrun', 'simctl', action, identifier], timeout=30, phase=phase)
+                except SmokeError as error:
+                    report.setdefault('cleanup_failures', []).append(error.evidence())
+        (output / 'result.json').write_text(json.dumps(report, indent=2) + '\n')
     return report
 
 
@@ -162,6 +326,11 @@ if __name__ == '__main__':
     args = parser.parse_args()
     try:
         result = smoke(args.ipa, args.output)
+    except SmokeError as error:
+        print(json.dumps({'mode': 'fresh_simulator_launch', 'passed': False,
+                          'phase': error.phase, 'failure': error.evidence(),
+                          'physical_device_verified': False}))
+        raise SystemExit(1)
     except (OSError, ValueError, RuntimeError, subprocess.SubprocessError):
         raise SystemExit('Startup smoke failed; inspect bounded local evidence.')
     print(json.dumps(result))

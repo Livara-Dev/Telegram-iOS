@@ -97,10 +97,13 @@ class FocusedWorkflowRoutingTests(unittest.TestCase):
         match = re.search(r'^    if: (.+)$', section, re.M)
         if not match:
             return True
-        # Interpret only the boolean/equality subset used by these job gates.
-        # Read the actual condition while refusing calls or other Python syntax.
-        expression = match.group(1).replace('github.event_name', 'event').replace('inputs.validation_scope', 'scope').replace('inputs.unsigned_device', 'device').replace('||', 'or').replace('&&', 'and')
-        inputs = {'event': event, 'scope': scope, 'device': device}
+        return bool(self.expression(match.group(1), event, scope, device))
+
+    def expression(self, expression, event, scope, device, replay_source='c' * 40):
+        # Interpret the checked-in boolean/equality gates and the one fixed
+        # concurrency formatter. No arbitrary Python calls or code execution.
+        expression = expression.replace('github.event_name', 'event').replace('inputs.validation_scope', 'scope').replace('inputs.unsigned_device', 'device').replace('inputs.replay_source', 'source').replace('||', 'or').replace('&&', 'and')
+        inputs = {'event': event, 'scope': scope, 'device': device, 'source': replay_source}
         def value(node):
             if isinstance(node, ast.Name):
                 return inputs[node.id]
@@ -108,20 +111,65 @@ class FocusedWorkflowRoutingTests(unittest.TestCase):
                 return node.value
             if isinstance(node, ast.BoolOp):
                 self.assertIn(type(node.op), (ast.And, ast.Or))
-                values = [bool(value(item)) for item in node.values]
-                return all(values) if isinstance(node.op, ast.And) else any(values)
+                result = value(node.values[0])
+                for item in node.values[1:]:
+                    if isinstance(node.op, ast.And):
+                        result = value(item) if result else result
+                    else:
+                        result = result if result else value(item)
+                return result
+            if isinstance(node, ast.Call):
+                self.assertIsInstance(node.func, ast.Name)
+                self.assertEqual(node.func.id, 'format')
+                self.assertEqual(len(node.args), 2)
+                self.assertEqual(node.keywords, [])
+                self.assertEqual(value(node.args[0]), 'ayugram-startup-replay-{0}')
+                return 'ayugram-startup-replay-' + value(node.args[1])
             if isinstance(node, ast.Compare) and len(node.ops) == 1:
                 self.assertIn(type(node.ops[0]), (ast.Eq, ast.NotEq))
                 equal = value(node.left) == value(node.comparators[0])
                 return equal if isinstance(node.ops[0], ast.Eq) else not equal
             self.fail('Unsupported workflow job condition syntax')
-        return bool(value(ast.parse(expression, mode='eval').body))
+        return value(ast.parse(expression, mode='eval').body)
 
     def test_focused_dispatch_starts_only_native_test_job_even_if_device_requested(self):
         for device in (False, True):
             self.assertTrue(self.condition('integration-tests', 'workflow_dispatch', 'focused', device))
             self.assertFalse(self.condition('application-build', 'workflow_dispatch', 'focused', device))
             self.assertFalse(self.condition('unsigned-device-build', 'workflow_dispatch', 'focused', device))
+
+    def test_startup_scope_runs_only_artifact_replay_without_any_compilation(self):
+        for device in (False, True):
+            with self.subTest(device=device):
+                self.assertTrue(self.condition('startup-artifact-replay', 'workflow_dispatch', 'startup', device))
+                for job in ('integration-tests', 'application-build', 'unsigned-device-build', 'native-api-probe'):
+                    self.assertFalse(self.condition(job, 'workflow_dispatch', 'startup', device))
+        for event, scope in [('push', 'startup'), ('workflow_dispatch', 'full'), ('workflow_dispatch', 'focused'), ('workflow_dispatch', 'probe'), ('workflow_dispatch', '')]:
+            self.assertFalse(self.condition('startup-artifact-replay', event, scope, True))
+
+    def test_replay_concurrency_is_source_scoped_without_replacing_full_qualification(self):
+        block = WORKFLOW.read_text().split('concurrency:\n', 1)[1].split('\njobs:', 1)[0]
+        expression = re.search(r'^  group: \$\{\{ (.+) \}\}$', block, re.M).group(1)
+        for event, scope in [('push', 'startup'), ('push', ''), ('workflow_dispatch', 'full'), ('workflow_dispatch', 'focused'), ('workflow_dispatch', 'probe')]:
+            self.assertEqual(self.expression(expression, event, scope, True), 'ayugram-qualification')
+        self.assertEqual(self.expression(expression, 'workflow_dispatch', 'startup', False), 'ayugram-startup-replay-' + 'c' * 40)
+        self.assertEqual(self.expression(expression, 'workflow_dispatch', 'startup', False, 'd' * 40), 'ayugram-startup-replay-' + 'd' * 40)
+        self.assertIn('cancel-in-progress: false', block)
+
+    def test_startup_job_reuses_existing_artifact_without_submodules_or_api_credentials(self):
+        source = WORKFLOW.read_text().split('  startup-artifact-replay:\n', 1)[1]
+        self.assertIn('      actions: read', source)
+        self.assertNotIn('secrets.TELEGRAM_', source)
+        self.assertNotIn('secrets.APPLE_', source)
+        self.assertNotIn("['git', 'submodule'", source)
+        self.assertNotIn('baseline.py', source)
+        self.assertNotIn('prepare_host.py', source)
+        self.assertNotIn('swiftc', source)
+        self.assertIn('replay_artifact.py --run "$REPLAY_RUN" --source "$REPLAY_SOURCE"', source)
+        self.assertIn('startup_replay.py --ipa build/fork-evidence/startup-replay/Telegram.ipa', source)
+        published = source.split('      - name: Publish bounded startup replay evidence only', 1)[1]
+        self.assertNotIn('Telegram.ipa', published)
+        self.assertNotIn('entitlement', published)
 
     def test_probe_dispatch_starts_only_host_probe_without_application_jobs(self):
         for device in (False, True):

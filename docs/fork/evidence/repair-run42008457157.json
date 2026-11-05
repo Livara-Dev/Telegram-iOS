@@ -52,5 +52,136 @@
   },
   "new_ipa_produced": false,
   "startup_smoke_ran": false,
-  "physical_device_verified": false
+  "physical_device_verified": false,
+  "repair_follow_up": {
+    "source_commit": "62546557807ee5d8ff468ea3d7d46ce1a090c8cf",
+    "macos_probe": {
+      "run_id": 42027565183,
+      "result": "passed",
+      "scope": "host API diagnostic controls only",
+      "ios_qualification": false
+    },
+    "focused_native": {
+      "run_id": 42027769348,
+      "result": "passed",
+      "executed": 104,
+      "failures": 0,
+      "suites": {
+        "PasscodeCore": {
+          "executed": 16,
+          "failures": 0
+        },
+        "LocalMessageArchive": {
+          "executed": 77,
+          "failures": 0
+        },
+        "LocalArchivePlayback": {
+          "executed": 11,
+          "failures": 0
+        }
+      },
+      "artifact": {
+        "id": 13415313404,
+        "sha256": "f84d8de7fbf8c544c905ec4774149a87885cb81cb33d6d266f19777923c1a405",
+        "outer_and_inner_checksums_verified": true
+      },
+      "full_application_built": false,
+      "physical_device_verified": false
+    },
+    "full_qualification": {
+      "run_id": 42031063759,
+      "event": "push",
+      "manually_dispatched_full_build": false,
+      "status_at_evidence_collection": "in_progress",
+      "unsigned_device": {
+        "job_id": 127257336871,
+        "result": "success",
+        "artifact": {
+          "id": 13421543948,
+          "outer_sha256": "bebd5868106589fa415a5817196532499cd3d485002a6ab676f0f671b901978b",
+          "ipa_sha256": "da12c38d0a14f6331b381b9b71f25fe191e1ad6f2034109c751e2e5799101d4b",
+          "outer_and_inner_checksums_verified": true
+        },
+        "build_number": 54,
+        "bundle_id": "org.livara.ayugram",
+        "mode": "unsigned-device",
+        "arm64_iphoneos_mach_o_binaries_checked": 12,
+        "framework_dependency_references_checked": 41,
+        "embedded_code_signature_commands": 0,
+        "embedded_provisioning_profiles": 0,
+        "signature_verified": false,
+        "runtime_verified": false
+      },
+      "native_integration_status_at_evidence_collection": "in_progress",
+      "simulator_startup_smoke_status_at_evidence_collection": "failed_prelaunch",
+      "release_qualified": false,
+      "physical_device_verified": false,
+      "simulator_application": {
+        "job_id": 127257336838,
+        "result": "failure",
+        "compilation_and_textformat": {
+          "result": "passed",
+          "textformat_cases": 270,
+          "failures": 0
+        },
+        "startup_smoke": {
+          "result": "failure",
+          "observed_launches": 0,
+          "screenshots_present": false,
+          "video_present": false,
+          "recording_log_present": false,
+          "application_ui_observed": false,
+          "cause": "Unconfirmed prelaunch create/boot/install failure; original command diagnostics were not retained."
+        },
+        "artifact": {
+          "id": 13426711346,
+          "outer_sha256": "0d5421b8fc15b1338140779eede69f85c24c2bd17d6d4c9674b0805bd343b0e5",
+          "ipa_sha256": "8ed00f94e2b72bf4ae239c1ea3060b00445107f677a370d6dd59bb3edc2df4c4",
+          "outer_and_inner_checksums_verified": true,
+          "inner_payloads_verified": 10
+        },
+        "static_package_checks": {
+          "safe_linux_extraction_files": 897,
+          "arm64_simulator_mach_o_binaries": 12,
+          "mach_o_platform": 7,
+          "code_signature_structures_consistent": true,
+          "code_pages_verified": 36149,
+          "info_and_code_resources_special_slots_verified": 24,
+          "regular_resource_hashes_verified": 1967,
+          "rpath_closure_checks": 113,
+          "apple_codesign_verified": false,
+          "apple_installd_verified": false,
+          "runtime_verified": false
+        },
+        "original_app_groups_entitlement_present": false
+      }
+    },
+    "repository_actions_blocker": "resolved by owner; automatic canonical push run observed",
+    "metadata_limitation": {
+      "active_bazel_TelegramInfoPlist_contains_AyuGramBaseBundleIdentifier": false,
+      "InfoBazel_plist_addition_used_by_active_generator": false,
+      "stable_bundle_id_and_private_fallback": "unaffected",
+      "rewritten_bundle_id_with_original_app_group": "not supported or verified by this build"
+    },
+    "physical_black_screen_fix_confirmed": false,
+    "diagnostic_startup_replay": {
+      "status": "prepared_not_run",
+      "run_id": null,
+      "source_commit": "62546557807ee5d8ff468ea3d7d46ce1a090c8cf",
+      "new_full_application_compilation": false,
+      "reuses_verified_simulator_artifact": 13426711346,
+      "tool_checkout_differences_allowed": [
+        "tools/fork_baseline/**",
+        ".github/workflows/archive-integration.yml",
+        "docs/**"
+      ],
+      "application_and_bazel_and_submodule_changes_allowed": false,
+      "preflight": "Apple codesign --verify --deep --strict on original extracted simulator package required before launch",
+      "normal_control": "Fresh simulator, two real launches with private storage required because original App Groups are absent",
+      "redundant_no_app_groups_variant": "Skipped when already absent; otherwise only attempted after normal control passes",
+      "queue": "source-scoped startup replay group preserves active full qualification",
+      "release_qualified": false,
+      "physical_device_verified": false
+    }
+  }
 }

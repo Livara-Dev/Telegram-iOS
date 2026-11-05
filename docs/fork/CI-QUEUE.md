@@ -1,5 +1,14 @@
 # Qualification queue
 
+Repository Actions has been enabled by the owner. After 104 focused native
+cases passed for source `62546557807ee5d8ff468ea3d7d46ce1a090c8cf`, its canonical
+branch push automatically started
+[full run 42031063759](https://github.com/Livara-Dev/Telegram-iOS/actions/runs/42031063759).
+This verifies the automatic push trigger; no full workflow was manually started.
+The device job succeeded. Simulator compilation and 270 TextFormat cases passed,
+but startup smoke failed before an observed app launch. Full native integration
+remains active; this is not yet a qualified release.
+
 The automatic build entry point is `ci/verify-latest`. Development branches and
 PR updates do not automatically start hosted macOS work. Advance the verification
 branch to the exact reviewed source batch once; do not create a throwaway commit
@@ -37,11 +46,23 @@ claim the backlog was canceled or that GitHub guarantees FIFO priority. The new
 policy prevents additional feature-push fan-out and limits subsequent submissions
 to one active qualification plus its latest pending successor.
 
+A manual `startup` scope is prepared to replay an existing simulator artifact
+without compiling Telegram again. It requires the original run ID and full
+source SHA, validates the successful compile step and artifact provenance/hashes,
+and permits only tooling/workflow/documentation differences in the replay
+checkout. It can inspect startup even when the original job failed its smoke
+step; that prior failure remains explicit. The replay has not run at this
+checkpoint. Its source-scoped queue does not cancel or replace the healthy full
+native job, and its outcome cannot be substituted for full release qualification.
+
 An unsigned device artifact is build output only. Its source commit, device
 Mach-O platform and SHA-256 must match its manifest; same-commit integration,
 independent signing and physical iPhone validation remain separate gates.
 
-## Confirmed repository-level permission blocker (2026-11-05)
+## Historical repository-level permission blocker (2026-11-05, resolved)
+
+The owner subsequently resolved the disabled-Actions setting. The failures
+below are historical evidence, not a current request for manual dispatch.
 
 The environment's authenticated `gh` client identifies as the authorized
 `Livara-Dev` user. The canonical qualification workflow is active and its

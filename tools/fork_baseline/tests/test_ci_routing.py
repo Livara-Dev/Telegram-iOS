@@ -15,7 +15,9 @@ class CIRoutingTests(unittest.TestCase):
 
     def test_one_global_queue_preserves_the_active_qualification(self):
         source = (WORKFLOWS / "archive-integration.yml").read_text()
-        self.assertIn("concurrency:\n  group: ayugram-qualification\n  cancel-in-progress: false\n", source)
+        self.assertIn("concurrency:\n  group: ${{", source)
+        self.assertIn("format('ayugram-startup-replay-{0}', inputs.replay_source)", source)
+        self.assertIn("|| 'ayugram-qualification' }}\n  cancel-in-progress: false\n", source)
         self.assertEqual(len(re.findall(r"^\s*concurrency:", source, re.M)), 1)
         self.assertNotIn("cancel-in-progress: true", source)
 
