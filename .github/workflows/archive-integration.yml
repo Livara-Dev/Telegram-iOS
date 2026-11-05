@@ -9,7 +9,7 @@ on:
       validation_scope:
         description: Startup replay, native diagnostics, or full app qualification
         type: choice
-        options: [full, focused, probe, startup]
+        options: [full, focused, probe, startup, projection]
         default: full
       replay_run:
         description: Startup only on integration/ayu-current; source simulator run ID
