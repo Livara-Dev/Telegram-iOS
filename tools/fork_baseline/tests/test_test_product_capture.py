@@ -4,6 +4,7 @@ import json
 import os
 from pathlib import Path
 import plistlib
+import re
 import subprocess
 import struct
 import sys
@@ -202,8 +203,12 @@ class TestProductCaptureTests(unittest.TestCase):
     def test_post_action_is_fixed_testonly_and_cannot_replace_original_exit_code(self):
         root = Path(__file__).resolve().parents[3]
         build = (root / 'submodules/TelegramUI/Components/Chat/ChatHistoryEntry/BUILD').read_text()
-        self.assertIn('post_action = "//tools/fork_baseline:projection_test_capture"', build)
-        self.assertIn('post_action_determines_exit_code = False', build)
+        runner = re.search(r'ios_test_runner\(\n\s+name = "ChatLocalTextFilterProjectionTestRunner",(.*?)\n\)', build, re.S).group(1)
+        # Bazel rejects a non-test runner depending on a testonly post action
+        # before compilation, so both sides of this edge must be testonly.
+        self.assertIn('testonly = True', runner)
+        self.assertIn('post_action = "//tools/fork_baseline:projection_test_capture"', runner)
+        self.assertIn('post_action_determines_exit_code = False', runner)
         helper = (root / 'tools/fork_baseline/BUILD').read_text()
         self.assertIn('testonly = True', helper)
         self.assertIn('@rules_shell//shell:sh_binary.bzl', helper)

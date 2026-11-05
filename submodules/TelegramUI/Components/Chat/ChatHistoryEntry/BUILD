@@ -89,6 +89,7 @@ ios_application(
 
 ios_test_runner(
     name = "ChatLocalTextFilterProjectionTestRunner",
+    testonly = True,
     device_type = "iPhone 17",
     os_version = "27.0",
     post_action = "//tools/fork_baseline:projection_test_capture",
