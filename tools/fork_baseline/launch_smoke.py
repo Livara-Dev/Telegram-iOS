@@ -21,6 +21,8 @@ import uuid
 import zipfile
 
 from ipa_inspect import inspect_ipa
+from storage_evidence import (STORAGE_SELECTION, inspect_storage, valid_private, valid_group,
+                              seed_private_selection, private_account_store_identity)
 
 BUNDLE = 'org.livara.ayugram'
 READY = {'authorizationVisible', 'conversationsVisible'}
@@ -29,11 +31,11 @@ STAGES = READY | {'applicationEntered', 'windowCreated', 'sceneAttached', 'stora
                   'conversationsPrepared', 'failed'}
 FAILURES = {'storageUnavailable', 'keychainUnavailable', 'storageConfiguration', 'initializationUnavailable'}
 MARKER = 'Library/Application Support/AyuGram/LaunchDiagnostics/latest.json'
-STORAGE_SELECTION = 'org.livara.ayugram.startup-storage.v1'
 PHASES = {'extractApplication', 'compileScreenshotChecker', 'testScreenshotChecker',
           'createDevice', 'bootDevice', 'waitForBoot',
           'installApplication', 'startRecording', 'launchApplication', 'getContainer',
-          'waitForInterface', 'captureScreenshot', 'checkScreenshot', 'checkStorageSelection', 'complete',
+          'waitForInterface', 'captureScreenshot', 'checkScreenshot', 'checkStorageSelection',
+          'seedPrivateStorage', 'checkPrivateAccountStore', 'complete',
           'shutdownDevice', 'deleteDevice', 'stopRecording', 'unknownPhase'}
 SMOKE_CODES = {'commandTimedOut', 'commandFailed', 'commandUnavailable', 'commandOutputLimit',
                'invalidCommandOutput', 'interfaceNotVisible', 'packageExtractionFailed',
@@ -217,18 +219,18 @@ def command(arguments, timeout=120, phase='extractApplication', compiler_log=Non
             write_compiler_log(compiler_log, captured['stderr'], arguments)
 
 
+class StorageEvidenceError(ValueError):
+    def __init__(self, evidence):
+        super().__init__('invalid_storage_selection')
+        self.evidence = evidence
+
+
 def read_storage_kind(path, expected='private'):
     """Read fresh-app preferences without retaining any other key or value."""
-    if expected != 'private' or path.is_symlink() or path.stat().st_size > 1024 * 1024:
+    if expected != 'private':
         raise ValueError('Invalid storage selection evidence')
-    preferences = plistlib.loads(path.read_bytes())
-    if not isinstance(preferences, dict):
-        raise ValueError('Invalid storage selection evidence')
-    selection = preferences.get(STORAGE_SELECTION)
-    if (not isinstance(selection, dict) or set(selection) != {'version', 'kind'} or
-            type(selection.get('version')) is not int or selection['version'] != 1 or
-            selection.get('kind') != expected):
-        raise ValueError('Expected private storage was not observed')
+    evidence = inspect_storage(path)
+    if not valid_private(evidence): raise StorageEvidenceError(evidence)
     return 'private'
 
 
@@ -258,19 +260,22 @@ def persist_report(output, report):
     temporary.replace(Path(output) / 'result.json')
 
 
-def smoke(ipa, output, expected_storage_kind=None):
+def smoke(ipa, output, expected_storage_kind=None, seed_private_storage=False):
     if expected_storage_kind not in {None, 'private'}:
         raise ValueError('Unsupported storage selection expectation')
+    if type(seed_private_storage) is not bool or (seed_private_storage and expected_storage_kind != 'private'):
+        raise ValueError('Private setup requires strict private storage verification')
     if platform.system() != 'Darwin':
         raise RuntimeError('A macOS host and the pinned simulator runtime are required')
     output = Path(output).resolve()
     output.mkdir(parents=True, exist_ok=False)
     report = {'mode': 'fresh_simulator_launch', 'physical_device_verified': False,
               'authentication_codes_used': False, 'launches': [], 'passed': False,
+              'storage_test_setup': 'freshPinnedPrivate' if seed_private_storage else 'freshAutomatic',
               'phase': 'extractApplication', 'failure': None}
     if expected_storage_kind is not None:
         report['expected_storage_kind'] = expected_storage_kind
-    identifier, recorder = None, None
+    identifier, recorder, private_store_identity = None, None, None
     try:
         with tempfile.TemporaryDirectory(prefix='ayu-launch-smoke-') as temporary:
             app = extract_app(ipa, Path(temporary) / 'Telegram.app')
@@ -307,6 +312,14 @@ def smoke(ipa, output, expected_storage_kind=None):
                     data = Path(command(['xcrun', 'simctl', 'get_app_container', identifier, BUNDLE, 'data'], phase='getContainer'))
                     if not data.is_absolute():
                         raise SmokeError('invalidCommandOutput', 'getContainer')
+                    if seed_private_storage and attempt == 0:
+                        # This container belongs to the brand-new simulator
+                        # created above; no existing user's app is touched.
+                        report['phase'] = 'seedPrivateStorage'
+                        seed_private_selection(data)
+                        report['private_selection_seeded_before_launch'] = True
+                        report['private_account_store_absent_before_launch'] = True
+                        persist_report(output, report)
                     marker = data / MARKER
                     # Only a diagnostics marker in this newly created device is reset.
                     marker.unlink(missing_ok=True)
@@ -329,16 +342,31 @@ def smoke(ipa, output, expected_storage_kind=None):
                     persist_report(output, report)
                     if stage['stage'] not in READY or stage['failure'] is not None:
                         raise SmokeError('interfaceNotVisible', 'waitForInterface')
-                    if expected_storage_kind is not None:
-                        report['phase'] = 'checkStorageSelection'
-                        result['storage_kind'] = 'unverified'
-                        preferences = data / 'Library/Preferences' / (BUNDLE + '.plist')
-                        result['storage_kind'] = read_storage_kind(preferences, expected_storage_kind)
-                        persist_report(output, report)
                     time.sleep(0.5)  # Allow the newly installed root's first display frame.
                     screenshot = output / ('launch-' + str(attempt + 1) + '.png')
                     report['phase'] = 'captureScreenshot'
                     command(['xcrun', 'simctl', 'io', identifier, 'screenshot', str(screenshot)], phase='captureScreenshot')
+                    if expected_storage_kind is not None:
+                        report['phase'] = 'checkStorageSelection'
+                        result['storage_kind'] = 'unverified'
+                        preferences = data / 'Library/Preferences' / (BUNDLE + '.plist')
+                        try:
+                            result['storage_kind'] = read_storage_kind(preferences, expected_storage_kind)
+                        except StorageEvidenceError as error:
+                            result['storage_evidence'] = error.evidence
+                            if valid_group(error.evidence): result['storage_kind'] = 'group'
+                            persist_report(output, report)
+                            raise
+                        report['phase'] = 'checkPrivateAccountStore'
+                        observed_identity = private_account_store_identity(data)
+                        result['private_account_store_present'] = observed_identity is not None
+                        if attempt:
+                            result['private_account_store_stable_after_restart'] = observed_identity == private_store_identity and observed_identity is not None
+                        persist_report(output, report)
+                        if not result['private_account_store_present'] or (attempt and not result['private_account_store_stable_after_restart']):
+                            raise SmokeError('invalidStorageEvidence', 'checkPrivateAccountStore')
+                        if not attempt: private_store_identity = observed_identity
+                        persist_report(output, report)
                     report['phase'] = 'checkScreenshot'
                     visual = json.loads(command([str(checker), str(screenshot)], timeout=30, phase='checkScreenshot'))
                     if (not isinstance(visual, dict) or set(visual) != {'width', 'height', 'nonblank'} or
@@ -360,6 +388,8 @@ def smoke(ipa, output, expected_storage_kind=None):
                  'waitForInterface': 'invalidLaunchMarker',
                  'checkScreenshot': 'invalidScreenshotEvidence',
                  'checkStorageSelection': 'invalidStorageEvidence',
+                 'seedPrivateStorage': 'invalidStorageEvidence',
+                 'checkPrivateAccountStore': 'invalidStorageEvidence',
                  'startRecording': 'recordingUnavailable'}
         error = SmokeError(codes.get(report['phase'], 'startupPreparationFailed'), report['phase'])
         report['failure'] = error.evidence()

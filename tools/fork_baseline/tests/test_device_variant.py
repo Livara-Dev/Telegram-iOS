@@ -59,17 +59,21 @@ def evidence(device_digest='d' * 64):
     device = {**common, 'mode': 'unsigned-device', 'ipa_sha256': device_digest, 'source_job_conclusion': 'success'}
     simulator = {**common, 'mode': 'simulator', 'ipa_sha256': 'a' * 64}
     proof = {'mode': 'main_app_only', 'startup_variant': 'main-app-only', 'passed': True, 'phase': 'complete',
+             'private_mode_control': 'automaticSelection', 'automatic_fallback_verified': True,
+             'pinned_private_control_attempted': False, 'automatic_group_selection_observed': False,
              'main_app_only_control_passed': True,
              'source_codesign_verified': True, 'main_code_unchanged': True, 'source_ipa_unchanged': True,
              'application_recompiled': False, 'physical_device_verified': False, 'extensions_removed': 6,
              'source_simulator_ipa_sha256': 'a' * 64}
     result = {'mode': 'fresh_simulator_launch', 'physical_device_verified': False, 'authentication_codes_used': False,
               'expected_storage_kind': 'private', 'recording_return_code': 0,
+              'storage_test_setup': 'freshAutomatic',
               'screenshot_checker': {'compiled': True, 'self_test_passed': True, 'self_test_cases': 3},
               'passed': True, 'phase': 'complete', 'launches': [
                   {'attempt': n, 'marker': {'stage': 'authorizationVisible', 'failure': None},
                    'screenshot': {'nonblank': True, 'width': 1206, 'height': 2622},
-                   'seconds_to_marker': 4, 'storage_kind': 'private'} for n in (1, 2)]}
+                   'seconds_to_marker': 4, 'storage_kind': 'private', 'private_account_store_present': True,
+                   **({'private_account_store_stable_after_restart': True} if n == 2 else {})} for n in (1, 2)]}
     return device, simulator, proof, result
 
 
@@ -174,6 +178,23 @@ class DeviceVariantTests(unittest.TestCase):
             if kind == 'blank': rs['launches'][0]['screenshot']['nonblank'] = False
             if kind == 'stage': rs['launches'][0]['marker']['stage'] = 'storageReady'
             if kind == 'unchecked_screenshot_tool': rs.pop('screenshot_checker')
+            with self.subTest(kind=kind), self.assertRaises(replay.ReplayError): variant.validate_startup(*values)
+
+    def test_seeded_private_control_is_explicit_and_requires_real_private_store_on_both_launches(self):
+        device, simulator, proof, result = evidence()
+        proof.update(private_mode_control='freshPinnedSelection', automatic_fallback_verified=False,
+                     pinned_private_control_attempted=True, automatic_group_selection_observed=True)
+        result.update(storage_test_setup='freshPinnedPrivate', private_selection_seeded_before_launch=True,
+                      private_account_store_absent_before_launch=True)
+        self.assertEqual(variant.validate_startup(device, simulator, proof, result), (SOURCE, RUN, 6))
+        for kind in ('claimed_automatic', 'not_seeded', 'preexisting_store', 'missing_actual_store', 'replaced_store', 'no_group_observation'):
+            values = copy.deepcopy((device, simulator, proof, result)); _, _, pr, rs = values
+            if kind == 'claimed_automatic': pr['automatic_fallback_verified'] = True
+            if kind == 'not_seeded': rs['private_selection_seeded_before_launch'] = False
+            if kind == 'preexisting_store': rs['private_account_store_absent_before_launch'] = False
+            if kind == 'missing_actual_store': rs['launches'][1]['private_account_store_present'] = False
+            if kind == 'replaced_store': rs['launches'][1]['private_account_store_stable_after_restart'] = False
+            if kind == 'no_group_observation': pr['automatic_group_selection_observed'] = False
             with self.subTest(kind=kind), self.assertRaises(replay.ReplayError): variant.validate_startup(*values)
 
     def test_package_is_atomic_distinct_unsigned_and_published_only_after_startup_passes(self):

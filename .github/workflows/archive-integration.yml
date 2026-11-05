@@ -783,7 +783,7 @@ jobs:
           root.mkdir(parents=True, exist_ok=True)
           names = ['verification.json', 'archive-evidence/manifest.json', 'archive-evidence/prior-launch-result.json',
                    'replay-controls/replay.json']
-          for control in ('normal', 'no-app-groups', 'main-app-only'):
+          for control in ('normal', 'no-app-groups', 'main-app-only', 'main-app-only-automatic'):
               for name in ('result.json', 'checker-compiler.log', 'recording.log', 'launch.mp4', 'launch-1.png', 'launch-2.png'):
                   names.append('replay-controls/' + control + '/launch-smoke/' + name)
           rows = []
@@ -822,6 +822,12 @@ jobs:
             ${{ github.workspace }}/fork-source/build/fork-evidence/startup-replay/replay-controls/main-app-only/launch-smoke/launch.mp4
             ${{ github.workspace }}/fork-source/build/fork-evidence/startup-replay/replay-controls/main-app-only/launch-smoke/launch-1.png
             ${{ github.workspace }}/fork-source/build/fork-evidence/startup-replay/replay-controls/main-app-only/launch-smoke/launch-2.png
+            ${{ github.workspace }}/fork-source/build/fork-evidence/startup-replay/replay-controls/main-app-only-automatic/launch-smoke/result.json
+            ${{ github.workspace }}/fork-source/build/fork-evidence/startup-replay/replay-controls/main-app-only-automatic/launch-smoke/checker-compiler.log
+            ${{ github.workspace }}/fork-source/build/fork-evidence/startup-replay/replay-controls/main-app-only-automatic/launch-smoke/recording.log
+            ${{ github.workspace }}/fork-source/build/fork-evidence/startup-replay/replay-controls/main-app-only-automatic/launch-smoke/launch.mp4
+            ${{ github.workspace }}/fork-source/build/fork-evidence/startup-replay/replay-controls/main-app-only-automatic/launch-smoke/launch-1.png
+            ${{ github.workspace }}/fork-source/build/fork-evidence/startup-replay/replay-controls/main-app-only-automatic/launch-smoke/launch-2.png
             ${{ github.workspace }}/fork-source/build/fork-evidence/startup-replay/SHA256SUMS
           if-no-files-found: warn
           retention-days: 7

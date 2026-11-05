@@ -175,7 +175,7 @@ class FocusedWorkflowRoutingTests(unittest.TestCase):
         self.assertNotIn('Telegram.ipa', published)
         self.assertNotIn('entitlement', published)
         self.assertIn("'checker-compiler.log'", source.split('      - name: Hash startup replay diagnostics', 1)[1])
-        for control in ('normal', 'no-app-groups', 'main-app-only'):
+        for control in ('normal', 'no-app-groups', 'main-app-only', 'main-app-only-automatic'):
             self.assertIn('/replay-controls/' + control + '/launch-smoke/checker-compiler.log', published)
 
     def test_main_only_device_package_is_gated_on_successful_variant_and_has_no_signing_secrets(self):

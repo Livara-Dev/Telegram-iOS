@@ -14,6 +14,7 @@ from unittest import mock
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import startup_replay as replay
 from ipa_inspect import inspect_ipa
+from storage_evidence import STORAGE_SELECTION, inspect_storage
 
 
 def application(root):
@@ -53,6 +54,19 @@ def signed_application(root):
     return app
 
 
+def group_storage_failure(root):
+    preferences = Path(root) / 'group-preferences.plist'
+    preferences.write_bytes(plistlib.dumps({STORAGE_SELECTION: {'version': 1, 'kind': 'group',
+                                                              'identifier': 'group.' + replay.BUNDLE}}))
+    return {'mode': 'fresh_simulator_launch', 'physical_device_verified': False,
+            'authentication_codes_used': False, 'passed': False, 'expected_storage_kind': 'private',
+            'storage_test_setup': 'freshAutomatic', 'phase': 'checkStorageSelection',
+            'launches': [{'attempt': 1, 'marker': {'stage': 'authorizationVisible', 'failure': None},
+                          'storage_kind': 'group', 'storage_evidence': inspect_storage(preferences), 'seconds_to_marker': 3}],
+            'failure': {'code': 'invalidStorageEvidence', 'phase': 'checkStorageSelection', 'return_code': None,
+                        'timeout': False, 'system_errors': []}}
+
+
 class Codesign:
     def __init__(self, original=None, changed=None, mutate_framework=False):
         self.original = entitlements() if original is None else original
@@ -72,6 +86,69 @@ class Codesign:
 
 
 class StartupReplayTests(unittest.TestCase):
+    def test_group_failure_admission_rejects_missing_malformed_or_wrong_identity_preferences(self):
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d).resolve(); value = group_storage_failure(root); path = root / 'result.json'
+            error = replay.SmokeError('invalidStorageEvidence', 'checkStorageSelection')
+            path.write_text(json.dumps(value)); self.assertTrue(replay.automatic_group_failure(error, path))
+            for field in ('file_exists', 'plist_parsed', 'selection_present', 'version_integer', 'version_is_one',
+                          'identifier_matches_expected_group', 'selection_unknown_keys'):
+                changed = copy.deepcopy(value)
+                changed['launches'][0]['storage_evidence'][field] = not changed['launches'][0]['storage_evidence'][field]
+                path.write_text(json.dumps(changed))
+                with self.subTest(field=field): self.assertFalse(replay.automatic_group_failure(error, path))
+            path.write_text(json.dumps(value))
+            self.assertFalse(replay.automatic_group_failure(replay.SmokeError('commandFailed', 'checkStorageSelection'), path))
+            self.assertFalse(replay.automatic_group_failure(replay.SmokeError('invalidStorageEvidence', 'checkPrivateAccountStore'), path))
+
+    def test_valid_automatic_group_selection_is_preserved_before_a_separate_fresh_private_control(self):
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d).resolve(); app = signed_application(root); ipa = root / 'source.ipa'; replay.repack_app(app, ipa)
+            output = root / 'evidence'; calls = []
+            def fake(ipa, destination, **kwargs):
+                calls.append((destination, kwargs))
+                if len(calls) == 1:
+                    destination.mkdir(parents=True)
+                    (destination / 'result.json').write_text(json.dumps(group_storage_failure(root)))
+                    raise replay.SmokeError('invalidStorageEvidence', 'checkStorageSelection')
+                self.assertTrue(kwargs['seed_private_storage'])
+                destination.mkdir(parents=True)
+                return {'passed': True}
+            with mock.patch.object(replay.platform, 'system', return_value='Darwin'), \
+                 mock.patch.object(replay, 'private_command', return_value=plistlib.dumps({'get-task-allow': True})), \
+                 mock.patch.object(replay, 'main_app_only', return_value={'extensions_removed': 2, 'main_code_unchanged': True}), \
+                 mock.patch.object(replay, 'smoke', side_effect=fake):
+                result = replay.replay(ipa, output, 'main-app-only')
+            self.assertEqual(len(calls), 2)
+            self.assertEqual(calls[0][1], {'expected_storage_kind': 'private'})
+            self.assertEqual(calls[1][1], {'expected_storage_kind': 'private', 'seed_private_storage': True})
+            self.assertTrue((output / 'main-app-only-automatic/launch-smoke/result.json').is_file())
+            self.assertTrue(result['passed'])
+            self.assertTrue(result['automatic_group_selection_observed'])
+            self.assertFalse(result['automatic_fallback_verified'])
+            self.assertEqual(result['private_mode_control'], 'freshPinnedSelection')
+
+    def test_missing_preference_evidence_never_admits_seeded_retry(self):
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d).resolve(); app = signed_application(root); ipa = root / 'source.ipa'; replay.repack_app(app, ipa)
+            calls = []
+            def fake(ipa, destination, **kwargs):
+                calls.append(kwargs); destination.mkdir(parents=True)
+                report = group_storage_failure(root)
+                report['launches'][0]['storage_evidence'] = inspect_storage(root / 'does-not-exist.plist')
+                report['launches'][0]['storage_kind'] = 'unverified'
+                (destination / 'result.json').write_text(json.dumps(report))
+                raise replay.SmokeError('invalidStorageEvidence', 'checkStorageSelection')
+            with mock.patch.object(replay.platform, 'system', return_value='Darwin'), \
+                 mock.patch.object(replay, 'private_command', return_value=plistlib.dumps({'get-task-allow': True})), \
+                 mock.patch.object(replay, 'main_app_only', return_value={'extensions_removed': 2, 'main_code_unchanged': True}), \
+                 mock.patch.object(replay, 'smoke', side_effect=fake):
+                with self.assertRaises(replay.SmokeError): replay.replay(ipa, root / 'evidence', 'main-app-only')
+            self.assertEqual(len(calls), 1)
+            result = json.loads((root / 'evidence/replay.json').read_text())
+            self.assertFalse(result['passed'])
+            self.assertFalse(result['pinned_private_control_attempted'])
+
     def test_main_only_removes_exact_extension_boundary_and_preserves_all_entitlements(self):
         with tempfile.TemporaryDirectory() as d:
             app = signed_application(d)

@@ -22,7 +22,9 @@ import tempfile
 import zipfile
 
 from ipa_inspect import inspect_ipa
-from launch_smoke import BUNDLE, extract_app, smoke
+from launch_smoke import BUNDLE, READY, SmokeError, extract_app, smoke
+from replay_artifact import prior_smoke_report
+from storage_evidence import valid_group
 
 GROUPS = 'com.apple.security.application-groups'
 LIMIT = 1024 * 1024
@@ -219,6 +221,26 @@ def repack_app(app, destination):
     inspect_ipa(destination, 'simulator', BUNDLE)
 
 
+def automatic_group_failure(error, result_path):
+    """Only a valid observed group selection admits a fresh pinned control."""
+    if not isinstance(error, SmokeError) or error.code != 'invalidStorageEvidence' or error.phase != 'checkStorageSelection':
+        return False
+    path = Path(result_path)
+    if path.is_symlink() or not path.is_file() or path.stat().st_size > 65536: return False
+    try:
+        result = prior_smoke_report(json.loads(path.read_bytes()))
+    except (OSError, ValueError, RuntimeError):
+        return False
+    failure = result.get('failure')
+    if (result['passed'] or result.get('storage_test_setup') != 'freshAutomatic' or
+            result.get('expected_storage_kind') != 'private' or result.get('phase') != 'checkStorageSelection' or
+            not isinstance(failure, dict) or failure.get('code') != 'invalidStorageEvidence' or len(result['launches']) != 1):
+        return False
+    launch = result['launches'][0]
+    return (launch['marker']['stage'] in READY and launch['marker']['failure'] is None and
+            launch.get('storage_kind') == 'group' and valid_group(launch.get('storage_evidence')))
+
+
 def replay(ipa, output, startup_variant='original'):
     if platform.system() != 'Darwin': raise ReplayError('macos_simulator_required')
     if startup_variant not in {'original', 'main-app-only'}: raise ReplayError('invalid_startup_variant')
@@ -254,7 +276,28 @@ def replay(ipa, output, startup_variant='original'):
                 repacked = Path(directory) / 'main-app-only-simulator.ipa'
                 repack_app(app, repacked)
                 report['phase'] = 'mainAppOnlyControl'
-                launched = smoke(repacked, output / 'main-app-only/launch-smoke', expected_storage_kind='private')
+                report['automatic_fallback_verified'] = False
+                report['automatic_group_selection_observed'] = False
+                report['pinned_private_control_attempted'] = False
+                report['private_mode_control'] = 'automaticSelection'
+                try:
+                    launched = smoke(repacked, output / 'main-app-only/launch-smoke', expected_storage_kind='private')
+                    if not launched.get('passed'): raise ReplayError('main_app_only_control_failed')
+                    report['automatic_storage_kind'] = 'private'
+                    report['automatic_fallback_verified'] = True
+                except SmokeError as error:
+                    if not automatic_group_failure(error, output / 'main-app-only/launch-smoke/result.json'): raise
+                    # The simulator can expose its embedded group even when the
+                    # code signature lacks that capability. Preserve that result
+                    # and vary only the saved selection in a separate new device.
+                    (output / 'main-app-only').rename(output / 'main-app-only-automatic')
+                    report['automatic_storage_kind'] = 'group'
+                    report['automatic_group_selection_observed'] = True
+                    report['pinned_private_control_attempted'] = True
+                    report['private_mode_control'] = 'freshPinnedSelection'
+                    report['phase'] = 'pinnedPrivateControl'
+                    launched = smoke(repacked, output / 'main-app-only/launch-smoke',
+                                     expected_storage_kind='private', seed_private_storage=True)
                 if not launched.get('passed'): raise ReplayError('main_app_only_control_failed')
                 report['main_app_only_control_passed'] = True
                 if digest(ipa) != report['source_simulator_ipa_sha256']: raise ReplayError('source_package_changed')

@@ -18,6 +18,7 @@ import zipfile
 
 from ipa_inspect import inspect_ipa
 from launch_smoke import PHASES, SMOKE_CODES, ERROR_DOMAINS
+from storage_evidence import STORAGE_FIELDS
 
 REPOSITORY = 'Livara-Dev/Telegram-iOS'
 WORKFLOW = '.github/workflows/archive-integration.yml'
@@ -196,7 +197,8 @@ def prior_smoke_report(value):
               'sharedContextReady', 'authorizationPrepared', 'conversationsPrepared', 'authorizationVisible',
               'conversationsVisible', 'failed', 'notObserved'}
     failures = {None, 'storageUnavailable', 'keychainUnavailable', 'storageConfiguration', 'initializationUnavailable'}
-    optional = {'phase', 'failure', 'cleanup_failures', 'expected_storage_kind', 'recording_return_code', 'screenshot_checker'}
+    optional = {'phase', 'failure', 'cleanup_failures', 'expected_storage_kind', 'recording_return_code', 'screenshot_checker',
+                'storage_test_setup', 'private_selection_seeded_before_launch', 'private_account_store_absent_before_launch'}
     if (not isinstance(value, dict) or not fields.issubset(value) or not set(value).issubset(fields | optional) or value['mode'] != 'fresh_simulator_launch' or
             value['physical_device_verified'] is not False or value['authentication_codes_used'] is not False or
             type(value['passed']) is not bool or not isinstance(value['launches'], list) or len(value['launches']) > 2):
@@ -208,6 +210,14 @@ def prior_smoke_report(value):
         if value.get('phase') != value['failure']['phase']:
             raise ReplayError('unexpected_prior_smoke_fields')
     if 'expected_storage_kind' in value and value['expected_storage_kind'] != 'private':
+        raise ReplayError('unexpected_prior_smoke_fields')
+    if 'storage_test_setup' in value and (not isinstance(value['storage_test_setup'], str) or
+            value['storage_test_setup'] not in {'freshAutomatic', 'freshPinnedPrivate'}):
+        raise ReplayError('unexpected_prior_smoke_fields')
+    for flag in ('private_selection_seeded_before_launch', 'private_account_store_absent_before_launch'):
+        if flag in value and type(value[flag]) is not bool: raise ReplayError('unexpected_prior_smoke_fields')
+    if value.get('storage_test_setup') == 'freshPinnedPrivate' and value['passed'] and any(
+            value.get(flag) is not True for flag in ('private_selection_seeded_before_launch', 'private_account_store_absent_before_launch')):
         raise ReplayError('unexpected_prior_smoke_fields')
     if 'recording_return_code' in value and not (value['recording_return_code'] is None or
             type(value['recording_return_code']) is int and -(2**31) <= value['recording_return_code'] < 2**31):
@@ -224,7 +234,9 @@ def prior_smoke_report(value):
     for error in cleanup:
         smoke_failure(error)
     for index, launch in enumerate(value['launches'], 1):
-        if (not isinstance(launch, dict) or not set(launch).issubset({'attempt', 'marker', 'screenshot', 'seconds_to_marker', 'storage_kind'}) or
+        if (not isinstance(launch, dict) or not set(launch).issubset({'attempt', 'marker', 'screenshot', 'seconds_to_marker', 'storage_kind',
+                                                                  'storage_evidence', 'private_account_store_present',
+                                                                  'private_account_store_stable_after_restart'}) or
                 type(launch.get('attempt')) is not int or launch['attempt'] != index):
             raise ReplayError('unexpected_prior_smoke_fields')
         marker, screen = launch.get('marker'), launch.get('screenshot')
@@ -236,7 +248,7 @@ def prior_smoke_report(value):
             # Only the last, explicitly failed attempt can be incomplete. Keep
             # the observed startup marker when native screenshot work fails.
             if (value['passed'] or index != len(value['launches']) or value.get('failure') is None or
-                    value.get('phase') not in {'waitForInterface', 'checkStorageSelection', 'captureScreenshot', 'checkScreenshot'}):
+                    value.get('phase') not in {'waitForInterface', 'checkStorageSelection', 'checkPrivateAccountStore', 'captureScreenshot', 'checkScreenshot'}):
                 raise ReplayError('unexpected_prior_smoke_fields')
         elif (not isinstance(screen, dict) or set(screen) != {'nonblank', 'width', 'height'} or
                 type(screen['nonblank']) is not bool or
@@ -247,13 +259,24 @@ def prior_smoke_report(value):
             raise ReplayError('unexpected_prior_smoke_fields')
         if 'storage_kind' in launch and (not isinstance(launch['storage_kind'], str) or launch['storage_kind'] not in {'private', 'group', 'unverified'}):
             raise ReplayError('unexpected_prior_smoke_fields')
+        if 'storage_evidence' in launch and (not isinstance(launch['storage_evidence'], dict) or
+                set(launch['storage_evidence']) != STORAGE_FIELDS or any(type(v) is not bool for v in launch['storage_evidence'].values())):
+            raise ReplayError('unexpected_prior_smoke_fields')
+        if 'private_account_store_present' in launch and type(launch['private_account_store_present']) is not bool:
+            raise ReplayError('unexpected_prior_smoke_fields')
+        if 'private_account_store_stable_after_restart' in launch and type(launch['private_account_store_stable_after_restart']) is not bool:
+            raise ReplayError('unexpected_prior_smoke_fields')
         if 'screenshot' not in launch and value.get('phase') in {'captureScreenshot', 'checkScreenshot'}:
             if (marker['stage'] not in {'authorizationVisible', 'conversationsVisible'} or marker['failure'] is not None or
-                    (value.get('expected_storage_kind') == 'private' and launch.get('storage_kind') != 'private')):
+                    (value.get('phase') == 'checkScreenshot' and value.get('expected_storage_kind') == 'private' and
+                     (launch.get('storage_kind') != 'private' or launch.get('private_account_store_present') is not True))):
                 raise ReplayError('unexpected_prior_smoke_fields')
         if value['passed'] and (marker['stage'] not in {'authorizationVisible', 'conversationsVisible'} or
                 marker['failure'] is not None or not screen['nonblank'] or
-                (value.get('expected_storage_kind') == 'private' and launch.get('storage_kind') != 'private')):
+                (value.get('expected_storage_kind') == 'private' and
+                 (launch.get('storage_kind') != 'private' or launch.get('private_account_store_present') is not True))):
+            raise ReplayError('unexpected_prior_smoke_fields')
+        if value['passed'] and index == 2 and value.get('expected_storage_kind') == 'private' and launch.get('private_account_store_stable_after_restart') is not True:
             raise ReplayError('unexpected_prior_smoke_fields')
     if value['passed'] and (len(value['launches']) != 2 or value.get('phase') != 'complete' or value.get('failure') is not None):
         raise ReplayError('unexpected_prior_smoke_fields')

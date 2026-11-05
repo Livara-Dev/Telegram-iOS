@@ -179,7 +179,7 @@ class ReplayArtifactTests(unittest.TestCase):
                  'recording_return_code': 0, 'phase': 'checkScreenshot',
                  'screenshot_checker': {'compiled': True, 'self_test_passed': True, 'self_test_cases': 3},
                  'launches': [{'attempt': 1, 'marker': {'stage': 'authorizationVisible', 'failure': None},
-                               'storage_kind': 'private', 'seconds_to_marker': 3}],
+                               'storage_kind': 'private', 'private_account_store_present': True, 'seconds_to_marker': 3}],
                  'failure': {'code': 'commandTimedOut', 'phase': 'checkScreenshot', 'return_code': None,
                              'timeout': True, 'system_errors': []}}
         self.assertEqual(replay.prior_smoke_report(value), value)
@@ -200,8 +200,9 @@ class ReplayArtifactTests(unittest.TestCase):
                  'recording_return_code': 0, 'phase': 'complete', 'failure': None,
                  'screenshot_checker': {'compiled': True, 'self_test_passed': True, 'self_test_cases': 3},
                  'launches': [{'attempt': n, 'marker': {'stage': 'authorizationVisible', 'failure': None},
-                               'storage_kind': 'private', 'seconds_to_marker': 3,
-                               'screenshot': {'nonblank': True, 'width': 1206, 'height': 2622}} for n in (1, 2)]}
+                               'storage_kind': 'private', 'private_account_store_present': True, 'seconds_to_marker': 3,
+                               'screenshot': {'nonblank': True, 'width': 1206, 'height': 2622},
+                               **({'private_account_store_stable_after_restart': True} if n == 2 else {})} for n in (1, 2)]}
         self.assertEqual(replay.prior_smoke_report(value), value)
         for kind in ('one_launch', 'missing_screenshot', 'blank', 'stage', 'storage', 'return_code', 'control_cases'):
             changed = copy.deepcopy(value)

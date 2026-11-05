@@ -60,8 +60,21 @@ def validate_startup(device, simulator, proof, result):
             or len(checked['launches']) != 2 or checked.get('screenshot_checker') !=
             {'compiled': True, 'self_test_passed': True, 'self_test_cases': 3}):
         raise ReplayError('startup_variant_not_verified')
+    control = proof.get('private_mode_control')
+    if control == 'automaticSelection':
+        if (proof.get('automatic_fallback_verified') is not True or proof.get('pinned_private_control_attempted') is not False or
+                checked.get('storage_test_setup') != 'freshAutomatic' or checked.get('private_selection_seeded_before_launch', False) is not False):
+            raise ReplayError('startup_variant_not_verified')
+    elif control == 'freshPinnedSelection':
+        if (proof.get('automatic_fallback_verified') is not False or proof.get('pinned_private_control_attempted') is not True or
+                proof.get('automatic_group_selection_observed') is not True or checked.get('storage_test_setup') != 'freshPinnedPrivate' or
+                checked.get('private_selection_seeded_before_launch') is not True or checked.get('private_account_store_absent_before_launch') is not True):
+            raise ReplayError('startup_variant_not_verified')
+    else:
+        raise ReplayError('startup_variant_not_verified')
     for attempt, launch in enumerate(checked['launches'], 1):
-        if (launch.get('attempt') != attempt or launch.get('storage_kind') != 'private'
+        if (launch.get('attempt') != attempt or launch.get('storage_kind') != 'private' or launch.get('private_account_store_present') is not True
+                or (attempt == 2 and launch.get('private_account_store_stable_after_restart') is not True)
                 or launch['marker']['stage'] not in {'authorizationVisible', 'conversationsVisible'}
                 or launch['marker']['failure'] is not None or launch['screenshot']['nonblank'] is not True):
             raise ReplayError('startup_variant_not_verified')
@@ -132,6 +145,10 @@ def package(ipa, verification, simulator_verification, startup_proof, startup_re
                     'filename': filename, 'signing': 'disabled', 'installable_signed_ipa': False,
                     'signature_verified': False, 'runtime_verified': False, 'physical_device_verified': False,
                     'simulator_variant_startup_verified': True, 'application_recompiled': False,
+                    'simulator_private_mode_control': proof['private_mode_control'],
+                    'automatic_private_fallback_verified': proof['automatic_fallback_verified'],
+                    'simulator_private_selection_seeded': result['storage_test_setup'] == 'freshPinnedPrivate',
+                    'simulator_private_account_store_stable_after_restart': True,
                     'source_ipa_unchanged': True, 'build_number_changed': False,
                     'extensions_available': False, 'release_qualified': False, **report}
         (staging / 'manifest.json').write_text(json.dumps(manifest, sort_keys=True, indent=2) + '\n')

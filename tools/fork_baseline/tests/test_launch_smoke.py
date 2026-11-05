@@ -74,7 +74,7 @@ class LaunchSmokeEvidenceTests(unittest.TestCase):
 
     def test_private_storage_evidence_returns_only_closed_kind(self):
         with tempfile.TemporaryDirectory() as d:
-            path = Path(d) / 'preferences.plist'
+            path = Path(d).resolve() / 'preferences.plist'
             value = {STORAGE_SELECTION: {'version': 1, 'kind': 'private'}, 'unrelated': 'must-not-be-returned'}
             path.write_bytes(plistlib.dumps(value))
             self.assertEqual(read_storage_kind(path), 'private')
@@ -169,6 +169,7 @@ class LaunchSmokeFailureEvidenceTests(unittest.TestCase):
                  mock.patch.object(launch.subprocess, 'Popen', return_value=recorder), \
                  mock.patch.object(launch, 'read_stage', return_value={'stage': 'authorizationVisible', 'failure': None}), \
                  mock.patch.object(launch, 'read_storage_kind', return_value='private') as storage, \
+                 mock.patch.object(launch, 'private_account_store_identity', return_value=(1, 2)), \
                  mock.patch.object(launch.time, 'sleep'):
                 with self.assertRaises(SmokeError): launch.smoke(Path('source.ipa'), output, expected_storage_kind='private')
             storage.assert_called_once()
@@ -197,6 +198,7 @@ class LaunchSmokeFailureEvidenceTests(unittest.TestCase):
                  mock.patch.object(launch.subprocess, 'Popen', return_value=recorder), \
                  mock.patch.object(launch, 'read_stage', return_value={'stage': 'authorizationVisible', 'failure': None}), \
                  mock.patch.object(launch, 'read_storage_kind', return_value='private') as storage, \
+                 mock.patch.object(launch, 'private_account_store_identity', return_value=(1, 2)), \
                  mock.patch.object(launch.time, 'sleep'):
                 result = launch.smoke(Path('source.ipa'), root / 'evidence', expected_storage_kind='private')
             prepare.assert_called_once()
@@ -207,6 +209,56 @@ class LaunchSmokeFailureEvidenceTests(unittest.TestCase):
             self.assertTrue(result['passed'])
             import replay_artifact
             self.assertEqual(replay_artifact.prior_smoke_report(result), result)
+
+    def test_fresh_pinned_control_seeds_once_before_launch_and_requires_app_created_account_store(self):
+        for store_mode in ('stable', 'missing', 'replaced'):
+            creates_store, persists = store_mode != 'missing', store_mode == 'stable'
+            with self.subTest(store_mode=store_mode), tempfile.TemporaryDirectory() as d:
+                root = Path(d).resolve(); data = root / 'fresh-data'; data.mkdir()
+                launches = []
+                def fake(arguments, timeout=120, phase=None):
+                    if phase == 'createDevice': return '00000000-0000-0000-0000-000000000001'
+                    if phase == 'getContainer': return str(data)
+                    if phase == 'launchApplication' and 'launch' in arguments:
+                        preferences = data / 'Library/Preferences' / (launch.BUNDLE + '.plist')
+                        self.assertEqual(read_storage_kind(preferences), 'private')
+                        launches.append(True)
+                        if creates_store:
+                            directory = data / 'Library/Application Support/AyuGram/telegram-data/accounts-metadata'
+                            if store_mode == 'replaced' and len(launches) == 2:
+                                directory.rename(directory.parent / 'previous-account-store')
+                            directory.mkdir(parents=True, exist_ok=True)
+                    if phase == 'checkScreenshot': return json.dumps({'nonblank': True, 'width': 1206, 'height': 2622})
+                    return ''
+                recorder = mock.Mock(); recorder.poll.return_value = 0
+                with mock.patch.object(launch.platform, 'system', return_value='Darwin'), \
+                     mock.patch.object(launch, 'extract_app', return_value=root / 'App.app'), \
+                     mock.patch.object(launch, 'prepare_screenshot_checker', return_value=root / 'checker'), \
+                     mock.patch.object(launch, 'command', side_effect=fake), \
+                     mock.patch.object(launch.subprocess, 'Popen', return_value=recorder), \
+                     mock.patch.object(launch, 'read_stage', return_value={'stage': 'authorizationVisible', 'failure': None}), \
+                     mock.patch.object(launch, 'seed_private_selection', wraps=launch.seed_private_selection) as seed, \
+                     mock.patch.object(launch.time, 'sleep'):
+                    if persists:
+                        result = launch.smoke(Path('source.ipa'), root / 'evidence', 'private', seed_private_storage=True)
+                    else:
+                        with self.assertRaises(SmokeError) as caught:
+                            launch.smoke(Path('source.ipa'), root / 'evidence', 'private', seed_private_storage=True)
+                        self.assertEqual(caught.exception.phase, 'checkPrivateAccountStore')
+                        result = json.loads((root / 'evidence/result.json').read_text())
+                seed.assert_called_once_with(data)
+                self.assertEqual(len(launches), 2 if creates_store else 1)
+                self.assertEqual(result['passed'], persists)
+                self.assertEqual(result['storage_test_setup'], 'freshPinnedPrivate')
+                self.assertTrue(result['private_selection_seeded_before_launch'])
+                self.assertTrue(result['private_account_store_absent_before_launch'])
+                self.assertEqual(result['launches'][0]['private_account_store_present'], creates_store)
+                if creates_store:
+                    self.assertEqual(result['launches'][1]['private_account_store_stable_after_restart'], persists)
+                self.assertNotIn('st_ino', json.dumps(result))
+                self.assertNotIn('st_dev', json.dumps(result))
+                import replay_artifact
+                self.assertEqual(replay_artifact.prior_smoke_report(result), result)
 
     def test_failure_evidence_closes_unknown_fields_and_never_retains_prose(self):
         evidence = SmokeError('/private/detail', '/private/phase', return_code='private',
