@@ -1,6 +1,6 @@
 # AyuGram for iOS feature matrix
 
-Updated 2026-11-04. Active priority: [deleted-message/media preservation](fork/PRESERVATION-STATUS.md). Secondary feature development is paused. **No requested feature is verified in the running application yet.**
+Updated 2026-11-05. Active priority: [deleted-message/media preservation](fork/PRESERVATION-STATUS.md). Secondary feature development is paused. **No requested feature is verified in the running application yet.**
 The current archive branch contains default-off TelegramCore/Postbox capture,
 a durable per-account outbox, independent encrypted media storage, indexed text
 search, streaming attachment reads and native archive screens. The gallery
@@ -241,3 +241,20 @@ ranges, plus native video/voice-row entry points and lock/background cleanup.
 Its generated H.264 decode test and cancellation tests await native CI. Ogg voice,
 animated playback, document viewing, a grid gallery and UI/device verification
 remain open. Source existence does not establish codec or UI parity.
+
+## Startup repair batch (native validation pending)
+
+The owner reports installation followed by a black screen on iPhone 15 Pro/iOS
+27.2. The new source repairs the unavailable-App-Group early return, provides
+pinned private-container storage and isolated Keychain services, and adds bounded
+local launch diagnostics. A fresh-simulator smoke test will launch the real app
+twice and retain video/screenshots. These source changes are not yet evidence
+of a successful physical-device launch. See [SideStore scope](SIDESTORE_INSTALL.md).
+
+Public dependency caching now verifies restored and exported objects against
+committed hashes. Compiled outputs containing API constants are not shared. Cold
+builds and sub-ten-minute incremental builds have not been measured. Cosmetic
+Premium options, promotional controls and a validated SideStore update feed remain
+unfinished. Sponsored-message hiding is technically possible but conflicts with
+Telegram API Terms §3.3; no ad-view or click events are fabricated. Native code
+updates still require a newly signed IPA; there is no executable hot loading.

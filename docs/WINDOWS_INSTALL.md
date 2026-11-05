@@ -23,7 +23,8 @@ latest pending successor. Existing submitted jobs keep their original settings.
 See [queue policy and observed capacity failure](fork/CI-QUEUE.md).
 
 The integration and unsigned-device jobs use the same commit and may execute
-alongside each other. `application-build` requires successful integration tests.
+alongside each other. `application-build` now runs independently to test startup even
+when an unrelated suite fails; all same-commit suites remain release gates.
 The device build has no simulator dependency; its output still needs same-commit
 qualification. Manual standalone workflows are diagnostics, not automatic
 second builds. A temporary, hash-verified unsigned rules overlay omits profile
@@ -101,3 +102,7 @@ activity-suppression and literal-filter tests are not evidence of complete
 application behavior or physical-device installation. Full Ghost Mode and
 advanced filtering remain unfinished. Do not use sensitive accounts for
 validation until the documented privacy/security gates pass.
+
+For personal signing, iOS 27.2 black-screen investigation and data-preserving
+updates, see [the SideStore guide](SIDESTORE_INSTALL.md). New qualification IPAs
+use the workflow run number for `CFBundleVersion` instead of always using `1`.

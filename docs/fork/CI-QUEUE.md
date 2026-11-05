@@ -7,8 +7,9 @@ or retry a healthy run merely to get a different runner.
 
 `archive-integration.yml` uses the global `ayugram-qualification` concurrency group
 with `cancel-in-progress: false`. Its integration and unsigned device jobs may run
-alongside each other on that one revision; the simulator app still requires all
-integration suites to pass. A newer pending batch supersedes an older pending
+alongside the simulator startup build on that one revision. The simulator job
+runs independently of unrelated suite failures; release qualification still
+requires all integration suites to pass. A newer pending batch supersedes an older pending
 batch while the active run is preserved. Standalone storage, compatibility and
 legacy baseline workflows remain available through explicit manual dispatch.
 These are diagnostic alternatives, not automatic duplicate runs.

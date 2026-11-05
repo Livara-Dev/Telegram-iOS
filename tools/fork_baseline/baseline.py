@@ -21,11 +21,13 @@ import tempfile
 from unsigned_rules import prepare_unsigned_rules
 from ipa_inspect import inspect_ipa, InvalidIPA
 from simulator_probe import capture as capture_projection_launch
+from dependency_cache import active_path as public_dependency_cache
 
 ROOT = Path(__file__).resolve().parents[2]
 TEST_TARGET = "//submodules/TextFormat:TextFormatTests"
 # Fixed labels and evidence paths: no user-provided target or path is accepted.
 TEST_TARGET_PATHS = {
+    "//submodules/PasscodeCore:PasscodeCoreTests": ("passcode-core", ("submodules", "PasscodeCore", "PasscodeCoreTests")),
     TEST_TARGET: ("textformat", ("submodules", "TextFormat", "TextFormatTests")),
     "//submodules/Postbox:PostboxTests": ("postbox", ("submodules", "Postbox", "PostboxTests")),
     "//submodules/LocalMessageArchive:LocalMessageArchiveTests": (
@@ -43,6 +45,7 @@ TEST_TARGET_PATHS = {
 # Collect core/capture results before the hosted UI suite. The tests-only job
 # attempts all targets, and every target must pass before any app-build claim.
 INTEGRATION_TEST_TARGETS = (
+    "//submodules/PasscodeCore:PasscodeCoreTests",
     "//submodules/Postbox:PostboxTests",
     "//submodules/LocalMessageArchive:LocalMessageArchiveTests",
     "//submodules/TelegramCore:TelegramCoreTests",
@@ -138,7 +141,7 @@ def preflight(env, simulator=False):
     return bazel
 
 
-def proxy_arguments(bazel, root, mode, arguments, rules_override=None):
+def proxy_arguments(bazel, root, mode, arguments, rules_override=None, repository_cache=None):
     if rules_override is not None and mode != "unsigned-device":
         raise InvalidSetup("Unsigned rules overlay is forbidden for signed or simulator builds")
     # Bazel's --version fast path must be the sole argument. Prepending startup
@@ -154,10 +157,10 @@ def proxy_arguments(bazel, root, mode, arguments, rules_override=None):
         if skip_cache_value:
             skip_cache_value = False
             continue
-        if in_build_command and argument == "--disk_cache":
+        if in_build_command and argument in ("--disk_cache", "--repository_cache"):
             skip_cache_value = True
             continue
-        if in_build_command and argument.startswith("--disk_cache="):
+        if in_build_command and argument.startswith(("--disk_cache=", "--repository_cache=")):
             continue
         command.append(argument)
         if argument in ("build", "test"):
@@ -166,6 +169,9 @@ def proxy_arguments(bazel, root, mode, arguments, rules_override=None):
             # suites. A second, disposable disk cache retains redundant artifacts
             # on the same hosted runner and is never reused by a later job.
             command.extend(["--lockfile_mode=error", "--disk_cache=", "--remote_cache=", "--remote_executor=", "--bes_backend=", "--noremote_accept_cached", "--noremote_upload_local_results"])
+            # This is a separate, sanitized public download cache. It never
+            # contains compiled actions or generated API/signing configuration.
+            command.append("--repository_cache=" + (str(repository_cache) if repository_cache is not None else ""))
             if argument == "test" and mode == "simulator":
                 # Use the pinned rules_apple simulator creator. It waits for
                 # simctl bootstatus and reuses the private runner's simulator,
@@ -521,7 +527,7 @@ def build(mode, env, build_number, integration_tests=False, tests_only=False):
 
 def main():
     if len(sys.argv) > 1 and sys.argv[1] == "bazel-proxy":
-        command = proxy_arguments(Path(sys.argv[2]), ROOT, sys.argv[3], sys.argv[4:], rules_override=os.environ.get("FORK_UNSIGNED_RULES_PATH"))
+        command = proxy_arguments(Path(sys.argv[2]), ROOT, sys.argv[3], sys.argv[4:], rules_override=os.environ.get("FORK_UNSIGNED_RULES_PATH"), repository_cache=public_dependency_cache(os.environ))
         os.execv(command[0], command)
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("mode", choices=("preflight", "simulator", "unsigned-device", "device"))

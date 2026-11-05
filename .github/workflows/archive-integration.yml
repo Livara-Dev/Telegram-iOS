@@ -67,6 +67,23 @@ jobs:
           (destination / 'build/fork-evidence').mkdir(parents=True)
           PY
 
+      # Dependency-only cache: no Bazel output roots, generated repositories,
+      # API constants, application archives, keychains or signing profiles.
+      - name: Restore public dependency downloads
+        continue-on-error: true
+        if: github.repository == 'Livara-Dev/Telegram-iOS' && github.ref == 'refs/heads/ci/verify-latest'
+        uses: actions/cache/restore@0400d5f644dc74513175e3cd8d07132dd4860809
+        with:
+          path: ${{ runner.temp }}/ayugram-public-dependencies-v1/portable
+          key: public-dependencies-v1-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('fork-source/MODULE.bazel', 'fork-source/MODULE.bazel.lock', 'fork-source/versions.json') }}-${{ github.job }}-${{ github.run_id }}-${{ github.run_attempt }}
+          restore-keys: |
+            public-dependencies-v1-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('fork-source/MODULE.bazel', 'fork-source/MODULE.bazel.lock', 'fork-source/versions.json') }}-
+
+      - name: Verify restored public dependency bytes
+        continue-on-error: true
+        if: github.repository == 'Livara-Dev/Telegram-iOS' && github.ref == 'refs/heads/ci/verify-latest'
+        run: python3 tools/fork_baseline/dependency_cache.py prepare
+
       - name: Run portable tooling tests and source guard
         run: |
           set -euo pipefail
@@ -118,6 +135,21 @@ jobs:
           set -euo pipefail
           umask 077
           python3 tools/fork_baseline/baseline.py simulator --integration-tests --tests-only 2>&1 | tee build/fork-evidence/integration-tests.log
+
+      - name: Export verified public dependency downloads
+        continue-on-error: true
+        if: always() && github.repository == 'Livara-Dev/Telegram-iOS' && github.ref == 'refs/heads/ci/verify-latest'
+        id: public_dependencies
+        run: python3 tools/fork_baseline/dependency_cache.py export
+
+      - name: Save public dependency downloads
+        continue-on-error: true
+        if: always() && steps.public_dependencies.outcome == 'success' && github.repository == 'Livara-Dev/Telegram-iOS' && github.ref == 'refs/heads/ci/verify-latest'
+        # Official actions/cache v4.2.4; tag resolved to this commit 2026-11-05.
+        uses: actions/cache/save@0400d5f644dc74513175e3cd8d07132dd4860809
+        with:
+          path: ${{ runner.temp }}/ayugram-public-dependencies-v1/portable
+          key: public-dependencies-v1-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('fork-source/MODULE.bazel', 'fork-source/MODULE.bazel.lock', 'fork-source/versions.json') }}-${{ github.job }}-${{ github.run_id }}-${{ github.run_attempt }}
 
       - name: Hash early integration test evidence
         if: always()
@@ -191,6 +223,23 @@ jobs:
           (destination / 'build/fork-evidence').mkdir(parents=True)
           PY
 
+      # Dependency-only cache: no Bazel output roots, generated repositories,
+      # API constants, application archives, keychains or signing profiles.
+      - name: Restore public dependency downloads
+        continue-on-error: true
+        if: github.repository == 'Livara-Dev/Telegram-iOS' && github.ref == 'refs/heads/ci/verify-latest'
+        uses: actions/cache/restore@0400d5f644dc74513175e3cd8d07132dd4860809
+        with:
+          path: ${{ runner.temp }}/ayugram-public-dependencies-v1/portable
+          key: public-dependencies-v1-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('fork-source/MODULE.bazel', 'fork-source/MODULE.bazel.lock', 'fork-source/versions.json') }}-${{ github.job }}-${{ github.run_id }}-${{ github.run_attempt }}
+          restore-keys: |
+            public-dependencies-v1-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('fork-source/MODULE.bazel', 'fork-source/MODULE.bazel.lock', 'fork-source/versions.json') }}-
+
+      - name: Verify restored public dependency bytes
+        continue-on-error: true
+        if: github.repository == 'Livara-Dev/Telegram-iOS' && github.ref == 'refs/heads/ci/verify-latest'
+        run: python3 tools/fork_baseline/dependency_cache.py prepare
+
       - name: Run portable tooling tests and source guard
         run: |
           set -euo pipefail
@@ -226,7 +275,7 @@ jobs:
           python3 tools/fork_baseline/prepare_host.py 2>&1 | tee build/fork-evidence/host.log
 
       # Xcode already contains the device SDK. No simulator runtime is
-      # downloaded on this fresh runner, and no private Bazel cache is shared.
+      # downloaded on this fresh runner. Only pinned public downloads are shared.
       - name: Compile unsigned device package
         env:
           TELEGRAM_API_ID: ${{ secrets.TELEGRAM_API_ID }}
@@ -236,7 +285,22 @@ jobs:
         run: |
           set -euo pipefail
           umask 077
-          python3 tools/fork_baseline/baseline.py unsigned-device 2>&1 | tee build/fork-evidence/unsigned-device.log
+          python3 tools/fork_baseline/baseline.py unsigned-device --build-number "${{ github.run_number }}" 2>&1 | tee build/fork-evidence/unsigned-device.log
+
+      - name: Export verified public dependency downloads
+        continue-on-error: true
+        if: always() && github.repository == 'Livara-Dev/Telegram-iOS' && github.ref == 'refs/heads/ci/verify-latest'
+        id: public_dependencies
+        run: python3 tools/fork_baseline/dependency_cache.py export
+
+      - name: Save public dependency downloads
+        continue-on-error: true
+        if: always() && steps.public_dependencies.outcome == 'success' && github.repository == 'Livara-Dev/Telegram-iOS' && github.ref == 'refs/heads/ci/verify-latest'
+        # Official actions/cache v4.2.4; tag resolved to this commit 2026-11-05.
+        uses: actions/cache/save@0400d5f644dc74513175e3cd8d07132dd4860809
+        with:
+          path: ${{ runner.temp }}/ayugram-public-dependencies-v1/portable
+          key: public-dependencies-v1-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('fork-source/MODULE.bazel', 'fork-source/MODULE.bazel.lock', 'fork-source/versions.json') }}-${{ github.job }}-${{ github.run_id }}-${{ github.run_attempt }}
 
       - name: Hash unsigned device evidence
         if: always()
@@ -269,7 +333,8 @@ jobs:
       # integration artifacts, not a telemetry-free release or an installable signed IPA.
 
   application-build:
-    needs: integration-tests
+    # Startup smoke must still run when an unrelated archive/projection test
+    # fails. Its result is separate from overall native release qualification.
     # macos-latest does not satisfy versions.json. This preview image does;
     # prepare_host.py additionally verifies the actual OS/Xcode versions.
     runs-on: xcode-27
@@ -314,6 +379,23 @@ jobs:
           (destination / 'build/fork-evidence').mkdir(parents=True)
           PY
 
+      # Dependency-only cache: no Bazel output roots, generated repositories,
+      # API constants, application archives, keychains or signing profiles.
+      - name: Restore public dependency downloads
+        continue-on-error: true
+        if: github.repository == 'Livara-Dev/Telegram-iOS' && github.ref == 'refs/heads/ci/verify-latest'
+        uses: actions/cache/restore@0400d5f644dc74513175e3cd8d07132dd4860809
+        with:
+          path: ${{ runner.temp }}/ayugram-public-dependencies-v1/portable
+          key: public-dependencies-v1-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('fork-source/MODULE.bazel', 'fork-source/MODULE.bazel.lock', 'fork-source/versions.json') }}-${{ github.job }}-${{ github.run_id }}-${{ github.run_attempt }}
+          restore-keys: |
+            public-dependencies-v1-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('fork-source/MODULE.bazel', 'fork-source/MODULE.bazel.lock', 'fork-source/versions.json') }}-
+
+      - name: Verify restored public dependency bytes
+        continue-on-error: true
+        if: github.repository == 'Livara-Dev/Telegram-iOS' && github.ref == 'refs/heads/ci/verify-latest'
+        run: python3 tools/fork_baseline/dependency_cache.py prepare
+
       - name: Run portable tooling tests and source guard
         run: |
           set -euo pipefail
@@ -355,8 +437,8 @@ jobs:
           python3 tools/fork_baseline/prepare_host.py --simulator
 
       # This job checks out the same requested SHA on a fresh hosted runner.
-      # Setup/runtime downloads and core compilation may repeat; no private
-      # Bazel state or credential-bearing cache is shared between the jobs.
+      # Core compilation may repeat; only pinned public downloads are shared.
+      # Startup smoke reuses this job's produced simulator IPA, not another build.
       - name: Build the full simulator app and run TextFormat regression tests
         env:
           TELEGRAM_API_ID: ${{ secrets.TELEGRAM_API_ID }}
@@ -366,7 +448,27 @@ jobs:
         run: |
           set -euo pipefail
           umask 077
-          python3 tools/fork_baseline/baseline.py simulator 2>&1 | tee build/fork-evidence/simulator.log
+          python3 tools/fork_baseline/baseline.py simulator --build-number "${{ github.run_number }}" 2>&1 | tee build/fork-evidence/simulator.log
+
+      - name: Export verified public dependency downloads
+        continue-on-error: true
+        if: always() && github.repository == 'Livara-Dev/Telegram-iOS' && github.ref == 'refs/heads/ci/verify-latest'
+        id: public_dependencies
+        run: python3 tools/fork_baseline/dependency_cache.py export
+
+      - name: Save public dependency downloads
+        continue-on-error: true
+        if: always() && steps.public_dependencies.outcome == 'success' && github.repository == 'Livara-Dev/Telegram-iOS' && github.ref == 'refs/heads/ci/verify-latest'
+        # Official actions/cache v4.2.4; tag resolved to this commit 2026-11-05.
+        uses: actions/cache/save@0400d5f644dc74513175e3cd8d07132dd4860809
+        with:
+          path: ${{ runner.temp }}/ayugram-public-dependencies-v1/portable
+          key: public-dependencies-v1-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('fork-source/MODULE.bazel', 'fork-source/MODULE.bazel.lock', 'fork-source/versions.json') }}-${{ github.job }}-${{ github.run_id }}-${{ github.run_attempt }}
+
+      - name: Launch the real simulator application twice on a fresh device
+        run: |
+          set -euo pipefail
+          python3 tools/fork_baseline/launch_smoke.py --ipa build/fork-baseline-simulator/Telegram.ipa --output build/fork-evidence/launch-smoke
 
       - name: Hash retained evidence
         if: always()
