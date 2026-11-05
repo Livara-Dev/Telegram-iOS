@@ -110,8 +110,10 @@ class FocusedWorkflowRoutingTests(unittest.TestCase):
                 self.assertIn(type(node.op), (ast.And, ast.Or))
                 values = [bool(value(item)) for item in node.values]
                 return all(values) if isinstance(node.op, ast.And) else any(values)
-            if isinstance(node, ast.Compare) and len(node.ops) == 1 and isinstance(node.ops[0], ast.Eq):
-                return value(node.left) == value(node.comparators[0])
+            if isinstance(node, ast.Compare) and len(node.ops) == 1:
+                self.assertIn(type(node.ops[0]), (ast.Eq, ast.NotEq))
+                equal = value(node.left) == value(node.comparators[0])
+                return equal if isinstance(node.ops[0], ast.Eq) else not equal
             self.fail('Unsupported workflow job condition syntax')
         return bool(value(ast.parse(expression, mode='eval').body))
 
@@ -120,6 +122,33 @@ class FocusedWorkflowRoutingTests(unittest.TestCase):
             self.assertTrue(self.condition('integration-tests', 'workflow_dispatch', 'focused', device))
             self.assertFalse(self.condition('application-build', 'workflow_dispatch', 'focused', device))
             self.assertFalse(self.condition('unsigned-device-build', 'workflow_dispatch', 'focused', device))
+
+    def test_probe_dispatch_starts_only_host_probe_without_application_jobs(self):
+        for device in (False, True):
+            with self.subTest(device=device):
+                self.assertTrue(self.condition('native-api-probe', 'workflow_dispatch', 'probe', device))
+                for job in ('integration-tests', 'application-build', 'unsigned-device-build'):
+                    self.assertFalse(self.condition(job, 'workflow_dispatch', 'probe', device))
+
+    def test_other_scopes_never_start_host_probe(self):
+        for event, scope in [('push', 'probe'), ('push', ''), ('workflow_dispatch', 'focused'), ('workflow_dispatch', 'full'), ('workflow_dispatch', ''), ('workflow_dispatch', 'invalid')]:
+            with self.subTest(event=event, scope=scope):
+                self.assertFalse(self.condition('native-api-probe', event, scope, True))
+
+    def test_host_probe_has_no_submodule_api_secret_or_bazel_build_path(self):
+        source = WORKFLOW.read_text().split('  native-api-probe:\n', 1)[1]
+        self.assertNotIn('secrets.TELEGRAM_', source)
+        self.assertNotIn('secrets.APPLE_', source)
+        self.assertNotIn('submodule', source.split('    steps:\n', 1)[1].split('      - name: Select', 1)[0].replace('without submodules', ''))
+        self.assertNotIn('baseline.py', source)
+        self.assertNotIn('prepare_host.py', source)
+        self.assertIn('xcrun swiftc -swift-version 5 -target arm64-apple-macosx13.0 submodules/LocalMessageArchive/Sources/LocalArchivePlayback/ArchivePlaybackAsset.swift tools/fork_baseline/native_api_probe.swift', source)
+        self.assertIn('build/native-api-probe/probe build/native-api-probe/fixture.mp4 > build/fork-evidence/native-api-probe.json', source)
+        self.assertIn('name: native-api-probe-${{ github.sha }}', source)
+        self.assertIn('codesign --force --sign - --timestamp=none build/native-api-probe/Probe.app', source)
+        self.assertIn('build/native-api-probe/Probe.app/Contents/MacOS/Probe build/native-api-probe/fixture.mp4 > build/fork-evidence/native-api-probe-bundle.json', source)
+        self.assertIn('build/fork-evidence/native-api-probe-bundle.json', source)
+        self.assertIn('build/fork-evidence/native-api-probe-SHA256SUMS', source)
 
     def test_full_push_and_legacy_dispatch_keep_existing_build_behavior(self):
         for event, scope, device, expected_device in [('push', 'focused', False, True), ('push', '', False, True), ('workflow_dispatch', 'full', True, True), ('workflow_dispatch', '', True, True), ('workflow_dispatch', 'full', False, False)]:

@@ -54,6 +54,27 @@ public final class ArchivePlaybackAsset: NSObject, AVAssetResourceLoaderDelegate
     private var active: [ObjectIdentifier: (AVAssetResourceLoadingRequest, ArchivePlaybackCancellation)] = [:]
     private var stopped = false
 
+    // Bounded, identity-free counters for native regression diagnostics. Never
+    // record URLs, account identifiers, media bytes or user-provided strings.
+    private let diagnosticsLock = NSLock()
+    private var requestCounts: [String: Int] = [
+        "requests": 0, "contentInformationRequests": 0, "dataRequests": 0,
+        "zeroLengthDataRequests": 0, "rejectedURLs": 0, "metadataOnlyFinishes": 0,
+        "failedFinishes": 0, "successfulFinishes": 0, "cancelledRequests": 0
+    ]
+
+    var diagnosticSummary: String {
+        self.diagnosticsLock.lock()
+        defer { self.diagnosticsLock.unlock() }
+        return self.requestCounts.keys.sorted().map { "\($0)=\(self.requestCounts[$0] ?? 0)" }.joined(separator: ", ")
+    }
+
+    private func countRequest(_ key: String) {
+        self.diagnosticsLock.lock()
+        self.requestCounts[key] = min(1_000_000, (self.requestCounts[key] ?? 0) + 1)
+        self.diagnosticsLock.unlock()
+    }
+
     public init(source: ArchivePlaybackSource) {
         self.source = source
         // A crafted movie may contain data references. Reject every external
@@ -92,12 +113,20 @@ public final class ArchivePlaybackAsset: NSObject, AVAssetResourceLoaderDelegate
         guard let (_, disposable) = self.active.removeValue(forKey: ObjectIdentifier(request)) else { return }
         disposable.cancel()
         if !request.isFinished && !request.isCancelled {
+            self.countRequest(failed ? "failedFinishes" : "successfulFinishes")
             if failed { request.finishLoading(with: Self.unavailable()) }
             else { request.finishLoading() }
         }
     }
 
     public func resourceLoader(_ resourceLoader: AVAssetResourceLoader, shouldWaitForLoadingOfRequestedResource request: AVAssetResourceLoadingRequest) -> Bool {
+        self.countRequest("requests")
+        if request.contentInformationRequest != nil { self.countRequest("contentInformationRequests") }
+        if let data = request.dataRequest {
+            self.countRequest("dataRequests")
+            if data.requestedLength == 0 { self.countRequest("zeroLengthDataRequests") }
+        }
+        if request.request.url != self.asset.url { self.countRequest("rejectedURLs") }
         guard !self.stopped, self.active.count < 8, request.request.url == self.asset.url else {
             request.finishLoading(with: Self.unavailable())
             return true
@@ -123,7 +152,11 @@ public final class ArchivePlaybackAsset: NSObject, AVAssetResourceLoaderDelegate
                     information.isEntireLengthAvailableOnDemand = true
                 }
             }
-            guard let data = request.dataRequest else { self.finish(request, failed: false); return }
+            guard let data = request.dataRequest else {
+                self.countRequest("metadataOnlyFinishes")
+                self.finish(request, failed: false)
+                return
+            }
             let start = max(data.requestedOffset, data.currentOffset)
             guard start >= 0, start <= info.byteCount, data.requestedLength >= 0 else {
                 self.finish(request, failed: true); return
@@ -163,6 +196,7 @@ public final class ArchivePlaybackAsset: NSObject, AVAssetResourceLoaderDelegate
     }
 
     public func resourceLoader(_ resourceLoader: AVAssetResourceLoader, didCancel loadingRequest: AVAssetResourceLoadingRequest) {
+        self.countRequest("cancelledRequests")
         self.active.removeValue(forKey: ObjectIdentifier(loadingRequest))?.1.cancel()
     }
 }

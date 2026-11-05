@@ -6,9 +6,9 @@ on:
   workflow_dispatch:
     inputs:
       validation_scope:
-        description: Focused native repair tests only, or full app qualification
+        description: Host API probe, focused iOS repair tests, or full app qualification
         type: choice
-        options: [full, focused]
+        options: [full, focused, probe]
         default: full
       unsigned_device:
         description: Compile an unsigned device IPA alongside exact-commit integration tests
@@ -28,6 +28,7 @@ concurrency:
 
 jobs:
   integration-tests:
+    if: github.event_name == 'push' || inputs.validation_scope != 'probe'
     # macos-latest does not satisfy versions.json. This preview image does;
     # prepare_host.py additionally verifies the actual OS/Xcode versions.
     runs-on: xcode-27
@@ -512,3 +513,134 @@ jobs:
 
       # No Apple signing keys are needed for this workflow. Packages are development
       # integration artifacts, not a telemetry-free release or an installable signed IPA.
+
+  native-api-probe:
+    # Manual host-only API diagnostics. This does not compile the Telegram app,
+    # use API Secrets, or qualify iOS/physical-device behavior.
+    if: github.event_name == 'workflow_dispatch' && inputs.validation_scope == 'probe'
+    runs-on: xcode-27
+    timeout-minutes: 15
+    defaults:
+      run:
+        shell: bash
+        working-directory: ./fork-source
+    steps:
+      - name: Check out the exact probe revision without submodules
+        working-directory: ${{ github.workspace }}
+        env:
+          CHECKOUT_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          python3 - <<'PYTHON'
+          import base64, os, pathlib, re, subprocess
+          destination = pathlib.Path(os.environ['GITHUB_WORKSPACE']) / 'fork-source'
+          destination.mkdir(mode=0o700)
+          sha = os.environ['GITHUB_SHA']
+          repo = os.environ['GITHUB_REPOSITORY']
+          if not re.fullmatch(r'[0-9a-f]{40}', sha) or not re.fullmatch(r'[\w.-]+/[\w.-]+', repo):
+              raise SystemExit('Invalid checkout coordinates')
+          def run(args, env=None):
+              subprocess.run(args, cwd=destination, env=env, check=True)
+          run(['git', 'init', '-q'])
+          run(['git', 'remote', 'add', 'origin', 'https://github.com/' + repo + '.git'])
+          auth_env = os.environ.copy()
+          token = auth_env.pop('CHECKOUT_TOKEN')
+          auth_env.update(GIT_CONFIG_COUNT='1', GIT_CONFIG_KEY_0='http.https://github.com/.extraheader',
+                          GIT_CONFIG_VALUE_0='AUTHORIZATION: basic ' + base64.b64encode(('x-access-token:' + token).encode()).decode())
+          run(['git', 'fetch', '--no-tags', '--depth', '1', 'origin', sha], auth_env)
+          run(['git', 'checkout', '--detach', sha])
+          (destination / 'build/fork-evidence').mkdir(parents=True)
+          PYTHON
+
+      - name: Select and verify the pinned host compiler
+        run: |
+          set -euo pipefail
+          sudo xcode-select -s /Applications/Xcode_27.1.app/Contents/Developer
+          python3 - <<'PYTHON'
+          import json, pathlib, subprocess
+          pins = json.loads(pathlib.Path('versions.json').read_text())
+          actual = subprocess.check_output(['xcodebuild', '-version'], text=True).splitlines()[0]
+          if actual != 'Xcode ' + pins['xcode']:
+              raise SystemExit('Pinned Xcode is unavailable')
+          PYTHON
+
+      - name: Prepare only the verified synthetic movie fixture
+        run: |
+          set -euo pipefail
+          umask 077
+          mkdir -p build/native-api-probe
+          python3 tools/fork_baseline/prepare_probe_fixture.py --output build/native-api-probe/fixture.mp4 > build/fork-evidence/native-api-probe-fixture.json
+
+      - name: Compile the production loader with the host API probe
+        run: |
+          set -euo pipefail
+          xcrun swiftc -swift-version 5 -target arm64-apple-macosx13.0 submodules/LocalMessageArchive/Sources/LocalArchivePlayback/ArchivePlaybackAsset.swift tools/fork_baseline/native_api_probe.swift -o build/native-api-probe/probe 2>&1 | tee build/fork-evidence/native-api-probe-compile.log
+
+      - name: Run host API diagnostics without account data
+        run: |
+          set -euo pipefail
+          build/native-api-probe/probe build/native-api-probe/fixture.mp4 > build/fork-evidence/native-api-probe.json
+          python3 - <<'PYTHON'
+          import json, pathlib
+          report = json.loads(pathlib.Path('build/fork-evidence/native-api-probe.json').read_text())
+          if not isinstance(report, dict):
+              raise SystemExit('Host probe did not produce a JSON object')
+          PYTHON
+
+      - name: Compare host API behavior with an ad-hoc signed app identity
+        run: |
+          set -euo pipefail
+          python3 - <<'PYTHON'
+          import pathlib, plistlib, shutil
+          app = pathlib.Path('build/native-api-probe/Probe.app')
+          executable = app / 'Contents/MacOS/Probe'
+          executable.parent.mkdir(parents=True)
+          shutil.copyfile('build/native-api-probe/probe', executable)
+          executable.chmod(0o700)
+          (app / 'Contents/Info.plist').write_bytes(plistlib.dumps({
+              'CFBundleExecutable': 'Probe',
+              'CFBundleIdentifier': 'org.livara.ayugram.tests.native-api-probe',
+              'CFBundlePackageType': 'APPL',
+              'NSFaceIDUsageDescription': 'Test noninteractive authentication context behavior with synthetic data.',
+              'LSBackgroundOnly': True
+          }))
+          PYTHON
+          codesign --force --sign - --timestamp=none build/native-api-probe/Probe.app
+          build/native-api-probe/Probe.app/Contents/MacOS/Probe build/native-api-probe/fixture.mp4 > build/fork-evidence/native-api-probe-bundle.json
+          python3 - <<'PYTHON'
+          import json, pathlib
+          report = json.loads(pathlib.Path('build/fork-evidence/native-api-probe-bundle.json').read_text())
+          if not isinstance(report, dict):
+              raise SystemExit('Bundled host probe did not produce a JSON object')
+          PYTHON
+
+      - name: Hash bounded host probe evidence
+        if: always()
+        run: |
+          python3 - <<'PYTHON'
+          import hashlib, pathlib
+          root = pathlib.Path('build/fork-evidence')
+          root.mkdir(parents=True, exist_ok=True)
+          names = ('native-api-probe.json', 'native-api-probe-bundle.json', 'native-api-probe-fixture.json', 'native-api-probe-compile.log')
+          checksums = []
+          for name in names:
+              file = root / name
+              if file.is_file() and not file.is_symlink():
+                  checksums.append(hashlib.sha256(file.read_bytes()).hexdigest() + '  ' + name + '\n')
+          (root / 'native-api-probe-SHA256SUMS').write_text(''.join(checksums))
+          PYTHON
+
+      - name: Publish host probe diagnostics only
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: native-api-probe-${{ github.sha }}
+          path: |
+            ${{ github.workspace }}/fork-source/build/fork-evidence/native-api-probe.json
+            ${{ github.workspace }}/fork-source/build/fork-evidence/native-api-probe-bundle.json
+            ${{ github.workspace }}/fork-source/build/fork-evidence/native-api-probe-fixture.json
+            ${{ github.workspace }}/fork-source/build/fork-evidence/native-api-probe-compile.log
+            ${{ github.workspace }}/fork-source/build/fork-evidence/native-api-probe-SHA256SUMS
+          if-no-files-found: warn
+          retention-days: 7
+          include-hidden-files: false

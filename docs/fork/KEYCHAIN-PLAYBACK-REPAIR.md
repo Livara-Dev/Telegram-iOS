@@ -40,3 +40,25 @@ jobs are preserved. This avoids repeating full builds to diagnose a small repair
 A successful device compilation still requires the independent real-app startup
 smoke and physical SideStore testing before claiming the black-screen issue is
 resolved on iPhone.
+
+## First focused result and test-host controls
+
+Focused run `42022644780` compiled the replacement Keychain APIs, but the native
+assertions found `interactionNotAllowed` false immediately after setting it on a
+fresh context. Playback still failed before a byte read; opaque URLs and the
+local-availability hint alone did not resolve the decoder error. No full build
+was triggered after this result.
+
+The original tests execute as XCTest logic tests without an application host.
+Both LocalAuthentication and AVFoundation use system services and process
+identity. Three minimal UIKit test hosts now provide separate suite identities
+and an explicit biometric usage description. Assertions and external-reference
+protection are retained. This is a test-environment hypothesis until hosted iOS
+execution confirms it.
+
+The manual `probe` scope runs only small native macOS controls without Bazel,
+Telegram credentials or application builds. It compares command-line and signed
+app-bundle contexts, plus public AVFoundation policy/response controls using the
+hash-pinned synthetic fixture. These controls are diagnostic code outside the
+application; a macOS result cannot establish iOS functionality. The fixed iOS
+focused suites must still pass before full qualification.

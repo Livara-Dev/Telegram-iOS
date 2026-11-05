@@ -66,6 +66,65 @@ final class ArchivePlaybackTests: XCTestCase {
         }
     }
 
+    /// Independent public-API control using only generated fixture bytes.
+    /// Default-policy comparison is confined to this XCTest helper; production
+    /// assets and all archive integration cases always retain .forbidAll.
+    private final class PublicMemoryLoaderControl: NSObject, AVAssetResourceLoaderDelegate {
+        let asset: AVURLAsset
+        private let bytes: Data
+        private let queue = DispatchQueue(label: "AyuGram.synthetic-loader-control")
+        private let lock = NSLock()
+        private var informationCount = 0
+        private var dataCount = 0
+        private var rejectedURLCount = 0
+
+        init(bytes: Data, restrictions: AVAssetReferenceRestrictions, overrideMIMEType: Bool = false) {
+            self.bytes = bytes
+            var options: [String: Any] = [AVURLAssetReferenceRestrictionsKey: restrictions.rawValue]
+            if overrideMIMEType {
+                if #available(iOS 17.0, macOS 14.0, *) { options[AVURLAssetOverrideMIMETypeKey] = "video/mp4" }
+            }
+            self.asset = AVURLAsset(url: URL(string: "ayugram-archive://" + UUID().uuidString.lowercased())!, options: options)
+            super.init()
+            self.asset.resourceLoader.setDelegate(self, queue: self.queue)
+        }
+
+        var diagnosticCounts: String {
+            lock.lock(); defer { lock.unlock() }
+            return "controlMetadataRequests=\(informationCount), controlDataRequests=\(dataCount), controlRejectedURLs=\(rejectedURLCount)"
+        }
+
+        func resourceLoader(_ loader: AVAssetResourceLoader, shouldWaitForLoadingOfRequestedResource request: AVAssetResourceLoadingRequest) -> Bool {
+            guard request.request.url == self.asset.url else {
+                self.lock.lock(); self.rejectedURLCount += 1; self.lock.unlock()
+                request.finishLoading(with: NSError(domain: "AyuGram.SyntheticControl", code: 1))
+                return true
+            }
+            if let info = request.contentInformationRequest {
+                self.lock.lock(); self.informationCount += 1; self.lock.unlock()
+                info.contentType = AVFileType.mp4.rawValue
+                info.contentLength = Int64(self.bytes.count)
+                info.isByteRangeAccessSupported = true
+                if #available(iOS 16.0, macOS 13.0, *) { info.isEntireLengthAvailableOnDemand = true }
+            }
+            if let data = request.dataRequest {
+                self.lock.lock(); self.dataCount += 1; self.lock.unlock()
+                let offset = max(data.requestedOffset, data.currentOffset)
+                guard offset >= 0, data.requestedLength >= 0 else {
+                    request.finishLoading(with: NSError(domain: "AyuGram.SyntheticControl", code: 2))
+                    return true
+                }
+                if offset < Int64(self.bytes.count) {
+                    let available = self.bytes.count - Int(offset)
+                    let length = data.requestsAllDataToEndOfResource ? available : min(available, data.requestedLength)
+                    data.respond(with: self.bytes.subdata(in: Int(offset)..<(Int(offset) + length)))
+                }
+            }
+            request.finishLoading()
+            return true
+        }
+    }
+
     private final class UnavailableSource: ArchivePlaybackSource {
         let started: XCTestExpectation?
         let cancelled: XCTestExpectation?
@@ -166,7 +225,7 @@ final class ArchivePlaybackTests: XCTestCase {
         XCTAssertEqual(playback.asset.url.scheme, "ayugram-archive")
         XCTAssertNotNil(playback.asset.url.host.flatMap { UUID(uuidString: $0) })
         XCTAssertTrue(playback.asset.url.path.isEmpty)
-        if await self.assertMovieDecodes(playback.asset, stage: "encrypted-archive-loader", diagnostics: { source.diagnosticCounts }) {
+        if await self.assertMovieDecodes(playback.asset, stage: "encrypted-archive-loader", diagnostics: { source.diagnosticCounts + ", " + playback.diagnosticSummary }) {
             XCTAssertFalse(source.requestedLengths.isEmpty)
             XCTAssertTrue(source.requestedLengths.allSatisfy { $0 > 0 && $0 <= 64 * 1024 })
         }
@@ -203,8 +262,8 @@ final class ArchivePlaybackTests: XCTestCase {
         XCTAssertNotEqual(first.asset.url, second.asset.url)
         XCTAssertEqual(first.asset.referenceRestrictions, .forbidAll)
         XCTAssertEqual(second.asset.referenceRestrictions, .forbidAll)
-        let firstDecoded = await self.assertMovieDecodes(first.asset, stage: "first-independent-memory-loader", diagnostics: { firstSource.diagnosticCounts })
-        let secondDecoded = await self.assertMovieDecodes(second.asset, stage: "second-independent-memory-loader", diagnostics: { secondSource.diagnosticCounts })
+        let firstDecoded = await self.assertMovieDecodes(first.asset, stage: "first-independent-memory-loader", diagnostics: { firstSource.diagnosticCounts + ", " + first.diagnosticSummary })
+        let secondDecoded = await self.assertMovieDecodes(second.asset, stage: "second-independent-memory-loader", diagnostics: { secondSource.diagnosticCounts + ", " + second.diagnosticSummary })
         guard firstDecoded && secondDecoded else { return }
         let firstDuration = try await first.asset.load(.duration)
         let secondDuration = try await second.asset.load(.duration)
@@ -214,12 +273,36 @@ final class ArchivePlaybackTests: XCTestCase {
         XCTAssertGreaterThan(secondSource.requestedRangeCount, 0)
     }
 
+    func testIndependentPublicMemoryLoaderWithStrictReferencePolicy() async throws {
+        let control = PublicMemoryLoaderControl(bytes: try self.secondMovieFixture(), restrictions: .forbidAll)
+        XCTAssertEqual(control.asset.referenceRestrictions, .forbidAll)
+        _ = await self.assertMovieDecodes(control.asset, stage: "independent-public-loader-forbid-all", diagnostics: { control.diagnosticCounts })
+    }
+
+    func testIndependentPublicMemoryLoaderWithStrictPolicyAndExplicitMIMEType() async throws {
+        guard #available(iOS 17.0, macOS 14.0, *) else {
+            XCTFail("The pinned test host must support the public MIME type option")
+            return
+        }
+        let control = PublicMemoryLoaderControl(bytes: try self.secondMovieFixture(), restrictions: .forbidAll, overrideMIMEType: true)
+        XCTAssertEqual(control.asset.referenceRestrictions, .forbidAll)
+        _ = await self.assertMovieDecodes(control.asset, stage: "independent-public-loader-forbid-all-explicit-mime", diagnostics: { control.diagnosticCounts })
+    }
+
+    func testIndependentPublicMemoryLoaderWithDefaultReferencePolicy() async throws {
+        // Only generated, self-contained H.264 bytes enter this diagnostic
+        // control. No external references or production policy are changed.
+        let control = PublicMemoryLoaderControl(bytes: try self.secondMovieFixture(), restrictions: .defaultPolicy)
+        XCTAssertEqual(control.asset.referenceRestrictions, .defaultPolicy)
+        _ = await self.assertMovieDecodes(control.asset, stage: "independent-public-loader-default-policy", diagnostics: { control.diagnosticCounts })
+    }
+
     func testSyntheticMovieDecodesThroughMemoryLoaderWithExternalReferencesForbidden() async throws {
         let source = MemorySource(try movieFixture())
         let playback = ArchivePlaybackAsset(source: source)
         defer { playback.stop() }
         XCTAssertEqual(playback.asset.referenceRestrictions, .forbidAll)
-        _ = await self.assertMovieDecodes(playback.asset, stage: "in-memory-loader", diagnostics: { source.diagnosticCounts })
+        _ = await self.assertMovieDecodes(playback.asset, stage: "in-memory-loader", diagnostics: { source.diagnosticCounts + ", " + playback.diagnosticSummary })
     }
 
     func testMissingMetadataFailsWithoutFetchingNetwork() async {

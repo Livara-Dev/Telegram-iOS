@@ -21,6 +21,8 @@ ADDED_PREFIXES = (
     "submodules/TelegramUI/Components/Chat/ChatMessageLocalFilterBubbleContentNode/",
 )
 ADDED_FILES = {
+    "Tests/NativeSecurityHost/BUILD",
+    "Tests/NativeSecurityHost/NativeSecurityTestHost.swift",
     "docs/SIDESTORE_INSTALL.md",
     "submodules/PasscodeCore/Sources/ApplicationStorage.swift",
     "submodules/PasscodeCore/Tests/PasscodeCoreTests/ApplicationStorageTests.swift",

@@ -78,4 +78,12 @@ final class PrivateInstallationKeychainTests: XCTestCase {
             #endif
         }
     }
+
+    #if os(iOS)
+    func testSecurityFrameworkTestsRunInsideTheDeclaredApplicationHost() throws {
+        XCTAssertEqual(Bundle.main.bundleIdentifier, "org.livara.ayugram.tests.native-security.passcode")
+        let reason = try XCTUnwrap(Bundle.main.object(forInfoDictionaryKey: "NSFaceIDUsageDescription") as? String)
+        XCTAssertFalse(reason.isEmpty)
+    }
+    #endif
 }

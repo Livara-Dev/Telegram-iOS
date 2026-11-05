@@ -35,6 +35,7 @@ ios_unit_test(
     timeout = "long",
     minimum_os_version = "15.0",
     runner = ":PasscodeCoreTestRunner",
+    test_host = "//Tests/NativeSecurityHost:PasscodeTestHost",
     deps = [":PasscodeCoreTestsLib"],
     visibility = ["//visibility:public"],
 )

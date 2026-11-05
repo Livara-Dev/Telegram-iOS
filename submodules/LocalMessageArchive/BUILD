@@ -20,6 +20,8 @@ swift_library(
 ios_test_runner(name = "ArchiveTestRunner", device_type = "iPhone 17", os_version = "27.0")
 ios_unit_test(
     name = "LocalMessageArchiveTests",
+    timeout = "long",
+    test_host = "//Tests/NativeSecurityHost:ArchiveTestHost",
     minimum_os_version = "15.0",
     runner = ":ArchiveTestRunner",
     deps = [":LocalMessageArchiveTestsLib"],
@@ -42,6 +44,8 @@ swift_library(
 
 ios_unit_test(
     name = "LocalArchivePlaybackTests",
+    timeout = "long",
+    test_host = "//Tests/NativeSecurityHost:PlaybackTestHost",
     minimum_os_version = "15.0",
     runner = ":ArchiveTestRunner",
     deps = [":LocalArchivePlaybackTestsLib"],
