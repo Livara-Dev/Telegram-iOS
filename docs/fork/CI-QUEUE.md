@@ -40,3 +40,42 @@ to one active qualification plus its latest pending successor.
 An unsigned device artifact is build output only. Its source commit, device
 Mach-O platform and SHA-256 must match its manifest; same-commit integration,
 independent signing and physical iPhone validation remain separate gates.
+
+## Confirmed repository-level permission blocker (2026-11-05)
+
+The environment's authenticated `gh` client identifies as the authorized
+`Livara-Dev` user. The canonical qualification workflow is active and its
+`push.branches` includes `ci/verify-latest`. However, dispatching the prepared
+startup revision returned HTTP 422: **Actions has been disabled for this
+repository.** This explains the missing run; no runner was queued.
+
+The explicit authenticated attempt to enable repository Actions with
+`PUT /repos/Livara-Dev/Telegram-iOS/actions/permissions` and `{ "enabled": true }`
+returned HTTP 403: **Resource not accessible by integration.** Reading the same
+settings is also denied. The user has repository admin membership, but the
+integration credential does not inherit every administration permission.
+Enabling the individual workflow succeeds and does not enable repository Actions.
+
+The supported CLI/API route is therefore available, but enabling repository
+Actions requires a credential with the repository **Administration: write**
+permission. Workflow dispatch requires **Actions: write**. No credentials were
+printed, copied into the repository, or requested in chat. A YAML trigger change,
+another throwaway push, or rerunning an old job cannot remove this setting.
+The prepared startup fix remains on the verification branch.
+
+The qualification dispatch helper uses normal `gh` authentication, verifies the
+exact expected canonical commit, preserves existing runs, and verifies an actual
+run appears after dispatch. It never reports an accepted dispatch as a started
+build. Automatic future builds remain configured on canonical branch pushes,
+subject to repository Actions being enabled and GitHub's normal event rules.
+
+```sh
+python3 tools/fork_baseline/dispatch_qualification.py --expected-sha <canonical-commit-sha>
+```
+
+The explicit `--enable-actions` option attempts repository enablement only after
+GitHub reports Actions disabled. It preserves the existing allowed-actions
+policy, then verifies enablement before one retry. A denied settings request
+returns `repository_administration_permission_required`; it does not prompt for
+or expose credentials. Normal `gh` authentication must be provisioned securely
+by the environment, with no token values committed or passed on the command line.

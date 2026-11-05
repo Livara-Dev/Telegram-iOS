@@ -1,0 +1,26 @@
+{
+  "repository": "Livara-Dev/Telegram-iOS",
+  "prepared_source_commit": "de8fa39d8fae2ccbe842452d2fa13ff663af0882",
+  "verification_branch": "ci/verify-latest",
+  "authenticated_cli_user": "Livara-Dev",
+  "workflow_id": 406742552,
+  "workflow_state": "active",
+  "workflow_enable_request": "succeeded",
+  "workflow_dispatch": {
+    "http_status": 422,
+    "message": "Actions has been disabled for this repository."
+  },
+  "repository_actions_permissions_get": {
+    "http_status": 403,
+    "message": "Resource not accessible by integration"
+  },
+  "repository_actions_enable_put": {
+    "payload": { "enabled": true },
+    "http_status": 403,
+    "message": "Resource not accessible by integration"
+  },
+  "run_created": false,
+  "native_tests_run_for_startup_fix": false,
+  "new_ipa_produced": false,
+  "credential_values_recorded": false
+}
