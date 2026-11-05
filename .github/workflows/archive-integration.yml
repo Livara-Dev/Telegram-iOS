@@ -9,7 +9,7 @@ on:
       validation_scope:
         description: Startup replay, native diagnostics, or full app qualification
         type: choice
-        options: [full, focused, probe, startup, projection]
+        options: [full, focused, probe, startup, projection, projection-only]
         default: full
       replay_run:
         description: Startup replay; source simulator run ID
@@ -24,6 +24,10 @@ on:
         type: choice
         options: [original, main-app-only]
         default: original
+      startup_private_only:
+        description: Run one fresh explicitly pinned private-storage simulator control
+        type: boolean
+        default: false
       unsigned_device:
         description: Compile an unsigned device IPA alongside exact-commit integration tests
         type: boolean
