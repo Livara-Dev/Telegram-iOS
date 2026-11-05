@@ -393,7 +393,7 @@ public final class LocalArchiveCoordinator {
                     operation(settings, epoch, cancellation, complete)
                 }))
             }
-            return ActionDisposable {
+            return ActionDisposable { [self] in
                 cancellation.cancel()
                 self.queue.justDispatch { [weak self] in
                     guard let self, self.activeTransfer === cancellation else { return }

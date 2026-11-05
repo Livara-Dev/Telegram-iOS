@@ -93,6 +93,8 @@ REVIEWED_MODIFICATIONS = {
 
     "Telegram/Telegram-iOS/InfoBazel.plist": "stable fork bundle identity for signing-aware container selection",
     "submodules/PasscodeCore/BUILD": "wire native storage and Keychain isolation regression tests",
+    "submodules/sqlcipher/BUILD": "enable the existing progress callback API for bounded archive cancellation; all crypto/version flags preserved",
+    "submodules/sqlcipher/Package.swift": "keep the same progress callback API in SwiftPM; no dependency or crypto configuration change",
     "submodules/PasscodeCore/Sources/Passcode.swift": "explicit private installation Keychain namespace without weakening existing shared mode",
     "submodules/WalletContext/Sources/WalletSecurity.swift": "isolate private-installation wallet Keychain services from legacy shared items",
     "submodules/WalletContext/Sources/WalletStorage.swift": "retain upstream wallet namespace except for isolated private installation",

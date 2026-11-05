@@ -55,6 +55,17 @@ binary. No proprietary exteraGram components are copied.
   and observations of the actual window/table traits and resolved table color.
   Light layouts and the synthetic reset/cosmetic actions were visually observed;
   recorded navigation gaps up to 248 ms do not establish smooth device scrolling.
+- [42098718967](https://github.com/Livara-Dev/Telegram-iOS/actions/runs/42098718967)
+  completed at b24d8688 with **201 Postbox cases passing**. The other seven
+  suites did not execute: dependent builds exposed one explicit/weak capture
+  error in the archive coordinator, two completion-only signal type errors,
+  and one missing SQLCipher progress-callback symbol affecting both archive
+  test bundles. These are build failures, not encrypted-playback runtime
+  failures. The follow-up preserves capture lifetimes, emits no fake signal
+  values, and enables the existing callback by removing only its omit flag
+  from Bazel/SwiftPM. All encryption flags and dependency versions remain
+  unchanged. Native requalification is required; portable ABI contracts alone
+  do not establish successful linking or cancellation behavior.
 
 ## Core features and native integration
 

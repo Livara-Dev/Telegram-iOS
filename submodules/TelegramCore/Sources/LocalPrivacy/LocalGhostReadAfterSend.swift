@@ -167,7 +167,8 @@ func dispatchLocalGhostReadAfterSend(postbox: Postbox, accountPeerId: PeerId,
     }
     |> mapToSignal { scopes -> Signal<Void, NoError> in
         guard !scopes.isEmpty else { return .complete() }
-        return combineLatest(scopes.map(send)) |> ignoreValues
+        return combineLatest(scopes.map(send))
+        |> mapToSignal { _ -> Signal<Void, NoError> in .complete() }
     }
 }
 
@@ -213,7 +214,8 @@ func sendLocalGhostReadAfterSend(postbox: Postbox, network: Network, stateManage
         }
         return successfulRead |> mapToSignal { success -> Signal<Void, NoError> in
             guard success else { return .complete() }
-            return _internal_applyMaxReadMessageIdInteractively(postbox: postbox, stateManager: stateManager, messageId: scope.maximumMessageId) |> ignoreValues
+            return _internal_applyMaxReadMessageIdInteractively(postbox: postbox, stateManager: stateManager, messageId: scope.maximumMessageId)
+            |> mapToSignal { _ -> Signal<Void, NoError> in .complete() }
         }
     }
 }

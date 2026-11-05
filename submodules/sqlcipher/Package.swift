@@ -39,7 +39,6 @@ let package = Package(
                 .define("SQLITE_DEFAULT_MEMSTATUS", to: "0"),
                 .define("SQLITE_OMIT_LOAD_EXTENSION", to: "1"),
                 .define("SQLITE_OMIT_DECLTYPE", to: "1"),
-                .define("SQLITE_OMIT_PROGRESS_CALLBACK", to: "1"),
                 .define("SQLITE_OMIT_DEPRECATED", to: "1"),
                 .define("NDEBUG", to: "1"),
                 .define("SQLITE_MAX_MMAP_SIZE", to: "0"),

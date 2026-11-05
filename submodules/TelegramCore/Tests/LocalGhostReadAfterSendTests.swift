@@ -145,6 +145,64 @@ final class LocalGhostReadAfterSendTests: XCTestCase {
         XCTAssertEqual(try self.record().intents.count, 1)
     }
 
+    func testDispatchEmitsNoValuesAndWaitsForEveryAuthorizedReadCompletion() throws {
+        try self.enable()
+        try self.capture()
+        let otherPeer = PeerId(namespace: Namespaces.Peer.CloudUser, id: ._internalFromInt64Value(2201))
+        let firstDelivered = self.id(105)
+        let otherDelivered = self.id(205, peer: otherPeer)
+        _ = try self.localArchiveValue(self.fixture.postbox.transaction { transaction in
+            transaction.updatePeersInternal([localArchiveTestUser(otherPeer)], update: { _, peer in peer })
+            _ = transaction.addMessages([localArchiveTestMessage(self.id(200, peer: otherPeer))], location: .Random)
+            captureLocalGhostReadAfterSend(transaction: transaction, accountPeerId: self.owner,
+                peerId: otherPeer, uniqueId: 8, message: self.message())
+            _ = transaction.addMessages([self.delivered(firstDelivered), self.delivered(otherDelivered)], location: .Random)
+        })
+
+        let requestsStarted = expectation(description: "both authorized reads subscribed")
+        requestsStarted.expectedFulfillmentCount = 2
+        let completed = expectation(description: "every authorized read completed")
+        let requests = Atomic<[Int64: Subscriber<Void, NoError>]>(value: [:])
+        let emittedValues = Atomic<Int>(value: 0)
+        let didComplete = Atomic<Bool>(value: false)
+        let operation = dispatchLocalGhostReadAfterSend(postbox: self.fixture.postbox, accountPeerId: self.owner,
+            confirmed: { [LocalGhostConfirmedSend(uniqueId: 7, deliveredId: firstDelivered),
+                          LocalGhostConfirmedSend(uniqueId: 8, deliveredId: otherDelivered)] },
+            send: { scope in
+                Signal<Void, NoError> { subscriber in
+                    _ = requests.modify { current in
+                        var current = current
+                        current[scope.maximumMessageId.peerId.toInt64()] = subscriber
+                        return current
+                    }
+                    requestsStarted.fulfill()
+                    return EmptyDisposable
+                }
+            })
+        let disposable = operation.start(next: {
+            _ = emittedValues.modify { $0 + 1 }
+        }, completed: {
+            _ = didComplete.swap(true)
+            completed.fulfill()
+        })
+        defer { disposable.dispose() }
+        wait(for: [requestsStarted], timeout: 15)
+        let streams = requests.with { Array($0.values) }
+        XCTAssertEqual(streams.count, 2)
+        guard streams.count == 2 else { return }
+
+        streams[0].putNext(())
+        streams[1].putNext(())
+        XCTAssertEqual(emittedValues.with { $0 }, 0)
+        XCTAssertFalse(didComplete.with { $0 })
+        streams[0].putCompletion()
+        XCTAssertFalse(didComplete.with { $0 })
+        streams[1].putCompletion()
+        wait(for: [completed], timeout: 15)
+        XCTAssertEqual(emittedValues.with { $0 }, 0)
+        XCTAssertTrue(try self.record().intents.isEmpty)
+    }
+
     func testWrongAccountPeerNamespaceAndUncommittedIdCannotConsumeIntent() throws {
         try self.enable()
         try self.capture()
