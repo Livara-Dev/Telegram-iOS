@@ -8,7 +8,7 @@ on:
       validation_scope:
         description: Startup replay, host API probe, targeted iOS tests, or full qualification
         type: choice
-        options: [full, focused, projection, probe, startup]
+        options: [full, focused, projection, projection-only, probe, startup]
         default: full
       replay_run:
         description: Required for startup scope; simulator artifact run ID
@@ -153,6 +153,7 @@ jobs:
           case "$VALIDATION_SCOPE" in
             focused) repair_options+=(--focused-tests) ;;
             projection) repair_options+=(--projection-tests) ;;
+            projection-only) repair_options+=(--projection-only-tests) ;;
             full) ;;
             *) echo "Invalid validation scope" >&2; exit 1 ;;
           esac

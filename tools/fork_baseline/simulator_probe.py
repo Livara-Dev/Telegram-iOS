@@ -6,6 +6,7 @@ import re
 import stat
 import subprocess
 import time
+from projection_crash import capture as capture_crashes
 
 BUNDLE = 'org.livara.ayugram.tests.native-security.projection'
 MARKER = 'Library/Caches/AyuGramNativeTestHost/projection-lifecycle.json'
@@ -49,7 +50,7 @@ def read_marker(container):
         return {'state': 'unavailable'}
 
 
-def capture(root, secrets):
+def capture(root, secrets, started_at=None):
     # Kept for the existing caller contract. No raw command or marker payload is
     # copied, so redacting an open-ended diagnostic string is no longer needed.
     del secrets
@@ -60,6 +61,9 @@ def capture(root, secrets):
         if (root / 'build').is_symlink() or destination.is_symlink():
             return
         destination.mkdir(parents=True, exist_ok=True)
+        # Snapshot the failing XCTest host before a standalone launch changes
+        # lifecycle state or generates an unrelated later crash report.
+        report['crash_summary_before_standalone_launch'] = capture_crashes(started_at)
         def command(name, args):
             try:
                 result = subprocess.run(args, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=10, check=False)

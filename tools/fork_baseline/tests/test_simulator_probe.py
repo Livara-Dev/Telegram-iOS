@@ -30,8 +30,17 @@ class SimulatorProbeTests(unittest.TestCase):
                 if 'launch' in args:
                     marker.write_text('{"stage":"sceneVisible"}')
                 return SimpleNamespace(returncode=0, stdout=value)
-            with patch.object(simulator_probe.subprocess, 'run', side_effect=reply) as run:
-                simulator_probe.capture(root, ['private-fixture-secret'])
+            order = []
+            def crash_snapshot(started_at):
+                self.assertEqual(started_at, 1234.5)
+                order.append('crash')
+                return {'probe_only_not_test_result': True, 'state': 'available', 'reports': []}
+            def observed_reply(args, **kwargs):
+                if 'launch' in args:
+                    order.append('standalone')
+                return reply(args, **kwargs)
+            with patch.object(simulator_probe.subprocess, 'run', side_effect=observed_reply) as run, patch.object(simulator_probe, 'capture_crashes', side_effect=crash_snapshot):
+                simulator_probe.capture(root, ['private-fixture-secret'], started_at=1234.5)
             calls = [c.args[0] for c in run.call_args_list]
             self.assertEqual(len(calls), 5)
             self.assertEqual(calls[2], ['xcrun', 'simctl', 'get_app_container', identifier, simulator_probe.BUNDLE, 'data'])
@@ -45,6 +54,8 @@ class SimulatorProbeTests(unittest.TestCase):
             self.assertEqual(report['marker_after_standalone_launch'], {'state': 'observed', 'stage': 'sceneVisible'})
             self.assertEqual(report['commands']['installed_signature'], {'exit_code': 0})
             self.assertEqual(report['commands']['standalone_host_launch'], {'exit_code': 0})
+            self.assertEqual(order, ['crash', 'standalone'])
+            self.assertEqual(report['crash_summary_before_standalone_launch'], {'probe_only_not_test_result': True, 'state': 'available', 'reports': []})
 
     def test_closed_marker_reader_rejects_unknown_schema_and_large_or_unsafe_files(self):
         with tempfile.TemporaryDirectory() as directory:

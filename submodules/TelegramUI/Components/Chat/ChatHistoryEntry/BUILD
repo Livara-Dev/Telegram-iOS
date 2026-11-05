@@ -91,6 +91,8 @@ ios_test_runner(
     name = "ChatLocalTextFilterProjectionTestRunner",
     device_type = "iPhone 17",
     os_version = "27.0",
+    post_action = "//tools/fork_baseline:projection_test_capture",
+    post_action_determines_exit_code = False,
 )
 
 ios_unit_test(

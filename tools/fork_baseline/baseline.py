@@ -17,11 +17,14 @@ import stat
 import subprocess
 import sys
 import tempfile
+import time
+import zipfile
 
 from unsigned_rules import prepare_unsigned_rules
 from ipa_inspect import inspect_ipa, InvalidIPA
 from simulator_probe import capture as capture_projection_launch
 from dependency_cache import active_path as public_dependency_cache
+from test_product_capture import retain_captured as retain_projection_products
 
 ROOT = Path(__file__).resolve().parents[2]
 TEST_TARGET = "//submodules/TextFormat:TextFormatTests"
@@ -66,6 +69,7 @@ FOCUSED_TEST_TARGETS = (
 PROJECTION_TEST_TARGETS = FOCUSED_TEST_TARGETS + (
     "//submodules/TelegramUI/Components/Chat/ChatHistoryEntry:ChatLocalTextFilterProjectionTests",
 )
+PROJECTION_ONLY_TEST_TARGETS = (PROJECTION_TEST_TARGETS[-1],)
 TEST_EVIDENCE_LIMIT = 2 * 1024 * 1024
 
 
@@ -383,7 +387,7 @@ def retain_integration_test_summary(test_results, targets=INTEGRATION_TEST_TARGE
         "source_commit": output(["git", "rev-parse", "HEAD"]),
         "toolchain": json.loads((ROOT / "versions.json").read_text()),
         "tests": {target: test_results.get(target, "not_run") for target in targets},
-        "validation_scope": "focused" if targets == FOCUSED_TEST_TARGETS else "projection" if targets == PROJECTION_TEST_TARGETS else "full",
+        "validation_scope": "focused" if targets == FOCUSED_TEST_TARGETS else "projection" if targets == PROJECTION_TEST_TARGETS else "projection-only" if targets == PROJECTION_ONLY_TEST_TARGETS else "full",
         "full_integration_suite_requested": targets == INTEGRATION_TEST_TARGETS,
         "tests_only": True,
         "full_application_built": False,
@@ -422,18 +426,20 @@ def publish_artifact(source, destination, mode, bundle_id, build_number, test_re
         staging.rename(destination)
 
 
-def build(mode, env, build_number, integration_tests=False, tests_only=False, focused_tests=False, projection_tests=False):
+def build(mode, env, build_number, integration_tests=False, tests_only=False, focused_tests=False, projection_tests=False, projection_only_tests=False):
     if integration_tests and mode != "simulator":
         raise InvalidSetup("Integration tests require simulator mode")
     if tests_only and not (integration_tests and mode == "simulator"):
         raise InvalidSetup("Tests-only requires simulator mode with integration tests")
     if focused_tests and not (mode == "simulator" and integration_tests and tests_only):
         raise InvalidSetup("Focused tests require simulator --integration-tests --tests-only")
-    if focused_tests and projection_tests:
-        raise InvalidSetup("Focused and projection test scopes are mutually exclusive")
+    if sum((focused_tests, projection_tests, projection_only_tests)) > 1:
+        raise InvalidSetup("Targeted test scopes are mutually exclusive")
     if projection_tests and not (mode == "simulator" and integration_tests and tests_only):
         raise InvalidSetup("Projection tests require simulator --integration-tests --tests-only")
-    targets = PROJECTION_TEST_TARGETS if projection_tests else FOCUSED_TEST_TARGETS if focused_tests else INTEGRATION_TEST_TARGETS
+    if projection_only_tests and not (mode == "simulator" and integration_tests and tests_only):
+        raise InvalidSetup("Projection-only tests require simulator --integration-tests --tests-only")
+    targets = PROJECTION_ONLY_TEST_TARGETS if projection_only_tests else PROJECTION_TEST_TARGETS if projection_tests else FOCUSED_TEST_TARGETS if focused_tests else INTEGRATION_TEST_TARGETS
     config = configuration(env, unsigned=mode != "device")
     bazel = preflight(env, simulator=mode == "simulator")
     destination = ROOT / "build" / ("fork-baseline-" + mode)
@@ -477,12 +483,31 @@ def build(mode, env, build_number, integration_tests=False, tests_only=False, fo
             first_failure = None
             for target in targets:
                 test_outcome = "failed"
+                test_started = time.time()
                 try:
                     run_redacted(common + ["test"] + base + ["--target=" + target], child_env, secret_values)
                     test_outcome = "passed"
                 except InvalidSetup as error:
                     if target == "//submodules/TelegramUI/Components/Chat/ChatHistoryEntry:ChatLocalTextFilterProjectionTests":
-                        capture_projection_launch(ROOT, secret_values)
+                        collection = {"state": "unavailable", "diagnostic_products_not_test_pass": True}
+                        try:
+                            collection = retain_projection_products(ROOT, temporary / "bazel-root",
+                                output(["git", "rev-parse", "HEAD"]),
+                                json.loads((ROOT / "versions.json").read_text()), application_credentials=secret_values)
+                        except (OSError, ValueError, TypeError, KeyError, RuntimeError, zipfile.BadZipFile):
+                            # Closed collection status only; never relay a path,
+                            # credentials, runner environment, or exception text.
+                            pass
+                        try:
+                            evidence = ROOT / "build/fork-evidence"
+                            if not (ROOT / "build").is_symlink() and not evidence.is_symlink():
+                                evidence.mkdir(parents=True, exist_ok=True)
+                                with (evidence / "projection-products-collection.json").open("x") as file:
+                                    json.dump(collection, file, indent=2)
+                                    file.write("\n")
+                        except OSError:
+                            pass
+                        capture_projection_launch(ROOT, secret_values, started_at=test_started)
                     if not continue_after_failure:
                         raise
                     # A failed target must not hide results for independent
@@ -541,7 +566,7 @@ def build(mode, env, build_number, integration_tests=False, tests_only=False, fo
                 # contain command arguments, paths or output; never relay them.
                 print("Warning: Bazel shutdown did not complete; temporary build data cleanup will still run.", flush=True)
     if tests_only:
-        scope = "Projection and shared-host" if projection_tests else "Focused repair" if focused_tests else "Explicit iOS integration"
+        scope = "Projection-only diagnostic" if projection_only_tests else "Projection and shared-host" if projection_tests else "Focused repair" if focused_tests else "Explicit iOS integration"
         print(scope + " test targets passed. No full application build or IPA was produced.")
     else:
         print(f"Upstream {mode} build completed. IPA requires independent signature/runtime verification.")
@@ -563,6 +588,8 @@ def main():
                        help="With simulator --integration-tests --tests-only, run only fixed PasscodeCore/archive/playback repair targets")
     scope.add_argument("--projection-tests", action="store_true",
                        help="With simulator --integration-tests --tests-only, run the fixed repair targets plus the isolated projection host")
+    scope.add_argument("--projection-only-tests", action="store_true",
+                       help="With simulator --integration-tests --tests-only, run only the fixed Projection diagnostic suite")
     args = parser.parse_args()
     try:
         if args.build_number <= 0:
@@ -575,11 +602,13 @@ def main():
             raise InvalidSetup("Focused tests require simulator --integration-tests --tests-only")
         if args.projection_tests and not (args.mode == "simulator" and args.integration_tests and args.tests_only):
             raise InvalidSetup("Projection tests require simulator --integration-tests --tests-only")
+        if args.projection_only_tests and not (args.mode == "simulator" and args.integration_tests and args.tests_only):
+            raise InvalidSetup("Projection-only tests require simulator --integration-tests --tests-only")
         if args.mode == "preflight":
             preflight(os.environ)
             print("Host, Bazel integrity and recursive checkout preflight passed; no iOS build has run.")
         else:
-            build(args.mode, os.environ, args.build_number, integration_tests=args.integration_tests, tests_only=args.tests_only, focused_tests=args.focused_tests, projection_tests=args.projection_tests)
+            build(args.mode, os.environ, args.build_number, integration_tests=args.integration_tests, tests_only=args.tests_only, focused_tests=args.focused_tests, projection_tests=args.projection_tests, projection_only_tests=args.projection_only_tests)
     except (InvalidSetup, OSError, subprocess.SubprocessError) as exc:
         print("Baseline blocked: " + str(exc), file=sys.stderr)
         return 1
