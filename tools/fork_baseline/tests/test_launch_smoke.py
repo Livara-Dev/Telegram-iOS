@@ -1,7 +1,9 @@
 import io
 import json
+import os
 from pathlib import Path
 import plistlib
+import signal
 import stat
 import struct
 import subprocess
@@ -104,6 +106,58 @@ class LaunchSmokeEvidenceTests(unittest.TestCase):
 
 
 class LaunchSmokeFailureEvidenceTests(unittest.TestCase):
+    def inherited_pipe_command(self, exit_code=0, noisy_descendant=False):
+        # Each test owns a new process group. Kill only that group's synthetic
+        # grandchild afterward; production must never kill simulator services.
+        original_popen, owned = subprocess.Popen, []
+        def isolated(arguments, **kwargs):
+            child = original_popen(arguments, start_new_session=True, **kwargs)
+            owned.append(child)
+            return child
+        descendant = 'import time; time.sleep(5)'
+        if noisy_descendant:
+            descendant = ('import os,sys,time; parent=int(sys.argv[1]); '
+                          'exec("while os.getppid() == parent: time.sleep(0.005)"); '
+                          'sys.stdout.write("x" * 70000); sys.stdout.flush(); time.sleep(5)')
+        code = ('import os,subprocess,sys; '
+                'subprocess.Popen([sys.executable,"-c",' + repr(descendant) + ',str(os.getpid())]); '
+                'sys.stdout.write("parent-output"); sys.stdout.flush(); '
+                'sys.stderr.write("domain=MIInstallerErrorDomain, code=13"); sys.stderr.flush(); '
+                'os._exit(' + str(exit_code) + ')')
+        try:
+            with mock.patch.object(launch.subprocess, 'Popen', side_effect=isolated):
+                return command([sys.executable, '-c', code], timeout=2, phase='installApplication')
+        finally:
+            for child in owned:
+                try: os.killpg(child.pid, signal.SIGKILL)
+                except ProcessLookupError: pass
+
+    def test_exited_success_with_inherited_open_pipes_returns_without_false_timeout(self):
+        self.assertEqual(self.inherited_pipe_command(), 'parent-output')
+
+    def test_exited_failure_with_inherited_open_pipes_preserves_status_and_safe_errors(self):
+        with self.assertRaises(SmokeError) as caught:
+            self.inherited_pipe_command(exit_code=65)
+        self.assertEqual(caught.exception.code, 'commandFailed')
+        self.assertEqual(caught.exception.return_code, 65)
+        self.assertFalse(caught.exception.timeout)
+        self.assertEqual(caught.exception.system_errors, [{'domain': 'MIInstallerErrorDomain', 'code': 13}])
+
+    def test_noisy_inherited_pipe_still_enforces_output_limit_after_parent_exit(self):
+        with self.assertRaises(SmokeError) as caught:
+            self.inherited_pipe_command(noisy_descendant=True)
+        self.assertEqual(caught.exception.code, 'commandOutputLimit')
+        self.assertEqual(caught.exception.return_code, 0)
+        self.assertFalse(caught.exception.timeout)
+
+    def test_live_child_with_closed_pipes_still_times_out(self):
+        code = 'import os,time; os.close(1); os.close(2); time.sleep(2)'
+        with self.assertRaises(SmokeError) as caught:
+            command([sys.executable, '-c', code], timeout=0.05, phase='installApplication')
+        self.assertEqual(caught.exception.code, 'commandTimedOut')
+        self.assertIsNone(caught.exception.return_code)
+        self.assertTrue(caught.exception.timeout)
+
     def test_checker_is_compiled_once_and_native_controls_run_before_any_device(self):
         with tempfile.TemporaryDirectory() as d:
             calls = []

@@ -120,6 +120,7 @@ ERROR_DOMAINS = {'CoreSimulator.SimError', 'com.apple.CoreSimulator.SimError',
                  'MIInstallerErrorDomain', 'IXUserPresentableErrorDomain',
                  'FBSOpenApplicationServiceErrorDomain'}
 COMMAND_OUTPUT_LIMIT = 64 * 1024
+POST_EXIT_DRAIN_SECONDS = 0.2
 
 
 def safe_system_errors(data):
@@ -179,12 +180,24 @@ def command(arguments, timeout=120, phase='extractApplication', compiler_log=Non
         with selectors.DefaultSelector() as selector:
             selector.register(process.stdout, selectors.EVENT_READ, 'stdout')
             selector.register(process.stderr, selectors.EVENT_READ, 'stderr')
+            drain_deadline = None
             while selector.get_map():
-                remaining = deadline - time.monotonic()
+                # simctl or a compiler can exit while a descendant retains its
+                # pipe descriptors. EOF then describes the descendant, not the
+                # command's lifetime. Drain briefly without waiting for that EOF.
+                code = process.poll()
+                now = time.monotonic()
+                if code is not None and drain_deadline is None:
+                    drain_deadline = min(deadline, now + POST_EXIT_DRAIN_SECONDS)
+                remaining = (drain_deadline if drain_deadline is not None else deadline) - now
                 if remaining <= 0:
-                    raise SmokeError('commandTimedOut', phase, timeout=True,
+                    code = process.poll()
+                    if code is not None: break
+                    # Existing return_code records this explicit poll: None
+                    # means the direct child was still alive at the deadline.
+                    raise SmokeError('commandTimedOut', phase, return_code=code, timeout=True,
                                      system_errors=safe_system_errors(captured['stderr']))
-                for key, _ in selector.select(min(0.2, remaining)):
+                for key, _ in selector.select(min(0.05, remaining)):
                     chunk = os.read(key.fileobj.fileno(), 4096)
                     if not chunk:
                         selector.unregister(key.fileobj)
@@ -193,13 +206,15 @@ def command(arguments, timeout=120, phase='extractApplication', compiler_log=Non
                     room = COMMAND_OUTPUT_LIMIT - len(target)
                     target.extend(chunk[:room])
                     if len(chunk) > room:
-                        raise SmokeError('commandOutputLimit', phase,
+                        raise SmokeError('commandOutputLimit', phase, return_code=process.poll(),
                                          system_errors=safe_system_errors(captured['stderr']))
         try:
-            code = process.wait(timeout=max(0.01, deadline - time.monotonic()))
+            code = process.wait(timeout=max(0, deadline - time.monotonic()))
         except subprocess.TimeoutExpired:
-            raise SmokeError('commandTimedOut', phase, timeout=True,
-                             system_errors=safe_system_errors(captured['stderr'])) from None
+            code = process.poll()
+            if code is None:
+                raise SmokeError('commandTimedOut', phase, return_code=code, timeout=True,
+                                 system_errors=safe_system_errors(captured['stderr'])) from None
         if code:
             raise SmokeError('commandFailed', phase, return_code=code,
                              system_errors=safe_system_errors(captured['stderr']))
