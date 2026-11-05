@@ -74,7 +74,7 @@ class LaunchSmokeEvidenceTests(unittest.TestCase):
 
     def test_private_storage_evidence_returns_only_closed_kind(self):
         with tempfile.TemporaryDirectory() as d:
-            path = Path(d) / 'preferences.plist'
+            path = Path(d).resolve() / 'preferences.plist'
             value = {STORAGE_SELECTION: {'version': 1, 'kind': 'private'}, 'unrelated': 'must-not-be-returned'}
             path.write_bytes(plistlib.dumps(value))
             self.assertEqual(read_storage_kind(path), 'private')
@@ -104,6 +104,162 @@ class LaunchSmokeEvidenceTests(unittest.TestCase):
 
 
 class LaunchSmokeFailureEvidenceTests(unittest.TestCase):
+    def test_checker_is_compiled_once_and_native_controls_run_before_any_device(self):
+        with tempfile.TemporaryDirectory() as d:
+            calls = []
+            def fake(arguments, timeout=120, phase=None, compiler_log=None):
+                calls.append((arguments, timeout, phase))
+                if phase == 'compileScreenshotChecker':
+                    Path(arguments[-1]).write_bytes(b'synthetic executable')
+                    return ''
+                return json.dumps({'self_test_passed': True, 'cases': 3})
+            with mock.patch.object(launch, 'command', side_effect=fake):
+                checker = launch.prepare_screenshot_checker(d)
+            self.assertEqual(calls[0][0][:3], ['xcrun', 'swiftc', '-O'])
+            self.assertEqual(calls[0][1:], (300, 'compileScreenshotChecker'))
+            self.assertEqual(calls[1], ([str(checker), '--self-test'], 30, 'testScreenshotChecker'))
+            self.assertEqual(len(calls), 2)
+
+    def test_checker_native_control_failures_are_closed_and_stop_before_boot(self):
+        for result in ({'self_test_passed': False, 'cases': 3}, {'self_test_passed': True, 'cases': 2},
+                       {'self_test_passed': True, 'cases': 3, 'path': 'must-not-retain'}):
+            with self.subTest(result=result), tempfile.TemporaryDirectory() as d:
+                def fake(arguments, timeout=120, phase=None, compiler_log=None):
+                    if phase == 'compileScreenshotChecker':
+                        Path(arguments[-1]).write_bytes(b'synthetic executable'); return ''
+                    return json.dumps(result)
+                with mock.patch.object(launch, 'command', side_effect=fake), self.assertRaises(SmokeError) as caught:
+                    launch.prepare_screenshot_checker(d)
+                self.assertEqual(caught.exception.phase, 'testScreenshotChecker')
+                self.assertEqual(caught.exception.code, 'invalidScreenshotEvidence')
+        with tempfile.TemporaryDirectory() as d:
+            with mock.patch.object(launch.platform, 'system', return_value='Darwin'), \
+                 mock.patch.object(launch, 'extract_app', return_value=Path(d) / 'App.app'), \
+                 mock.patch.object(launch, 'prepare_screenshot_checker', side_effect=SmokeError('commandTimedOut', 'compileScreenshotChecker', timeout=True)), \
+                 mock.patch.object(launch, 'command') as commands:
+                with self.assertRaises(SmokeError): launch.smoke(Path('source.ipa'), Path(d) / 'evidence')
+            commands.assert_not_called()
+            report = json.loads((Path(d) / 'evidence/result.json').read_text())
+            self.assertEqual(report['phase'], 'compileScreenshotChecker')
+            self.assertFalse(report['passed'])
+            self.assertEqual(report['launches'], [])
+
+    def test_runtime_checker_failure_preserves_observed_marker_and_private_selection(self):
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d).resolve(); output = root / 'evidence'; checker = root / 'compiled-checker'
+            calls = []
+            def fake(arguments, timeout=120, phase=None):
+                calls.append((arguments, timeout, phase))
+                if phase == 'createDevice': return '00000000-0000-0000-0000-000000000001'
+                if phase == 'getContainer': return str(root / 'fresh-data')
+                if phase == 'checkScreenshot':
+                    partial = json.loads((output / 'result.json').read_text())
+                    self.assertEqual(partial['launches'][0]['marker'], {'stage': 'authorizationVisible', 'failure': None})
+                    self.assertEqual(partial['launches'][0]['storage_kind'], 'private')
+                    self.assertNotIn('screenshot', partial['launches'][0])
+                    self.assertEqual(arguments[0], str(checker))
+                    self.assertEqual(timeout, 30)
+                    raise SmokeError('commandTimedOut', phase, timeout=True)
+                return ''
+            recorder = mock.Mock(); recorder.poll.return_value = 0
+            with mock.patch.object(launch.platform, 'system', return_value='Darwin'), \
+                 mock.patch.object(launch, 'extract_app', return_value=root / 'App.app'), \
+                 mock.patch.object(launch, 'prepare_screenshot_checker', return_value=checker), \
+                 mock.patch.object(launch, 'command', side_effect=fake), \
+                 mock.patch.object(launch.subprocess, 'Popen', return_value=recorder), \
+                 mock.patch.object(launch, 'read_stage', return_value={'stage': 'authorizationVisible', 'failure': None}), \
+                 mock.patch.object(launch, 'read_storage_kind', return_value='private') as storage, \
+                 mock.patch.object(launch, 'private_account_store_identity', return_value=(1, 2)), \
+                 mock.patch.object(launch.time, 'sleep'):
+                with self.assertRaises(SmokeError): launch.smoke(Path('source.ipa'), output, expected_storage_kind='private')
+            storage.assert_called_once()
+            result = json.loads((output / 'result.json').read_text())
+            self.assertEqual(result['phase'], 'checkScreenshot')
+            self.assertEqual(result['launches'][0]['storage_kind'], 'private')
+            self.assertEqual(result['launches'][0]['marker']['stage'], 'authorizationVisible')
+            self.assertFalse(result['passed'])
+            import replay_artifact
+            self.assertEqual(replay_artifact.prior_smoke_report(result), result)
+
+    def test_two_launches_use_compiled_checker_with_ready_and_private_assertions(self):
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d).resolve(); checker = root / 'compiled-checker'; calls = []
+            def fake(arguments, timeout=120, phase=None):
+                calls.append((arguments, timeout, phase))
+                if phase == 'createDevice': return '00000000-0000-0000-0000-000000000001'
+                if phase == 'getContainer': return str(root / 'fresh-data')
+                if phase == 'checkScreenshot': return json.dumps({'nonblank': True, 'width': 1206, 'height': 2622})
+                return ''
+            recorder = mock.Mock(); recorder.poll.return_value = 0
+            with mock.patch.object(launch.platform, 'system', return_value='Darwin'), \
+                 mock.patch.object(launch, 'extract_app', return_value=root / 'App.app'), \
+                 mock.patch.object(launch, 'prepare_screenshot_checker', return_value=checker) as prepare, \
+                 mock.patch.object(launch, 'command', side_effect=fake), \
+                 mock.patch.object(launch.subprocess, 'Popen', return_value=recorder), \
+                 mock.patch.object(launch, 'read_stage', return_value={'stage': 'authorizationVisible', 'failure': None}), \
+                 mock.patch.object(launch, 'read_storage_kind', return_value='private') as storage, \
+                 mock.patch.object(launch, 'private_account_store_identity', return_value=(1, 2)), \
+                 mock.patch.object(launch.time, 'sleep'):
+                result = launch.smoke(Path('source.ipa'), root / 'evidence', expected_storage_kind='private')
+            prepare.assert_called_once()
+            self.assertEqual(storage.call_count, 2)
+            checks = [entry for entry in calls if entry[2] == 'checkScreenshot']
+            self.assertEqual(len(checks), 2)
+            self.assertTrue(all(args[0] == str(checker) and timeout == 30 for args, timeout, _ in checks))
+            self.assertTrue(result['passed'])
+            import replay_artifact
+            self.assertEqual(replay_artifact.prior_smoke_report(result), result)
+
+    def test_fresh_pinned_control_seeds_once_before_launch_and_requires_app_created_account_store(self):
+        for store_mode in ('stable', 'missing', 'replaced'):
+            creates_store, persists = store_mode != 'missing', store_mode == 'stable'
+            with self.subTest(store_mode=store_mode), tempfile.TemporaryDirectory() as d:
+                root = Path(d).resolve(); data = root / 'fresh-data'; data.mkdir()
+                launches = []
+                def fake(arguments, timeout=120, phase=None):
+                    if phase == 'createDevice': return '00000000-0000-0000-0000-000000000001'
+                    if phase == 'getContainer': return str(data)
+                    if phase == 'launchApplication' and 'launch' in arguments:
+                        preferences = data / 'Library/Preferences' / (launch.BUNDLE + '.plist')
+                        self.assertEqual(read_storage_kind(preferences), 'private')
+                        launches.append(True)
+                        if creates_store:
+                            directory = data / 'Library/Application Support/AyuGram/telegram-data/accounts-metadata'
+                            if store_mode == 'replaced' and len(launches) == 2:
+                                directory.rename(directory.parent / 'previous-account-store')
+                            directory.mkdir(parents=True, exist_ok=True)
+                    if phase == 'checkScreenshot': return json.dumps({'nonblank': True, 'width': 1206, 'height': 2622})
+                    return ''
+                recorder = mock.Mock(); recorder.poll.return_value = 0
+                with mock.patch.object(launch.platform, 'system', return_value='Darwin'), \
+                     mock.patch.object(launch, 'extract_app', return_value=root / 'App.app'), \
+                     mock.patch.object(launch, 'prepare_screenshot_checker', return_value=root / 'checker'), \
+                     mock.patch.object(launch, 'command', side_effect=fake), \
+                     mock.patch.object(launch.subprocess, 'Popen', return_value=recorder), \
+                     mock.patch.object(launch, 'read_stage', return_value={'stage': 'authorizationVisible', 'failure': None}), \
+                     mock.patch.object(launch, 'seed_private_selection', wraps=launch.seed_private_selection) as seed, \
+                     mock.patch.object(launch.time, 'sleep'):
+                    if persists:
+                        result = launch.smoke(Path('source.ipa'), root / 'evidence', 'private', seed_private_storage=True)
+                    else:
+                        with self.assertRaises(SmokeError) as caught:
+                            launch.smoke(Path('source.ipa'), root / 'evidence', 'private', seed_private_storage=True)
+                        self.assertEqual(caught.exception.phase, 'checkPrivateAccountStore')
+                        result = json.loads((root / 'evidence/result.json').read_text())
+                seed.assert_called_once_with(data)
+                self.assertEqual(len(launches), 2 if creates_store else 1)
+                self.assertEqual(result['passed'], persists)
+                self.assertEqual(result['storage_test_setup'], 'freshPinnedPrivate')
+                self.assertTrue(result['private_selection_seeded_before_launch'])
+                self.assertTrue(result['private_account_store_absent_before_launch'])
+                self.assertEqual(result['launches'][0]['private_account_store_present'], creates_store)
+                if creates_store:
+                    self.assertEqual(result['launches'][1]['private_account_store_stable_after_restart'], persists)
+                self.assertNotIn('st_ino', json.dumps(result))
+                self.assertNotIn('st_dev', json.dumps(result))
+                import replay_artifact
+                self.assertEqual(replay_artifact.prior_smoke_report(result), result)
+
     def test_failure_evidence_closes_unknown_fields_and_never_retains_prose(self):
         evidence = SmokeError('/private/detail', '/private/phase', return_code='private',
                               system_errors=[{'domain': '/private/domain', 'code': 1},
@@ -122,6 +278,45 @@ class LaunchSmokeFailureEvidenceTests(unittest.TestCase):
         self.assertTrue(evidence['timeout'])
         self.assertEqual(evidence['code'], 'commandTimedOut')
         self.assertNotIn('time.sleep', json.dumps(evidence))
+
+    def test_fixed_public_compiler_failure_retains_bounded_redacted_diagnostics(self):
+        original_popen = subprocess.Popen
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d).resolve(); home = root / 'private-home-sentinel'; temporary = root / 'private-temp-sentinel'
+            log = root / 'checker-compiler.log'
+            source = Path(launch.__file__).with_name('screenshot_check.swift')
+            text = (str(source) + ':17:3: error: synthetic syntax failure\n' +
+                    str(home / 'Library/cache') + ': note: module cache\n' +
+                    str(temporary / 'module.swift') + ': note: temporary file\n' +
+                    'GH_TOKEN=credential-sentinel-must-not-appear\n' +
+                    'TELEGRAM_API_HASH=api-sentinel-must-not-appear\n' + 'x' * 70000)
+            code = 'import sys; sys.stderr.write(' + repr(text) + '); sys.stderr.flush(); sys.exit(1)'
+            def fake_popen(arguments, **kwargs):
+                return original_popen([sys.executable, '-c', code], **kwargs)
+            arguments = ['xcrun', 'swiftc', '-O', '-framework', 'CoreGraphics', '-framework', 'ImageIO',
+                         str(source), '-o', str(temporary / 'checker')]
+            with mock.patch.object(launch.subprocess, 'Popen', side_effect=fake_popen), \
+                 mock.patch.object(launch.Path, 'home', return_value=home), \
+                 mock.patch.object(launch.tempfile, 'gettempdir', return_value=str(root)), self.assertRaises(SmokeError):
+                command(arguments, phase='compileScreenshotChecker', compiler_log=log)
+            output = log.read_text()
+            self.assertLessEqual(log.stat().st_size, launch.COMMAND_OUTPUT_LIMIT)
+            self.assertIn('<SOURCE_ROOT>/tools/fork_baseline/screenshot_check.swift:17:3: error:', output)
+            self.assertIn('synthetic syntax failure', output)
+            self.assertIn('<HOME_ROOT>', output)
+            self.assertIn('<CHECKER_TEMP>', output)
+            for secret in (str(root), 'private-home-sentinel', 'private-temp-sentinel',
+                           'credential-sentinel-must-not-appear', 'api-sentinel-must-not-appear'):
+                self.assertNotIn(secret, output)
+            self.assertEqual(stat.S_IMODE(log.stat().st_mode), 0o600)
+
+    def test_raw_simctl_errors_cannot_be_opted_into_compiler_logging(self):
+        with tempfile.TemporaryDirectory() as d, mock.patch.object(launch.subprocess, 'Popen') as process:
+            log = Path(d) / 'checker-compiler.log'
+            with self.assertRaises(ValueError):
+                command(['xcrun', 'simctl', 'install', 'private'], phase='installApplication', compiler_log=log)
+            process.assert_not_called()
+            self.assertFalse(log.exists())
 
     def test_nonzero_exit_retains_only_phase_status_and_allowlisted_error_codes(self):
         text = 'private path /secret/value domain=MIInstallerErrorDomain, code=13; domain=private.secret, code=99'
@@ -156,6 +351,7 @@ class LaunchSmokeFailureEvidenceTests(unittest.TestCase):
                 failing_phase = phase
                 with mock.patch.object(launch.platform, 'system', return_value='Darwin'), \
                      mock.patch.object(launch, 'extract_app', return_value=Path(d) / 'App.app'), \
+                     mock.patch.object(launch, 'prepare_screenshot_checker', return_value=Path(d) / 'compiled-checker'), \
                      mock.patch.object(launch, 'command', side_effect=fake):
                     with self.assertRaises(SmokeError): launch.smoke(Path('source.ipa'), output)
                 value = json.loads((output / 'result.json').read_text())

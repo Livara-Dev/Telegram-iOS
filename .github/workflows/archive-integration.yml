@@ -18,6 +18,15 @@ on:
         description: Required for startup scope; full source commit SHA
         type: string
         default: ''
+      startup_variant:
+        description: Replay original package or isolate the main app without extensions
+        type: choice
+        options: [original, main-app-only]
+        default: original
+      startup_private_only:
+        description: Run only a fresh explicitly pinned private-storage main-app control
+        type: boolean
+        default: false
       unsigned_device:
         description: Compile an unsigned device IPA alongside exact-commit integration tests
         type: boolean
@@ -714,6 +723,9 @@ jobs:
               raise SystemExit('Pinned Xcode is unavailable')
           PYTHON
 
+      - name: Test replay tooling before downloading or installing an app
+        run: python3 -m unittest discover -s tools/fork_baseline/tests
+
       - name: Download and verify the existing simulator build
         env:
           GH_TOKEN: ${{ github.token }}
@@ -724,10 +736,56 @@ jobs:
           umask 077
           python3 tools/fork_baseline/replay_artifact.py --run "$REPLAY_RUN" --source "$REPLAY_SOURCE" --output build/fork-evidence/startup-replay
 
-      - name: Replay startup without App Group capabilities
+      - name: Replay the selected startup control without compiling
+        env:
+          STARTUP_VARIANT: ${{ inputs.startup_variant || 'original' }}
+          STARTUP_PRIVATE_ONLY: ${{ inputs.startup_private_only && 'true' || 'false' }}
         run: |
           set -euo pipefail
-          python3 tools/fork_baseline/startup_replay.py --ipa build/fork-evidence/startup-replay/Telegram.ipa --output build/fork-evidence/startup-replay/replay-controls
+          startup_args=(--startup-variant "$STARTUP_VARIANT")
+          if [[ "$STARTUP_PRIVATE_ONLY" == 'true' ]]; then
+            startup_args+=(--private-control-only)
+          elif [[ "$STARTUP_PRIVATE_ONLY" != 'false' ]]; then
+            exit 2
+          fi
+          python3 tools/fork_baseline/startup_replay.py --ipa build/fork-evidence/startup-replay/Telegram.ipa --output build/fork-evidence/startup-replay/replay-controls "${startup_args[@]}"
+
+      - name: Fetch the matching device package only after variant startup passes
+        if: success() && inputs.startup_variant == 'main-app-only'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPLAY_RUN: ${{ inputs.replay_run }}
+          REPLAY_SOURCE: ${{ inputs.replay_source }}
+        run: |
+          set -euo pipefail
+          umask 077
+          python3 tools/fork_baseline/replay_artifact.py --mode unsigned-device --run "$REPLAY_RUN" --source "$REPLAY_SOURCE" --output build/fork-evidence/startup-replay-device
+
+      - name: Package the verified unsigned main app without recompiling
+        if: success() && inputs.startup_variant == 'main-app-only'
+        run: |
+          set -euo pipefail
+          umask 077
+          python3 tools/fork_baseline/device_variant.py \
+            --ipa build/fork-evidence/startup-replay-device/Telegram.ipa \
+            --verification build/fork-evidence/startup-replay-device/verification.json \
+            --simulator-verification build/fork-evidence/startup-replay/verification.json \
+            --startup-proof build/fork-evidence/startup-replay/replay-controls/replay.json \
+            --startup-result build/fork-evidence/startup-replay/replay-controls/main-app-only/launch-smoke/result.json \
+            --output build/fork-evidence/startup-main-app-only-device
+
+      - name: Publish separate unsigned main-app-only device package
+        if: success() && inputs.startup_variant == 'main-app-only'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: startup-main-app-only-unsigned-device-${{ inputs.replay_source }}
+          path: |
+            ${{ github.workspace }}/fork-source/build/fork-evidence/startup-main-app-only-device/AyuGram-*-main-app-only-unsigned-device.ipa
+            ${{ github.workspace }}/fork-source/build/fork-evidence/startup-main-app-only-device/manifest.json
+            ${{ github.workspace }}/fork-source/build/fork-evidence/startup-main-app-only-device/SHA256SUMS
+          if-no-files-found: error
+          retention-days: 14
+          include-hidden-files: false
 
       - name: Hash startup replay diagnostics without republishing the IPA
         if: always()
@@ -738,8 +796,8 @@ jobs:
           root.mkdir(parents=True, exist_ok=True)
           names = ['verification.json', 'archive-evidence/manifest.json', 'archive-evidence/prior-launch-result.json',
                    'replay-controls/replay.json']
-          for control in ('normal', 'no-app-groups'):
-              for name in ('result.json', 'recording.log', 'launch.mp4', 'launch-1.png', 'launch-2.png'):
+          for control in ('normal', 'no-app-groups', 'main-app-only', 'main-app-only-automatic'):
+              for name in ('result.json', 'checker-compiler.log', 'recording.log', 'launch.mp4', 'launch-1.png', 'launch-2.png'):
                   names.append('replay-controls/' + control + '/launch-smoke/' + name)
           rows = []
           for name in names:
@@ -760,15 +818,29 @@ jobs:
             ${{ github.workspace }}/fork-source/build/fork-evidence/startup-replay/archive-evidence/prior-launch-result.json
             ${{ github.workspace }}/fork-source/build/fork-evidence/startup-replay/replay-controls/replay.json
             ${{ github.workspace }}/fork-source/build/fork-evidence/startup-replay/replay-controls/normal/launch-smoke/result.json
+            ${{ github.workspace }}/fork-source/build/fork-evidence/startup-replay/replay-controls/normal/launch-smoke/checker-compiler.log
             ${{ github.workspace }}/fork-source/build/fork-evidence/startup-replay/replay-controls/normal/launch-smoke/recording.log
             ${{ github.workspace }}/fork-source/build/fork-evidence/startup-replay/replay-controls/normal/launch-smoke/launch.mp4
             ${{ github.workspace }}/fork-source/build/fork-evidence/startup-replay/replay-controls/normal/launch-smoke/launch-1.png
             ${{ github.workspace }}/fork-source/build/fork-evidence/startup-replay/replay-controls/normal/launch-smoke/launch-2.png
             ${{ github.workspace }}/fork-source/build/fork-evidence/startup-replay/replay-controls/no-app-groups/launch-smoke/result.json
+            ${{ github.workspace }}/fork-source/build/fork-evidence/startup-replay/replay-controls/no-app-groups/launch-smoke/checker-compiler.log
             ${{ github.workspace }}/fork-source/build/fork-evidence/startup-replay/replay-controls/no-app-groups/launch-smoke/recording.log
             ${{ github.workspace }}/fork-source/build/fork-evidence/startup-replay/replay-controls/no-app-groups/launch-smoke/launch.mp4
             ${{ github.workspace }}/fork-source/build/fork-evidence/startup-replay/replay-controls/no-app-groups/launch-smoke/launch-1.png
             ${{ github.workspace }}/fork-source/build/fork-evidence/startup-replay/replay-controls/no-app-groups/launch-smoke/launch-2.png
+            ${{ github.workspace }}/fork-source/build/fork-evidence/startup-replay/replay-controls/main-app-only/launch-smoke/result.json
+            ${{ github.workspace }}/fork-source/build/fork-evidence/startup-replay/replay-controls/main-app-only/launch-smoke/checker-compiler.log
+            ${{ github.workspace }}/fork-source/build/fork-evidence/startup-replay/replay-controls/main-app-only/launch-smoke/recording.log
+            ${{ github.workspace }}/fork-source/build/fork-evidence/startup-replay/replay-controls/main-app-only/launch-smoke/launch.mp4
+            ${{ github.workspace }}/fork-source/build/fork-evidence/startup-replay/replay-controls/main-app-only/launch-smoke/launch-1.png
+            ${{ github.workspace }}/fork-source/build/fork-evidence/startup-replay/replay-controls/main-app-only/launch-smoke/launch-2.png
+            ${{ github.workspace }}/fork-source/build/fork-evidence/startup-replay/replay-controls/main-app-only-automatic/launch-smoke/result.json
+            ${{ github.workspace }}/fork-source/build/fork-evidence/startup-replay/replay-controls/main-app-only-automatic/launch-smoke/checker-compiler.log
+            ${{ github.workspace }}/fork-source/build/fork-evidence/startup-replay/replay-controls/main-app-only-automatic/launch-smoke/recording.log
+            ${{ github.workspace }}/fork-source/build/fork-evidence/startup-replay/replay-controls/main-app-only-automatic/launch-smoke/launch.mp4
+            ${{ github.workspace }}/fork-source/build/fork-evidence/startup-replay/replay-controls/main-app-only-automatic/launch-smoke/launch-1.png
+            ${{ github.workspace }}/fork-source/build/fork-evidence/startup-replay/replay-controls/main-app-only-automatic/launch-smoke/launch-2.png
             ${{ github.workspace }}/fork-source/build/fork-evidence/startup-replay/SHA256SUMS
           if-no-files-found: warn
           retention-days: 7

@@ -260,11 +260,44 @@ class FocusedWorkflowRoutingTests(unittest.TestCase):
         self.assertNotIn('baseline.py', source)
         self.assertNotIn('prepare_host.py', source)
         self.assertNotIn('swiftc', source)
+        tests = source.index('      - name: Test replay tooling before downloading or installing an app')
+        self.assertLess(source.index('      - name: Check out the replay tool revision'), tests)
+        self.assertLess(tests, source.index('      - name: Download and verify the existing simulator build'))
+        self.assertIn('run: python3 -m unittest discover -s tools/fork_baseline/tests', source)
         self.assertIn('replay_artifact.py --run "$REPLAY_RUN" --source "$REPLAY_SOURCE"', source)
         self.assertIn('startup_replay.py --ipa build/fork-evidence/startup-replay/Telegram.ipa', source)
         published = source.split('      - name: Publish bounded startup replay evidence only', 1)[1]
         self.assertNotIn('Telegram.ipa', published)
         self.assertNotIn('entitlement', published)
+        self.assertIn("'checker-compiler.log'", source.split('      - name: Hash startup replay diagnostics', 1)[1])
+        for control in ('normal', 'no-app-groups', 'main-app-only', 'main-app-only-automatic'):
+            self.assertIn('/replay-controls/' + control + '/launch-smoke/checker-compiler.log', published)
+
+    def test_main_only_device_package_is_gated_on_successful_variant_and_has_no_signing_secrets(self):
+        workflow = WORKFLOW.read_text()
+        self.assertIn('      startup_variant:\n', workflow)
+        self.assertIn('        options: [original, main-app-only]\n        default: original', workflow)
+        self.assertIn('      startup_private_only:\n', workflow)
+        self.assertIn('        description: Run only a fresh explicitly pinned private-storage main-app control\n        type: boolean\n        default: false', workflow)
+        source = workflow.split('  startup-artifact-replay:\n', 1)[1]
+        self.assertIn("STARTUP_PRIVATE_ONLY: ${{ inputs.startup_private_only && 'true' || 'false' }}", source)
+        self.assertIn('startup_args=(--startup-variant "$STARTUP_VARIANT")', source)
+        self.assertIn('startup_args+=(--private-control-only)', source)
+        control = source.index('      - name: Replay the selected startup control')
+        fetch = source.index('      - name: Fetch the matching device package')
+        package = source.index('      - name: Package the verified unsigned main app')
+        publish = source.index('      - name: Publish separate unsigned main-app-only device package')
+        self.assertLess(control, fetch); self.assertLess(fetch, package); self.assertLess(package, publish)
+        for start, stop in ((fetch, package), (package, publish), (publish, source.index('      - name: Hash startup'))):
+            self.assertIn("if: success() && inputs.startup_variant == 'main-app-only'", source[start:stop])
+        self.assertIn('--mode unsigned-device', source[fetch:package])
+        self.assertIn('--startup-proof ', source[package:publish])
+        self.assertIn('--startup-result ', source[package:publish])
+        self.assertIn('GH_TOKEN:', source[fetch:package])
+        self.assertNotIn('GH_TOKEN:', source[package:])
+        self.assertNotIn('secrets.', source)
+        self.assertNotIn('Make.py', source)
+        self.assertIn('AyuGram-*-main-app-only-unsigned-device.ipa', source[publish:])
 
     def test_probe_dispatch_starts_only_host_probe_without_application_jobs(self):
         for device in (False, True):
