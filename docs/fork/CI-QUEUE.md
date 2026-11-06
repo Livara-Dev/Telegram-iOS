@@ -174,6 +174,23 @@ metadata and the cached, hash-verified captured artifact, with zero application
 builds or native executions. Closed preparation failures now retain bounded
 reasons without exporting arbitrary exception text or replacing prior evidence.
 
+Run `42262815237` at `b3fe7c2f` passed preparation and all 198 portable preflight
+cases. The baseline control compiled and its signing checks passed. Xcode then
+rejected the wrapper scheme's external test host during `build-for-testing`,
+before Swift compilation or any simulator creation. No native case executed.
+The build-action repair compiles only the wrapper target with ordinary `build`,
+fixed private product/intermediates paths and the same validated external
+`TEST_HOST` and `BUNDLE_LOADER`. It does not build another host or change the
+app-hosted execution plan, captured payload or Swift source. Actual macOS
+compilation and the 41 feature outcomes remain required.
+
+The retained c55 diagnostic continues on `diagnostics/c55-projection-deferred`.
+Concurrent source-publication/build workflow additions on `integration/ayu-current`
+are preserved on that branch. The isolated diagnostic avoids changing their
+source or admitting unrelated new workflows into the fixed c55 replay scope.
+It still shares the same no-cancellation Projection queue and runs no full app
+or device build. Its results qualify only the explicitly retained c55 payload.
+
 Only bounded, explicitly selected diagnostics and visuals are uploaded. Modern
 native JSON is limited to 1 MiB per file, logs to 2 MiB and the combined selection
 to 8 MiB. Settings evidence has separate 1 MiB JSON, 2 MiB log, 16 MiB image,

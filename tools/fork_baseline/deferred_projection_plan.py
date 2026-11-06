@@ -935,9 +935,13 @@ def run(output=OUTPUT, root=None, command=projection.native_command):
         project = output / 'private-wrapper-project'; create_wrapper_project(project, wrapper_source)
         wrapper_derived = output / 'private-wrapper-derived'
         host_executable = str(control / modern.CONTROL_APP)
-        status, wrapper_log = call('build_wrapper', ['xcodebuild', 'build-for-testing', '-project', str(project / 'DeferredProjection.xcodeproj'),
-            '-scheme', 'DeferredProjection', '-configuration', 'Debug', '-sdk', 'iphonesimulator',
-            '-destination', 'generic/platform=iOS Simulator', '-derivedDataPath', str(wrapper_derived),
+        # Compile this target only. build-for-testing resolves the scheme's
+        # test host as a project target, but this diagnostic deliberately uses
+        # the separately built, validated host without another app target.
+        status, wrapper_log = call('build_wrapper', ['xcodebuild', 'build', '-project', str(project / 'DeferredProjection.xcodeproj'),
+            '-target', modern.CONTROL_TEST, '-configuration', 'Debug', '-sdk', 'iphonesimulator',
+            'SYMROOT=' + str(wrapper_derived / 'Build/Products'),
+            'OBJROOT=' + str(wrapper_derived / 'Build/Intermediates.noindex'),
             'TEST_HOST=' + host_executable, 'BUNDLE_LOADER=' + host_executable, *signing], 180, False)
         compiler.append(wrapper_log)
         if status['status'] != 'completed' or status['exit_code'] != 0: raise DeferredError('deferred_wrapper_compile_failed')

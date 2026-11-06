@@ -225,13 +225,24 @@ class DeferredRunnerTests(unittest.TestCase):
             if args == ['xcodebuild', '-version']: return base.complete(b'Xcode 27.1\nBuild version 27A9275\n')
             if '--show-sdk-version' in args: return base.complete(b'27.1')
             if '--show-sdk-platform-path' in args: return base.complete(str(platform).encode())
-            if 'build-for-testing' in args:
-                derived = Path(args[args.index('-derivedDataPath') + 1]); products = derived / 'Build/Products'
-                if args[args.index('-scheme') + 1] == parser.modern.CONTROL_APP:
+            if args[:2] in (['xcodebuild', 'build-for-testing'], ['xcodebuild', 'build']):
+                if args[1] == 'build-for-testing':
+                    self.assertEqual(args[args.index('-scheme') + 1], parser.modern.CONTROL_APP)
+                    derived = Path(args[args.index('-derivedDataPath') + 1]); products = derived / 'Build/Products'
                     if mutation == 'control_compile': return base.complete(b'private-compiler-failure-canary', 65)
                     plan, host, test = base.apple_fixture(products, 1, False)
                     (products / 'control.xctestrun').write_bytes(plistlib.dumps(plan))
                     return base.complete((signed_line(host) + '\n' + signed_line(test) + '\n').encode())
+                self.assertEqual(args[args.index('-target') + 1], parser.modern.CONTROL_TEST)
+                for option in ('-scheme', '-derivedDataPath', '-destination'):
+                    self.assertNotIn(option, args)
+                derived = output / 'private-wrapper-derived'; products = derived / 'Build/Products'
+                self.assertIn('SYMROOT=' + str(products), args)
+                self.assertIn('OBJROOT=' + str(derived / 'Build/Intermediates.noindex'), args)
+                host_executable = output / 'private-derived/Build/Products/Debug-iphonesimulator' / (parser.modern.CONTROL_APP + '.app') / parser.modern.CONTROL_APP
+                self.assertTrue(host_executable.is_file())
+                self.assertIn('TEST_HOST=' + str(host_executable), args)
+                self.assertIn('BUNDLE_LOADER=' + str(host_executable), args)
                 if mutation == 'wrapper_compile': return base.complete(b'private-compiler-failure-canary', 65)
                 self.assertTrue(any(value.startswith('TEST_HOST=') for value in args))
                 project = Path(args[args.index('-project') + 1]).parent
@@ -328,7 +339,7 @@ class DeferredRunnerTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             report, calls = self.execute(Path(temporary).resolve()); self.assertTrue(report['passed'])
             first_device = next(i for i, (args, _) in enumerate(calls) if args[:3] == ['xcrun', 'simctl', 'create'])
-            build = [i for i, (args, _) in enumerate(calls) if 'build-for-testing' in args]
+            build = [i for i, (args, _) in enumerate(calls) if args[:2] in (['xcodebuild', 'build-for-testing'], ['xcodebuild', 'build'])]
             self.assertEqual(len(build), 2); self.assertTrue(all(i < first_device for i in build))
             seals = [i for i, (args, _) in enumerate(calls) if '--verify' in args]
             self.assertTrue(seals); self.assertTrue(all(i < first_device for i in seals))
