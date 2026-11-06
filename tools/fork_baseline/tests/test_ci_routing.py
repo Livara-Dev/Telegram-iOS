@@ -139,10 +139,15 @@ class CIRoutingTests(unittest.TestCase):
         self.assertIn("if: inputs.replay_run != ''", replay)
         self.assertIn("PROJECTION_HOST_CONTROL: ${{ inputs.projection_host_control || 'original' }}", replay)
         self.assertIn('--host-control "$PROJECTION_HOST_CONTROL"', replay)
+        self.assertIn("PROJECTION_BOOTSTRAP_SAMPLE: ${{ inputs.projection_bootstrap_sample && 'true' || 'false' }}", replay)
+        self.assertIn('projection_args+=(--bootstrap-sample)', replay)
+        self.assertIn('"${projection_args[@]}"', replay)
         for name in ("application-build", "unsigned-device-build", "integration-tests", "custom-options-ui", "startup-artifact-replay"):
             with self.subTest(job=name):
                 self.assertNotIn("PROJECTION_HOST_CONTROL", self.job(name))
                 self.assertNotIn("--host-control", self.job(name))
+                self.assertNotIn("PROJECTION_BOOTSTRAP_SAMPLE", self.job(name))
+                self.assertNotIn("--bootstrap-sample", self.job(name))
 
     def test_startup_fetches_the_explicitly_verified_device_pair_after_real_startup_only(self):
         startup = self.job("startup-artifact-replay")
