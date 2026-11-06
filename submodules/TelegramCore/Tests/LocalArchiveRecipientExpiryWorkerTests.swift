@@ -82,7 +82,7 @@ final class LocalArchiveRecipientExpiryWorkerTests: XCTestCase {
 
     private func media(_ payload: Payload, secret: Bool) -> (Media, MediaResource, Data) {
         let bytes = payload.bytes
-        let resource: MediaResource
+        let resource: TelegramMediaResource
         if secret {
             resource = SecretFileMediaResource(fileId: -19401, accessHash: 0,
                 containerSize: Int64(bytes.count + 16), decryptedSize: Int64(bytes.count), datacenterId: 1,
