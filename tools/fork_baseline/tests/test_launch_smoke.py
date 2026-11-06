@@ -257,6 +257,12 @@ class LaunchSmokeFailureEvidenceTests(unittest.TestCase):
                 result = launch.smoke(Path('source.ipa'), root / 'evidence', expected_storage_kind='private')
             prepare.assert_called_once()
             self.assertEqual(storage.call_count, 2)
+            created = [args for args, _, phase in calls if phase == 'createDevice']
+            self.assertEqual(len(created), 1)
+            self.assertEqual(created[0][-2:], ['com.apple.CoreSimulator.SimDeviceType.iPhone-15-Pro',
+                                              'com.apple.CoreSimulator.SimRuntime.iOS-27-0'])
+            self.assertEqual(result['simulator_device_type'], created[0][-2])
+            self.assertEqual(result['simulator_runtime'], created[0][-1])
             checks = [entry for entry in calls if entry[2] == 'checkScreenshot']
             self.assertEqual(len(checks), 2)
             self.assertTrue(all(args[0] == str(checker) and timeout == 30 for args, timeout, _ in checks))

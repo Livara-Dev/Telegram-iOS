@@ -106,6 +106,12 @@ def validate_startup(device, simulator, proof, result):
             raise ReplayError('startup_variant_not_verified')
     else:
         raise ReplayError('startup_variant_not_verified')
+    # Older controls did not report a model. New controls must bind both fields
+    # to the validated native result; a label cannot replace observed startup.
+    for field in ('simulator_device_type', 'simulator_runtime'):
+        if field in proof or field in checked:
+            if field not in proof or field not in checked or proof[field] != checked[field]:
+                raise ReplayError('startup_variant_profile_mismatch')
     for attempt, launch in enumerate(checked['launches'], 1):
         if (launch.get('attempt') != attempt or launch.get('storage_kind') != 'private' or launch.get('private_account_store_present') is not True
                 or (attempt == 2 and launch.get('private_account_store_stable_after_restart') is not True)
@@ -202,6 +208,8 @@ def package(ipa, verification, simulator_verification, startup_proof, startup_re
                     'filename': filename, 'signing': 'disabled', 'installable_signed_ipa': False,
                     'signature_verified': False, 'runtime_verified': False, 'physical_device_verified': False,
                     'simulator_variant_startup_verified': True, 'application_recompiled': False,
+                    'simulator_device_type': result.get('simulator_device_type'),
+                    'simulator_runtime': result.get('simulator_runtime'),
                     'simulator_private_mode_control': proof['private_mode_control'],
                     'simulator_automatic_control_run': proof['automatic_control_run'],
                     'simulator_automatic_group_selection_observed': proof['automatic_group_selection_observed'],

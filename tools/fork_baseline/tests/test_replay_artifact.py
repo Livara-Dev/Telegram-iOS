@@ -301,6 +301,24 @@ class ReplayArtifactTests(unittest.TestCase):
                     artifact, _, _ = fixture(archive, platform=2)
                 with self.assertRaises(ValueError): replay.verify_extract(archive, artifact, SOURCE, root / 'output')
 
+    def test_simulator_model_and_runtime_are_a_closed_complete_pair(self):
+        legacy = {'mode': 'fresh_simulator_launch', 'physical_device_verified': False,
+                  'authentication_codes_used': False, 'launches': [], 'passed': False}
+        self.assertEqual(replay.prior_smoke_report(legacy), legacy)
+        profile = {'simulator_device_type': 'com.apple.CoreSimulator.SimDeviceType.iPhone-15-Pro',
+                   'simulator_runtime': 'com.apple.CoreSimulator.SimRuntime.iOS-27-0'}
+        current = {**legacy, **profile}
+        self.assertEqual(replay.prior_smoke_report(current), current)
+        malformed = ({'simulator_runtime': profile['simulator_runtime']},
+                     {'simulator_device_type': profile['simulator_device_type']},
+                     {**profile, 'simulator_device_type': []},
+                     {**profile, 'simulator_device_type': True},
+                     {**profile, 'simulator_device_type': 'arbitrary-private-device'},
+                     {**profile, 'simulator_runtime': 'com.apple.CoreSimulator.SimRuntime.iOS-26-0'})
+        for fields in malformed:
+            with self.subTest(fields=fields), self.assertRaises(replay.ReplayError):
+                replay.prior_smoke_report({**legacy, **fields})
+
     def test_prior_smoke_does_not_allow_free_form_diagnostic_content(self):
         value = {'mode': 'fresh_simulator_launch', 'physical_device_verified': False,
                  'authentication_codes_used': False, 'launches': [], 'passed': False}

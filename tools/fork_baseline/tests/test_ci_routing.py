@@ -23,11 +23,11 @@ class CIRoutingTests(unittest.TestCase):
         self.assertIsNotNone(match, "Required qualification step is missing")
         return match.group(1)
 
-    def allows(self, job, event, scope):
+    def allows(self, job, event, scope, retained=False):
         condition = re.search(r"^    if: (.+)$", self.job(job), re.M)
         self.assertIsNotNone(condition)
-        expression = condition.group(1).replace("github.event_name", "event").replace("inputs.validation_scope", "scope").replace("||", "or").replace("&&", "and")
-        values = {"event": event, "scope": scope}
+        expression = condition.group(1).replace("github.event_name", "event").replace("inputs.validation_scope", "scope").replace("inputs.retained_projection_tests", "retained").replace("||", "or").replace("&&", "and")
+        values = {"event": event, "scope": scope, "retained": retained}
         def value(node):
             if isinstance(node, ast.Name):
                 return values[node.id]

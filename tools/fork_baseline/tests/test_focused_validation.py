@@ -236,18 +236,18 @@ class FocusedWorkflowRoutingTests(unittest.TestCase):
     def section(self, job):
         return re.search(r'(?ms)^  ' + re.escape(job) + r':\n(.*?)(?=^  [a-z-]+:\n|\Z)', WORKFLOW.read_text()).group(1)
 
-    def condition(self, job, event, scope, device):
+    def condition(self, job, event, scope, device, retained=False):
         section = self.section(job)
         match = re.search(r'^    if: (.+)$', section, re.M)
         if not match:
             return True
-        return bool(self.expression(match.group(1), event, scope, device))
+        return bool(self.expression(match.group(1), event, scope, device, retained=retained))
 
-    def expression(self, expression, event, scope, device, replay_source='c' * 40, replay_run=''):
+    def expression(self, expression, event, scope, device, replay_source='c' * 40, replay_run='', retained=False):
         # Interpret the checked-in boolean/equality gates and the one fixed
         # concurrency formatter. No arbitrary Python calls or code execution.
-        expression = expression.replace('github.event_name', 'event').replace('inputs.validation_scope', 'scope').replace('inputs.unsigned_device', 'device').replace('inputs.replay_source', 'source').replace('inputs.replay_run', 'run').replace('||', 'or').replace('&&', 'and')
-        inputs = {'event': event, 'scope': scope, 'device': device, 'source': replay_source, 'run': replay_run}
+        expression = expression.replace('github.event_name', 'event').replace('inputs.validation_scope', 'scope').replace('inputs.unsigned_device', 'device').replace('inputs.replay_source', 'source').replace('inputs.replay_run', 'run').replace('inputs.retained_projection_tests', 'retained').replace('||', 'or').replace('&&', 'and')
+        inputs = {'event': event, 'scope': scope, 'device': device, 'source': replay_source, 'run': replay_run, 'retained': retained}
         def value(node):
             if isinstance(node, ast.Name):
                 return inputs[node.id]
@@ -379,6 +379,17 @@ class FocusedWorkflowRoutingTests(unittest.TestCase):
         self.assertIn("'checker-compiler.log'", source.split('      - name: Hash startup replay diagnostics', 1)[1])
         for control in ('normal', 'no-app-groups', 'main-app-only', 'main-app-only-automatic'):
             self.assertIn('/replay-controls/' + control + '/launch-smoke/checker-compiler.log', published)
+
+    def test_retained_startup_can_test_projection_without_enabling_any_compile_job(self):
+        self.assertTrue(self.condition('startup-artifact-replay', 'workflow_dispatch', 'startup', False, retained=True))
+        self.assertTrue(self.condition('native-api-probe', 'workflow_dispatch', 'startup', False, retained=True))
+        self.assertFalse(self.condition('native-api-probe', 'workflow_dispatch', 'startup', False, retained=False))
+        for job in ('integration-tests', 'application-build', 'unsigned-device-build', 'custom-options-ui'):
+            self.assertFalse(self.condition(job, 'workflow_dispatch', 'startup', False, retained=True), job)
+        source = self.section('native-api-probe')
+        self.assertIn("requested_run != '42160468600'", source)
+        self.assertIn("os.environ['STARTUP_REPLAY_RUN'] != '42174474046'", source)
+        self.assertIn("requested_source != 'c55e19c4f5cbe0d730499035d0a0ef712f6903a9'", source)
 
     def test_main_only_device_package_is_gated_on_successful_variant_and_has_no_signing_secrets(self):
         workflow = WORKFLOW.read_text()

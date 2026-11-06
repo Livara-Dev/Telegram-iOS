@@ -15,6 +15,9 @@ from launch_smoke import COMMAND_OUTPUT_LIMIT, POST_EXIT_DRAIN_SECONDS
 BUNDLE = 'org.livara.ayugram.tests.native-security.projection'
 RUNTIME = 'com.apple.CoreSimulator.SimRuntime.iOS-27-0'
 DEVICE_NAME = 'BAZEL_TEST_iPhone 17_27.0'
+REPLAY_PROFILE = 'replay-iphone15pro'
+REPLAY_DEVICE_NAME = 'AYU_REPLAY_iPhone 15 Pro_27.0'
+REPLAY_DEVICE_TYPE = 'com.apple.CoreSimulator.SimDeviceType.iPhone-15-Pro'
 MARKER = 'Library/Caches/AyuGramNativeTestHost/projection-lifecycle.json'
 STAGES = {'didFinish', 'sceneVisible'}
 BOOTSTRAP_PROCESSES = {'testmanagerd', 'runningboardd', 'xctest', 'launchd_sim'}
@@ -181,14 +184,31 @@ def read_marker(container):
         return {'state': 'unavailable'}
 
 
-def capture(root, secrets, started_at=None):
+def capture(root, secrets, started_at=None, *, owned_identifier=None, profile=None):
     root = Path(root)
     destination = root / 'build/fork-evidence'
     report = {'probe_only_not_test_result': True, 'bundle': BUNDLE, 'commands': {}}
+    replay = owned_identifier is not None or profile is not None
+    valid_replay = (isinstance(profile, str) and profile == REPLAY_PROFILE and
+                    isinstance(owned_identifier, str) and
+                    re.fullmatch(r'[0-9a-fA-F]{8}(?:-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}', owned_identifier))
+    if replay:
+        report.update(profile=REPLAY_PROFILE, device_type=REPLAY_DEVICE_TYPE,
+                      runtime=RUNTIME, device_identity={'state': 'unknown'})
     try:
         if (root / 'build').is_symlink() or destination.is_symlink():
             return
         destination.mkdir(mode=0o700, parents=True, exist_ok=True)
+        def write_report():
+            descriptor = os.open(destination / 'projection-launch-probe.json', os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+            with os.fdopen(descriptor, 'w') as file:
+                json.dump(report, file, indent=2)
+                file.write('\n')
+        if replay and not valid_replay:
+            write_report()
+            return
+        if replay:
+            secrets = [*secrets, owned_identifier, owned_identifier.lower(), owned_identifier.upper()]
         # Snapshot the failing XCTest host before a standalone launch changes
         # lifecycle state or generates an unrelated later crash report.
         report['crash_summary_before_standalone_launch'] = capture_crashes(started_at)
@@ -200,7 +220,8 @@ def capture(root, secrets, started_at=None):
             except (OSError, subprocess.SubprocessError):
                 report['commands'][name] = {'state': 'unavailable'}
                 return None, ''
-        inventory, data = diagnostic_command(['xcrun', 'simctl', 'list', 'devices', 'available', '--json'], secrets, timeout=10)
+        inventory, data = diagnostic_command(['xcrun', 'simctl', 'list', 'devices',
+            REPLAY_DEVICE_NAME if replay else 'available', '--json'], secrets, timeout=10)
         # Keep the bounded/redacted failure metadata even when CoreSimulator
         # inventory cannot complete. No raw device inventory is published.
         report['commands']['devices'] = inventory
@@ -208,17 +229,36 @@ def capture(root, secrets, started_at=None):
             try:
                 payload = json.loads(data)
                 devices = payload.get('devices') if isinstance(payload, dict) else None
-                values = devices.get(RUNTIME, []) if isinstance(devices, dict) else None
-                if not isinstance(values, list): raise ValueError('Invalid device inventory')
-                candidates = [d for d in values if isinstance(d, dict)
-                              and d.get('name') == DEVICE_NAME and d.get('state') == 'Booted']
+                if replay:
+                    if not isinstance(devices, dict): raise ValueError('Invalid device inventory')
+                    owned_rows = []
+                    for runtime, values in devices.items():
+                        if not isinstance(runtime, str) or not isinstance(values, list):
+                            raise ValueError('Invalid device inventory')
+                        for device in values:
+                            if not isinstance(device, dict) or not isinstance(device.get('udid'), str):
+                                raise ValueError('Invalid device row')
+                            if device['udid'].casefold() == owned_identifier.casefold():
+                                owned_rows.append((runtime, device))
+                    candidates = [device for runtime, device in owned_rows
+                                  if len(owned_rows) == 1 and runtime == RUNTIME and
+                                  device.get('name') == REPLAY_DEVICE_NAME and
+                                  device.get('deviceTypeIdentifier') == REPLAY_DEVICE_TYPE and
+                                  device.get('state') == 'Booted']
+                else:
+                    values = devices.get(RUNTIME, []) if isinstance(devices, dict) else None
+                    if not isinstance(values, list): raise ValueError('Invalid device inventory')
+                    candidates = [d for d in values if isinstance(d, dict)
+                                  and d.get('name') == DEVICE_NAME and d.get('state') == 'Booted']
             except (ValueError, TypeError, UnicodeError, RecursionError):
                 candidates = []
                 inventory['payload_state'] = 'invalid'
             report['commands']['devices']['matching_booted_devices'] = len(candidates)
             if (len(candidates) == 1 and isinstance(candidates[0].get('udid'), str)
                     and re.fullmatch(r'[0-9a-fA-F]{8}(?:-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}', candidates[0]['udid'])):
-                identifier = candidates[0]['udid']
+                identifier = owned_identifier if replay else candidates[0]['udid']
+                if replay:
+                    report['device_identity'] = {'state': 'verified'}
                 # Installation/path validation can fail during XCTest bootstrap.
                 # Read selected logs for the verified owned device first so
                 # those failures do not suppress the most useful evidence.
@@ -255,10 +295,7 @@ def capture(root, secrets, started_at=None):
                         time.sleep(0.1)
                         marker = read_marker(data_path)
                     report['marker_after_standalone_launch'] = marker
-        descriptor = os.open(destination / 'projection-launch-probe.json', os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
-        with os.fdopen(descriptor, 'w') as file:
-            json.dump(report, file, indent=2)
-            file.write('\n')
+        write_report()
     except (OSError, ValueError, TypeError, KeyError):
         # Diagnostic collection never replaces the original compiler/test failure.
         return

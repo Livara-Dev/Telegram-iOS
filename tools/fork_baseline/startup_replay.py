@@ -22,7 +22,8 @@ import tempfile
 import zipfile
 
 from ipa_inspect import inspect_ipa
-from launch_smoke import BUNDLE, READY, SmokeError, extract_app, smoke
+from launch_smoke import (BUNDLE, READY, SmokeError, extract_app, smoke,
+                          SIMULATOR_DEVICE_TYPE, SIMULATOR_RUNTIME)
 from replay_artifact import prior_smoke_report
 from storage_evidence import valid_group
 
@@ -253,7 +254,8 @@ def replay(ipa, output, startup_variant='original', private_control_only=False):
               'startup_variant': startup_variant, 'private_control_only': private_control_only,
               'application_recompiled': False, 'passed': False, 'normal_control_passed': False,
               'no_app_groups_control_attempted': False, 'source_codesign_verified': False,
-              'phase': 'extractApplication'}
+              'phase': 'extractApplication', 'simulator_device_type': SIMULATOR_DEVICE_TYPE,
+              'simulator_runtime': SIMULATOR_RUNTIME}
     try:
         inspect_ipa(ipa, 'simulator', BUNDLE)
         report['source_simulator_ipa_sha256'] = digest(ipa)

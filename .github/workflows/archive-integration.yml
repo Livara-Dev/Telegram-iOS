@@ -31,6 +31,10 @@ on:
         description: Compare the fixed historical package once before the c55 private startup control
         type: boolean
         default: false
+      retained_projection_tests:
+        description: Run the fixed c55 Projection artifact alongside its retained startup check
+        type: boolean
+        default: false
       projection_host_control:
         description: Diagnostic control for the fixed synthetic Projection host only
         type: choice
@@ -586,7 +590,7 @@ jobs:
   native-api-probe:
     # Manual host API diagnostics, or one verified retained Projection replay.
     # Neither mode compiles Telegram, uses API Secrets, or qualifies the app.
-    if: github.event_name == 'workflow_dispatch' && inputs.validation_scope == 'probe'
+    if: github.event_name == 'workflow_dispatch' && (inputs.validation_scope == 'probe' || (inputs.validation_scope == 'startup' && inputs.retained_projection_tests))
     runs-on: xcode-27
     timeout-minutes: 25
     permissions:
@@ -601,8 +605,10 @@ jobs:
         working-directory: ${{ github.workspace }}
         env:
           CHECKOUT_TOKEN: ${{ github.token }}
-          REPLAY_RUN: ${{ inputs.replay_run }}
+          REPLAY_RUN: ${{ inputs.validation_scope == 'startup' && inputs.retained_projection_tests && '42160468600' || inputs.replay_run }}
           REPLAY_SOURCE: ${{ inputs.replay_source }}
+          RETAINED_WITH_STARTUP: ${{ inputs.validation_scope == 'startup' && inputs.retained_projection_tests && 'true' || 'false' }}
+          STARTUP_REPLAY_RUN: ${{ inputs.replay_run }}
         run: |
           set -euo pipefail
           python3 - <<'PYTHON'
@@ -615,6 +621,13 @@ jobs:
               raise SystemExit('Invalid checkout coordinates')
           requested_run = os.environ['REPLAY_RUN']
           requested_source = os.environ['REPLAY_SOURCE']
+          paired = os.environ.get('RETAINED_WITH_STARTUP', 'false')
+          if paired not in {'true', 'false'}:
+              raise SystemExit('Invalid retained verification mode')
+          if paired == 'true' and (
+                  requested_run != '42160468600' or requested_source != 'c55e19c4f5cbe0d730499035d0a0ef712f6903a9'
+                  or os.environ['STARTUP_REPLAY_RUN'] != '42174474046' or repo != 'Livara-Dev/Telegram-iOS'):
+              raise SystemExit('Invalid paired retained verification coordinates')
           fetch_args = ['git', 'fetch', '--no-tags', '--depth', '1', 'origin', sha]
           if requested_run:
               if (not re.fullmatch(r'[1-9][0-9]{0,18}', requested_run) or int(requested_run) > 2**63 - 1
@@ -657,7 +670,7 @@ jobs:
         if: inputs.replay_run != ''
         env:
           GH_TOKEN: ${{ github.token }}
-          REPLAY_RUN: ${{ inputs.replay_run }}
+          REPLAY_RUN: ${{ inputs.validation_scope == 'startup' && inputs.retained_projection_tests && '42160468600' || inputs.replay_run }}
           REPLAY_SOURCE: ${{ inputs.replay_source }}
           PROJECTION_HOST_CONTROL: ${{ inputs.projection_host_control || 'original' }}
           PROJECTION_BOOTSTRAP_SAMPLE: ${{ inputs.projection_bootstrap_sample && 'true' || 'false' }}

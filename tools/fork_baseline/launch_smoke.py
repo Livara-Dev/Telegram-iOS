@@ -25,6 +25,9 @@ from storage_evidence import (STORAGE_SELECTION, inspect_storage, valid_private,
                               seed_private_selection, private_account_store_identity)
 
 BUNDLE = 'org.livara.ayugram'
+# Match the successfully exercised UI host and the owner's target model.
+SIMULATOR_DEVICE_TYPE = 'com.apple.CoreSimulator.SimDeviceType.iPhone-15-Pro'
+SIMULATOR_RUNTIME = 'com.apple.CoreSimulator.SimRuntime.iOS-27-0'
 READY = {'authorizationVisible', 'conversationsVisible'}
 STAGES = READY | {'applicationEntered', 'windowCreated', 'sceneAttached', 'storageReady',
                   'accountManagerReady', 'sharedContextReady', 'authorizationPrepared',
@@ -287,7 +290,8 @@ def smoke(ipa, output, expected_storage_kind=None, seed_private_storage=False):
     report = {'mode': 'fresh_simulator_launch', 'physical_device_verified': False,
               'authentication_codes_used': False, 'launches': [], 'passed': False,
               'storage_test_setup': 'freshPinnedPrivate' if seed_private_storage else 'freshAutomatic',
-              'phase': 'extractApplication', 'failure': None}
+              'phase': 'extractApplication', 'failure': None,
+              'simulator_device_type': SIMULATOR_DEVICE_TYPE, 'simulator_runtime': SIMULATOR_RUNTIME}
     if expected_storage_kind is not None:
         report['expected_storage_kind'] = expected_storage_kind
     identifier, recorder, private_store_identity = None, None, None
@@ -299,8 +303,7 @@ def smoke(ipa, output, expected_storage_kind=None, seed_private_storage=False):
             report['screenshot_checker'] = {'compiled': True, 'self_test_passed': True, 'self_test_cases': 3}
             report['phase'] = 'createDevice'
             identifier = command(['xcrun', 'simctl', 'create', 'AYU_SMOKE_' + uuid.uuid4().hex,
-                                  'com.apple.CoreSimulator.SimDeviceType.iPhone-17',
-                                  'com.apple.CoreSimulator.SimRuntime.iOS-27-0'], phase='createDevice')
+                                  SIMULATOR_DEVICE_TYPE, SIMULATOR_RUNTIME], phase='createDevice')
             # Identifier is produced by simctl, never taken from user input.
             try:
                 uuid.UUID(identifier)

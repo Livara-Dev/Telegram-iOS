@@ -221,10 +221,20 @@ def prior_smoke_report(value):
               'conversationsVisible', 'failed', 'notObserved'}
     failures = {None, 'storageUnavailable', 'keychainUnavailable', 'storageConfiguration', 'initializationUnavailable'}
     optional = {'phase', 'failure', 'cleanup_failures', 'expected_storage_kind', 'recording_return_code', 'screenshot_checker',
-                'storage_test_setup', 'private_selection_seeded_before_launch', 'private_account_store_absent_before_launch'}
+                'storage_test_setup', 'private_selection_seeded_before_launch', 'private_account_store_absent_before_launch',
+                'simulator_device_type', 'simulator_runtime'}
     if (not isinstance(value, dict) or not fields.issubset(value) or not set(value).issubset(fields | optional) or value['mode'] != 'fresh_simulator_launch' or
             value['physical_device_verified'] is not False or value['authentication_codes_used'] is not False or
             type(value['passed']) is not bool or not isinstance(value['launches'], list) or len(value['launches']) > 2):
+        raise ReplayError('unexpected_prior_smoke_fields')
+    profile_fields = {'simulator_device_type', 'simulator_runtime'}
+    if profile_fields.intersection(value) and (
+            not profile_fields.issubset(value) or
+            not isinstance(value['simulator_device_type'], str) or
+            value['simulator_device_type'] not in {
+                'com.apple.CoreSimulator.SimDeviceType.iPhone-17',
+                'com.apple.CoreSimulator.SimDeviceType.iPhone-15-Pro'} or
+            value['simulator_runtime'] != 'com.apple.CoreSimulator.SimRuntime.iOS-27-0'):
         raise ReplayError('unexpected_prior_smoke_fields')
     if 'phase' in value and (not isinstance(value['phase'], str) or value['phase'] not in PHASES):
         raise ReplayError('unexpected_prior_smoke_fields')

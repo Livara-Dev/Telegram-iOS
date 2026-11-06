@@ -256,6 +256,22 @@ class DeviceVariantTests(unittest.TestCase):
                     variant.strip_extensions(source, root / 'variant.ipa', count)
                 self.assertFalse((root / 'variant.ipa').exists())
 
+    def test_device_variant_cannot_relabel_the_observed_simulator_model(self):
+        values = evidence()
+        profile = {'simulator_device_type': 'com.apple.CoreSimulator.SimDeviceType.iPhone-15-Pro',
+                   'simulator_runtime': 'com.apple.CoreSimulator.SimRuntime.iOS-27-0'}
+        values[2].update(profile); values[3].update(profile)
+        self.assertEqual(variant.validate_startup(*values), (SOURCE, RUN, 6))
+        for kind in ('proof_missing', 'result_missing', 'different_model', 'invalid_model', 'different_runtime'):
+            changed = copy.deepcopy(values); proof, result = changed[2:]
+            if kind == 'proof_missing': proof.pop('simulator_device_type')
+            elif kind == 'result_missing': result.pop('simulator_runtime')
+            elif kind == 'different_model': proof['simulator_device_type'] = 'com.apple.CoreSimulator.SimDeviceType.iPhone-17'
+            elif kind == 'invalid_model': proof['simulator_device_type'] = result['simulator_device_type'] = 'unknown-model'
+            else: proof['simulator_runtime'] = 'com.apple.CoreSimulator.SimRuntime.iOS-26-0'
+            with self.subTest(kind=kind), self.assertRaises(replay.ReplayError):
+                variant.validate_startup(*changed)
+
     def test_gate_rejects_failure_wrong_source_missing_launch_private_storage_or_blank_ui(self):
         device, simulator, proof, result = evidence()
         self.assertEqual(variant.validate_startup(device, simulator, proof, result), (SOURCE, RUN, 6))

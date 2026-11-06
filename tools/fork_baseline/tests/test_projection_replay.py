@@ -133,7 +133,7 @@ class ProjectionReplayTests(unittest.TestCase):
                 self.assertEqual(identifier, replay.CURRENT_ARTIFACT); Path(target).write_bytes(zipped.read_bytes())
             with patch.object(replay, 'CURRENT_OUTER_SHA256', actual), patch.object(replay, 'verify_current_checkout') as guard:
                 result = replay.replay(replay.CURRENT_RUN, replay.CURRENT_SOURCE, root / replay.OUTPUT, root,
-                    api_for(run_meta, artifact), fetch, run, lambda *args: None)
+                    api_for(run_meta, artifact), fetch, run, lambda *args, **kwargs: None)
             guard.assert_called_once_with(root)
             self.assertTrue(result['passed']); self.assertTrue(result['source_products_unchanged'])
             self.assertTrue(result['control_products_unchanged_after_execution'])
@@ -161,7 +161,7 @@ class ProjectionReplayTests(unittest.TestCase):
                         self.assertEqual(arguments[-2:], [products.BUNDLE, 'app'])
                         return ({'status': 'commandFailed', 'exit_code': 2}, b'') if mode == 'unavailable' else ({'status': 'completed', 'exit_code': 0}, b'private-invalid-path' if mode == 'invalidPath' else str(installed).encode())
                     return base(arguments, timeout)
-                def probe(*args): order.append('standaloneProbe')
+                def probe(*args, **kwargs): order.append('standaloneProbe')
                 with patch.object(replay, 'host_bootstrap_diagnostic', return_value={'state': 'unavailable'}):
                     result = replay.execute(capture, root, root, run, probe, attest_control=True)
                 self.assertEqual(order, ['installed', 'standaloneProbe'])
@@ -408,7 +408,7 @@ class ProjectionReplayTests(unittest.TestCase):
                 else: self.assertEqual(options, {})
                 return status, stdout
             with patch.object(replay.bootstrap_sampling, 'capture', return_value={'state': 'captured'}) as capture, patch.object(replay, 'host_bootstrap_diagnostic', return_value={'state': 'unavailable'}):
-                result = replay.execute(root, root, root, command, lambda *args: None, bootstrap_sample=True)
+                result = replay.execute(root, root, root, command, lambda *args, **kwargs: None, bootstrap_sample=True)
             self.assertEqual(capture.call_count, 1)
             self.assertEqual(capture.call_args.args[:3], (123, 123, '12345678-1234-1234-1234-123456789ABC'))
             self.assertEqual(result['diagnostics']['bootstrap_sample'], {'state': 'captured'})
@@ -426,8 +426,10 @@ class ProjectionReplayTests(unittest.TestCase):
             if args == ['xcodebuild', '-version']: data = ('Xcode ' + version + '\nBuild version 27A9275').encode()
             elif '--show-sdk-version' in args: data = sdk.encode()
             elif 'runtimes' in args: data = json.dumps({'runtimes': [{'identifier': replay.RUNTIME, 'version': '27.0', 'isAvailable': True}]}).encode()
+            elif 'devicetypes' in args: data = json.dumps({'devicetypes': [{'name': 'iPhone 15 Pro', 'identifier': replay.DEVICE_TYPE}]}).encode()
             elif 'devices' in args:
-                data = json.dumps({'devices': {replay.RUNTIME: [{'name': replay.DEVICE_NAME, 'udid': device, 'state': 'Booted'}] if boot149 and any('bootstatus' in a for a in calls) else []}}).encode()
+                data = json.dumps({'devices': {replay.RUNTIME: [{'name': replay.DEVICE_NAME, 'udid': device, 'state': 'Booted',
+                    'deviceTypeIdentifier': replay.DEVICE_TYPE}] if boot149 and any('bootstatus' in a for a in calls) else []}}).encode()
             elif 'create' in args: data = device.encode()
             elif 'get_app_container' in args: result.update(status='commandFailed', exit_code=2)
             elif 'bootstatus' in args and boot149: result.update(status='commandFailed', exit_code=149)
@@ -440,8 +442,69 @@ class ProjectionReplayTests(unittest.TestCase):
     def test_sdk_mismatch_prevents_device_and_test_launch(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory); run, calls = self.runner(sdk='99')
-            result = replay.execute(root, root, root, run, lambda *args: None)
+            result = replay.execute(root, root, root, run, lambda *args, **kwargs: None)
             self.assertFalse(result['passed']); self.assertFalse(any('create' in a for a in calls))
+
+    def test_cached_replay_uses_fixed_iphone15pro_and_passes_only_its_owned_identity_to_probe(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory); run, calls = self.runner(); observed = []
+            def probe(destination, secrets, started_at, *, owned_identifier, profile):
+                observed.append((owned_identifier, profile))
+            with patch.object(replay, 'host_bootstrap_diagnostic', return_value={'state': 'unavailable'}):
+                result = replay.execute(root, root, root, run, probe)
+            self.assertTrue(result['passed']); self.assertEqual(result['case_counts']['started'], 41)
+            self.assertEqual(result['case_counts']['passed'], 41); self.assertEqual(result['assertion_retries'], 0)
+            self.assertEqual(result['device_type'], 'com.apple.CoreSimulator.SimDeviceType.iPhone-15-Pro')
+            self.assertEqual(result['runtime'], 'com.apple.CoreSimulator.SimRuntime.iOS-27-0')
+            self.assertEqual(observed, [('12345678-1234-1234-1234-123456789ABC', 'replay-iphone15pro')])
+            query = ['xcrun', 'simctl', 'list', '--json', 'devicetypes', 'iPhone 15 Pro']
+            creation = ['xcrun', 'simctl', 'create', 'AYU_REPLAY_iPhone 15 Pro_27.0', replay.DEVICE_TYPE, replay.RUNTIME]
+            self.assertLess(calls.index(query), calls.index(creation))
+            self.assertIn(['xcrun', 'simctl', 'list', 'devices', replay.DEVICE_NAME, '--json'], calls)
+            self.assertFalse(any('available' in args or 'iPhone-17' in ' '.join(args) for args in calls))
+            self.assertEqual(sum('test-without-building' in args for args in calls), 1)
+            self.assertEqual(replay.simulator_probe.DEVICE_NAME, 'BAZEL_TEST_iPhone 17_27.0')
+            self.assertEqual(replay.DEVICE_NAME, replay.simulator_probe.REPLAY_DEVICE_NAME)
+            self.assertEqual(replay.DEVICE_TYPE, replay.simulator_probe.REPLAY_DEVICE_TYPE)
+            self.assertEqual(replay.DEVICE_PROFILE, replay.simulator_probe.REPLAY_PROFILE)
+
+    def test_missing_wrong_or_ambiguous_iphone15pro_type_rejects_before_device_creation(self):
+        exact = {'identifier': replay.DEVICE_TYPE, 'name': 'iPhone 15 Pro'}
+        fixtures = [[], [{'identifier': replay.DEVICE_TYPE + '-Max', 'name': 'iPhone 15 Pro Max'}],
+                    [dict(exact, name='Other phone')], [exact, exact], [exact, dict(exact, name='Other phone')], None]
+        for types in fixtures:
+            with self.subTest(types=types), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory); base, calls = self.runner(); probed = []
+                def command(arguments, timeout=30):
+                    status, raw = base(arguments, timeout)
+                    if 'devicetypes' in arguments: raw = json.dumps({'devicetypes': types}).encode()
+                    return status, raw
+                result = replay.execute(root, root, root, command, lambda *args, **kwargs: probed.append(True))
+                self.assertFalse(result['passed']); self.assertFalse(result['xctest_command_attempted'])
+                self.assertEqual(result['failure'], 'projection_device_type_unavailable')
+                self.assertFalse(any('create' in args for args in calls)); self.assertEqual(probed, [])
+
+    def test_149_requires_exact_created_uuid_profile_runtime_and_booted_state(self):
+        for mode in ('model', 'identifier', 'runtime', 'duplicate', 'duplicateCaseVariant', 'notBooted'):
+            with self.subTest(mode=mode), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory); base, calls = self.runner(boot149=True)
+                def command(arguments, timeout=30):
+                    status, raw = base(arguments, timeout)
+                    if 'devices' in arguments and any('bootstatus' in args for args in calls):
+                        payload = json.loads(raw); row = payload['devices'][replay.RUNTIME][0]
+                        if mode == 'model': row['deviceTypeIdentifier'] += '-Max'
+                        elif mode == 'identifier': row['udid'] = '87654321-4321-4321-4321-CBA987654321'
+                        elif mode == 'runtime': payload['devices'][replay.RUNTIME + '-other'] = payload['devices'].pop(replay.RUNTIME)
+                        elif mode == 'duplicate': payload['devices'][replay.RUNTIME].append(dict(row))
+                        elif mode == 'duplicateCaseVariant': payload['devices'][replay.RUNTIME].append(dict(row, udid=row['udid'].lower()))
+                        else: row['state'] = 'Shutdown'
+                        raw = json.dumps(payload).encode()
+                    return status, raw
+                result = replay.execute(root, root, root, command, lambda *args, **kwargs: None)
+                self.assertFalse(result['passed']); self.assertFalse(result['xctest_command_attempted'])
+                self.assertEqual(result['failure'], 'projection_boot_state_unverified')
+                self.assertTrue(result['owned_device_cleanup_completed'])
+                self.assertFalse(any('test-without-building' in args for args in calls))
 
     def test_first_launch_readiness_is_read_only_bounded_and_precedes_device_creation(self):
         original = replay.native_command
@@ -458,7 +521,7 @@ class ProjectionReplayTests(unittest.TestCase):
                         return original([sys.executable, '-c', code], timeout=.1 if mode == 'timedOut' else 2)
                     return base(arguments, timeout)
                 with patch.dict(os.environ, {'SESSION_TOKEN': secret}), patch.object(replay, 'host_bootstrap_diagnostic', return_value={'state': 'unavailable'}):
-                    result = replay.execute(root, root, root, run, lambda *args: None)
+                    result = replay.execute(root, root, root, run, lambda *args, **kwargs: None)
                 self.assertNotIn(secret, json.dumps(result)); self.assertNotIn('/private/first-launch-secret', json.dumps(result))
                 self.assertIn('<REDACTED_CREDENTIAL>', result['diagnostics']['first_launch']['output'])
                 self.assertLessEqual(len(json.dumps(result['diagnostics']['first_launch'])), 17 * 1024)
@@ -544,7 +607,7 @@ class ProjectionReplayTests(unittest.TestCase):
                 if 'test-without-building' in arguments: self.assertEqual(timeout, 300)
                 if 'shutdown' in arguments or 'delete' in arguments: order.append(arguments[2])
                 return base(arguments, timeout)
-            def probe(destination, secrets, started_at):
+            def probe(destination, secrets, started_at, **kwargs):
                 order.append('inventoryTimedOut')
                 target = destination / 'build/fork-evidence'; target.mkdir(parents=True)
                 (target / 'projection-launch-probe.json').write_text(json.dumps({'probe_only_not_test_result': True,
@@ -577,7 +640,7 @@ class ProjectionReplayTests(unittest.TestCase):
                         stdout = data
                     return status, stdout
                 with patch.object(replay, 'host_bootstrap_diagnostic', return_value={'state': 'unavailable'}):
-                    result = replay.execute(root, root, root, run, lambda *args: None)
+                    result = replay.execute(root, root, root, run, lambda *args, **kwargs: None)
                 self.assertTrue(result['xctest_command_attempted']); self.assertFalse(result['passed'])
                 self.assertEqual(result['tests_started'], mode in {'crashed', 'startedOnly'})
                 self.assertEqual(result['case_counts']['started'], {'crashed': 41, 'startedOnly': 1}.get(mode, 0))
@@ -586,7 +649,7 @@ class ProjectionReplayTests(unittest.TestCase):
     def test_one_test_invocation_and_owned_device_cleanup_after_timeout(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory); run, calls = self.runner(failure='xctest')
-            result = replay.execute(root, root, root, run, lambda *args: None)
+            result = replay.execute(root, root, root, run, lambda *args, **kwargs: None)
             self.assertFalse(result['passed']); self.assertTrue(result['owned_device_cleanup_completed'])
             self.assertTrue(result['xctest_command_attempted']); self.assertFalse(result['tests_started'])
             self.assertEqual(result['case_counts']['started'], 0)
@@ -604,7 +667,7 @@ class ProjectionReplayTests(unittest.TestCase):
     def test_success_counts_are_historical_diagnostic_and_149_needs_exact_fresh_state(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory); run, calls = self.runner(boot149=True)
-            result = replay.execute(root, root, root, run, lambda *args: None)
+            result = replay.execute(root, root, root, run, lambda *args, **kwargs: None)
             self.assertTrue(result['passed']); self.assertTrue(result['already_booted_state_verified'])
             self.assertTrue(result['xctest_command_attempted']); self.assertTrue(result['tests_started'])
             self.assertEqual(result['case_counts']['started'], 41)
@@ -633,7 +696,7 @@ class ProjectionReplayTests(unittest.TestCase):
                     if 'bootstatus' in args and mode == 'timeout': status.update(status='timedOut', timeout=True, exit_code=None)
                     if 'devices' in args and mode == 'wrong_name': data = data.replace(replay.DEVICE_NAME.encode(), b'Other device')
                     return status, data
-                result = replay.execute(root, root, root, run, lambda *args: None)
+                result = replay.execute(root, root, root, run, lambda *args, **kwargs: None)
                 self.assertFalse(result['passed']); self.assertFalse(result['tests_started'])
                 self.assertTrue(result['owned_device_cleanup_completed'])
                 self.assertFalse(any('test-without-building' in a for a in calls))
@@ -646,7 +709,7 @@ class ProjectionReplayTests(unittest.TestCase):
                     status, data = base(args, timeout)
                     if mode == 'exit' and 'test-without-building' in args: status.update(status='commandFailed', exit_code=65)
                     return status, data
-                def probe(*args):
+                def probe(*args, **kwargs):
                     if mode == 'probe': raise RuntimeError('must not be published')
                 result = replay.execute(root, root, root, run, probe)
                 self.assertFalse(result['passed']); self.assertTrue(result['owned_device_cleanup_completed'])
@@ -661,7 +724,7 @@ class ProjectionReplayTests(unittest.TestCase):
             def fetch(identifier, destination):
                 self.assertEqual(identifier, replay.ARTIFACT); Path(destination).write_bytes(zipped.read_bytes())
             with patch.object(replay, 'OUTER_SHA256', digest):
-                result = replay.replay(replay.RUN, replay.SOURCE, root / replay.OUTPUT, root, api_for(run_meta, artifact), fetch, run, lambda *args: None)
+                result = replay.replay(replay.RUN, replay.SOURCE, root / replay.OUTPUT, root, api_for(run_meta, artifact), fetch, run, lambda *args, **kwargs: None)
             self.assertTrue(result['passed']); self.assertTrue(result['diagnostic_replay_only'])
             self.assertFalse(result['application_recompiled_for_replay']); self.assertFalse(result['new_checkout_qualified'])
             self.assertFalse(result['physical_device_verified']); output = root / replay.OUTPUT

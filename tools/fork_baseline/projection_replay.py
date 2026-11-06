@@ -44,8 +44,9 @@ CURRENT_OUTER_SHA256 = 'b1994fd195dc85097d8984c0eeb97508ccc60747f847de883636f137
 PINS = {'app': '13.1.2', 'xcode': '27.1', 'deploy_xcode': '27.1', 'macos': '27',
         'bazel': '9.2.0:dd466352a3e4d3581b8898740ee1ff208866ccbe25f8d367c5dcb950219587e6'}
 RUNTIME = 'com.apple.CoreSimulator.SimRuntime.iOS-27-0'
-DEVICE_TYPE = 'com.apple.CoreSimulator.SimDeviceType.iPhone-17'
-DEVICE_NAME = 'BAZEL_TEST_iPhone 17_27.0'
+DEVICE_TYPE = 'com.apple.CoreSimulator.SimDeviceType.iPhone-15-Pro'
+DEVICE_NAME = 'AYU_REPLAY_iPhone 15 Pro_27.0'
+DEVICE_PROFILE = 'replay-iphone15pro'
 OUTPUT = 'build/fork-evidence/projection-replay'
 MAX_OUTPUT = 1024 * 1024
 BOOTSTRAP_SAMPLE_AFTER_SECONDS = 90
@@ -629,6 +630,7 @@ def execute(products_root, output, root, command=native_command, probe=simulator
             bootstrap_sample=False):
     output, root = Path(output), Path(root); commands = {}; identifier = None
     report = {'commands': commands, 'passed': False, 'tests_started': False,
+              'device_type': DEVICE_TYPE, 'runtime': RUNTIME,
               'xctest_command_attempted': False, 'assertion_retries': 0, 'diagnostics': {}}
     secrets = tuple(v for k, v in os.environ.items() if v and re.search(r'TOKEN|SECRET|PASSWORD|API_ID|API_HASH|AUTH|PRIVATE_KEY|SESSION', k, re.I))
     def call(name, arguments, timeout=30, required=True):
@@ -662,7 +664,12 @@ def execute(products_root, output, root, command=native_command, probe=simulator
         runtimes = json.loads(raw)['runtimes']
         if len([r for r in runtimes if r.get('identifier') == RUNTIME and r.get('version') == '27.0' and r.get('isAvailable') is True]) != 1:
             raise artifacts.ReplayError('projection_runtime_unavailable')
-        _, raw = call('devices', ['xcrun', 'simctl', 'list', 'devices', 'available', '--json'])
+        _, raw = call('device_types', ['xcrun', 'simctl', 'list', '--json', 'devicetypes', 'iPhone 15 Pro'])
+        types = json.loads(raw)['devicetypes']
+        matching_types = [item for item in types if isinstance(item, dict) and item.get('identifier') == DEVICE_TYPE] if isinstance(types, list) else []
+        if len(matching_types) != 1 or matching_types[0].get('name') != 'iPhone 15 Pro':
+            raise artifacts.ReplayError('projection_device_type_unavailable')
+        _, raw = call('devices', ['xcrun', 'simctl', 'list', 'devices', DEVICE_NAME, '--json'])
         if any(d.get('name') == DEVICE_NAME for ds in json.loads(raw)['devices'].values() for d in ds):
             raise artifacts.ReplayError('projection_device_name_already_exists')
         _, raw = call('create', ['xcrun', 'simctl', 'create', DEVICE_NAME, DEVICE_TYPE, RUNTIME])
@@ -673,9 +680,13 @@ def execute(products_root, output, root, command=native_command, probe=simulator
         if status['status'] != 'completed':
             if status['status'] != 'commandFailed' or status['exit_code'] != 149 or status['timeout']:
                 raise artifacts.ReplayError('projection_boot_failed')
-            _, raw = call('boot_state', ['xcrun', 'simctl', 'list', 'devices', 'available', '--json'], timeout=15)
-            matching = [d for d in json.loads(raw)['devices'].get(RUNTIME, []) if d.get('udid') == identifier and d.get('name') == DEVICE_NAME and d.get('state') == 'Booted']
-            if len(matching) != 1: raise artifacts.ReplayError('projection_boot_state_unverified')
+            _, raw = call('boot_state', ['xcrun', 'simctl', 'list', 'devices', DEVICE_NAME, '--json'], timeout=15)
+            matching = [(runtime, device) for runtime, devices in json.loads(raw)['devices'].items() for device in devices
+                        if isinstance(device, dict) and isinstance(device.get('udid'), str)
+                        and device['udid'].casefold() == identifier.casefold()]
+            if (len(matching) != 1 or matching[0][0] != RUNTIME or matching[0][1].get('name') != DEVICE_NAME
+                    or matching[0][1].get('state') != 'Booted' or matching[0][1].get('deviceTypeIdentifier') != DEVICE_TYPE):
+                raise artifacts.ReplayError('projection_boot_state_unverified')
             report['already_booted_state_verified'] = True
         with tempfile.TemporaryDirectory(prefix='ayu-projection-results-') as private:
             result = Path(private) / 'test.xcresult'
@@ -723,7 +734,8 @@ def execute(products_root, output, root, command=native_command, probe=simulator
         # Reuse only the synthetic-host probe, with credentials absent from every
         # nested native command; raw XCResult and simulator files stay private.
         with tempfile.TemporaryDirectory(prefix='ayu-projection-probe-') as private:
-            with clean_environment(): probe(Path(private), secrets, started_at)
+            with clean_environment():
+                probe(Path(private), secrets, started_at, owned_identifier=identifier, profile=DEVICE_PROFILE)
             diagnostic = Path(private) / 'build/fork-evidence/projection-launch-probe.json'
             if diagnostic.is_file() and not diagnostic.is_symlink() and diagnostic.stat().st_size <= 256 * 1024:
                 write(output / 'projection-launch-probe.json', json.loads(products.read_small(diagnostic, 256 * 1024)))
