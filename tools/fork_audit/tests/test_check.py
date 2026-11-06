@@ -113,6 +113,18 @@ class SourceGuardTests(unittest.TestCase):
         self.write("ci/projection-discovery-request-extra.json", '{"schema":1}\n')
         self.assertFailure("Addition outside audit/build scope")
 
+    def test_export_repair_workflow_addition_is_exact_path_only(self):
+        self.write(".github/workflows/repair-qualified-device-export.yml", "name: Copy-only export repair\n")
+        self.assertEqual([], self.failures())
+        self.write(".github/workflows/repair-qualified-device-export-extra.yml", "name: Unreviewed workflow\n")
+        self.assertFailure("Addition outside audit/build scope")
+
+    def test_export_repair_request_addition_is_exact_path_only(self):
+        self.write("ci/qualified-device-export-repair-request.json", '{"schema":1}\n')
+        self.assertEqual([], self.failures())
+        self.write("ci/qualified-device-export-repair-request-extra.json", '{"schema":1}\n')
+        self.assertFailure("Addition outside audit/build scope")
+
     def test_exact_source_snapshot_workflow_is_tooling_but_neighbor_is_not(self):
         self.write(".github/workflows/ayu-source-snapshot.yml", "name: Tracked source snapshot\n")
         self.assertEqual([], self.failures())

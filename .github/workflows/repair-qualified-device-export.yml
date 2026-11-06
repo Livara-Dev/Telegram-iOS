@@ -1,0 +1,75 @@
+# SPDX-License-Identifier: GPL-2.0-or-later
+# Copyright (c) 2026 AyuGram iOS contributors
+# Added: 2026-11-06
+name: Repair qualified device export (packaging only)
+
+# Publish reviewed tooling first. Add this fixed request in a separate commit
+# only after original run 42279866706 finishes successfully. No request exists
+# in this draft. Changes elsewhere do not trigger a repair.
+on:
+  push:
+    branches: [ci/qualified-device-export-repair]
+    paths: [ci/qualified-device-export-repair-request.json]
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: ayugram-export-repair-42279866706
+  cancel-in-progress: false
+
+env:
+  GITHUB_WORKFLOW_SHA: ${{ github.workflow_sha }}
+
+jobs:
+  repair-export:
+    if: github.repository == 'Livara-Dev/Telegram-iOS' && github.event_name == 'push' && github.ref == 'refs/heads/ci/qualified-device-export-repair'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - name: Check out reviewed repair tooling without persistent credentials
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          ref: ${{ github.workflow_sha }}
+          path: repair-tooling
+          persist-credentials: false
+          fetch-depth: 1
+
+      - name: Test fixed origins and copy-only repair guards
+        run: python3 -m unittest discover -s repair-tooling/tools/fork_baseline/export_repair -p 'test_*.py' -v
+
+      # The sole token is the normal read-only Actions token. This downloads the
+      # completed original final export, simulator intermediate and native
+      # evidence. No Xcode, Bazel, Telegram API credentials or signing material.
+      - name: Repair evidence from three exact completed-run artifacts
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          umask 077
+          python3 repair-tooling/tools/fork_baseline/export_repair/publish_repaired_export.py \
+            --request repair-tooling/ci/qualified-device-export-repair-request.json \
+            --output repaired-export \
+            --delivery-helper repair-tooling/tools/fork_baseline/device_delivery.py \
+            --inventory repair-tooling/tools/fork_baseline/device_delivery_inventory.json
+
+      - name: Publish corrected evidence export with unchanged unsigned IPA
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: corrected-qualified-main-app-only-unsigned-device-5d241267-42279866706
+          path: repaired-export/
+          if-no-files-found: error
+          retention-days: 14
+          include-hidden-files: false
+
+      - name: Record packaging-only scope
+        run: |
+          python3 - <<'PY'
+          import os, pathlib
+          with pathlib.Path(os.environ['GITHUB_STEP_SUMMARY']).open('a') as output:
+              output.write('Corrected evidence export for original run 42279866706, source `5d241267735b3958c225681d173853568bab705d`.\n\n')
+              output.write('The original unsigned IPA hash and static ARM64/iPhoneOS inspection are unchanged. ')
+              output.write('Five native evidence files and three TextFormat evidence files were restored. ')
+              output.write('No app was built, run or signed. External signing and physical-device verification remain required.\n')
+          PY

@@ -23,6 +23,8 @@ ADDED_PREFIXES = (
     "submodules/TelegramUI/Components/Chat/ChatMessageLocalFilterBubbleContentNode/",
 )
 ADDED_FILES = {
+    '.github/workflows/repair-qualified-device-export.yml',
+    'ci/qualified-device-export-repair-request.json',
     '.github/workflows/projection-discovery-dispatch.yml',
     'ci/projection-discovery-request.json',
     'ci/unsigned-device-request.json',
