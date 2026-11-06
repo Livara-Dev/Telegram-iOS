@@ -74,6 +74,20 @@ binary. No proprietary exteraGram components are copied.
   waits for that actual transition with a bounded run-loop condition while
   retaining the original assertion. XCUI interaction, video and screenshot
   export were not attempted in this run; visual dark-mode proof is still open.
+- [42114628197](https://github.com/Livara-Dev/Telegram-iOS/actions/runs/42114628197)
+  at b492f097 passed **965 completed cases**, failed six, and crashed during one
+  further Core case before it produced an outcome. Counts: Passcode 16,
+  Postbox 201, archive 99, encrypted playback 18, TextFormat 270 and Core 361
+  passing / 6 failing. Later Core classes never ran. The 18 playback cases
+  actually decoded the generated H.264/AAC video, AAC and Ogg/Opus voice, MP4
+  animation, PNG/JPEG, animated GIF and PDF fixtures. SettingsUI ran zero cases
+  because its PDF controller's stored `next` button collided with UIKit's
+  inherited property. Projection also ran zero cases: three XCTest bootstrap
+  stalls ended with exit 12, although its host launched standalone. The Core
+  failures concern deletion/unlock and five transfer fixtures; a later media
+  filter case hit Postbox's unsupported single-value Codable container. These
+  remain repair/qualification work, not an all-green application build. The
+  artifact's outer SHA-256 and 94 inner checksum references were verified.
 
 ## Core features and native integration
 
@@ -88,12 +102,12 @@ follow-up extends that candidate. None is certified by the older 62546557 IPA.
 | Prominent **Custome options**, eleven searchable categories, quick toggles | Actual production renderer compiled; 8 controller tests and 1 XCUI scenario passed in [42097515377](https://github.com/Livara-Dev/Telegram-iOS/actions/runs/42097515377); twelve recorded stages | Synthetic account-free host; authenticated Settings entry/routing not proven. Dark-labelled stages stayed light and do not verify dark mode; repaired scenario needs rerun. Job failed afterward during screenshot export, exit 64; recorded video retained |
 | Account-bound archive/Ghost/filter controls and disable-only reset | Source integrated with existing account facades | Current-candidate native suites and real account navigation pending |
 | Browse retained archives with capture disabled; chat search and profile links | Foreground read leases, chat-scoped search, separate saved-media/history destinations | New native tests pending; separate local destinations, not merged server search or canonical media grid |
-| Bulk clear-history/date/thread and author/forward-author deletion capture | Explicit cloud helpers use default-nil Postbox selected-row observers; 13 new production-path tests authored | Native execution pending. Handoff remains capped at 256 records / 8 MiB; overflow increments missed-capture count while canonical deletion proceeds. No extra full history scan; performance unmeasured |
-| Reconnect/history-fetch replacements, validation removals and media-reference refreshes | Follow-up adds a default-nil observer at actual Postbox body replacement, explicit ordinary cloud-load wrappers, cached channel minimum-ID handling and original-request namespace guards; 28 additional native tests authored | Native execution pending. Same-second repeated content uses existing persisted UUIDs and SQLite sequence ordering. One pending-outbox budget scan per upsert batch; no measured latency. Validation removal also covers upstream RPC-error fallback and is not proof of remote sender deletion |
+| Bulk clear-history/date/thread and author/forward-author deletion capture | Explicit cloud helpers use default-nil Postbox selected-row observers; all 13 new production-path cases passed at b492 in 42114628197 | Current later source needs qualification. Handoff remains capped at 256 records / 8 MiB; overflow increments missed-capture count while canonical deletion proceeds. No extra full history scan; performance unmeasured |
+| Reconnect/history-fetch replacements, validation removals and media-reference refreshes | Precise Postbox replacement observer, ordinary cloud-load wrappers, cached channel minimum-ID handling and original-request namespace guards; all 28 additional cases passed at b492 in 42114628197 | Current later source needs qualification. Same-second repeated content uses persisted UUIDs and SQLite sequence ordering. One pending-outbox budget scan per upsert batch; no measured latency. Validation removal includes upstream RPC-error fallback and is not proof of remote sender deletion |
 | Legacy group, broadcast and supergroup edit/delete replay | New actual replay fixtures and acknowledged channel-edit coverage | Native execution pending; no live two-client server claim |
 | Deleted/Edited label preferences and current live-version preview | Account-local editor and archive timeline/gallery bindings; later saved-edit marker candidate described below | New native tests pending. The older IPA does not contain the inline marker candidate |
-| Encrypted import/export | Native picker, strict same-user/environment binding, authenticated envelope, live-row reconstruction and transactional merge | 30 new native tests pending; capture must be explicitly paused, with warned capture gap. No AyuSync/network transport |
-| Ordinary GIF, PDF and typed encrypted media playback | Bounded in-memory GIF/PDF renderers and expanded real-format tests | Native tests/recordings pending; Ogg/Opus decoding is not assumed supported |
+| Encrypted import/export | Native picker, strict owner/environment binding, authenticated envelope, live-row reconstruction and transactional merge; all 22 library transfer cases passed at b492 | Five Core integration fixtures failed during backup creation; facade/UI qualification remains open. Capture must be explicitly paused, with warned capture gap. No AyuSync/network transport |
+| Ordinary GIF, PDF and typed encrypted media playback | All 18 encrypted-playback cases passed at b492, including real Ogg/Opus PCM, video frames and the PDF fixture; bounded in-memory GIF/PDF UI source | Native SettingsUI tests never executed because of the separate PDF button compiler error. UI compilation/recordings and later-source qualification remain pending; no physical-device claim |
 | Ordinary read/presence controls, story-opening warning, read after confirmed send | Account-scoped production hooks, bounded acknowledged-send intent, central story gate | New native tests pending; server behavior and other-client interactions unverified, mandatory expiry receipts preserved |
 | Text, bounded-expression, media-type and cached blocked-author filters | Background projection, temporary reveal and native rule editor | New native tests pending; unknown metadata/albums/rich/secret/timed content stays visible |
 | Explicit local sender hiding and inverse rules | [Account-local sender management and proven non-match predicates](fork/LOCAL-MESSAGE-FILTERS.md), source commit `b39cf89f`; fifteen Core and three projection cases authored | Native execution and real chat/editor recordings pending. Unknown/empty/oversized/work-limited text stays visible to inverse text rules; independent sender/media predicates may apply. No server block request or notification/preview filtering |

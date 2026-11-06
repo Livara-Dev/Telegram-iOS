@@ -1056,7 +1056,7 @@ private final class LocalArchivedPDFController: ViewController {
     private let picture = UIImageView()
     private let pageLabel = UILabel()
     private let previous = UIButton(type: .system)
-    private let next = UIButton(type: .system)
+    private let nextPageButton = UIButton(type: .system)
     private let renderDisposable = MetaDisposable()
     private let statusDisposable = MetaDisposable()
     private var inactiveObserver: NSObjectProtocol?
@@ -1076,9 +1076,9 @@ private final class LocalArchivedPDFController: ViewController {
         self.pageLabel.textAlignment = .center
         self.pageLabel.numberOfLines = 2
         self.previous.setTitle("Previous page", for: .normal)
-        self.next.setTitle("Next page", for: .normal)
+        self.nextPageButton.setTitle("Next page", for: .normal)
         self.previous.addTarget(self, action: #selector(self.previousPage), for: .touchUpInside)
-        self.next.addTarget(self, action: #selector(self.nextPage), for: .touchUpInside)
+        self.nextPageButton.addTarget(self, action: #selector(self.nextPage), for: .touchUpInside)
         self.statusDisposable.set((archive.status |> deliverOnMainQueue).start(next: { [weak self] status in
             if !localArchiveCanRead(status) { self?.closeMedia() }
         }))
@@ -1095,7 +1095,7 @@ private final class LocalArchivedPDFController: ViewController {
         self.closed = true; self.renderGeneration += 1
         self.renderDisposable.set(nil)
         self.preview = nil; self.picture.image = nil
-        self.previous.isEnabled = false; self.next.isEnabled = false
+        self.previous.isEnabled = false; self.nextPageButton.isEnabled = false
         self.pageLabel.text = "Preview closed. Reopen the attachment to continue."
     }
 
@@ -1114,7 +1114,7 @@ private final class LocalArchivedPDFController: ViewController {
         self.renderGeneration += 1
         let generation = self.renderGeneration, page = self.pageIndex
         self.picture.image = nil
-        self.previous.isEnabled = false; self.next.isEnabled = false
+        self.previous.isEnabled = false; self.nextPageButton.isEnabled = false
         self.pageLabel.text = "Loading page…"
         let signal = Signal<UIImage?, NoError> { subscriber in
             let cancellation = LocalArchivePreviewCancellation()
@@ -1131,7 +1131,7 @@ private final class LocalArchivedPDFController: ViewController {
             self.picture.image = image
             self.pageLabel.text = image == nil ? "This page is unavailable or exceeds preview limits." : "Page \(page + 1) of \(preview.pageCount) · Read-only preview"
             self.previous.isEnabled = page > 0
-            self.next.isEnabled = page + 1 < preview.pageCount
+            self.nextPageButton.isEnabled = page + 1 < preview.pageCount
         }))
     }
 
@@ -1143,7 +1143,7 @@ private final class LocalArchivedPDFController: ViewController {
     override func loadDisplayNode() {
         super.loadDisplayNode()
         self.displayNode.backgroundColor = .black
-        for view in [self.picture, self.pageLabel, self.previous, self.next] as [UIView] { self.displayNode.view.addSubview(view) }
+        for view in [self.picture, self.pageLabel, self.previous, self.nextPageButton] as [UIView] { self.displayNode.view.addSubview(view) }
         self.renderPage()
     }
 
@@ -1154,7 +1154,7 @@ private final class LocalArchivedPDFController: ViewController {
         self.picture.frame = CGRect(x: 12, y: top, width: max(0, layout.size.width - 24), height: max(0, bottom - top - 100))
         self.pageLabel.frame = CGRect(x: 16, y: bottom - 96, width: max(0, layout.size.width - 32), height: 40)
         self.previous.frame = CGRect(x: 16, y: bottom - 52, width: max(0, (layout.size.width - 40) * 0.5), height: 44)
-        self.next.frame = CGRect(x: layout.size.width * 0.5 + 4, y: bottom - 52, width: max(0, (layout.size.width - 40) * 0.5), height: 44)
+        self.nextPageButton.frame = CGRect(x: layout.size.width * 0.5 + 4, y: bottom - 52, width: max(0, (layout.size.width - 40) * 0.5), height: 44)
     }
 }
 
