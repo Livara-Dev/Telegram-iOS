@@ -1,0 +1,40 @@
+{
+  "schema": 1,
+  "repository": "Livara-Dev/Telegram-iOS",
+  "branch": "integration/ayu-current",
+  "reviewed_base_source_commit": "ae19a4dc33bdb7ab2c7be0309dd7377b6d4fdf4f",
+  "patch_sha256": "6078511ea337bf133a2745920535c64ffa48fb93610eaba37870f24c3e964a98",
+  "files": [
+    {"path":"submodules/LocalMessageArchive/Sources/LocalMessageArchive/ArchiveModels.swift","before_sha256":"3d9b5e6a66875321500e085b1f93b0261fb4516261f6480ed900ef32563d4e4e","after_sha256":"93f3f638b2fb531083e8c95719f1acd9d6b5964011e754db4f9d9e88b6b96512"},
+    {"path":"submodules/TelegramCore/Sources/LocalArchive/LocalArchiveSettings.swift","before_sha256":"873b6e95a8f482b2ae3c7c0b0f267b0129e69b35768b4f2833c525914c757377","after_sha256":"c20d767e5006e79189c0aa4773545fd29d9939e52a3bbb00d2a95dd7a9830995"},
+    {"path":"submodules/TelegramCore/Sources/LocalArchive/LocalArchiveCapture.swift","before_sha256":"bbaa74e24281a74de93fdd63dacbb70f9d963018492fa2e47cf94994a626e35c","after_sha256":"850cdc44c6f93e4ba1b89ebdad12cee623ac2c1a28745f08824bbe546ecb2b9f"},
+    {"path":"submodules/TelegramCore/Sources/LocalArchive/LocalArchiveCaptureOperation.swift","before_sha256":"80a582aba5a3283c1044f860939074dbea833e6281f7dffa5cd498a4d8b8b721","after_sha256":"6cce8d1d9f374431ee367528952391c122ca6ea1c0f54602c1cae1aebcddfd18"},
+    {"path":"submodules/TelegramCore/Sources/LocalArchive/LocalArchiveCoordinator.swift","before_sha256":"eec4d921cf67d1909ab7d54454fe884970570b4396666778500dfe91562c1f81","after_sha256":"eae02e136d5db37b7e48ea9bbb13055309171d7c6b55efe88c8dbee7e9488564"},
+    {"path":"submodules/LocalMessageArchive/Sources/LocalMessageArchive/ArchiveStore.swift","before_sha256":"8cb3a8c09adb641803a797f5bd054cb660f2db05dddc918374e4ef4c936a38a0","after_sha256":"1731e61299c55b3b4db48b4d691d8666b7a63aa0d28d8d1a7c1a2552a7815ab0"},
+    {"path":"submodules/LocalMessageArchive/Sources/LocalMessageArchive/ArchiveTransferDatabase.swift","before_sha256":"4109c6e40abeb05fa0053c5582f04716150293616cae3459c798bd4972d7f28a","after_sha256":"0823eed9daf2a772cb2c88cba34ed26bbecb1797ff99a25561125493289f3166"},
+    {"path":"submodules/TelegramCore/Sources/TelegramEngine/Messages/DeleteMessages.swift","before_sha256":"1181a5d30b56d56367424007242a3d875eefc7efee2a0a0bae39697f2c6d8f4a","after_sha256":"1597cec3d385841585ec733618bb05c33206a6a2078b98ef38929e0ab8a014b3"},
+    {"path":"submodules/TelegramCore/Sources/State/ManagedAutoremoveMessageOperations.swift","before_sha256":"326b3015ff1275df3970f0b53c6dbc9972a35c46cac4ab7f66e3fe84532b107e","after_sha256":"bd4a29100e88cf9904ac354eaf872826e698a6e848d1879957f8b790b08fde72"},
+    {"path":"submodules/TelegramCore/Sources/TelegramEngine/Messages/MarkMessageContentAsConsumedInteractively.swift","before_sha256":"e746abdd1042fab3b295d65c24ed358f9524b37921581b5aaa42454406f472e6","after_sha256":"7848212165960d92049b8ee31e88a0fa5c955212548098ec9b0e05e8216e2716"},
+    {"path":"submodules/SettingsUI/Sources/LocalArchiveSettingsController.swift","before_sha256":"effb41e349812f376ca80740731e88d8a2842b9d25b16bdc1bacd7479fc5b858","after_sha256":"b5e7f7176b13189d5944f2a8db808606806a9ba115ef70144ec7f77404dd38ef"},
+    {"path":"submodules/SettingsUI/Sources/LocalTimedMediaInformationController.swift","before_sha256":"8fd31db61100d3169176371b2266390f7e334bd9c2c8fda6a8dbedf48a9821e6","after_sha256":"9a932a6e2dd52e26af943f5654744fd093253ca2cc4fea1126e080d42fbaafab"},
+    {"path":"submodules/SettingsUI/Sources/CustomeOptionsCatalog.swift","before_sha256":"109f346466e10b7f50cf519d78dfdca115093e3ba66c4c969a951c1fad12909d","after_sha256":"cc22b4e659f1d09fae72128ad3fd7f1a2c037b57dc49c1df6013f10828376fb1"},
+    {"path":"tools/fork_audit/check.py","before_sha256":"1dbfc686002638d6c7677e99c5ac755288e34e2f29dfc500115dce0840cae1e1","after_sha256":"3cf63fef7fbc59e88a51afebad75cab4c30f9e133eb0f7918e77441b2f98017c"},
+    {"path":"submodules/TelegramCore/Tests/LocalArchiveTimedMediaExclusionTests.swift","before_sha256":"f9b1cac70d1165d769fe02fea78e0f4a11e74eabf01d89a82864985223493802","after_sha256":"d73a67ba1d3dbc5d84a628cb229659bb678a36970e72e7c410b8df74f49f3acb"},
+    {"path":"submodules/TelegramCore/Tests/LocalArchiveCoordinatorTests.swift","before_sha256":"862d5a9af03cfd5364f3b3d44f8080a78aa27af35aec660de71a69ed8966a172","after_sha256":"862731c5d4ed4d8d800abbba4ea709aab144a8dbcf1aec44ae49e8c12dda9b6f"},
+    {"path":"submodules/LocalMessageArchive/Tests/LocalMessageArchiveTests/ArchiveStoreTests.swift","before_sha256":"bb55003b7873f43d692e3e2631cd8825dc07ddbe7ea657cb40cbded8da7805d1","after_sha256":"1565b4a756108e59880fddf717b01716cbd616e15704d4cdc17864a46fb2485b"},
+    {"path":"submodules/LocalMessageArchive/Tests/LocalMessageArchiveTests/ArchiveTransferTests.swift","before_sha256":"1492869cdec5a68d2c943f691c1b14f968af7f2f59fcbcf62a4603106d5c2550","after_sha256":"812055e47ceabf1b1fe8c1a210b8519d7bb8df4d9e68d06ebd90a7ceca308ccb"},
+    {"path":"tools/fork_baseline/extended_retention_checks.py","before_sha256":null,"after_sha256":"9c24b9af0f5f6810e8afe2c64d8229c3414af1e61969a84bd32780fc247fca62"},
+    {"path":"tools/fork_baseline/ExtendedRetentionHostChecks.swift","before_sha256":null,"after_sha256":"b9111cf29021af22482dac2e1be8bf5fb142373eaf80b4525594e6924e10e33e"},
+    {"path":"tools/fork_baseline/tests/fixtures/retained-c55-CustomeOptionsCatalog.swift","before_sha256":null,"after_sha256":"109f346466e10b7f50cf519d78dfdca115093e3ba66c4c969a951c1fad12909d"},
+    {"path":"tools/fork_baseline/tests/test_custom_options_replay.py","before_sha256":"369f099829c5a564d7d52897f0aa743af063e45b4b9c4caa3cd039d15311fa0b","after_sha256":"e8163f1a83e34c4e50235d65fc09505c3e348b82dedb8d9f06a5e8cd55a23f67"},
+    {"path":"docs/fork/EXTENDED-RETENTION.md","before_sha256":null,"after_sha256":"859b5bdb62a05cb0d603f2aafa984cb60b8101967f59d47042c3957b1dd295db"},
+    {"path":"tools/fork_baseline/tests/test_extended_publication.py","before_sha256":null,"after_sha256":"2e5f92dbc2ada5b5186efd97f8226f9b14c26479ff8d6170afeae95da165d593"}
+  ],
+  "patch_chunks": [
+    {"path":"tools/fork_baseline/extended-retention-payload/00.txt","sha256":"0ab76088f41a658af9b0b4e20291f1a1ed01d5b2f972ff083cd9bb827ca54c3f"},
+    {"path":"tools/fork_baseline/extended-retention-payload/01.txt","sha256":"d56bdd171c53ec67ea4eb463eb5a32d010544404c504e7ae0f58fda62e1d54d8"},
+    {"path":"tools/fork_baseline/extended-retention-payload/02.txt","sha256":"a4686bd70f798af6cb926fcbd1eb570bcf06202987523207c1ba4fecc999b465"},
+    {"path":"tools/fork_baseline/extended-retention-payload/03.txt","sha256":"722dfb2af8f8fdd073bdc2d41fd1cb1c0db177625fd441c1b8df95a32036abf1"},
+    {"path":"tools/fork_baseline/extended-retention-payload/04.txt","sha256":"52fca4a872c40ce3807a1804b5139fdd445b64b6a0d756e54d445fe304503c3f"}
+  ]
+}
