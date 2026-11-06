@@ -3,6 +3,20 @@
 Initial assessment date: 2026-11-04. This source-based threat assessment is **not a finding that the app is secure**. The initial reviewed snapshots were Telegram-iOS `279f89e4d4f63f17227bf877dc3d8990f22ecd58` and AyuGram4A `7013145676d36d82ee13c02a89f72097b7490dcd`. Later checkpoints below record native tests and successful full device and simulator compilation at `c55e19c4`. These results do not establish signed physical-device behavior, a penetration test, a cryptographic review or runtime network-privacy verification. The companion architecture and license audits contain source references.
 
 
+## Canonical secret-cache cleanup correction — 6 November 2026
+
+Source `5d241267735b3958c225681d173853568bab705d` repairs a privacy defect in the preceding extended-retention source `c2ddd3d5`: captured secret resource IDs had been excluded from Telegram's normal forced MediaBox unlink without an eventual cleanup obligation. A named decrypted cache file could therefore outlive archive rejection, disablement or purge. The repair preserves canonical deletion IDs/force flags and, when eligible, acquires an account-bound owned descriptor before unlink. It introduces no plaintext staging file, new dependency, alternate decryption, extra download or network service.
+
+[Run 42272821047](https://github.com/Livara-Dev/Telegram-iOS/actions/runs/42272821047) passed 129 archive-store and 835 Core native cases, including all 28 added identities. Canonical cleanup under rejection/disable/exclusion/quota/purge, missing-owner behavior, held-writer ownership, path replacement, per-account/environment isolation and reopen-after-commit passed local fixtures. The focused run did not build the complete application or produce an IPA. Existing c55 artifacts do not include this change.
+
+The bridge is bounded to64 descriptors / 256 MiB globally,16 descriptors per account and60-second leases. Pre-unlink admission leaves one descriptor of headroom:63 global / 15 per account. The default archive payload quota is 32 MiB; snapshot overhead counts. Missing/incomplete cache files, policy/protection/lease changes, storage failure and capacity pressure can lose pending media. Cloud media can disappear before utility-queue acquisition. A successful descriptor acquisition is not durable before encrypted commit; process death can still lose bytes after canonical unlink. Cooperative cancellation can race after its final validity check with COMMIT; generation/purge serialization is separate. These tests do not prove lossless retention or atomic cross-database cancellation.
+
+Secret-chat and expiring-message retention remain independent default-off options. Source tracing finds an incoming local-consume→timestamp-worker→capture route, but current opted view-once tests exercise the remote helper and the local timer test directly invokes expiry. No recipient playback/close/actual-worker end-to-end proof is available. Copy protection, server restrictions and normal timers remain active; Telegram API-contract conflicts are unresolved, with no approval claim.
+
+Existing account-directory recovery/removal risks remain open. Normal cache clearing and account/logout cleanup are distinct; the archive can be removed with its account directory. Native Keychain fixtures do not establish physical protected-data behavior, signing-team migration or recovery across SideStore reinstall. A new signing identity or uninstall may affect data; no real migration has been tested.
+
+No runtime zero-telemetry finding, external penetration test, full cryptographic audit or complete corresponding-source/dependency-license certification follows from these results. The publicly retained three GPL/source material files correct packaging omission but are not a complete GPL certification. The SideSign screenshot's Apple 403 / timeout occurred during signing/networking and is not evidence of a repaired or reproduced app crash. Independent signing and physical-device verification remain external release gates.
+
 ## Startup and storage review, 2026-11-05
 
 This later checkpoint records bounded evidence rather than closing the earlier

@@ -63,11 +63,21 @@ cover canonical cleanup, missing owners, held writers, path replacement, source
 revocation, account isolation and restart after commit. Standalone store cases
 cover descriptor lifetime, cancellation, quota and generation behavior.
 
-At this document's creation these native tests are **authored, not executed**.
-Portable guards and source review are not Swift type-checking, application
-integration or physical-device evidence. The manual `archive-core` CI scope
-runs only the archive-store and TelegramCore suites; it produces no app or IPA.
-A new device package requires separate successful compilation and signing.
+At source `5d241267735b3958c225681d173853568bab705d`,
+[run 42272821047](https://github.com/Livara-Dev/Telegram-iOS/actions/runs/42272821047)
+executed **129 archive-store and 835 TelegramCore cases: all 964 passed**, with
+no failures, skips, duplicate case events or invalid start/pass ordering. All
+28 added method identities passed; one renamed a prior method, so there are
+27 net additional methods. The artifact's outer SHA-256 and all 12 inner checksum
+references were verified. These results replace the earlier authored-but-unexecuted
+status.
+
+The focused `archive-core` scope compiled and tested the two named suites only.
+It did not build the complete application or produce an IPA. Fixture success does
+not establish live incoming/recipient playback, actual timer-worker progression,
+authenticated UI, process-death survival before media commit or physical-device
+behavior. The previous c55 device candidate does not contain this source. A new
+device package needs its own compilation, startup and independent signing evidence.
 
 Telegram API policy conflicts for optional extended retention remain documented
 in [EXTENDED-RETENTION.md](EXTENDED-RETENTION.md). This cleanup correction does not

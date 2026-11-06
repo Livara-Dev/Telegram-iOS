@@ -1,9 +1,11 @@
 # AyuGram native iOS feature matrix
 
-Audit date: **2026-11-06**. The current compiled candidate uses application source
-`c55e19c4f5cbe0d730499035d0a0ef712f6903a9`. Historical baseline entries refer to
-`62546557`, `73b52244` and other explicitly named revisions; they do not verify
-later feature changes. The checkpoints below distinguish implementation, native
+Audit date: **2026-11-06**. The preserved compiled device candidate uses application
+source `c55e19c4f5cbe0d730499035d0a0ef712f6903a9`. New archive source
+`5d241267735b3958c225681d173853568bab705d` passed focused native tests but has no
+full application build or IPA at this checkpoint. Historical baseline entries
+refer to `62546557`, `73b52244` and other explicitly named revisions; they do not
+verify later feature changes. The checkpoints below distinguish implementation, native
 tests, full application compilation and actual startup. No feature is marked
 fully working without relevant real-application evidence. Simulator behavior does
 not establish physical-iPhone installation, device performance or feature parity.
@@ -16,7 +18,49 @@ source is January 2025 (`42f5f32c`). This is an inventory of discoverable public
 features, not a claim of complete corresponding source for the current Android
 binary. No proprietary exteraGram components are copied.
 
-## Current verification evidence
+## Current source-specific status — 6 November 2026
+
+This checkpoint supersedes the older “absent in baseline” descriptions only for the explicitly named newer source. The downloadable device candidate remains `c55e19c4`; the new archive source `5d241267` has **964 passing local native cases**, but no full application build or IPA yet. Neither is verified on a physical iPhone. See [current verification](fork/CURRENT-VERIFICATION-2026-11-06.md) for exact test/artifact identities and limits. Historical results below retain their original source and must not be relabelled as current-source or device evidence.
+
+| Feature | Current native iOS implementation/status | Verification and remaining limitation |
+| --- | --- | --- |
+| Deleted messages: private/group/channel | Pre-removal hooks → durable Postbox outbox → independent SQLCipher archive; default off | 5d local capture/coordinator/replay/removal suites pass. No live sender-deletes-for-everyone session verified; unseen/already removed content cannot be recovered |
+| All observed edits and timestamps | Pre-replacement/acknowledged-edit capture and chronological timeline | Local native storage/Core tests pass. Captures observed versions; deletion observation time is not authoritative server time |
+| Completed photos | Eligible locally completed image bytes copied to encrypted archive | Local JPEG capture/cache-cleanup/reopen tests pass; no physical incoming-photo scenario verified |
+| Completed videos/GIFs/voice/round videos/documents | Typed metadata plus bounded descriptor-backed encrypted file copy | Local byte-copy tests pass; separate c55 encrypted decoder tests pass for generated real formats. Synthetic four-byte timed AV fixtures do not prove playable media |
+| Secret-chat retention | Independent account option, default off, source 5d | Local pre-unlink descriptor/canonical-cleanup cases pass. Existing c55 IPA excludes these messages; no full-app 5d build or live Secret Chat scenario verified |
+| Cloud disappearing/timed/view-once media and auto-delete | Independent expiring-content option, default off; capture before expiry/removal where eligible completed bytes exist | 47 timed/exclusion native cases pass at 5d. Opted view-once tests use remote-consume helper; full recipient local-playback/actual-worker route unverified. No policy exemption or server restriction bypass |
+| Disappearing secret media | Requires both secret and expiring opt-ins | Same local source/cleanup/store coverage; completion, budgets, TTL and pre-commit process-death limits apply |
+| Independent storage/cache cleanup | Archive-owned encrypted content independent of MediaBox; normal canonical cleanup preserved | Actual local cleanup/reopen and owned-source tests pass. Logout/account-directory removal can delete archive; no permanence across every app lifecycle claimed |
+| Crash recovery | Durable metadata outbox, idempotent receipts, encrypted commits; bounded in-memory media ownership | Native rollback/replay/reopen tests pass. Two databases are not one transaction; an FD does not survive process death before media commit |
+| Account isolation and keys | Account/environment-bound ownership, Keychain-backed key identity and generation checks | Native account/key/source tests pass. SideStore signing-team migration, physical protected-data state and actual account switching unverified |
+| Retention/exclusions/bot rules | Account payload/age policies and peer/sender/bot exclusion | Native local tests pass; default 32 MiB. Effective source bridge max 256 MiB, descriptor/lease/outbox limits apply; payload count is not full physical-disk usage |
+| Archive management/delete controls | Usage counters, retention and generation-aware purge; native source-wired controls | Core/store tests pass. Actual authenticated dashboard and per-chat management recording unverified |
+| Deleted Messages/search/timeline | Separate local archive destinations, encrypted indexed queries and original/edit/deletion timeline | Native local query/state tests pass. Actual account navigation unverified; not merged server search |
+| Media gallery/chat-profile route | Native encrypted standalone/account/chat-scoped gallery | Source-wired, local helper/query tests pass. Actual gallery interaction unverified; not canonical media-grid parity |
+| Inline Deleted/Edited markers | Text/caption markers, local archived-row projection and bounded label preferences | Core tests pass. New standard-discovery Projection run 42276436155 active at checkpoint; authenticated placement/media-only status/album coverage pending |
+| Encrypted import/export | Versioned authenticated local file transfer and account mapping | 25 Store transfer  + 12 Core transfer cases pass at 5d. Document-picker and cross-install recovery unverified; Telegram session material excluded |
+| Ghost read suppression/read on interaction | Account policy and typed receipt operation gates; scoped read-after-send | 15 message privacy  + 24 read-after-send native cases pass at 5d; live server behavior unverified |
+| Ghost typing/sticker/upload/recording activity | Account-scoped outgoing activity gate | 15 activity native cases pass. Already sent/server-derived/other-client activity cannot be hidden retroactively |
+| Ghost presence/offline attempts | Native presence policy and bounded offline attempt | 9 presence cases pass. No guaranteed invisibility, background scheduling or simultaneous-client result |
+| Story receipt suppression/warning | Account-scoped story policy plus pre-opening warning | 26 story  + 10 warning cases pass. Reactions/replies/other clients may reveal activity; actual account opening/reconnect unverified |
+| Per-account privacy/quick controls | Postbox preferences and source-wired controls/active status | Core local policies pass; authenticated quick-toggle/control bindings need runtime verification |
+| Ghost scheduled sending | No reliability-qualified implicit scheduling | Not implemented as a Ghost guarantee; explicit upstream scheduling remains separate |
+| Text/global/per-chat/regex/media filters | Persisted bounded local matcher, media predicates and global exclusions | 54 Core cases pass at 5d. Actual hide/reveal/editor and pending Projection qualification remain distinct; no spam-classifier or notification/preview guarantee |
+| Blocked/specified sender and inverse filters | Cached/explicit local sender rules and inverse text/media predicates | Included in54 Core passes. Unknown/rich/grouped/secret/timed cases remain visible where unsupported; no server blocking mutation |
+| Create filter/reveal temporarily | Native source-wired message action/editor and reveal state | No authenticated conversation recording; does not alter server messages |
+| Hide sponsored messages | Configurable account-local presentation policy | 5 ads cases pass at 5d. Full promotional-surface/live display coverage unverified; no Premium entitlement or server-request suppression claim |
+| Local Premium cosmetics | Local palette/motion/bundled-icon permission and appearance controls | 8 cosmetics cases pass at 5d. Server entitlements unchanged; native alternate-icon switching unverified |
+| Folder colors/tags | Account-local presentation metadata | 21 native cases pass at 5d; real tab/editor recordings pending; no server tag API/limits bypass |
+| Visible “Custome options” | Leading source-wired Settings route, 11 searchable categories; real renderer exercised in synthetic host | c55 fresh root and fulltwelve-stage XCUI cases pass;12 PNGs / 2,599 frames reviewed. Authenticated account binding unverified. New 5d timed-media copy/extended controls not visually verified |
+| Native light/dark/reset/customization | Actual UIKit appearance, search/category, toggle, cancel/confirm reset and cosmetic reset | c55 synthetic full scenario passes. Footer overlap/conditional dark-banner contrast remain; no smooth-scroll or physical-device benchmark |
+| AyuSync | No reviewed compatible encrypted protocol implemented | Unsupported; storage remains local-only, no archive/session upload |
+| Restricted content/history never received | No decryption/copy-protection/server-access bypass | Cannot recover inaccessible, already missing, incomplete or never received content. Only already archived eligible removed-group history can remain |
+| IPA/signing/update identity | Preserved ARM64 main-app-only unsigned c55 package; `org.livara.ayugram` | Requires independent signing. New 5d IPA not produced at checkpoint; physical install/update/data preservation unverified. Apple 403 signing/network error unresolved |
+
+The 41 original Projection assertions were observed passing in earlier experimental nested runs, but those runs ended with Apple test-manager failures. They are **not** a successful native qualification. The active standard-discovery run reuses retained products on a fresh simulator; its final result must be audited before this status changes.
+
+## Historical verification evidence
 
 - Historical application source `62546557` produced the full unsigned ARM64 device build in
   [42031063759](https://github.com/Livara-Dev/Telegram-iOS/actions/runs/42031063759).
