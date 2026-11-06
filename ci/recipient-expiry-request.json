@@ -1,0 +1,7 @@
+{
+  "schemaVersion": 1,
+  "candidate_sha": "d020bfd79afed66f4ab981bbc4d5a3ab580e187c",
+  "production_source_sha": "5d241267735b3958c225681d173853568bab705d",
+  "validation_scope": "core-only",
+  "nonce": "recipient-startup-20261106-01"
+}
