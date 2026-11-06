@@ -10,6 +10,7 @@ import shutil
 import stat
 import sys
 import tempfile
+import threading
 import time
 import unittest
 from unittest.mock import patch
@@ -298,6 +299,124 @@ class ProjectionReplayTests(unittest.TestCase):
             self.assertEqual(status['status'], 'outputLimit'); self.assertEqual(len(data), 1024)
         status, _ = replay.native_command([sys.executable, '-c', 'import time;time.sleep(5)'], timeout=.1)
         self.assertTrue(status['timeout'])
+
+    def test_bootstrap_sampler_is_default_off_and_restricted_to_exact_current_source_before_access(self):
+        for source, run_id, enabled in [(replay.SOURCE, replay.RUN, True),
+                                        (replay.CURRENT_SOURCE, replay.CURRENT_RUN, 1),
+                                        (replay.CURRENT_SOURCE, replay.CURRENT_RUN, 'true')]:
+            with self.subTest(source=source, enabled=enabled), patch.object(replay, 'origin') as origin:
+                with self.assertRaisesRegex(ValueError, 'projection_invalid_bootstrap_sample'):
+                    replay.replay(run_id, source, Path(replay.OUTPUT), bootstrap_sample=enabled)
+                origin.assert_not_called()
+        with patch.object(replay.bootstrap_sampling, 'capture') as capture:
+            status, _ = replay.native_command([sys.executable, '-c', 'pass'])
+        self.assertNotIn('bootstrap_diagnostic', status); capture.assert_not_called()
+
+    def test_single_bootstrap_observation_runs_before_kill_only_for_live_owned_child_and_preserves_timeout(self):
+        observations = []
+        def observe(pid, group, alive):
+            os.kill(pid, 0)
+            observations.append((pid, group, alive()))
+            return {'state': 'captured', 'selection': {'wait_categories': {'machReceive': 1}}}
+        began = time.monotonic()
+        with patch.object(replay, 'BOOTSTRAP_SAMPLE_AFTER_SECONDS', .05):
+            status, data = replay.native_command([sys.executable, '-c', 'import time;print("Testing started",flush=True);time.sleep(5)'],
+                                                 timeout=.3, bootstrap_diagnostic=observe)
+        self.assertLess(time.monotonic() - began, 1.2)
+        self.assertEqual(len(observations), 1)
+        self.assertEqual(observations[0][0], observations[0][1]); self.assertTrue(observations[0][2])
+        self.assertEqual(status['status'], 'timedOut'); self.assertIsNone(status['exit_code'])
+        self.assertEqual(status['bootstrap_diagnostic']['state'], 'captured')
+        self.assertEqual(replay.cases(data)['started'], 0)
+
+    def test_expected_case_start_prevents_sampling_but_unknown_or_suite_banner_does_not(self):
+        expected = "Test Case '-[Module." + next(iter(replay.EXPECTED)).replace('.', ' ') + "]' started."
+        for line, should_sample in [(expected, False), ('Test Suite started', True),
+                                    ("Test Case '-[OtherTests testUnknown]' started.", True)]:
+            with self.subTest(line=line), patch.object(replay, 'BOOTSTRAP_SAMPLE_AFTER_SECONDS', .1):
+                calls = []
+                def observe(pid, group, alive):
+                    calls.append(alive()); return {'state': 'captured'}
+                status, _ = replay.native_command([sys.executable, '-c', 'import time;print(' + repr(line) + ',flush=True);time.sleep(5)'],
+                                                  timeout=.25, bootstrap_diagnostic=observe)
+            self.assertEqual(calls, [True] if should_sample else [])
+            self.assertTrue(status['timeout'])
+            self.assertEqual(status['bootstrap_diagnostic']['state'], 'captured' if should_sample else 'notTriggered')
+            if not should_sample: self.assertEqual(status['bootstrap_diagnostic']['reason'], 'expectedCaseStarted')
+
+    def test_observation_handles_live_child_after_stdout_closes_and_does_not_sample_after_exit(self):
+        with patch.object(replay, 'BOOTSTRAP_SAMPLE_AFTER_SECONDS', .05):
+            calls = []
+            def observe(pid, group, alive):
+                calls.append(alive()); return {'state': 'captured'}
+            status, _ = replay.native_command([sys.executable, '-c', 'import os,time;os.close(1);os.close(2);time.sleep(5)'],
+                                              timeout=.2, bootstrap_diagnostic=observe)
+            self.assertTrue(status['timeout']); self.assertEqual(calls, [True])
+        with patch.object(replay, 'BOOTSTRAP_SAMPLE_AFTER_SECONDS', 10):
+            calls.clear()
+            status, _ = replay.native_command([sys.executable, '-c', 'pass'], timeout=1, bootstrap_diagnostic=observe)
+            self.assertEqual(status['status'], 'completed'); self.assertEqual(calls, [])
+            self.assertEqual(status['bootstrap_diagnostic']['state'], 'notTriggered')
+
+    def test_optional_diagnostic_failure_and_output_limit_do_not_leak_or_change_failed_command(self):
+        for failure in ('exception', 'oversized', 'notDictionary'):
+            with self.subTest(failure=failure), patch.object(replay, 'BOOTSTRAP_SAMPLE_AFTER_SECONDS', .05):
+                def observe(pid, group, alive):
+                    if failure == 'exception': raise RuntimeError('private-diagnostic-canary /private/raw-source')
+                    return {'private-diagnostic-canary': 'x' * 65536} if failure == 'oversized' else 'private-diagnostic-canary'
+                status, _ = replay.native_command([sys.executable, '-c', 'import time;time.sleep(.15);raise SystemExit(7)'],
+                                                  timeout=1, bootstrap_diagnostic=observe)
+            self.assertEqual(status['status'], 'commandFailed'); self.assertEqual(status['exit_code'], 7)
+            self.assertEqual(status['bootstrap_diagnostic']['state'], 'unavailable')
+            self.assertNotIn('private-diagnostic-canary', json.dumps(status)); self.assertNotIn('/private/', json.dumps(status))
+            self.assertLess(len(json.dumps(status)), 65536)
+
+    def test_slow_diagnostic_cannot_extend_original_command_deadline_or_publish_mutable_partial_state(self):
+        release = threading.Event(); finished = threading.Event(); observations = []
+        def observe(pid, group, alive):
+            observations.append(alive()); release.wait(2)
+            finished.set(); return {'state': 'captured'}
+        began = time.monotonic()
+        try:
+            with patch.object(replay, 'BOOTSTRAP_SAMPLE_AFTER_SECONDS', .05):
+                status, _ = replay.native_command([sys.executable, '-c', 'import time;time.sleep(5)'], timeout=.2,
+                                                  bootstrap_diagnostic=observe)
+            self.assertLess(time.monotonic() - began, 1)
+            self.assertTrue(status['timeout']); self.assertEqual(observations, [True])
+            self.assertEqual(status['bootstrap_diagnostic'], {'state': 'unavailable', 'reason': 'diagnosticDidNotFinishBeforeDeadline'})
+        finally:
+            release.set(); self.assertTrue(finished.wait(1))
+        self.assertEqual(status['bootstrap_diagnostic']['state'], 'unavailable')
+
+    def test_unverified_child_group_never_starts_observer(self):
+        with patch.object(replay, 'BOOTSTRAP_SAMPLE_AFTER_SECONDS', .05), patch.object(replay.os, 'getpgid', return_value=-1):
+            calls = []
+            status, _ = replay.native_command([sys.executable, '-c', 'import time;time.sleep(5)'], timeout=.2,
+                bootstrap_diagnostic=lambda *args: calls.append(args))
+        self.assertTrue(status['timeout']); self.assertEqual(calls, [])
+        self.assertEqual(status['bootstrap_diagnostic'], {'state': 'unavailable', 'reason': 'ownedProcessGroupUnverified'})
+
+    def test_sampler_option_reaches_only_single_xctest_and_does_not_promote_zero_cases_to_pass(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory); base, calls = self.runner(failure='xctest'); sampled = []
+            def command(arguments, timeout=30, **options):
+                status, stdout = base(arguments, timeout)
+                if 'test-without-building' in arguments:
+                    self.assertEqual(timeout, 300); self.assertEqual(set(options), {'bootstrap_diagnostic'})
+                    sampled.append(options['bootstrap_diagnostic'](123, 123, lambda: True))
+                    status['bootstrap_diagnostic'] = sampled[-1]
+                else: self.assertEqual(options, {})
+                return status, stdout
+            with patch.object(replay.bootstrap_sampling, 'capture', return_value={'state': 'captured'}) as capture, patch.object(replay, 'host_bootstrap_diagnostic', return_value={'state': 'unavailable'}):
+                result = replay.execute(root, root, root, command, lambda *args: None, bootstrap_sample=True)
+            self.assertEqual(capture.call_count, 1)
+            self.assertEqual(capture.call_args.args[:3], (123, 123, '12345678-1234-1234-1234-123456789ABC'))
+            self.assertEqual(result['diagnostics']['bootstrap_sample'], {'state': 'captured'})
+            self.assertNotIn('bootstrap_diagnostic', result['commands']['xctest'])
+            self.assertFalse(result['passed']); self.assertFalse(result['tests_started'])
+            self.assertEqual(result['case_counts']['started'], 0); self.assertEqual(len(result['case_counts']['missing']), 41)
+            self.assertTrue(result['owned_device_cleanup_completed']); self.assertEqual(result['assertion_retries'], 0)
+            self.assertEqual(sum('test-without-building' in args for args in calls), 1)
 
     def runner(self, failure=None, version='27.1', sdk='27.1', boot149=False):
         calls = []; device = '12345678-1234-1234-1234-123456789ABC'

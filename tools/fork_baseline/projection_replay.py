@@ -19,6 +19,7 @@ import stat
 import struct
 import subprocess
 import tempfile
+import threading
 import time
 import uuid
 import zipfile
@@ -27,6 +28,7 @@ from xml.parsers.expat import ExpatError
 import replay_artifact as artifacts
 import test_product_capture as products
 import simulator_probe
+import bootstrap_sample as bootstrap_sampling
 from custom_options_smoke import EXPORT_ENVIRONMENT_KEYS
 from launch_smoke import POST_EXIT_DRAIN_SECONDS
 from startup_replay import main_code_digest
@@ -46,6 +48,9 @@ DEVICE_TYPE = 'com.apple.CoreSimulator.SimDeviceType.iPhone-17'
 DEVICE_NAME = 'BAZEL_TEST_iPhone 17_27.0'
 OUTPUT = 'build/fork-evidence/projection-replay'
 MAX_OUTPUT = 1024 * 1024
+BOOTSTRAP_SAMPLE_AFTER_SECONDS = 90
+BOOTSTRAP_SAMPLE_JOIN_SECONDS = 20
+BOOTSTRAP_SAMPLE_OUTPUT_LIMIT = 64 * 1024
 HOST_LOG_PROCESSES = frozenset({'xcodebuild', 'CoreSimulatorService', 'testmanagerd',
                                 'runningboardd', 'xctest', 'launchd_sim'})
 HOST_LOG_IDENTITIES = simulator_probe.BOOTSTRAP_IDENTITIES
@@ -437,10 +442,51 @@ def clean_environment():
         os.environ.clear(); os.environ.update(original)
 
 
-def native_command(arguments, timeout=30):
+def native_command(arguments, timeout=30, bootstrap_diagnostic=None):
     """Bound subprocess lifetime/output, including inherited pipes after exit."""
     process = None; data = bytearray(); code = None; state = 'unavailable'
-    deadline = time.monotonic() + timeout
+    started = time.monotonic(); deadline = started + timeout
+    observer = None; observation = []; observation_decided = False
+    not_observed = {'state': 'notTriggered', 'reason': 'commandEndedBeforeTrigger'}
+    def begin_observation():
+        nonlocal observer, not_observed
+        try:
+            group = os.getpgid(process.pid)
+            if group != process.pid: raise ValueError('Unexpected owned process group')
+        except (OSError, ValueError):
+            not_observed = {'state': 'unavailable', 'reason': 'ownedProcessGroupUnverified'}
+            return
+        def alive():
+            return process.poll() is None and time.monotonic() < deadline
+        def observe():
+            try:
+                selected = bootstrap_diagnostic(process.pid, group, alive)
+                if not isinstance(selected, dict): raise ValueError('Invalid diagnostic selection')
+                encoded = json.dumps(selected, ensure_ascii=True, allow_nan=False).encode('ascii')
+                if len(encoded) > BOOTSTRAP_SAMPLE_OUTPUT_LIMIT:
+                    selected = {'state': 'unavailable', 'reason': 'diagnosticOutputLimit'}
+                else:
+                    selected = json.loads(encoded)
+            except Exception:
+                # An optional diagnostic cannot alter a test outcome, expose an
+                # exception's private arguments, or bypass ordinary cleanup.
+                selected = {'state': 'unavailable', 'reason': 'diagnosticFailed'}
+            observation.append(selected)
+        try:
+            observer = threading.Thread(target=observe, name='projection-bootstrap-observer', daemon=True)
+            observer.start()
+        except RuntimeError:
+            observer = None
+            not_observed = {'state': 'unavailable', 'reason': 'diagnosticWorkerUnavailable'}
+    def consider_observation(now, code):
+        nonlocal observation_decided, not_observed
+        if (bootstrap_diagnostic is not None and not observation_decided and code is None
+                and now - started >= BOOTSTRAP_SAMPLE_AFTER_SECONDS):
+            observation_decided = True
+            if cases(bytes(data))['started']:
+                not_observed = {'state': 'notTriggered', 'reason': 'expectedCaseStarted'}
+            else:
+                begin_observation()
     try:
         process = subprocess.Popen(arguments, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                                    env=child_environment(), start_new_session=True)
@@ -453,6 +499,7 @@ def native_command(arguments, timeout=30):
                 if left <= 0:
                     if code is None: state = 'timedOut'
                     break
+                consider_observation(now, code)
                 for key, _ in selector.select(min(left, .05)):
                     chunk = os.read(key.fileobj.fileno(), 4096)
                     if not chunk: selector.unregister(key.fileobj); continue
@@ -460,6 +507,14 @@ def native_command(arguments, timeout=30):
                     if len(chunk) > room: state = 'outputLimit'; break
                 if state == 'outputLimit': break
         if state not in {'timedOut', 'outputLimit'}:
+            # Closing stdout is not proof that XCTest exited. Keep the optional
+            # single observation available even when a live child closes pipes.
+            while bootstrap_diagnostic is not None and process.poll() is None:
+                now = time.monotonic()
+                if now >= deadline: break
+                consider_observation(now, None)
+                try: process.wait(timeout=min(.05, deadline - now))
+                except subprocess.TimeoutExpired: pass
             try:
                 code = process.wait(timeout=max(0, deadline - time.monotonic()))
                 state = 'completed' if code == 0 else 'commandFailed'
@@ -469,6 +524,10 @@ def native_command(arguments, timeout=30):
         state = 'unavailable'
     finally:
         if process is not None:
+            if observer is not None:
+                # Diagnostics run while pipes drain. Waiting for their bounded
+                # completion must never extend the original XCTest deadline.
+                observer.join(timeout=min(BOOTSTRAP_SAMPLE_JOIN_SECONDS, max(0, deadline - time.monotonic())))
             # A leader can exit while a descendant still owns its stdout pipe.
             # start_new_session gives this invocation its own group: retire that
             # group after the bounded drain even when the leader already exited.
@@ -480,8 +539,12 @@ def native_command(arguments, timeout=30):
             try: process.wait(timeout=2)
             except subprocess.SubprocessError: pass
             if process.stdout is not None: process.stdout.close()
-    return {'status': state, 'exit_code': code, 'timeout': state == 'timedOut',
-            'output_limit': state == 'outputLimit', 'captured_bytes': len(data)}, bytes(data)
+    status = {'status': state, 'exit_code': code, 'timeout': state == 'timedOut',
+              'output_limit': state == 'outputLimit', 'captured_bytes': len(data)}
+    if bootstrap_diagnostic is not None:
+        status['bootstrap_diagnostic'] = (observation[0] if observation else
+            {'state': 'unavailable', 'reason': 'diagnosticDidNotFinishBeforeDeadline'} if observer is not None else not_observed)
+    return status, bytes(data)
 
 
 def cases(data):
@@ -562,13 +625,21 @@ def host_bootstrap_diagnostic(identifier, secrets):
     return {'command': status, 'selection': selected}
 
 
-def execute(products_root, output, root, command=native_command, probe=simulator_probe.capture, attest_control=False):
+def execute(products_root, output, root, command=native_command, probe=simulator_probe.capture, attest_control=False,
+            bootstrap_sample=False):
     output, root = Path(output), Path(root); commands = {}; identifier = None
     report = {'commands': commands, 'passed': False, 'tests_started': False,
               'xctest_command_attempted': False, 'assertion_retries': 0, 'diagnostics': {}}
     secrets = tuple(v for k, v in os.environ.items() if v and re.search(r'TOKEN|SECRET|PASSWORD|API_ID|API_HASH|AUTH|PRIVATE_KEY|SESSION', k, re.I))
     def call(name, arguments, timeout=30, required=True):
-        status, stdout = command(arguments, timeout=timeout); commands[name] = status
+        options = {'timeout': timeout}
+        if name == 'xctest' and bootstrap_sample:
+            options['bootstrap_diagnostic'] = lambda pid, group, alive: bootstrap_sampling.capture(pid, group, identifier, secrets, alive)
+        status, stdout = command(arguments, **options)
+        status = dict(status)
+        if name == 'xctest' and bootstrap_sample:
+            report['diagnostics']['bootstrap_sample'] = status.pop('bootstrap_diagnostic', {'state': 'unavailable'})
+        commands[name] = status
         if required and status['status'] != 'completed': raise artifacts.ReplayError('projection_' + name + '_failed')
         return status, stdout
     def retain_host_log():
@@ -677,11 +748,13 @@ def write(path, value, text=False):
 
 
 def replay(run, source, output, root=None, api=artifacts.gh_json, fetch=artifacts.download, command=native_command, probe=simulator_probe.capture,
-           host_control='original', control_command=simulator_probe.diagnostic_command):
+           host_control='original', control_command=simulator_probe.diagnostic_command, bootstrap_sample=False):
     specification = pinned(run, source)
     source = specification['source']
     if host_control not in {'original', 'resealed-host'} or (host_control != 'original' and source != CURRENT_SOURCE):
         raise artifacts.ReplayError('projection_invalid_host_control')
+    if type(bootstrap_sample) is not bool or (bootstrap_sample and source != CURRENT_SOURCE):
+        raise artifacts.ReplayError('projection_invalid_bootstrap_sample')
     root = Path(root or Path(__file__).resolve().parents[2]).resolve(strict=True)
     output = Path(output); output = output if output.is_absolute() else root / output
     if output != root / OUTPUT or any(x.is_symlink() for x in (output, *output.parents)) or output.exists():
@@ -693,7 +766,7 @@ def replay(run, source, output, root=None, api=artifacts.gh_json, fetch=artifact
               'artifact_id': specification['artifact'], 'artifact_sha256': specification['digest'], 'diagnostic_replay_only': True,
               'application_recompiled_for_replay': False, 'new_checkout_qualified': False,
               'full_application_built': False, 'physical_device_verified': False, 'release_qualified': False,
-              'host_signing_control': host_control, 'passed': False}
+              'host_signing_control': host_control, 'bootstrap_sample_enabled': bootstrap_sample, 'passed': False}
     try:
         with tempfile.TemporaryDirectory(prefix='ayu-projection-replay-') as private:
             archive = Path(private) / 'artifact.zip'; fetch(specification['artifact'], archive)
@@ -709,7 +782,8 @@ def replay(run, source, output, root=None, api=artifacts.gh_json, fetch=artifact
                     report['host_control_attestation'] = prepare_control(original, controlled, host_control, diagnostics, secrets, control_command)
                     control_snapshot = snapshot_tree(controlled)
                     report['expected_case_source_verified'] = True
-                    report.update(execute(controlled, output, root, command, probe, attest_control=True))
+                    report.update(execute(controlled, output, root, command, probe, attest_control=True,
+                                          bootstrap_sample=bootstrap_sample))
                     control_unchanged = snapshot_tree(controlled) == control_snapshot
                     report['control_products_unchanged_after_execution'] = control_unchanged
                     if not control_unchanged:
@@ -739,8 +813,9 @@ def main(argv=None):
     parser.add_argument('--run', required=True); parser.add_argument('--source', required=True)
     parser.add_argument('--output', type=Path, required=True)
     parser.add_argument('--host-control', choices=['original', 'resealed-host'], default='original')
+    parser.add_argument('--bootstrap-sample', action='store_true')
     args = parser.parse_args(argv)
-    try: report = replay(args.run, args.source, args.output, host_control=args.host_control)
+    try: report = replay(args.run, args.source, args.output, host_control=args.host_control, bootstrap_sample=args.bootstrap_sample)
     except artifacts.ReplayError as error:
         print(json.dumps({'passed': False, 'failure': str(error)})); return 1
     except (OSError, ValueError, TypeError, KeyError, RuntimeError):
