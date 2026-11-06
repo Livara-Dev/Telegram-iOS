@@ -67,12 +67,26 @@ sender predicates do not scan the text body and may apply to a large caption.
 
 Schema version 3 reads versions 1 and 2 with their original semantics and does
 not rewrite the saved bytes on read. Only an explicit mutation writes version
-3. Older versions may not contain sender hiding or inverse semantics; malformed
-or future schemas stay read-only, including reset, with original bytes retained.
+3. Older versions may not contain sender hiding or inverse semantics; unsupported
+versions and value-invalid policies in the supported shape stay read-only,
+including reset, with original bytes retained. Unsupported versions are rejected
+before their fields or collections are decoded.
 Every ordinary mutation preserves unrelated sender/rule/exclusion preferences.
 Disabling filtering preserves its saved policy. Explicit filter reset clears it.
 The matching path does not mutate canonical messages, media, server preferences,
 archive records or Telegram operations.
+
+Matching mode and media type are explicit keyed Int32 primitives. Encoding a
+raw enum generically invokes Postbox's unsupported single-value container and
+was the actual native host crash in run 42114628197. The corrected rule codec
+preserves the intended numeric representation and legacy field omission; it
+rejects unknown raw values without rewriting saved preferences. Standard JSON
+round-trips alone do not test this boundary.
+The inherited adapted decoder is not a complete structural validator: a
+same-version raw preference with a wrong binary collection shape (for example
+integer elements instead of keyed rule objects) can still trap. Normal rule
+mutations cannot produce that shape. This repair does not alter the global
+Postbox adapter or certify arbitrary corrupt binary preference data.
 
 Fifteen authored Core tests cover on-disk reopen, account isolation, cached
 block separation, canonical cleanup, every mutation, limits, malformed/future
@@ -81,6 +95,9 @@ limits, input bounds, inverse media truth tables and scope/OR behavior. Three
 additional authored projection tests exercise the production snapshot bridge,
 sender identity, reveal and protected/timed/grouped/unknown metadata boundaries.
 Native execution is pending; portable guard tests are not a substitute.
+Three additional authored codec cases use real Postbox preferences/reopen to
+cover all media kinds, expression/inverse rules, version-2 numeric wire bytes,
+and unknown values in versions 1, 2 and 3. Their native execution is pending.
 
 A native visual recording should show the message-prefilled editor saving its
 sender switch independently of Save; an inverse rule surviving editor reopen;

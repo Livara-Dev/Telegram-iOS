@@ -64,8 +64,19 @@ public struct LocalMessageFilterRule: Codable, Equatable {
         self.text = try container.decode(String.self, forKey: .text)
         self.caseSensitive = try container.decode(Bool.self, forKey: .caseSensitive)
         self.peerId = try container.decodeIfPresent(Int64.self, forKey: .peerId)
-        self.matchingMode = try container.decodeIfPresent(LocalMessageFilterMatchingMode.self, forKey: .matchingMode) ?? .literal
-        self.mediaType = try container.decodeIfPresent(LocalMessageFilterMediaType.self, forKey: .mediaType)
+        let rawMode = try container.decodeIfPresent(Int32.self, forKey: .matchingMode) ?? LocalMessageFilterMatchingMode.literal.rawValue
+        guard let matchingMode = LocalMessageFilterMatchingMode(rawValue: rawMode) else {
+            throw DecodingError.dataCorruptedError(forKey: .matchingMode, in: container, debugDescription: "Unknown local matching mode")
+        }
+        self.matchingMode = matchingMode
+        if let rawMedia = try container.decodeIfPresent(Int32.self, forKey: .mediaType) {
+            guard let mediaType = LocalMessageFilterMediaType(rawValue: rawMedia) else {
+                throw DecodingError.dataCorruptedError(forKey: .mediaType, in: container, debugDescription: "Unknown local media type")
+            }
+            self.mediaType = mediaType
+        } else {
+            self.mediaType = nil
+        }
         self.isInverted = try container.decodeIfPresent(Bool.self, forKey: .isInverted) ?? false
     }
 
@@ -76,8 +87,10 @@ public struct LocalMessageFilterRule: Codable, Equatable {
         try container.encode(self.caseSensitive, forKey: .caseSensitive)
         try container.encodeIfPresent(self.peerId, forKey: .peerId)
         // Preserve the literal-rule representation and its persistence budget.
-        if self.matchingMode != .literal { try container.encode(self.matchingMode, forKey: .matchingMode) }
-        try container.encodeIfPresent(self.mediaType, forKey: .mediaType)
+        // AdaptedPostboxEncoder has no single-value container. Encode enum
+        // primitives directly rather than invoking synthesized enum Codable.
+        if self.matchingMode != .literal { try container.encode(self.matchingMode.rawValue, forKey: .matchingMode) }
+        if let mediaType = self.mediaType { try container.encode(mediaType.rawValue, forKey: .mediaType) }
         if self.isInverted { try container.encode(true, forKey: .isInverted) }
     }
 }
@@ -110,6 +123,9 @@ public struct LocalMessageFilterSettings: Codable, Equatable {
     public init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         let version = try container.decode(Int32.self, forKey: .schemaVersion)
+        guard version == 1 || version == 2 || version == 3 else {
+            throw DecodingError.dataCorruptedError(forKey: .schemaVersion, in: container, debugDescription: "Unsupported local filter schema")
+        }
         self.enabled = try container.decode(Bool.self, forKey: .enabled)
         self.rules = try container.decode([LocalMessageFilterRule].self, forKey: .rules)
         self.excludedPeerIds = Set(try container.decode([Int64].self, forKey: .excludedPeerIds))

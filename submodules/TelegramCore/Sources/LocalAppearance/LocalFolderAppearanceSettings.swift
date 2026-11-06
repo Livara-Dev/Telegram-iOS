@@ -43,6 +43,25 @@ public struct LocalFolderAppearance: Codable, Equatable {
         self.tag = tag
     }
 
+    private enum CodingKeys: String, CodingKey { case color, tag }
+
+    public init(from decoder: Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        if let raw = try values.decodeIfPresent(Int32.self, forKey: .color) {
+            guard let color = LocalFolderColor(rawValue: raw) else {
+                throw DecodingError.dataCorruptedError(forKey: .color, in: values, debugDescription: "Unknown local folder color")
+            }
+            self.color = color
+        } else { self.color = nil }
+        self.tag = try values.decode(String.self, forKey: .tag)
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var values = encoder.container(keyedBy: CodingKeys.self)
+        if let color = self.color { try values.encode(color.rawValue, forKey: .color) }
+        try values.encode(self.tag, forKey: .tag)
+    }
+
     /// Bound raw input before segmentation; keep emoji joiners, remove control
     /// and directional formatting characters. An empty tag removes the label.
     public static func normalizedTag(_ input: String) -> String? {
@@ -63,6 +82,14 @@ public struct LocalFolderAppearance: Codable, Equatable {
     }
 }
 
+/// Postbox supports homogeneous object arrays, not an alternating Int32/value
+/// dictionary representation. Keep only keyed fixed-width primitives on disk.
+private struct LocalFolderAppearanceRecord: Codable {
+    let id: Int32
+    let color: Int32?
+    let tag: String
+}
+
 /// Local-only overlays keyed by this account's native folder IDs. Canonical
 /// filters and their synchronization document are never rewritten.
 public struct LocalFolderAppearanceSettings: Codable, Equatable {
@@ -70,12 +97,51 @@ public struct LocalFolderAppearanceSettings: Codable, Equatable {
     public internal(set) var folders: [Int32: LocalFolderAppearance]
 
     public init() {
-        self.schemaVersion = 1
+        self.schemaVersion = 2
         self.folders = [:]
     }
 
+    private enum CodingKeys: String, CodingKey { case schemaVersion, folders }
+
+    public init(from decoder: Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        let version = try values.decode(Int32.self, forKey: .schemaVersion)
+        // Version 1 was an unreleased candidate with an unencodable nonempty
+        // dictionary. Reject it and future versions before reading their shape;
+        // the preference facade preserves incompatible bytes as read-only.
+        guard version == 2 else {
+            throw DecodingError.dataCorruptedError(forKey: .schemaVersion, in: values, debugDescription: "Unsupported local folder schema")
+        }
+        let records = try values.decode([LocalFolderAppearanceRecord].self, forKey: .folders)
+        guard records.count <= 100 else {
+            throw DecodingError.dataCorruptedError(forKey: .folders, in: values, debugDescription: "Too many local folder records")
+        }
+        var folders: [Int32: LocalFolderAppearance] = [:]
+        for record in records {
+            let color = record.color.flatMap(LocalFolderColor.init(rawValue:))
+            guard record.id > 0, folders[record.id] == nil,
+                  record.color == nil || color != nil,
+                  let appearance = LocalFolderAppearance(color: color, tag: record.tag), appearance.tag == record.tag,
+                  appearance.color != nil || !appearance.tag.isEmpty else {
+                throw DecodingError.dataCorruptedError(forKey: .folders, in: values, debugDescription: "Invalid or duplicate local folder record")
+            }
+            folders[record.id] = appearance
+        }
+        self.schemaVersion = version
+        self.folders = folders
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var values = encoder.container(keyedBy: CodingKeys.self)
+        try values.encode(self.schemaVersion, forKey: .schemaVersion)
+        let records = self.folders.sorted(by: { $0.key < $1.key }).map { id, value in
+            LocalFolderAppearanceRecord(id: id, color: value.color?.rawValue, tag: value.tag)
+        }
+        try values.encode(records, forKey: .folders)
+    }
+
     var isValid: Bool {
-        return self.schemaVersion == 1 && self.folders.count <= 100 && self.folders.allSatisfy { id, value in
+        return self.schemaVersion == 2 && self.folders.count <= 100 && self.folders.allSatisfy { id, value in
             id > 0 && LocalFolderAppearance.normalizedTag(value.tag) == value.tag && (value.color != nil || !value.tag.isEmpty)
         }
     }

@@ -11,9 +11,27 @@ private struct RawLocalFolderAppearance: Codable {
     let tag: String
 }
 
+private struct RawLocalFolderAppearanceRecord: Codable {
+    let id: Int32
+    let color: Int32?
+    let tag: String
+}
+
 private struct RawLocalFolderAppearanceDocument: Codable {
     let schemaVersion: Int32
-    let folders: [Int32: RawLocalFolderAppearance]
+    let folders: [RawLocalFolderAppearanceRecord]
+
+    init(schemaVersion: Int32, folders: [Int32: RawLocalFolderAppearance]) {
+        self.schemaVersion = schemaVersion
+        self.folders = folders.sorted(by: { $0.key < $1.key }).map { id, value in
+            RawLocalFolderAppearanceRecord(id: id, color: value.color, tag: value.tag)
+        }
+    }
+
+    init(schemaVersion: Int32, records: [RawLocalFolderAppearanceRecord]) {
+        self.schemaVersion = schemaVersion
+        self.folders = records
+    }
 }
 
 final class LocalFolderAppearanceTests: XCTestCase {
@@ -262,7 +280,7 @@ final class LocalFolderAppearanceTests: XCTestCase {
     }
 
     func testCanonicalRemovalPreservesFutureLocalPreferenceBytes() throws {
-        let raw = RawLocalFolderAppearanceDocument(schemaVersion: 2, folders: [7: .init(color: 0, tag: "Future")])
+        let raw = RawLocalFolderAppearanceDocument(schemaVersion: 3, folders: [7: .init(color: 0, tag: "Future")])
         let entry = try XCTUnwrap(PreferencesEntry(raw))
         let _ = try self.localArchiveValue(self.fixture.postbox.transaction { $0.setPreferencesEntry(key: localFolderAppearanceSettingsKey, value: entry) })
         try self.seed(self.fixture.postbox, filters: [.allChats, self.folder(9)])
@@ -293,11 +311,11 @@ final class LocalFolderAppearanceTests: XCTestCase {
 
     func testFutureUnknownAndInvalidDocumentsAreReadOnlyAndDisplayNativeFallback() throws {
         let documents = [
-            RawLocalFolderAppearanceDocument(schemaVersion: 2, folders: [7: .init(color: 0, tag: "Future")]),
-            RawLocalFolderAppearanceDocument(schemaVersion: 1, folders: [7: .init(color: 999, tag: "Unknown")]),
-            RawLocalFolderAppearanceDocument(schemaVersion: 1, folders: [0: .init(color: 0, tag: "Invalid ID")]),
-            RawLocalFolderAppearanceDocument(schemaVersion: 1, folders: [7: .init(color: nil, tag: "")]),
-            RawLocalFolderAppearanceDocument(schemaVersion: 1, folders: [7: .init(color: 0, tag: "\u{202e}Direction")])
+            RawLocalFolderAppearanceDocument(schemaVersion: 3, folders: [7: .init(color: 0, tag: "Future")]),
+            RawLocalFolderAppearanceDocument(schemaVersion: 2, folders: [7: .init(color: 999, tag: "Unknown")]),
+            RawLocalFolderAppearanceDocument(schemaVersion: 2, folders: [0: .init(color: 0, tag: "Invalid ID")]),
+            RawLocalFolderAppearanceDocument(schemaVersion: 2, folders: [7: .init(color: nil, tag: "")]),
+            RawLocalFolderAppearanceDocument(schemaVersion: 2, folders: [7: .init(color: 0, tag: "\u{202e}Direction")])
         ]
         let canonical = try self.canonicalTitle(self.folder(7))
         for document in documents {
@@ -360,5 +378,93 @@ final class LocalFolderAppearanceTests: XCTestCase {
             settings: try self.localArchiveValue(self.context.settings), dark: false)
         XCTAssertEqual(tagOnly.title.text, "Work 7 · Local")
         XCTAssertNil(tagOnly.rgb)
+    }
+
+    func testHomogeneousFixedWidthRecordsPersistEveryPaletteAndReopen() throws {
+        try self.seed(self.fixture.postbox, filters: [.allChats] + (10...16).map { self.folder(Int32($0)) })
+        for (offset, color) in LocalFolderColor.allCases.enumerated() {
+            XCTAssertTrue(try self.localArchiveValue(self.saveFolder(id: Int32(10 + offset), color: color, tag: "")))
+        }
+        XCTAssertTrue(try self.localArchiveValue(self.saveFolder(id: 16, color: nil, tag: "Tag only")))
+        let entry = try XCTUnwrap(self.localArchiveValue(self.fixture.postbox.transaction {
+            $0.getPreferencesEntry(key: localFolderAppearanceSettingsKey)
+        }))
+        let raw = try XCTUnwrap(entry.get(RawLocalFolderAppearanceDocument.self))
+        XCTAssertEqual(raw.schemaVersion, 2)
+        XCTAssertEqual(raw.folders.map(\.id), (10...16).map { Int32($0) })
+        XCTAssertEqual(raw.folders.compactMap(\.color), LocalFolderColor.allCases.map(\.rawValue))
+        XCTAssertEqual(raw.folders.last?.tag, "Tag only")
+        self.context = nil
+        try self.fixture.reopen()
+        self.context = LocalFolderAppearanceContext(postbox: self.fixture.postbox)
+        let settings = try self.settings()
+        XCTAssertEqual(settings.folders.count, 7)
+        for (offset, color) in LocalFolderColor.allCases.enumerated() {
+            XCTAssertEqual(settings.folders[Int32(10 + offset)]?.color, color)
+        }
+        XCTAssertNil(settings.folders[16]?.color)
+        XCTAssertEqual(settings.folders[16]?.tag, "Tag only")
+    }
+
+    func testSingleAppearanceUsesKeyedRawColorRatherThanEnumSingleValueContainer() throws {
+        for color in LocalFolderColor.allCases {
+            let value = try XCTUnwrap(LocalFolderAppearance(color: color, tag: "Pinned"))
+            let entry = try XCTUnwrap(PreferencesEntry(value))
+            let raw = try XCTUnwrap(entry.get(RawLocalFolderAppearance.self))
+            XCTAssertEqual(raw.color, color.rawValue)
+            XCTAssertEqual(raw.tag, "Pinned")
+            XCTAssertEqual(entry.get(LocalFolderAppearance.self), value)
+        }
+    }
+
+    func testEmptyFolderRecordsAndRestoringLastOverrideReopenDefaults() throws {
+        let defaults = LocalFolderAppearanceSettings()
+        let entry = try XCTUnwrap(PreferencesEntry(defaults))
+        XCTAssertEqual(entry.get(LocalFolderAppearanceSettings.self), defaults)
+        XCTAssertTrue(try XCTUnwrap(entry.get(RawLocalFolderAppearanceDocument.self)).folders.isEmpty)
+        let _ = try self.localArchiveValue(self.fixture.postbox.transaction {
+            $0.setPreferencesEntry(key: localFolderAppearanceSettingsKey, value: entry)
+        })
+        XCTAssertEqual(try self.settings(), defaults)
+        XCTAssertTrue(try self.localArchiveValue(self.saveFolder(id: 7, color: .green, tag: "Saved")))
+        XCTAssertTrue(try self.localArchiveValue(self.saveFolder(id: 7, color: nil, tag: "")))
+        XCTAssertEqual(try self.settings(), defaults)
+        XCTAssertEqual(try self.savedDocument(), entry.data)
+        self.context = nil
+        try self.fixture.reopen()
+        self.context = LocalFolderAppearanceContext(postbox: self.fixture.postbox)
+        XCTAssertEqual(try self.settings(), defaults)
+        XCTAssertEqual(try self.savedDocument(), entry.data)
+    }
+
+    func testDuplicateFolderRecordsDoNotOverwriteAnEarlierEntry() throws {
+        let raw = RawLocalFolderAppearanceDocument(schemaVersion: 2, records: [
+            RawLocalFolderAppearanceRecord(id: 7, color: 1, tag: "First"),
+            RawLocalFolderAppearanceRecord(id: 7, color: 2, tag: "Second")
+        ])
+        let entry = try XCTUnwrap(PreferencesEntry(raw))
+        let _ = try self.localArchiveValue(self.fixture.postbox.transaction {
+            $0.setPreferencesEntry(key: localFolderAppearanceSettingsKey, value: entry)
+        })
+        XCTAssertEqual(try self.localArchiveValue(self.context.settings), .unsupported)
+        XCTAssertFalse(try self.localArchiveValue(self.saveFolder(id: 7, color: .pink, tag: "Overwrite")))
+        XCTAssertFalse(try self.localArchiveValue(self.context.reset()))
+        XCTAssertEqual(try self.savedDocument(), entry.data)
+    }
+
+    func testUnreleasedLegacyAndFutureShapesRemainReadOnlyBeforeFolderDecoding() throws {
+        struct OtherShape: Encodable {
+            let schemaVersion: Int32
+            let folders: [Int32] = [7]
+        }
+        for version in [Int32(1), 3, 99] {
+            let entry = try XCTUnwrap(PreferencesEntry(OtherShape(schemaVersion: version)))
+            let _ = try self.localArchiveValue(self.fixture.postbox.transaction {
+                $0.setPreferencesEntry(key: localFolderAppearanceSettingsKey, value: entry)
+            })
+            XCTAssertEqual(try self.localArchiveValue(self.context.settings), .unsupported)
+            XCTAssertFalse(try self.localArchiveValue(self.context.reset()))
+            XCTAssertEqual(try self.savedDocument(), entry.data)
+        }
     }
 }
