@@ -1,5 +1,5 @@
 {
   "schema": 1,
-  "nonce": "c55-discovery-reentry-20261106-01",
-  "expected_tool_sha": "6ddc98794115af64184bd9ddcf60116f3d063238"
+  "nonce": "c55-discovery-deterministic-fixture-20261106-02",
+  "expected_tool_sha": "6a3ecea506adaed8654cd54db938f56684ea039f"
 }
