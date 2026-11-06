@@ -128,3 +128,23 @@ class CIRoutingTests(unittest.TestCase):
         self.assertEqual(len(optional_steps), 12)
         self.assertEqual(set(optional_steps), {"Restore public dependency downloads", "Verify restored public dependency bytes",
                                                "Export verified public dependency downloads", "Save public dependency downloads"})
+
+    def test_projection_signing_control_cannot_reach_application_or_device_builds(self):
+        probe = self.job("native-api-probe")
+        replay = self.step(probe, "Replay verified synthetic Projection products without recompilation")
+        self.assertIn("if: inputs.replay_run != ''", replay)
+        self.assertIn("PROJECTION_HOST_CONTROL: ${{ inputs.projection_host_control || 'original' }}", replay)
+        self.assertIn('--host-control "$PROJECTION_HOST_CONTROL"', replay)
+        for name in ("application-build", "unsigned-device-build", "integration-tests", "custom-options-ui", "startup-artifact-replay"):
+            with self.subTest(job=name):
+                self.assertNotIn("PROJECTION_HOST_CONTROL", self.job(name))
+                self.assertNotIn("--host-control", self.job(name))
+
+    def test_startup_fetches_the_explicitly_verified_device_pair_after_real_startup_only(self):
+        startup = self.job("startup-artifact-replay")
+        fetch = self.step(startup, "Fetch the matching device package only after variant startup passes")
+        self.assertIn("if: success() && inputs.startup_variant == 'main-app-only'", fetch)
+        self.assertIn("from replay_artifact import paired_device_run", fetch)
+        self.assertIn("paired_device_run(os.environ['REPLAY_RUN'], os.environ['REPLAY_SOURCE'])", fetch)
+        self.assertIn("'--mode', 'unsigned-device', '--run', str(device_run)", fetch)
+        self.assertGreater(startup.index("Fetch the matching device package"), startup.index("Replay the selected startup control"))

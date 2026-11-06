@@ -397,7 +397,8 @@ class FocusedWorkflowRoutingTests(unittest.TestCase):
         self.assertLess(control, fetch); self.assertLess(fetch, package); self.assertLess(package, publish)
         for start, stop in ((fetch, package), (package, publish), (publish, source.index('      - name: Hash startup'))):
             self.assertIn("if: success() && inputs.startup_variant == 'main-app-only'", source[start:stop])
-        self.assertIn('--mode unsigned-device', source[fetch:package])
+        self.assertIn("'--mode', 'unsigned-device', '--run', str(device_run)", source[fetch:package])
+        self.assertIn("paired_device_run(os.environ['REPLAY_RUN'], os.environ['REPLAY_SOURCE'])", source[fetch:package])
         self.assertIn('--startup-proof ', source[package:publish])
         self.assertIn('--startup-result ', source[package:publish])
         self.assertIn('GH_TOKEN:', source[fetch:package])

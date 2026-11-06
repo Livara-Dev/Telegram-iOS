@@ -27,6 +27,11 @@ on:
         description: Run only a fresh explicitly pinned private-storage main-app control
         type: boolean
         default: false
+      projection_host_control:
+        description: Diagnostic control for the fixed synthetic Projection host only
+        type: choice
+        options: [original, resealed-host]
+        default: original
       unsigned_device:
         description: Compile an unsigned device IPA alongside exact-commit integration tests
         type: boolean
@@ -633,10 +638,11 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           REPLAY_RUN: ${{ inputs.replay_run }}
           REPLAY_SOURCE: ${{ inputs.replay_source }}
+          PROJECTION_HOST_CONTROL: ${{ inputs.projection_host_control || 'original' }}
         run: |
           set -euo pipefail
           umask 077
-          python3 tools/fork_baseline/projection_replay.py --run "$REPLAY_RUN" --source "$REPLAY_SOURCE" --output build/fork-evidence/projection-replay
+          python3 tools/fork_baseline/projection_replay.py --run "$REPLAY_RUN" --source "$REPLAY_SOURCE" --host-control "$PROJECTION_HOST_CONTROL" --output build/fork-evidence/projection-replay
 
       - name: Prepare only the verified synthetic movie fixture
         if: inputs.replay_run == ''
@@ -823,7 +829,16 @@ jobs:
         run: |
           set -euo pipefail
           umask 077
-          python3 tools/fork_baseline/replay_artifact.py --mode unsigned-device --run "$REPLAY_RUN" --source "$REPLAY_SOURCE" --output build/fork-evidence/startup-replay-device
+          python3 - <<'PYTHON'
+          import os, subprocess, sys
+          sys.path.insert(0, 'tools/fork_baseline')
+          from replay_artifact import paired_device_run
+          device_run = paired_device_run(os.environ['REPLAY_RUN'], os.environ['REPLAY_SOURCE'])
+          subprocess.run([sys.executable, 'tools/fork_baseline/replay_artifact.py',
+              '--mode', 'unsigned-device', '--run', str(device_run),
+              '--source', os.environ['REPLAY_SOURCE'],
+              '--output', 'build/fork-evidence/startup-replay-device'], check=True)
+          PYTHON
 
       - name: Package the verified unsigned main app without recompiling
         if: success() && inputs.startup_variant == 'main-app-only'
