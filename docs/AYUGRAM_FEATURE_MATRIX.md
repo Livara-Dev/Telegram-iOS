@@ -2,8 +2,9 @@
 
 Audit date: **2026-11-06**. The preserved compiled device candidate uses application
 source `c55e19c4f5cbe0d730499035d0a0ef712f6903a9`. New archive source
-`5d241267735b3958c225681d173853568bab705d` passed focused native tests but has no
-full application build or IPA at this checkpoint. Historical baseline entries
+`5d241267735b3958c225681d173853568bab705d` passed focused native tests and its
+unsigned ARM64 device build; matching simulator startup and final packaging are
+still pending at this checkpoint. Historical baseline entries
 refer to `62546557`, `73b52244` and other explicitly named revisions; they do not
 verify later feature changes. The checkpoints below distinguish implementation, native
 tests, full application compilation and actual startup. No feature is marked
@@ -20,7 +21,7 @@ binary. No proprietary exteraGram components are copied.
 
 ## Current source-specific status — 6 November 2026
 
-This checkpoint supersedes the older “absent in baseline” descriptions only for the explicitly named newer source. The downloadable device candidate remains `c55e19c4`; the new archive source `5d241267` has **964 passing local native cases**, but no full application build or IPA yet. Neither is verified on a physical iPhone. See [current verification](fork/CURRENT-VERIFICATION-2026-11-06.md) for exact test/artifact identities and limits. Historical results below retain their original source and must not be relabelled as current-source or device evidence.
+This checkpoint supersedes the older “absent in baseline” descriptions only for the explicitly named newer source. The downloadable device candidate remains `c55e19c4`; the new archive source `5d241267` has **964 passing local native cases** and a successful unsigned device build in run `42279866706`. Its matching simulator/startup/final-package jobs are not yet qualified. Neither is verified on a physical iPhone. See [current verification](fork/CURRENT-VERIFICATION-2026-11-06.md) for exact test/artifact identities and limits. Historical results below retain their original source and must not be relabelled as current-source or device evidence.
 
 | Feature | Current native iOS implementation/status | Verification and remaining limitation |
 | --- | --- | --- |
@@ -28,9 +29,9 @@ This checkpoint supersedes the older “absent in baseline” descriptions only 
 | All observed edits and timestamps | Pre-replacement/acknowledged-edit capture and chronological timeline | Local native storage/Core tests pass. Captures observed versions; deletion observation time is not authoritative server time |
 | Completed photos | Eligible locally completed image bytes copied to encrypted archive | Local JPEG capture/cache-cleanup/reopen tests pass; no physical incoming-photo scenario verified |
 | Completed videos/GIFs/voice/round videos/documents | Typed metadata plus bounded descriptor-backed encrypted file copy | Local byte-copy tests pass; separate c55 encrypted decoder tests pass for generated real formats. Synthetic four-byte timed AV fixtures do not prove playable media |
-| Secret-chat retention | Independent account option, default off, source 5d | Local pre-unlink descriptor/canonical-cleanup cases pass. Existing c55 IPA excludes these messages; no full-app 5d build or live Secret Chat scenario verified |
+| Secret-chat retention | Independent account option, default off, source 5d | Local pre-unlink descriptor/canonical-cleanup cases pass. Existing c55 IPA excludes these messages; 5d device compilation passed, but no live Secret Chat scenario is verified |
 | Cloud disappearing/timed/view-once media and auto-delete | Independent expiring-content option, default off; capture before expiry/removal where eligible completed bytes exist | 47 timed/exclusion native cases pass at 5d. Opted view-once tests use remote-consume helper; full recipient local-playback/actual-worker route unverified. No policy exemption or server restriction bypass |
-| Disappearing secret media | Requires both secret and expiring opt-ins | Same local source/cleanup/store coverage; completion, budgets, TTL and pre-commit process-death limits apply |
+| Disappearing secret media | Requires both secret and expiring opt-ins | Same local source/cleanup/store coverage; a restored already-due timer can beat owner/policy readiness at 5d. Completion, budgets, TTL and pre-commit process-death limits apply |
 | Independent storage/cache cleanup | Archive-owned encrypted content independent of MediaBox; normal canonical cleanup preserved | Actual local cleanup/reopen and owned-source tests pass. Logout/account-directory removal can delete archive; no permanence across every app lifecycle claimed |
 | Crash recovery | Durable metadata outbox, idempotent receipts, encrypted commits; bounded in-memory media ownership | Native rollback/replay/reopen tests pass. Two databases are not one transaction; an FD does not survive process death before media commit |
 | Account isolation and keys | Account/environment-bound ownership, Keychain-backed key identity and generation checks | Native account/key/source tests pass. SideStore signing-team migration, physical protected-data state and actual account switching unverified |
@@ -56,7 +57,7 @@ This checkpoint supersedes the older “absent in baseline” descriptions only 
 | Native light/dark/reset/customization | Actual UIKit appearance, search/category, toggle, cancel/confirm reset and cosmetic reset | c55 synthetic full scenario passes. Footer overlap/conditional dark-banner contrast remain; no smooth-scroll or physical-device benchmark |
 | AyuSync | No reviewed compatible encrypted protocol implemented | Unsupported; storage remains local-only, no archive/session upload |
 | Restricted content/history never received | No decryption/copy-protection/server-access bypass | Cannot recover inaccessible, already missing, incomplete or never received content. Only already archived eligible removed-group history can remain |
-| IPA/signing/update identity | Preserved ARM64 main-app-only unsigned c55 package; `org.livara.ayugram` | Requires independent signing. New 5d IPA not produced at checkpoint; physical install/update/data preservation unverified. Apple 403 signing/network error unresolved |
+| IPA/signing/update identity | Preserved ARM64 main-app-only unsigned c55 package; `org.livara.ayugram` | Requires independent signing. 5d internal unsigned device build passed; matching simulator/startup and final main-app-only package pending. Physical install/update/data preservation unverified. Apple 403 signing/network error unresolved |
 
 [Standard-discovery run 42281520123](https://github.com/Livara-Dev/Telegram-iOS/actions/runs/42281520123) passed all **41 retained c55 Projection cases**, one discovery wrapper and a separate hosted control. Apple result metadata verified all 42 payload/wrapper cases; exact identities, zero exits, installed bytes, signatures and both cleanups passed. [Artifact 13535374914](https://github.com/Livara-Dev/Telegram-iOS/actions/runs/42281520123/artifacts/13535374914) has SHA-256 `3f103236b5ac2d23d2869981374f19a6faff3d55b7b1a452e417ef59496cd4ec`, with its outer ZIP and seven inner references verified. All 31 captured files (165,736,765 bytes) remained unchanged; no application or captured-test rebuild occurred. Mac preflight passed 228 portable cases, including 67 deferred-plan cases and the exact Foundation gate; the corresponding Linux module passed 66 with one platform skip. This is a different experimental harness with framework-managed execution, not original-Bazel-host, release, authenticated-account or physical-device qualification. It does not qualify the separate 5d application build. Earlier nested failures and the 422764 discovery-guard failure remain historical failures.
 

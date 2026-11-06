@@ -15,6 +15,26 @@ Secret-chat and expiring-message retention remain independent default-off option
 
 Existing account-directory recovery/removal risks remain open. Normal cache clearing and account/logout cleanup are distinct; the archive can be removed with its account directory. Native Keychain fixtures do not establish physical protected-data behavior, signing-team migration or recovery across SideStore reinstall. A new signing identity or uninstall may affect data; no real migration has been tested.
 
+### Restored timer startup ordering — source 5d241267
+
+A source/queue audit found a viable startup schedule in which a restored,
+already-due secret-message timer runs before the archive owner or its initial
+policy is ready. `Account.init` starts the timestamp workers before constructing
+`LocalArchiveCoordinator`; the constructor, Postbox and zero-delay timer use
+independent queues. The pre-unlink hook then finds no eligible owner, while
+canonical forced cache cleanup correctly continues. Later replay deliberately
+does not reopen a missing secret-media pathname. Metadata may therefore survive
+without its attachment. This is a possible ordering established from source,
+not a reproduced device failure or a measurement of frequency.
+
+The ordinary fresh remote-update startup follows a later state-manager reset
+after Account construction; the timer finding alone does not establish the same
+before-owner race for that path. Existing native missing-owner/no-reopen cases
+verify the media-gap consequence, not execution of the complete Account startup.
+No archive-store or Keychain readiness wait may postpone mandatory expiry.
+This limitation remains in the frozen 5d device build until a separately tested
+source change and corresponding binary explicitly replace it.
+
 No runtime zero-telemetry finding, external penetration test, full cryptographic audit or complete corresponding-source/dependency-license certification follows from these results. The publicly retained three GPL/source material files correct packaging omission but are not a complete GPL certification. The SideSign screenshot's Apple 403 / timeout occurred during signing/networking and is not evidence of a repaired or reproduced app crash. Independent signing and physical-device verification remain external release gates.
 
 ## Startup and storage review, 2026-11-05
