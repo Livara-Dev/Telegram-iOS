@@ -86,10 +86,20 @@ func localArchiveMediaMetadata(_ media: [Media], includeSecretResources: Bool = 
             else if file.isVideo { kind = .video }
             else { kind = .document }
             let resource = file.resource.id.stringRepresentation
-            return LocalArchiveMediaMetadata(kind: kind, namespace: file.fileId.namespace, id: file.fileId.id,
+            var result = LocalArchiveMediaMetadata(kind: kind, namespace: file.fileId.namespace, id: file.fileId.id,
                 resourceKey: localArchiveResourceKeyAllowed(resource, includeSecretResources: includeSecretResources) ? resource : nil,
                 mimeType: file.mimeType.utf8.count <= 256 && !file.mimeType.contains("\0") ? file.mimeType : nil,
                 byteSize: file.size.flatMap { $0 >= 0 ? $0 : nil }, bytesPreserved: false)
+            // Playback may download an alternate codec/quality rather than the primary file.
+            // Persist identifiers only; never access hashes, file references or secret keys.
+            var seen: Set<String> = [resource]
+            result.alternativeResourceKeys = file.alternativeRepresentations.prefix(9).compactMap { alternative in
+                let key = alternative.resource.id.stringRepresentation
+                guard localArchiveResourceKeyAllowed(key, includeSecretResources: includeSecretResources),
+                      alternative.mimeType == file.mimeType, seen.insert(key).inserted else { return nil }
+                return key
+            }
+            return result
         }
         return LocalArchiveMediaMetadata(kind: .unsupported, namespace: item.id?.namespace, id: item.id?.id,
             resourceKey: nil, mimeType: nil, byteSize: nil, bytesPreserved: false)
@@ -430,4 +440,23 @@ func captureExtendedLocalArchiveBeforeRemoval(transaction: Transaction, ids: [Me
         return message.id.peerId.namespace == Namespaces.Peer.SecretChat || containsExpiringAttribute(message.attributes)
     }
     return captureDeletedLocalArchiveMessages(transaction: transaction, accountPeerId: state.peerId, ids: extendedIds)
+}
+
+/// Start a bounded full download while the viewed message still has its native
+/// reference. A streamed playback range is not a complete retained file.
+/// This helper is read-only and applies exactly the archive's existing exclusions.
+func localArchiveMediaPrefetchPlan(transaction: Transaction, messageId: MessageId) -> (LocalArchiveSettings, [MediaResourceReference])? {
+    let settings = localArchiveSettings(transaction: transaction)
+    guard settings.isSupported, settings.enabled, settings.includeExpiringMessages, !settings.pendingPurge,
+          let message = transaction.getMessage(messageId), containsExpiringAttribute(message.attributes),
+          case .text? = eligibleMessage(transaction: transaction, message: message, settings: settings, includeMetadata: false) else { return nil }
+    let limit = min(settings.maxPayloadBytes, Int64(512 * 1024 * 1024))
+    let resources = message.media.prefix(4).compactMap { media -> MediaResourceReference? in
+        guard let file = media as? TelegramMediaFile,
+              file.isVideo || file.isVoice || file.isInstantVideo,
+              let size = file.size, size > 0, size <= limit,
+              localArchiveSafeResourceKey(file.resource.id.stringRepresentation) else { return nil }
+        return FileMediaReference.message(message: MessageReference(message), media: file).resourceReference(file.resource)
+    }
+    return resources.isEmpty ? nil : (settings, resources)
 }

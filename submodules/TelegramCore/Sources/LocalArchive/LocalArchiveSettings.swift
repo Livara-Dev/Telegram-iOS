@@ -37,6 +37,17 @@ public struct LocalArchiveSettings: Codable, Equatable {
             && self.excludedSenderIds.allSatisfy(telegramCorePeerIdIsSafelyDecodable)
     }
 
+    /// Counter-only updates do not revoke an authorized in-flight download.
+    func hasSameCaptureAuthority(as other: LocalArchiveSettings) -> Bool {
+        return self.isSupported && other.isSupported
+            && self.enabled == other.enabled && self.includeSecretChats == other.includeSecretChats
+            && self.includeExpiringMessages == other.includeExpiringMessages
+            && self.excludeBots == other.excludeBots && self.excludedPeerIds == other.excludedPeerIds
+            && self.excludedSenderIds == other.excludedSenderIds && self.generation == other.generation
+            && self.pendingPurge == other.pendingPurge && self.maxAgeSeconds == other.maxAgeSeconds
+            && self.maxPayloadBytes == other.maxPayloadBytes
+    }
+
     fileprivate static var unsupported: LocalArchiveSettings {
         var result = LocalArchiveSettings()
         result.sourceIsSupported = false
@@ -45,7 +56,7 @@ public struct LocalArchiveSettings: Codable, Equatable {
 
     public init(enabled: Bool = false, excludeBots: Bool = true,
                 excludedPeerIds: Set<Int64> = [], excludedSenderIds: Set<Int64> = [],
-                maxAgeSeconds: Int64 = Int64.max, maxPayloadBytes: Int64 = 32 * 1024 * 1024,
+                maxAgeSeconds: Int64 = Int64.max, maxPayloadBytes: Int64 = 1024 * 1024 * 1024,
                 includeSecretChats: Bool = false, includeExpiringMessages: Bool = false) {
         self.schemaVersion = 1
         self.enabled = enabled

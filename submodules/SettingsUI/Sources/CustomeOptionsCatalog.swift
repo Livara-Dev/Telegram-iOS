@@ -19,15 +19,15 @@ public enum CustomeOptionsCategory: String, CaseIterable {
     public var title: String {
         switch self {
         case .ghostMode: return "Ghost Mode"
-        case .deletedMessages: return "Deleted Messages & History"
+        case .deletedMessages: return "Message History"
         case .timedMedia: return "Timed Media"
         case .mediaSaving: return "Media Saving"
-        case .localPremium: return "Local Premium"
+        case .localPremium: return "Extra Appearance"
         case .privacyAds: return "Privacy & Ads"
         case .messageFilters: return "Message Filters"
-        case .appearance: return "Appearance & Themes"
+        case .appearance: return "Appearance"
         case .chatInterface: return "Chat Interface"
-        case .advanced: return "Advanced Features"
+        case .advanced: return "Advanced"
         case .storageBackup: return "Storage & Backup"
         }
     }
@@ -189,7 +189,7 @@ public struct CustomeOptionsLink: Equatable {
 }
 
 public enum CustomeOptionsCatalog {
-    public static let title = "Custome options"
+    public static let title = "AyuGram"
     public static let maximumQueryUTF16Length = 512
 
     public static func boundedQuery(_ query: String) -> String {

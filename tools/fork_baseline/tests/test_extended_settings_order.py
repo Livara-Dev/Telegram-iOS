@@ -21,7 +21,7 @@ class ExtendedSettingsOrderTests(unittest.TestCase):
         self.assertIn("assert(state.entries[i - 1].isLessThan(state.entries[i]))", node)
 
     def test_all_conditional_settings_combinations_have_unique_sorted_order_and_sections(self):
-        self.assertEqual(len(self.rows), 28)
+        self.assertEqual(len(self.rows), 20)
         for error, missed, chat in itertools.product((False, True), repeat=3):
             rows = [r for r in self.rows if (r[0] != 7 or error) and (r[0] != 14 or missed) and (r[0] not in (15, 16, 17) or chat)]
             with self.subTest(error=error, missed=missed, chat=chat):
@@ -31,11 +31,11 @@ class ExtendedSettingsOrderTests(unittest.TestCase):
                 self.assertTrue(all(a[1] < b[1] and a[2] <= b[2] for a, b in zip(ordered, ordered[1:])))
 
     def test_extended_switches_keep_stable_ids_and_real_distinct_account_setters(self):
-        self.assertIn((24, 25, 9), self.rows)
-        self.assertIn((25, 26, 9), self.rows)
+        self.assertIn((24, 2, 0), self.rows)
+        self.assertIn((25, 3, 0), self.rows)
         self.assertIn("archive.setIncludeSecretChats(enabled)", self.body)
         self.assertIn("archive.setIncludeExpiringMessages(enabled)", self.body)
-        self.assertIn('title: "Enable for This Account"', self.body)
+        self.assertIn('title: "Enable"', self.body)
 
 
 if __name__ == "__main__":

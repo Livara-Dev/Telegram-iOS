@@ -113,7 +113,10 @@ private func chatHistoryLocalArchiveWindow(view: MessageHistoryView, data: ChatH
     }
     guard !view.isLoading, !copyProtected, let peer, peer.id == peerId else { return nil }
     let canonical = view.entries.map(\.message).filter {
-        $0.id.peerId == peerId && $0.id.namespace == Namespaces.Message.Cloud && $0.id.id > 0 && $0.timestamp >= 0
+        $0.id.peerId == peerId && $0.timestamp >= 0 && (
+            (peerId.namespace == Namespaces.Peer.SecretChat && $0.id.id >= 0 && ($0.id.namespace == Namespaces.Message.SecretIncoming || $0.id.namespace == Namespaces.Message.Local)) ||
+            ($0.id.namespace == Namespaces.Message.Cloud && $0.id.id > 0)
+        )
     }
     // Postbox's loaded history is the visible window plus its bounded prefetch.
     // Keep the query tied to that window rather than scanning the whole archive
@@ -121,8 +124,8 @@ private func chatHistoryLocalArchiveWindow(view: MessageHistoryView, data: ChatH
     // rows; SQL still has an independent work/output bound.
     let atStart = view.earlierId == nil && !view.holeEarlier
     let atEnd = view.laterId == nil && !view.holeLater
-    let lowerId = atStart ? 1 : (canonical.map { $0.id.id }.min() ?? 1)
-    let upperId = atEnd ? Int32.max : (canonical.map { $0.id.id }.max() ?? Int32.max)
+    let lowerId = peerId.namespace == Namespaces.Peer.SecretChat ? 0 : (atStart ? 1 : (canonical.map { $0.id.id }.min() ?? 1))
+    let upperId = peerId.namespace == Namespaces.Peer.SecretChat ? Int32.max : (atEnd ? Int32.max : (canonical.map { $0.id.id }.max() ?? Int32.max))
     let lowerTime = atStart ? 0 : Int64(canonical.map(\.timestamp).min() ?? 0)
     let upperTime = atEnd ? Int64(Int32.max) : Int64(canonical.map(\.timestamp).max() ?? Int32.max)
     guard lowerId <= upperId, lowerTime <= upperTime else { return nil }
@@ -321,7 +324,9 @@ private func mappedInsertEntries(context: AccountContext, chatLocation: ChatLoca
             case let .LocalArchiveEntry(row, presentationData):
                 return ChatHistoryListViewInsertItem(index: entry.index, previousIndex: entry.previousIndex,
                     stableId: entry.entry.stableId, item: ChatLocalArchiveItem(row: row, presentationData: presentationData,
-                    controllerInteraction: controllerInteraction), directionHint: nil)
+                    controllerInteraction: controllerInteraction, loadThumbnail: { key, slot in
+                        context.account.localArchive?.mediaData(eventKey: key, slot: slot) ?? .single(nil)
+                    }), directionHint: nil)
             case let .MessageEntry(message, presentationData, read, location, selection, attributes):
                 let item: ListViewItem
                 switch mode {
@@ -380,7 +385,9 @@ private func mappedUpdateEntries(context: AccountContext, chatLocation: ChatLoca
             case let .LocalArchiveEntry(row, presentationData):
                 return ChatHistoryListViewUpdateItem(index: entry.index, previousIndex: entry.previousIndex,
                     stableId: entry.entry.stableId, item: ChatLocalArchiveItem(row: row, presentationData: presentationData,
-                    controllerInteraction: controllerInteraction), directionHint: nil)
+                    controllerInteraction: controllerInteraction, loadThumbnail: { key, slot in
+                        context.account.localArchive?.mediaData(eventKey: key, slot: slot) ?? .single(nil)
+                    }), directionHint: nil)
             case let .MessageEntry(message, presentationData, read, location, selection, attributes):
                 let item: ListViewItem
                 switch mode {

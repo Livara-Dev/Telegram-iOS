@@ -102,6 +102,7 @@ final class ArchiveStoreTests: XCTestCase {
         let page = try self.history(store)
         XCTAssertEqual(page.records.first?.event.content.text, String(body.prefix(2048)))
         XCTAssertEqual(page.records.first?.storedMediaCount, 1)
+        XCTAssertEqual(page.records.first?.storedMediaSlots, [0])
         XCTAssertEqual(try self.records(store).first?.event.content.text, body)
         for path in [store.databaseURL.path, store.databaseURL.path + "-wal", store.databaseURL.path + "-shm"] where FileManager.default.fileExists(atPath: path) {
             XCTAssertNil(try Data(contentsOf: URL(fileURLWithPath: path)).range(of: Data("encrypted-inline-canary-".utf8)))
@@ -118,7 +119,7 @@ final class ArchiveStoreTests: XCTestCase {
         XCTAssertEqual(try self.records(store).count, 1, "inline history reads do not write or change the canonical archive")
     }
 
-    func testInlineDeletedHistoryRejectsUnboundedOrNonCloudRequests() throws {
+    func testInlineDeletedHistoryRejectsUnboundedOrUnknownNamespaceRequests() throws {
         let store = try self.open()
         for limit in [0, 41] {
             self.assertError(.invalidInput) { _ = try self.history(store, limit: limit) }
@@ -127,7 +128,7 @@ final class ArchiveStoreTests: XCTestCase {
         self.assertError(.invalidInput) { _ = try self.history(store, sent: -1...1) }
         self.assertError(.invalidInput) { _ = try self.history(store, sent: 0...(Int64(Int32.max) + 1)) }
         self.assertError(.invalidInput) {
-            _ = try self.awaitResult { store.deletedHistory(peerId: 42, namespace: 1, messageIds: 1...100, sentAt: 0...1000,
+            _ = try self.awaitResult { store.deletedHistory(peerId: 42, namespace: 999, messageIds: 1...100, sentAt: 0...1000,
                 excludingAuthors: [], completion: $0) }
         }
         self.assertError(.invalidInput) { _ = try self.history(store, excluding: Set((1...4097).map(Int64.init))) }
@@ -1451,6 +1452,44 @@ final class ArchiveStoreTests: XCTestCase {
         XCTAssertEqual(timeline.map(\.event), [zero])
         self.assertError(.invalidInput) { try self.write(reopened, [self.event("cloud-zero-is-invalid", message: 0)]) }
         self.assertError(.invalidInput) { try self.write(reopened, [self.event("negative-is-invalid", message: -1)]) }
+    }
+
+    func testInlineHistoryReportsActualNoncontiguousSavedSlots() throws {
+        let store = try self.open()
+        _ = try self.write(store, [self.event("slots")])
+        for slot in [1, 7] {
+            XCTAssertTrue(try self.awaitResult { store.recordMedia(eventKey: "slots", slot: slot, kind: "voice", mimeType: "audio/ogg",
+                data: Data([1, 2, 3]), generation: 0, completion: $0) })
+        }
+        self.close(store)
+        let page = try self.history(self.open())
+        XCTAssertEqual(page.records.first?.storedMediaCount, 2)
+        XCTAssertEqual(page.records.first?.storedMediaSlots, [1, 7], "Slots are not inferred from attachment count")
+    }
+
+    func testSecretZeroIdsStayInTheirOwnHistoryNamespacesAfterReopen() throws {
+        let store = try self.open()
+        for namespace in [Int32(1), 2] {
+            let event = ArchiveEvent(eventKey: "secret-namespace-\(namespace)",
+                message: ArchiveMessageID(accountId: 1, peerId: 42, namespace: namespace, messageId: 0), kind: .deleted,
+                observedAt: 900, content: ArchiveContent(text: "namespace \(namespace)", sentAt: 800))
+            let result: ArchiveWriteResult = try self.awaitResult {
+                store.record([self.capture(event, ArchiveCaptureContext(secretChat: true))], generation: 0,
+                    policy: ArchiveCapturePolicy(enabled: true, includeSecretChats: true), completion: $0)
+            }
+            XCTAssertEqual(result.inserted, 1)
+        }
+        self.close(store)
+        let reopened = try self.open()
+        for namespace in [Int32(1), 2] {
+            let page: ArchiveDeletedHistoryPage = try self.awaitResult {
+                reopened.deletedHistory(peerId: 42, namespace: namespace, messageIds: 0...100,
+                    sentAt: 0...1000, excludingAuthors: [], completion: $0)
+            }
+            XCTAssertEqual(page.records.count, 1)
+            XCTAssertEqual(page.records.first?.event.message.namespace, namespace)
+            XCTAssertEqual(page.records.first?.event.message.messageId, 0)
+        }
     }
 
 }

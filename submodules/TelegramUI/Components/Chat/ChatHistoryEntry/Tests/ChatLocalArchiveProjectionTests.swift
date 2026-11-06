@@ -11,18 +11,18 @@ final class ChatLocalArchiveProjectionTests: XCTestCase {
     private lazy var presentation = ChatPresentationData(presentationData: defaultPresentationData())
     private let peer = EnginePeer.Id(namespace: Namespaces.Peer.CloudUser, id: ._internalFromInt64Value(7111))
 
-    private func saved(_ id: Int32, peer: EnginePeer.Id? = nil, sequence: Int64 = 1, timestamp: Int32? = nil) -> LocalArchiveDeletedHistoryItem {
+    private func saved(_ id: Int32, peer: EnginePeer.Id? = nil, sequence: Int64 = 1, timestamp: Int32? = nil, namespace: Int32 = Namespaces.Message.Cloud) -> LocalArchiveDeletedHistoryItem {
         return LocalArchiveDeletedHistoryItem(peerId: peer ?? self.peer, messageId: id, sequence: sequence,
             eventKey: "local-event-\(id)-\(sequence)", sentAt: timestamp ?? id, deletedAt: 900,
             marker: "Deleted", storedMediaCount: 1, unavailableMediaCount: 1, moreAvailable: false,
-            content: LocalArchiveDeletedHistoryContent(text: "saved body \(id)"))
+            content: LocalArchiveDeletedHistoryContent(text: "saved body \(id)"), namespace: namespace)
     }
 
-    private func message(_ id: Int32) -> EngineRawMessage {
+    private func message(_ id: Int32, expired: Bool = false) -> EngineRawMessage {
         return EngineRawMessage(stableId: UInt32(id), stableVersion: 1,
             id: EngineMessage.Id(peerId: self.peer, namespace: Namespaces.Message.Cloud, id: id), globallyUniqueId: nil,
             groupingKey: nil, groupInfo: nil, threadId: nil, timestamp: id, flags: [.Incoming], tags: [], globalTags: [],
-            localTags: [], customTags: [], forwardInfo: nil, author: nil, text: "canonical \(id)", attributes: [], media: [],
+            localTags: [], customTags: [], forwardInfo: nil, author: nil, text: "canonical \(id)", attributes: [], media: expired ? [TelegramMediaExpiredContent(data: .file)] : [],
             peers: .init(), associatedMessages: .init(), associatedMessageIds: [], associatedMedia: [:], associatedThreadInfo: nil, associatedStories: [:])
     }
 
@@ -131,4 +131,27 @@ final class ChatLocalArchiveProjectionTests: XCTestCase {
         XCTAssertEqual(anchors.last?.index.id.id, 4)
         XCTAssertTrue(chatHistoryCanonicalEntries(self.project([], [self.saved(1)])).isEmpty)
     }
+    func testExpiredPlaceholderIsReplacedByRetainedAttachmentWithoutInventingServerAnchor() {
+        let expired = self.message(2, expired: true)
+        let result = self.project([self.row(expired)], [self.saved(2)])
+        XCTAssertEqual(result.count, 1)
+        guard case .LocalArchiveEntry = result[0] else { return XCTFail("retained media must remain visible") }
+        XCTAssertTrue(chatHistoryCanonicalEntries(result).isEmpty)
+        XCTAssertEqual(self.project([self.row(expired)], []), [self.row(expired)])
+        XCTAssertEqual(self.project([self.row(expired)], [self.saved(2)], permitted: false), [self.row(expired)])
+    }
+
+    func testSecretIncomingAndOutgoingZeroIdsRemainDistinctLocalOnlyRows() {
+        let secret = EnginePeer.Id(namespace: Namespaces.Peer.SecretChat, id: ._internalFromInt64Value(7222))
+        let rows = [self.saved(0, peer: secret, timestamp: 12, namespace: Namespaces.Message.SecretIncoming),
+                    self.saved(0, peer: secret, timestamp: 13, namespace: Namespaces.Message.Local)]
+        let result = chatHistoryApplyingLocalArchive([], rows: rows, peerId: secret,
+            presentationData: self.presentation, permitted: true)
+        XCTAssertEqual(result.count, 2)
+        XCTAssertEqual(Set(result.map { $0.stableId }).count, 2)
+        XCTAssertEqual(Set(result.map { $0.index.id.namespace }), Set([Namespaces.Message.SecretIncoming, Namespaces.Message.Local]))
+        XCTAssertTrue(chatHistoryCanonicalEntries(result).isEmpty)
+        XCTAssertTrue(self.project([], rows).isEmpty)
+    }
+
 }

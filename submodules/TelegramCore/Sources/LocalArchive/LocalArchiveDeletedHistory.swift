@@ -11,12 +11,14 @@ public struct LocalArchiveDeletedHistoryWindow: Equatable {
     public let messageIds: ClosedRange<Int32>
     public let sentAt: ClosedRange<Int64>
     let peerIsBot: Bool
+    public let namespaces: [Int32]
 
     public init?(peer: EnginePeer, messageIds: ClosedRange<Int32>, sentAt: ClosedRange<Int64>) {
         let rawPeer = peer._asPeer()
-        guard Self.supportsPeer(peer), messageIds.lowerBound > 0, sentAt.lowerBound >= 0,
+        guard Self.supportsPeer(peer), messageIds.lowerBound >= (peer.id.namespace == Namespaces.Peer.SecretChat ? 0 : 1), sentAt.lowerBound >= 0,
               sentAt.upperBound <= Int64(Int32.max) else { return nil }
         self.peerId = peer.id
+        self.namespaces = peer.id.namespace == Namespaces.Peer.SecretChat ? [Namespaces.Message.SecretIncoming, Namespaces.Message.Local] : [Namespaces.Message.Cloud]
         self.messageIds = messageIds
         self.sentAt = sentAt
         self.peerIsBot = (rawPeer as? TelegramUser)?.botInfo != nil
@@ -26,7 +28,7 @@ public struct LocalArchiveDeletedHistoryWindow: Equatable {
         let id = peer.id
         let rawPeer = peer._asPeer()
         return (id.namespace == Namespaces.Peer.CloudUser || id.namespace == Namespaces.Peer.CloudGroup
-            || id.namespace == Namespaces.Peer.CloudChannel) && !rawPeer.isCopyProtectionEnabled
+            || id.namespace == Namespaces.Peer.CloudChannel || id.namespace == Namespaces.Peer.SecretChat) && !rawPeer.isCopyProtectionEnabled
             && !rawPeer.isForumOrMonoForum
     }
 }
@@ -81,6 +83,9 @@ public final class LocalArchiveDeletedHistoryContent {
 public struct LocalArchiveDeletedHistoryItem: Equatable {
     public let peerId: EnginePeer.Id
     public let messageId: Int32
+    public let namespace: Int32
+    public let mediaKinds: [String]
+    public let storedMediaSlots: [Int]
     public let sequence: Int64
     public let eventKey: String
     public let sentAt: Int32
@@ -93,15 +98,18 @@ public struct LocalArchiveDeletedHistoryItem: Equatable {
 
     public init(peerId: EnginePeer.Id, messageId: Int32, sequence: Int64, eventKey: String,
                 sentAt: Int32, deletedAt: Int64, marker: String, storedMediaCount: Int,
-                unavailableMediaCount: Int, moreAvailable: Bool, content: LocalArchiveDeletedHistoryContent) {
+                unavailableMediaCount: Int, moreAvailable: Bool, content: LocalArchiveDeletedHistoryContent,
+                namespace: Int32 = Namespaces.Message.Cloud, mediaKinds: [String] = [], storedMediaSlots: [Int] = []) {
         self.peerId = peerId; self.messageId = messageId; self.sequence = sequence; self.eventKey = eventKey
         self.sentAt = sentAt; self.deletedAt = deletedAt; self.marker = marker
         self.storedMediaCount = storedMediaCount; self.unavailableMediaCount = unavailableMediaCount
         self.moreAvailable = moreAvailable; self.content = content
+        self.namespace = namespace; self.mediaKinds = Array(mediaKinds.prefix(10)); self.storedMediaSlots = storedMediaSlots.filter { (0..<10).contains($0) }
     }
 
     public static func == (lhs: Self, rhs: Self) -> Bool {
-        return lhs.peerId == rhs.peerId && lhs.messageId == rhs.messageId && lhs.sequence == rhs.sequence
+        return lhs.peerId == rhs.peerId && lhs.messageId == rhs.messageId && lhs.namespace == rhs.namespace
+            && lhs.mediaKinds == rhs.mediaKinds && lhs.storedMediaSlots == rhs.storedMediaSlots && lhs.sequence == rhs.sequence
             && lhs.eventKey == rhs.eventKey && lhs.sentAt == rhs.sentAt && lhs.deletedAt == rhs.deletedAt
             && lhs.marker == rhs.marker && lhs.storedMediaCount == rhs.storedMediaCount
             && lhs.unavailableMediaCount == rhs.unavailableMediaCount && lhs.moreAvailable == rhs.moreAvailable
@@ -111,7 +119,8 @@ public struct LocalArchiveDeletedHistoryItem: Equatable {
     public func withMoreAvailable(_ value: Bool) -> Self {
         return Self(peerId: self.peerId, messageId: self.messageId, sequence: self.sequence, eventKey: self.eventKey,
             sentAt: self.sentAt, deletedAt: self.deletedAt, marker: self.marker, storedMediaCount: self.storedMediaCount,
-            unavailableMediaCount: self.unavailableMediaCount, moreAvailable: value, content: self.content)
+            unavailableMediaCount: self.unavailableMediaCount, moreAvailable: value, content: self.content,
+            namespace: self.namespace, mediaKinds: self.mediaKinds, storedMediaSlots: self.storedMediaSlots)
     }
 }
 
@@ -217,14 +226,14 @@ public final class LocalArchiveDeletedHistoryLoader {
                 let now = self.clock()
                 guard now >= 0 else { return }
                 let cutoff = max(0, now - min(now, policy.maxAgeSeconds))
-                var seen = Set<Int32>()
+                var seen = Set<EngineMessage.Id>()
                 let records = page.records.prefix(40).filter { record in
                     return record.isDeleted && record.peerId == window.peerId.toInt64()
-                        && record.namespace == Namespaces.Message.Cloud && window.messageIds.contains(record.messageId)
+                        && window.namespaces.contains(record.namespace) && window.messageIds.contains(record.messageId)
                         && window.sentAt.contains(record.sentAt) && record.sentAt <= Int64(Int32.max)
                         && record.sequence > 0 && record.observedAt >= cutoff && record.observedAt <= now
                         && (policy.excludedSenderIds.isEmpty || record.authorId.map { !policy.excludedSenderIds.contains($0) } == true)
-                        && seen.insert(record.messageId).inserted
+                        && seen.insert(EngineMessage.Id(peerId: window.peerId, namespace: record.namespace, id: record.messageId)).inserted
                 }
                 self.clearRows()
                 self.rows = records.enumerated().map { index, record in
@@ -233,7 +242,8 @@ public final class LocalArchiveDeletedHistoryLoader {
                         deletedAt: record.observedAt, marker: markers.deletedMarker,
                         storedMediaCount: max(0, record.storedMediaCount), unavailableMediaCount: max(0, record.unavailableMediaCount),
                         moreAvailable: page.isTruncated && index == records.count - 1,
-                        content: LocalArchiveDeletedHistoryContent(text: record.text))
+                        content: LocalArchiveDeletedHistoryContent(text: record.text), namespace: record.namespace,
+                        mediaKinds: record.mediaKinds, storedMediaSlots: record.storedMediaSlots)
                 }
                 self.changed(self.rows)
                 self.scheduleExpiration(policy: policy, generation: generation, request: request)

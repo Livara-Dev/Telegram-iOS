@@ -81,7 +81,7 @@ final class LocalArchiveDeletedHistoryTests: XCTestCase {
         }
     }
 
-    func testSecretForumCopyProtectedAndUnknownThreadPeersCannotCreateAWindow() {
+    func testSecretNamespacesHaveWindowsWhileForumAndCopyProtectedPeersRemainExcluded() {
         let id = PeerId(namespace: Namespaces.Peer.CloudChannel, id: ._internalFromInt64Value(9813))
         let channel = TelegramChannel(id: id, accessHash: .personal(456), title: "Deleted row eligibility", username: nil,
             photo: [], creationDate: 0, version: 0, participationStatus: .member, info: .group(TelegramChannelGroupInfo(flags: [])),
@@ -95,7 +95,9 @@ final class LocalArchiveDeletedHistoryTests: XCTestCase {
         let secret = TelegramSecretChat(id: PeerId(namespace: Namespaces.Peer.SecretChat, id: ._internalFromInt64Value(9814)),
             creationDate: 0, regularPeerId: PeerId(namespace: Namespaces.Peer.CloudUser, id: ._internalFromInt64Value(9811)), accessHash: 0,
             role: .creator, embeddedState: .active, messageAutoremoveTimeout: nil)
-        XCTAssertNil(LocalArchiveDeletedHistoryWindow(peer: .secretChat(secret), messageIds: 1...100, sentAt: 0...1000))
+        let window = LocalArchiveDeletedHistoryWindow(peer: .secretChat(secret), messageIds: 0...100, sentAt: 0...1000)
+        XCTAssertNotNil(window)
+        XCTAssertEqual(window?.namespaces, [Namespaces.Message.SecretIncoming, Namespaces.Message.Local])
         XCTAssertNil(LocalArchiveDeletedHistoryWindow(peer: .channel(channel), messageIds: 0...100, sentAt: 0...1000))
         XCTAssertNil(LocalArchiveDeletedHistoryWindow(peer: .channel(channel), messageIds: 1...100, sentAt: -1...1000))
     }

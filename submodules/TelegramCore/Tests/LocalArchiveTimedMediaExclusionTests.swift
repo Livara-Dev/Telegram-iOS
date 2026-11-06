@@ -617,4 +617,77 @@ final class LocalArchiveTimedMediaExclusionTests: XCTestCase {
         }
     }
 
+    func testVideoVoiceAndRoundVideoPrefetchPlansRequireCurrentExplicitTimedOptIn() throws {
+        for (index, media) in [self.completedFile(), self.completedFile(voice: true), self.completedFile(round: true)].enumerated() {
+            let id = self.id(Int32(index + 60)), postbox = self.fixture.postbox!
+            let _ = try self.localArchiveValue(postbox.transaction { transaction in
+                _ = transaction.addMessages([localArchiveTestMessage(id, attributes: [
+                    AutoclearTimeoutMessageAttribute(timeout: viewOnceTimeout, countdownBeginTime: nil)
+                ], media: [media.0])], location: .Random)
+            })
+            try self.configureExtended(secret: false, timed: false)
+            XCTAssertNil(try self.localArchiveValue(postbox.transaction { localArchiveMediaPrefetchPlan(transaction: $0, messageId: id) }))
+            try self.configureExtended(secret: false, timed: true)
+            let plan = try XCTUnwrap(try self.localArchiveValue(postbox.transaction { localArchiveMediaPrefetchPlan(transaction: $0, messageId: id) }))
+            XCTAssertEqual(plan.1.map { $0.resource.id.stringRepresentation }, [media.1.id.stringRepresentation])
+            XCTAssertNotNil(try self.message(id), "Prefetch planning does not consume or delete the message")
+        }
+    }
+
+    func testExcludedChatAndOverQuotaVideoNeverProduceDownloadPlan() throws {
+        try self.configureExtended(secret: false, timed: true)
+        let postbox = self.fixture.postbox!, id = self.id(64)
+        let file = try XCTUnwrap(self.completedFile().0 as? TelegramMediaFile).withUpdatedSize(128 * 1024 * 1024)
+        let chat = self.chatPeerId
+        let _ = try self.localArchiveValue(postbox.transaction { transaction in
+            _ = transaction.addMessages([localArchiveTestMessage(id, attributes: [
+                AutoclearTimeoutMessageAttribute(timeout: 30, countdownBeginTime: nil)
+            ], media: [file])], location: .Random)
+            var settings = localArchiveSettings(transaction: transaction)
+            settings.maxPayloadBytes = 32 * 1024 * 1024
+            setLocalArchiveSettings(transaction: transaction, settings: settings)
+        })
+        XCTAssertNil(try self.localArchiveValue(postbox.transaction { localArchiveMediaPrefetchPlan(transaction: $0, messageId: id) }))
+        let _ = try self.localArchiveValue(postbox.transaction { transaction in
+            var settings = localArchiveSettings(transaction: transaction)
+            settings.maxPayloadBytes = 1024 * 1024 * 1024
+            settings.excludedPeerIds.insert(chat.toInt64())
+            setLocalArchiveSettings(transaction: transaction, settings: settings)
+        })
+        XCTAssertNil(try self.localArchiveValue(postbox.transaction { localArchiveMediaPrefetchPlan(transaction: $0, messageId: id) }))
+    }
+
+    func testMissingCaptureCounterDoesNotChangeAuthorityButPrivacyAndQuotaDo() {
+        let initial = LocalArchiveSettings(enabled: true, includeExpiringMessages: true)
+        var changed = initial
+        changed.droppedCaptures += 1
+        XCTAssertTrue(initial.hasSameCaptureAuthority(as: changed))
+        changed.includeExpiringMessages = false
+        XCTAssertFalse(initial.hasSameCaptureAuthority(as: changed))
+        changed = initial; changed.maxPayloadBytes /= 2
+        XCTAssertFalse(initial.hasSameCaptureAuthority(as: changed))
+        changed = initial; changed.pendingPurge = true
+        XCTAssertFalse(initial.hasSameCaptureAuthority(as: changed))
+        changed = initial; changed.enabled = false
+        XCTAssertFalse(initial.hasSameCaptureAuthority(as: changed))
+        changed = initial; changed.generation += 1
+        XCTAssertFalse(initial.hasSameCaptureAuthority(as: changed))
+    }
+
+    func testAlternativeVideoResourcesAreRecordedWithoutCopyingCredentials() throws {
+        let primary = try XCTUnwrap(self.completedFile().0 as? TelegramMediaFile)
+        let alternate = primary.withUpdatedResource(CloudDocumentMediaResource(datacenterId: 1, fileId: 9410,
+            accessHash: 987654321, size: 2, fileReference: Data([0xde, 0xad]), fileName: nil)).withUpdatedSize(2)
+        let file = TelegramMediaFile(fileId: primary.fileId, partialReference: primary.partialReference, resource: primary.resource,
+            previewRepresentations: primary.previewRepresentations, videoThumbnails: primary.videoThumbnails,
+            immediateThumbnailData: primary.immediateThumbnailData, mimeType: primary.mimeType, size: primary.size,
+            attributes: primary.attributes, alternativeRepresentations: [alternate, alternate])
+        let metadata = try XCTUnwrap(localArchiveMediaMetadata([file]).first)
+        XCTAssertEqual(metadata.resourceKey, primary.resource.id.stringRepresentation)
+        XCTAssertEqual(metadata.alternativeResourceKeys, [alternate.resource.id.stringRepresentation])
+        let json = String(data: try JSONEncoder().encode(metadata), encoding: .utf8) ?? ""
+        XCTAssertFalse(json.contains("987654321")); XCTAssertFalse(json.contains("accessHash"))
+        XCTAssertFalse(json.contains("fileReference"))
+    }
+
 }

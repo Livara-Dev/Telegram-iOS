@@ -201,31 +201,14 @@ public func deleteAccountOptionsController(context: AccountContext, navigationCo
         |> take(1)
         |> deliverOnMainQueue
         ).start(next: { accountAndPeer, accountsAndPeers in
-            var maximumAvailableAccounts: Int = 3
-            if accountAndPeer?.1.isPremium == true && !context.account.testingEnvironment {
-                maximumAvailableAccounts = 4
-            }
-            var count: Int = 1
-            for (accountContext, peer, _) in accountsAndPeers {
-                if !accountContext.account.testingEnvironment {
-                    if peer.isPremium {
-                        maximumAvailableAccounts = 4
-                    }
-                    count += 1
-                }
-            }
-
-            if count >= maximumAvailableAccounts {
-                var replaceImpl: ((ViewController) -> Void)?
-                let controller = PremiumLimitScreen(context: context, subject: .accounts, count: Int32(count), action: {
-                    let controller = PremiumIntroScreen(context: context, source: .accounts)
-                    replaceImpl?(controller)
-                    return true
-                })
-                replaceImpl = { [weak controller] c in
-                    controller?.replace(with: c)
-                }
-                pushControllerImpl?(controller)
+            let count = (accountAndPeer.map { $0.0.account.testingEnvironment == context.account.testingEnvironment ? 1 : 0 } ?? 0)
+                + accountsAndPeers.filter { $0.0.account.testingEnvironment == context.account.testingEnvironment }.count
+            if count >= maximumNumberOfAccounts {
+                let controller = textAlertController(context: context, title: "Account limit",
+                    text: "This installation supports up to \(maximumNumberOfAccounts) accounts.", actions: [
+                        TextAlertAction(type: .defaultAction, title: context.sharedContext.currentPresentationData.with { $0 }.strings.Common_OK, action: {})
+                    ])
+                presentControllerImpl?(controller, nil)
             } else {
                 context.sharedContext.beginNewAuth(testingEnvironment: context.account.testingEnvironment)
 

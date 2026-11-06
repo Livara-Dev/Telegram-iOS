@@ -286,7 +286,8 @@ public extension TelegramEngine {
         }
 
         public func markMessageContentAsConsumedInteractively(messageId: MessageId) -> Signal<Void, NoError> {
-            return _internal_markMessageContentAsConsumedInteractively(postbox: self.account.postbox, messageId: messageId)
+            let preparation = self.account.localArchive?.prepareMediaForConsumption(messageId: messageId) ?? .single(())
+            return preparation |> then(_internal_markMessageContentAsConsumedInteractively(postbox: self.account.postbox, messageId: messageId))
         }
 
         public func installInteractiveReadMessagesAction(peerId: PeerId, threadId: Int64?) -> Disposable {

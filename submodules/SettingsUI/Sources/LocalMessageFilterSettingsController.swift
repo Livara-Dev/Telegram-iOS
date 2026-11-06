@@ -206,9 +206,9 @@ public func localMessageFilterSettingsController(context: AccountContext, peerId
             LocalFilterRow(stableId: .fixed(1), order: 1, section: 0, content: .toggle("Filter Messages Locally", settings.enabled, canChange)),
             LocalFilterRow(stableId: .fixed(2), order: 2, section: 0, content: .text(status)),
             LocalFilterRow(stableId: .fixed(3), order: 3, section: 1, content: .action(peerId == nil ? "Add Global Rule" : "Add Rule for This Chat", "\(settings.rules.count) of \(LocalMessageFilterLimits.maximumRules) rules", canChange && settings.rules.count < LocalMessageFilterLimits.maximumRules)),
-            LocalFilterRow(stableId: .fixed(4), order: 4, section: 1, content: .text("Create text/caption rules or hide a supported media type. Rules can apply globally or to one chat.")),
+            LocalFilterRow(stableId: .fixed(4), order: 4, section: 1, content: .text("Add rules for text or media, globally or per chat.")),
             LocalFilterRow(stableId: .fixed(15), order: 5, section: 1, content: .toggle("Hide Blocked Senders", settings.hideBlockedSenders, canChange)),
-            LocalFilterRow(stableId: .fixed(16), order: 6, section: 1, content: .text("Uses this account’s locally cached user-block status for supported messages. Changes update open chats; missing block metadata stays visible. No block or peer-fetch request is sent by filtering. Chats excluded from global rules are also exempt from this option."))
+            LocalFilterRow(stableId: .fixed(16), order: 6, section: 1, content: .text("Hide messages from locally known blocked users. Excluded chats are unaffected."))
         ]
         var nextOrder = 7
         if let peerId {
@@ -238,15 +238,15 @@ public func localMessageFilterSettingsController(context: AccountContext, peerId
         }
         entries.append(LocalFilterRow(stableId: .fixed(17), order: nextOrder, section: 4, content: .heading("LOCALLY HIDDEN SENDERS · \(settings.hiddenSenderIds.count)/\(LocalMessageFilterLimits.maximumHiddenSenders)")))
         nextOrder += 1
-        entries.append(LocalFilterRow(stableId: .fixed(18), order: nextOrder, section: 4, content: .text("Open a supported message’s filter editor to hide its sender locally. No Telegram block request is sent. Global-chat exceptions apply; sender filters require a known author. Tap a sender below to remove their local filter.")))
+        entries.append(LocalFilterRow(stableId: .fixed(18), order: nextOrder, section: 4, content: .text("Hide senders locally. Tap a sender to remove the rule; Telegram blocking is unchanged.")))
         nextOrder += 1
         for id in settings.hiddenSenderIds.sorted() {
             entries.append(LocalFilterRow(stableId: .sender(id), order: nextOrder, section: 4, content: .action(data.1[id] ?? "Sender \(id)", "Show again…", canChange)))
             nextOrder += 1
         }
-        entries.append(LocalFilterRow(stableId: .fixed(7), order: nextOrder, section: 4, content: .text("Supports ordinary incoming text and single photos, videos, GIFs, voice/video messages and files in generic bubbles. Forwarded or grouped messages, stickers, large emoji, rich/unknown attributes, secret, protected and disappearing content stay visible. Filtering does not stop already playing media, block receipts, remove unread counts or delete server messages.")))
-        entries.append(LocalFilterRow(stableId: .fixed(9), order: nextOrder + 1, section: 4, content: .text("Tap a hidden-message placeholder to show filtered messages in that chat. Use Hide Filtered Messages Again in the chat menu to restore the placeholders.")))
-        entries.append(LocalFilterRow(stableId: .fixed(13), order: nextOrder + 2, section: 4, content: .text("Text rules skip oversized bodies and expressions that exceed the work limit. Independent sender and media-type rules may still apply. Expressions use a finite-state evaluator, not unrestricted backtracking.")))
+        entries.append(LocalFilterRow(stableId: .fixed(7), order: nextOrder, section: 4, content: .text("Filters ordinary text and supported media. Secret, timed and unsupported messages stay visible.")))
+        entries.append(LocalFilterRow(stableId: .fixed(9), order: nextOrder + 1, section: 4, content: .text("Tap a hidden-message placeholder to reveal it. Hide again from the chat menu.")))
+        entries.append(LocalFilterRow(stableId: .fixed(13), order: nextOrder + 2, section: 4, content: .text("Oversized text or unsupported expressions stay visible.")))
         entries.append(LocalFilterRow(stableId: .fixed(14), order: nextOrder + 3, section: 5, content: .destructive("Reset Message Filters", canChange)))
         if actionState.1 {
             entries.append(LocalFilterRow(stableId: .fixed(8), order: nextOrder + 4, section: 5, content: .text("The filter change could not be saved. Existing rules have been kept.")))
@@ -431,7 +431,7 @@ private func localFilterRuleEditor(context: AccountContext, peerId: Int64?, rule
             LocalFilterRow(stableId: .fixed(2), order: 3, section: 0, content: .text(explanation))
         ]
         entries.append(LocalFilterRow(stableId: .fixed(17), order: 4, section: 1, content: .toggle("Invert This Rule", value.isInverted, canChange)))
-        entries.append(LocalFilterRow(stableId: .fixed(18), order: 5, section: 1, content: .text("Inverse text rules hide supported nonempty text or captions that do not match. Inverse media rules hide other recognized media types. This is not an allowlist: another rule may also hide matching messages. Unknown, empty, oversized or work-limited text stays visible.")))
+        entries.append(LocalFilterRow(stableId: .fixed(18), order: 5, section: 1, content: .text("Inverse rules hide non-matches. Other rules may also apply; unknown content stays visible.")))
         if value.mediaType == nil {
             entries.append(LocalFilterRow(stableId: .fixed(12), order: 6, section: 1, content: .toggle("Regular expression · safe subset", value.regularExpression, canChange)))
             entries.append(LocalFilterRow(stableId: .fixed(3), order: 7, section: 1, content: .toggle("Case-sensitive matching", value.caseSensitive, canChange)))
@@ -445,7 +445,7 @@ private func localFilterRuleEditor(context: AccountContext, peerId: Int64?, rule
         entries.append(LocalFilterRow(stableId: .fixed(7), order: 11, section: 2, content: .action("Filter Settings", "This account", !busy)))
         if let initialSenderId, initialSenderId.namespace == Namespaces.Peer.CloudUser || initialSenderId.namespace == Namespaces.Peer.CloudChannel {
             entries.append(LocalFilterRow(stableId: .fixed(19), order: 12, section: 2, content: .toggle("Hide This Sender Locally", senderIsHidden, canChange)))
-            entries.append(LocalFilterRow(stableId: .fixed(20), order: 13, section: 2, content: .text("Saved immediately for this account, independently of the draft rule. Hides this author’s supported messages in all chats except global-chat exceptions when filtering is on. Does not block the sender on Telegram.")))
+            entries.append(LocalFilterRow(stableId: .fixed(20), order: 13, section: 2, content: .text("Applies immediately to this account. Does not block the sender on Telegram.")))
         }
         if rule != nil {
             entries.append(LocalFilterRow(stableId: .fixed(8), order: 14, section: 3, content: .destructive("Remove Rule", canChange)))

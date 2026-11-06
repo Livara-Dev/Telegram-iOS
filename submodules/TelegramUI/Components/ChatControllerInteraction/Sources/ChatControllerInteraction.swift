@@ -150,6 +150,7 @@ public final class ChatControllerInteraction: ChatControllerInteractionProtocol 
     /// Read-only local destination. Archived records never enter openMessage,
     /// forwarding, reply, selection, pinning or any outgoing-message callback.
     public var openLocalArchiveHistory: ((EngineMessage.Id) -> Void)?
+    public var openLocalArchiveMedia: ((EngineMessage.Id, String, Int) -> Void)?
     public enum OpenPeerSource {
         case `default`
         case reaction

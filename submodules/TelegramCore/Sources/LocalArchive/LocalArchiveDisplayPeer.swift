@@ -18,3 +18,8 @@ public func localArchiveDisplayMessageId(peerId: Int64, namespace: Int32, messag
           let peer = localArchiveDisplayPeerId(peerId) else { return nil }
     return EngineMessage.Id(peerId: peer, namespace: namespace, id: messageId)
 }
+
+/// Validation for local-only retained destinations, not a request to Telegram.
+public func localArchiveSupportsRetainedMessageId(_ id: EngineMessage.Id) -> Bool {
+    return localArchiveMessageIdentityIsSupported(id)
+}

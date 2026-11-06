@@ -18,7 +18,7 @@ final class ChatLocalArchiveRowRendererTests: XCTestCase {
         return LocalArchiveDeletedHistoryItem(peerId: .init(namespace: Namespaces.Peer.CloudUser, id: ._internalFromInt64Value(7111)),
             messageId: 4, sequence: 2, eventKey: "renderer-fixture", sentAt: 800, deletedAt: 900, marker: "Custom Deleted",
             storedMediaCount: media, unavailableMediaCount: unavailable, moreAvailable: more,
-            content: LocalArchiveDeletedHistoryContent(text: text))
+            content: LocalArchiveDeletedHistoryContent(text: text), mediaKinds: ["voice", "video"], storedMediaSlots: media > 0 ? [0] : [])
     }
 
     func testActualRendererExposesLocalMarkerTimestampAndMediaAvailabilityWithoutServerActions() {
@@ -29,12 +29,12 @@ final class ChatLocalArchiveRowRendererTests: XCTestCase {
             view.update(row: row, theme: defaultPresentationData().theme, openHistory: { opens += 1 })
             view.layoutIfNeeded()
             XCTAssertFalse(view.isHidden)
-            XCTAssertTrue(view.accessibilityLabel?.contains("Custom Deleted · Local archive") == true)
+            XCTAssertTrue(view.accessibilityLabel?.contains("Custom Deleted") == true)
             XCTAssertTrue(view.accessibilityLabel?.contains("Saved private body") == true)
-            XCTAssertTrue(view.accessibilityLabel?.contains("Observed deletion:") == true)
-            XCTAssertTrue(view.accessibilityLabel?.contains("Saved media: 1") == true)
-            XCTAssertTrue(view.accessibilityLabel?.contains("Media not captured: 1") == true)
-            XCTAssertEqual(view.gestureRecognizers?.count, 1, "only archive history opening is supported")
+            XCTAssertFalse(view.accessibilityLabel?.contains("Observed deletion:") == true)
+            XCTAssertTrue(view.accessibilityLabel?.contains("Voice message, saved") == true)
+            XCTAssertTrue(view.accessibilityLabel?.contains("Video, not saved") == true)
+            XCTAssertEqual(view.gestureRecognizers?.count, 1, "the container has one local-only navigation gesture")
             XCTAssertTrue(view.accessibilityActivate()); XCTAssertEqual(opens, 1)
             row.content.revoke()
             XCTAssertTrue(view.isHidden); XCTAssertNil(view.accessibilityLabel)
@@ -100,4 +100,23 @@ final class ChatLocalArchiveRowRendererTests: XCTestCase {
             XCTAssertTrue(view.isHidden); XCTAssertNil(view.accessibilityLabel)
         }
     }
+    func testSavedAttachmentButtonOpensItsActualSlotAndRevocationRemovesActions() {
+        self.onMain {
+            let row = self.row()
+            let view = ChatLocalArchiveRowView(frame: CGRect(x: 0, y: 0, width: 320, height: 250))
+            var slots: [Int] = []
+            view.update(row: row, theme: defaultPresentationData().theme, openHistory: {}, openMedia: { slots.append($0) })
+            let buttons = view.subviews.compactMap { $0 as? UIButton }
+            XCTAssertEqual(buttons.count, 2)
+            XCTAssertTrue(buttons[0].isEnabled)
+            XCTAssertFalse(buttons[1].isEnabled)
+            buttons[0].sendActions(for: .touchUpInside)
+            XCTAssertEqual(slots, [0])
+            row.content.revoke()
+            buttons[0].sendActions(for: .touchUpInside)
+            XCTAssertEqual(slots, [0])
+            XCTAssertNil(view.accessibilityCustomActions)
+        }
+    }
+
 }

@@ -244,6 +244,7 @@ struct ScrolledToMessageId: Equatable {
 }
 
 public final class ChatControllerImpl: TelegramBaseController, ChatController, GalleryHiddenMediaTarget, UIDropInteractionDelegate {    
+    private let localArchivePreviewDisposable = MetaDisposable()
     var validLayout: ContainerViewLayout?
     
     public weak var parentController: ViewController?
@@ -6058,10 +6059,20 @@ public final class ChatControllerImpl: TelegramBaseController, ChatController, G
         self.controllerInteraction = controllerInteraction
         controllerInteraction.openLocalArchiveHistory = { [weak self] messageId in
             guard let self, self.isNodeLoaded,
-                  self.chatLocation.peerId == messageId.peerId, localArchiveSupportsPeer(messageId.peerId),
-                  messageId.namespace == Namespaces.Message.Cloud, messageId.id > 0,
+                  self.chatLocation.peerId == messageId.peerId, localArchiveSupportsRetainedMessageId(messageId),
                   self.context.account.localArchive != nil else { return }
             self.push(localArchiveMessageHistoryController(context: self.context, messageId: messageId))
+        }
+        controllerInteraction.openLocalArchiveMedia = { [weak self] messageId, eventKey, slot in
+            guard let self, self.isNodeLoaded, self.chatLocation.peerId == messageId.peerId,
+                  localArchiveSupportsRetainedMessageId(messageId) else { return }
+            self.localArchivePreviewDisposable.set(openLocalArchiveSavedMedia(context: self.context, eventKey: eventKey, slot: slot,
+                push: { [weak self] controller in self?.push(controller) },
+                information: { [weak self] text in
+                    guard let self else { return }
+                    self.present(textAlertController(context: self.context, title: "Saved media", text: text,
+                        actions: [TextAlertAction(type: .defaultAction, title: self.presentationData.strings.Common_OK, action: {})]), in: .window(.root))
+                }))
         }
         controllerInteraction.requestWalletTransferArrival = { [weak self] message in
             self?.walletTransferAnimationCoordinator().requestArrival(message)
@@ -7152,6 +7163,7 @@ public final class ChatControllerImpl: TelegramBaseController, ChatController, G
     }
 
     deinit {
+        self.localArchivePreviewDisposable.dispose()
         let _ = ChatControllerCount.modify { value in
             return value - 1
         }

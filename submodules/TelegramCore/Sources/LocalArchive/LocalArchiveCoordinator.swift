@@ -30,6 +30,7 @@ public struct LocalArchivedMessage {
     public let serverEditAt: Int64?
     public let isDeleted: Bool
     public let storedMediaCount: Int
+    public let storedMediaSlots: [Int]
     public let mediaKinds: [String]
     public let unavailableMediaCount: Int
 
@@ -46,6 +47,7 @@ public struct LocalArchivedMessage {
         self.serverEditAt = record.event.serverEditAt
         self.isDeleted = record.event.kind == .deleted
         self.storedMediaCount = record.storedMediaCount
+        self.storedMediaSlots = record.storedMediaSlots
         self.mediaKinds = (localArchiveDecodedMediaMetadata(record.event.content.entities) ?? []).map { $0.kind.rawValue }
         self.unavailableMediaCount = max(0, (localArchiveDecodedMediaMetadata(record.event.content.entities)?.count ?? 0) - record.storedMediaCount)
     }
@@ -148,6 +150,13 @@ extension ArchiveStore: LocalArchiveStorage {}
 typealias LocalArchiveStorageFactory = (URL, Int64, ArchiveRetentionPolicy, Bool, DispatchQueue,
                                        @escaping (Result<LocalArchiveStorage, ArchiveError>) -> Void) -> Void
 
+/// These native references live in memory only and never enter archive records.
+private final class LocalArchiveMediaWarmup {
+    let disposables = DisposableSet()
+    let ready = ValuePromise<Bool?>(nil, ignoreRepeated: true)
+    deinit { self.disposables.dispose() }
+}
+
 /// Account-owned, opt-in handoff. Operation-log views are wakeups, never commit acknowledgements.
 /// All archive work starts from a fresh Postbox transaction's emitted result on `queue`.
 /// Postbox's release-build disk-full commit behavior remains a separately documented limitation.
@@ -161,6 +170,8 @@ public final class LocalArchiveCoordinator {
     private let storageFactory: LocalArchiveStorageFactory
     private let subscriptions = DisposableSet()
     private let transactionDisposable = MetaDisposable()
+    private let mediaCopyWait = MetaDisposable()
+    private var mediaWarmups: [String: LocalArchiveMediaWarmup] = [:]
     private let statusValue = ValuePromise<LocalArchiveStatus>(.disabled, ignoreRepeated: true)
     private let historyRevisionValue = ValuePromise<Int64>(0, ignoreRepeated: true)
     private var currentHistoryRevision: Int64 = 0
@@ -229,6 +240,7 @@ public final class LocalArchiveCoordinator {
         }
 
         self.subscriptions.add(self.transactionDisposable)
+        self.subscriptions.add(self.mediaCopyWait)
         self.subscriptions.add((protectedData ?? localArchiveProtectedDataSignal()).start(next: { [weak self] available in
             guard let self else { return }
             self.queue.justDispatch { [weak self] in
@@ -245,6 +257,10 @@ public final class LocalArchiveCoordinator {
         self.subscriptions.add(self.settings.start(next: { [weak self] settings in
             self?.queue.justDispatch { [weak self] in
                 guard let self else { return }
+                if self.hasReadSettings && !self.activeSettings.hasSameCaptureAuthority(as: settings) {
+                    for warmup in self.mediaWarmups.values { warmup.ready.set(false); warmup.disposables.dispose() }
+                    self.mediaWarmups.removeAll()
+                }
                 // A privacy, retention or purge change cancels an uncommitted
                 // transfer rather than exporting under stale account choices.
                 // An unchanged initial preference view is not a policy change.
@@ -260,6 +276,7 @@ public final class LocalArchiveCoordinator {
     }
 
     deinit {
+        for warmup in self.mediaWarmups.values { warmup.disposables.dispose() }
         self.activeTransfer?.cancel()
         self.subscriptions.dispose()
         self.storage?.close(completion: {})
@@ -272,6 +289,43 @@ public final class LocalArchiveCoordinator {
             self.stopped = true
             self.invalidateWork()
             self.statusValue.set(.unavailable)
+        }
+    }
+
+    /// Establish full-resource fetches before starting the normal consumption
+    /// transaction. Only the small plan lookup is awaited, never the download.
+    /// Read receipts and expiration timings remain owned by the upstream path.
+    public func prepareMediaForConsumption(messageId: MessageId) -> Signal<Void, NoError> {
+        return self.postbox.transaction { transaction in
+            localArchiveMediaPrefetchPlan(transaction: transaction, messageId: messageId)
+        }
+        |> deliverOn(self.queue)
+        |> map { [weak self] plan -> Void in
+            guard let self, !self.stopped, self.mayAccessProtectedData,
+                  let (settings, resources) = plan,
+                  settings.isSupported, settings.enabled, !settings.pendingPurge else { return }
+            // Re-read policy through the account's serialized queue before use;
+            // a stale request must not resume a disabled or purged archive.
+            guard self.hasReadSettings, self.activeSettings.hasSameCaptureAuthority(as: settings) else { return }
+            for reference in resources {
+                let key = reference.resource.id.stringRepresentation
+                guard self.mediaWarmups[key] == nil, self.mediaWarmups.count < 8 else { continue }
+                let warmup = LocalArchiveMediaWarmup()
+                self.mediaWarmups[key] = warmup
+                warmup.disposables.add(self.postbox.mediaBox.keepResource(id: reference.resource.id).start())
+                warmup.disposables.add(fetchedMediaResource(mediaBox: self.postbox.mediaBox,
+                    userLocation: .peer(messageId.peerId), userContentType: .other, reference: reference,
+                    continueInBackground: false).start(error: { [weak warmup] _ in
+                        warmup?.ready.set(false)
+                    }, completed: { [weak warmup] in warmup?.ready.set(true) }))
+                // No permanent cache pin or unbounded background downloader.
+                self.queue.after(600.0) { [weak self, weak warmup] in
+                    guard let self, let warmup, self.mediaWarmups[key] === warmup else { return }
+                    warmup.ready.set(false)
+                    warmup.disposables.dispose()
+                    self.mediaWarmups.removeValue(forKey: key)
+                }
+            }
         }
     }
 
@@ -608,13 +662,24 @@ public final class LocalArchiveCoordinator {
     }
 
     public func deletedHistory(window: LocalArchiveDeletedHistoryWindow, excludingAuthors: Set<Int64>) -> Signal<LocalArchiveDeletedHistoryResult, NoError> {
-        let value: Signal<ArchiveDeletedHistoryPage?, NoError> = self.readValue { storage, completion in
-            storage.deletedHistory(peerId: window.peerId.toInt64(), namespace: Namespaces.Message.Cloud,
-                messageIds: window.messageIds, sentAt: window.sentAt, excludingAuthors: excludingAuthors, limit: 40, completion: completion)
+        let queries: [Signal<ArchiveDeletedHistoryPage?, NoError>] = window.namespaces.map { namespace in
+            return self.readValue { storage, completion in
+                storage.deletedHistory(peerId: window.peerId.toInt64(), namespace: namespace,
+                    messageIds: window.messageIds, sentAt: window.sentAt, excludingAuthors: excludingAuthors,
+                    limit: 40, completion: completion)
+            }
         }
-        return value |> map { page in
-            guard let page else { return LocalArchiveDeletedHistoryResult(records: [], isTruncated: false, unavailable: true) }
-            return LocalArchiveDeletedHistoryResult(records: page.records.map(LocalArchivedMessage.init), isTruncated: page.isTruncated, unavailable: false)
+        return combineLatest(queries) |> map { pages in
+            guard pages.allSatisfy({ $0 != nil }) else {
+                return LocalArchiveDeletedHistoryResult(records: [], isTruncated: false, unavailable: true)
+            }
+            let known = pages.compactMap { $0 }
+            let records = known.flatMap { $0.records }.sorted { lhs, rhs in
+                if lhs.event.content.sentAt != rhs.event.content.sentAt { return lhs.event.content.sentAt > rhs.event.content.sentAt }
+                return lhs.sequence > rhs.sequence
+            }
+            return LocalArchiveDeletedHistoryResult(records: records.prefix(40).map(LocalArchivedMessage.init),
+                isTruncated: records.count > 40 || known.contains { $0.isTruncated }, unavailable: false)
         }
     }
 
@@ -757,6 +822,9 @@ public final class LocalArchiveCoordinator {
     }
 
     private func invalidateWork() {
+        self.mediaCopyWait.set(nil)
+        for warmup in self.mediaWarmups.values { warmup.disposables.dispose() }
+        self.mediaWarmups.removeAll()
         self.cancelPendingTransfer()
         self.activeTransfer?.cancel()
         self.activeTransfer = nil
@@ -1018,7 +1086,7 @@ public final class LocalArchiveCoordinator {
     }
 
     private func copyMediaFile(storage: LocalArchiveStorage, operation: LocalArchiveCaptureOperation, item: LocalArchiveMediaMetadata,
-                               slot: Int, epoch: Int64, missing: Bool, candidate: Int = 0, completion: @escaping (Bool) -> Void) {
+                               slot: Int, epoch: Int64, missing: Bool, candidate: Int = 0, waitedForDownload: Bool = false, completion: @escaping (Bool) -> Void) {
         guard self.isCurrent(epoch) else { return }
         let keys = ([item.resourceKey].compactMap { $0 } + (item.alternativeResourceKeys ?? [])).filter(localArchiveSafeResourceKey)
         guard candidate < keys.count else {
@@ -1026,11 +1094,25 @@ public final class LocalArchiveCoordinator {
             return
         }
         let path = self.postbox.mediaBox.storePathsForId(MediaResourceId(keys[candidate])).complete
+        if !waitedForDownload, !FileManager.default.fileExists(atPath: path), let warmup = self.mediaWarmups[keys[candidate]] {
+            // A one-time, bounded asynchronous wait lets an in-flight full fetch
+            // finish after playback. Never treat partial/sparse bytes as a file.
+            self.mediaCopyWait.set((warmup.ready.get()
+            |> filter { $0 != nil }
+            |> take(1)
+            |> timeout(120.0, queue: self.queue, alternate: .single(false))
+            |> deliverOn(self.queue)).start(next: { [weak self] _ in
+                guard let self, self.isCurrent(epoch) else { return }
+                self.copyMediaFile(storage: storage, operation: operation, item: item, slot: slot,
+                    epoch: epoch, missing: missing, candidate: candidate, waitedForDownload: true, completion: completion)
+            }))
+            return
+        }
         // ArchiveStore opens and streams the completed file on its own worker. Never
         // materialize a video or document as a full Data buffer on this account queue.
         storage.recordMediaFile(eventKey: operation.eventKey, slot: slot, kind: item.kind.rawValue,
                                 mimeType: item.mimeType ?? "application/octet-stream", source: URL(fileURLWithPath: path),
-                                expectedSize: item.byteSize, generation: operation.generation) { [weak self] result in
+                                expectedSize: candidate == 0 ? item.byteSize : nil, generation: operation.generation) { [weak self] result in
             self?.queue.justDispatch { [weak self] in
                 guard let self, self.isCurrent(epoch) else { return }
                 guard case let .success(retained) = result else { self.failed(.unavailable, epoch: epoch); return }
@@ -1038,6 +1120,10 @@ public final class LocalArchiveCoordinator {
                 // snapshots even when this particular attachment did not fit.
                 self.historyDidChange()
                 if retained {
+                    if let warmup = self.mediaWarmups.removeValue(forKey: keys[candidate]) {
+                        warmup.ready.set(true)
+                        warmup.disposables.dispose()
+                    }
                     self.copyCachedMedia(storage: storage, operation: operation, slot: slot + 1, epoch: epoch, missing: missing, completion: completion)
                 } else {
                     self.copyMediaFile(storage: storage, operation: operation, item: item, slot: slot, epoch: epoch, missing: missing, candidate: candidate + 1, completion: completion)

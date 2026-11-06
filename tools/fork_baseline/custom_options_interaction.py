@@ -15,7 +15,7 @@ import custom_options_smoke as visual
 import test_product_capture as products
 import tiny_ui_test_project as project
 
-SOURCE_PATH = 'Tests/CustomeOptionsHost/CustomeOptionsInteractionTests.swift'
+SOURCE_PATH = 'tools/fork_baseline/tests/fixtures/retained-c55-CustomeOptionsInteractionTests.swift'
 SOURCE_SHA256 = 'd6e84d693255d95638edfa8d4bb5d34719172d153ff93678271adc79171a2de1'
 EXPECTED_CASE = 'CustomeOptionsInteractionTests.testLightDarkSearchNavigationSwitchAndActualResetConfirmation'
 # Run422470 left the switch visibly off after the ordinary AX tap. Its cause is

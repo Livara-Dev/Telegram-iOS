@@ -53,18 +53,48 @@ final class CustomeOptionsInteractionTests: XCTestCase {
             XCTAssertEqual(XCTWaiter.wait(for: [hidden], timeout: 5), .completed)
             return
         }
-        // Empty searches disable the keyboard's Search action. Exercise the
-        // production table's interactive dismissal with stable window-relative
-        // coordinates on this fixed portrait iPhone profile, without querying
-        // keyboard geometry between a visibility check and an animation.
+        // Empty-search assertion-contract repair: hierarchy membership does
+        // not prove visibility. Preserve the real interactive-dismissal drag
+        // and five-second deadline; invalid geometry must never prove hidden.
         let window = app.windows.firstMatch
+        func validFrame(_ rect: CGRect) -> Bool {
+            return [rect.origin.x, rect.origin.y, rect.size.width, rect.size.height, rect.maxX, rect.maxY].allSatisfy { $0.isFinite }
+                && rect.size.width > 0 && rect.size.height > 0
+        }
+        func keyboardState() -> (visible: Bool, hidden: Bool, evidence: [String: Any]) {
+            let windowFrame = window.frame
+            let windowValid = validFrame(windowFrame)
+            let exists = keyboard.exists
+            let keyboardFrame = exists ? keyboard.frame : .zero
+            let keyboardValid = exists && validFrame(keyboardFrame)
+            let hittable = exists && keyboard.isHittable
+            let intersectsWindow = windowValid && keyboardValid && !keyboardFrame.intersection(windowFrame).isEmpty
+            let hidden = windowValid && (!exists || (keyboardValid && !hittable && !intersectsWindow))
+            let evidence: [String: Any] = ["exists": exists, "hittable": hittable,
+                "window_valid": windowValid, "keyboard_valid": keyboardValid,
+                "intersects_window": intersectsWindow, "hidden": hidden,
+                "window": windowValid ? [windowFrame.minX, windowFrame.minY, windowFrame.width, windowFrame.height] : [],
+                "keyboard": keyboardValid ? [keyboardFrame.minX, keyboardFrame.minY, keyboardFrame.width, keyboardFrame.height] : []]
+            return (exists && windowValid && keyboardValid && intersectsWindow, hidden, evidence)
+        }
+        func recordKeyboard(_ phase: String, state: (visible: Bool, hidden: Bool, evidence: [String: Any])) {
+            var evidence = state.evidence
+            evidence["phase"] = phase
+            if let data = try? JSONSerialization.data(withJSONObject: evidence, options: [.sortedKeys]),
+               let value = String(data: data, encoding: .utf8) { print("AYU_OPTIONS_KEYBOARD:" + value) }
+        }
+        let initial = keyboardState()
+        recordKeyboard("before", state: initial)
+        XCTAssertTrue(initial.visible, "Keyboard must initially intersect the valid application window")
+        guard initial.visible else { return }
         let start = window.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.45))
         let end = window.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.9))
-        if keyboard.exists {
-            start.press(forDuration: 0.1, thenDragTo: end)
-        }
-        let hidden = XCTNSPredicateExpectation(predicate: isHidden, object: keyboard)
-        XCTAssertEqual(XCTWaiter.wait(for: [hidden], timeout: 5), .completed)
+        start.press(forDuration: 0.1, thenDragTo: end)
+        let hiddenState = NSPredicate { _, _ in keyboardState().hidden }
+        let hidden = XCTNSPredicateExpectation(predicate: hiddenState, object: keyboard)
+        let outcome = XCTWaiter.wait(for: [hidden], timeout: 5)
+        recordKeyboard("after", state: keyboardState())
+        XCTAssertEqual(outcome, .completed)
     }
 
     @MainActor
@@ -121,14 +151,61 @@ final class CustomeOptionsInteractionTests: XCTestCase {
         XCTAssertTrue(app.tables[self.prefix + "list"].waitForExistence(timeout: 30))
         self.record("root-light", app: app)
         let archive = app.switches[self.prefix + "toggle.archive"]
+        let toggleWindow = app.windows.firstMatch
+        let togglePoint = archive.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5))
+        func validToggleFrame(_ rect: CGRect) -> Bool {
+            return [rect.origin.x, rect.origin.y, rect.width, rect.height, rect.maxX, rect.maxY].allSatisfy { $0.isFinite }
+                && rect.width > 0 && rect.height > 0
+        }
+        func recordArchiveToggle(_ phase: String) -> (safe: Bool, off: Bool, ledgerOn: Bool) {
+            let exists = archive.exists
+            let windowExists = toggleWindow.exists
+            let windowFrame = windowExists ? toggleWindow.frame : .zero
+            let controlFrame = exists ? archive.frame : .zero
+            let windowValid = windowExists && validToggleFrame(windowFrame)
+            let controlValid = exists && validToggleFrame(controlFrame)
+            let enabled = exists && archive.isEnabled
+            let hittable = exists && archive.isHittable
+            let contained = windowValid && controlValid && windowFrame.contains(controlFrame)
+            let center = contained ? togglePoint.screenPoint : .zero
+            let centerValid = contained && center.x.isFinite && center.y.isFinite
+                && controlFrame.contains(center) && windowFrame.contains(center)
+            let value = exists ? archive.value as? String : nil
+            let ledger = app.staticTexts["fixture.ledger"].firstMatch
+            let ledgerValue = ledger.exists ? ledger.value as? String : nil
+            let ledgerOff = ledgerValue?.hasPrefix("No Telegram account; archive off;") == true
+            let ledgerOn = ledgerValue?.hasPrefix("No Telegram account; archive on;") == true
+            let evidence: [String: Any] = ["phase": phase, "exists": exists,
+                "enabled": enabled, "hittable": hittable, "window_valid": windowValid,
+                "control_valid": controlValid, "contained": contained, "center_valid": centerValid,
+                "value_known": value == "0" || value == "1", "is_on": value == "1",
+                "ledger_known": ledgerOff || ledgerOn, "ledger_on": ledgerOn,
+                "window": windowValid ? [windowFrame.minX, windowFrame.minY, windowFrame.width, windowFrame.height] : [],
+                "control": controlValid ? [controlFrame.minX, controlFrame.minY, controlFrame.width, controlFrame.height] : [],
+                "center": centerValid ? [center.x, center.y] : []]
+            if let data = try? JSONSerialization.data(withJSONObject: evidence, options: [.sortedKeys]),
+               let text = String(data: data, encoding: .utf8) { print("AYU_OPTIONS_ARCHIVE_TOGGLE:" + text) }
+            return (contained && centerValid && enabled && hittable, value == "0" && ledgerOff, ledgerOn)
+        }
+        let initialToggle = recordArchiveToggle("before")
+        XCTAssertTrue(initialToggle.safe, "Archive switch must be hittable inside a valid window")
+        XCTAssertEqual(archive.value as? String, "0")
+        XCTAssertTrue(initialToggle.off, "Synthetic callback ledger must initially report archive off")
         XCTAssertTrue(archive.isEnabled)
-        archive.tap()
+        XCTAssertTrue(archive.isHittable)
+        guard initialToggle.safe && initialToggle.off else { return }
+        togglePoint.tap()
+        let expectedToggle = XCTNSPredicateExpectation(predicate: NSPredicate(format: "value == %@", "1"), object: archive)
+        let toggleOutcome = XCTWaiter.wait(for: [expectedToggle], timeout: 5)
+        let finalToggle = recordArchiveToggle("after")
+        XCTAssertEqual(toggleOutcome, .completed)
         XCTAssertEqual(archive.value as? String, "1")
+        XCTAssertTrue(finalToggle.ledgerOn, "Synthetic callback ledger must report archive on")
 
-        self.search("view once", app: app)
+        self.search("history edited", app: app)
         XCTAssertFalse(app.switches[self.prefix + "toggle.archive"].exists)
         self.record("search-light", app: app)
-        self.select("timedMedia", app: app)
+        self.select("deletedMessages", app: app)
         self.record("category-light", app: app)
         self.back(app)
         self.search("", app: app)
@@ -138,25 +215,23 @@ final class CustomeOptionsInteractionTests: XCTestCase {
         XCTAssertTrue(app.windows.firstMatch.frame.contains(appearance.frame))
         appearance.tap()
         self.record("root-dark", app: app)
-        self.search("view once", app: app)
+        self.search("history edited", app: app)
         self.record("search-dark", app: app)
-        self.select("timedMedia", app: app)
+        self.select("deletedMessages", app: app)
         self.record("category-dark", app: app)
         self.back(app)
         self.search("", app: app)
         self.select("advanced", app: app)
-        app.tables.cells[self.prefix + "category.advanced.0"].tap()
         XCTAssertTrue(app.alerts["Reset active features?"].waitForExistence(timeout: 5))
         self.record("reset-prompt", app: app)
         app.alerts.buttons["Cancel"].tap()
         XCTAssertEqual(app.staticTexts["fixture.ledger"].firstMatch.label, "Synthetic · resets 0")
         self.record("reset-cancelled", app: app)
-        app.tables.cells[self.prefix + "category.advanced.0"].tap()
+        self.select("advanced", app: app)
         app.alerts.buttons["Turn features off"].tap()
         XCTAssertTrue(app.alerts["Features switched off"].waitForExistence(timeout: 5))
         app.alerts.buttons["OK"].tap()
         XCTAssertEqual(app.staticTexts["fixture.ledger"].firstMatch.label, "Synthetic · resets 1")
-        self.back(app)
         for _ in 0..<10 where !archive.isHittable { app.tables[self.prefix + "list"].swipeDown() }
         XCTAssertTrue(archive.isHittable)
         XCTAssertEqual(app.switches[self.prefix + "toggle.archive"].value as? String, "0")

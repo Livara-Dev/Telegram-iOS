@@ -452,7 +452,7 @@ public final class ArchiveStore {
                                sentAt: ClosedRange<Int64>, excludingAuthors: Set<Int64>, limit: Int = 40,
                                completion: @escaping (Result<ArchiveDeletedHistoryPage, ArchiveError>) -> Void) {
         self.submit(completion) {
-            guard namespace == 0, messageIds.lowerBound > 0, sentAt.lowerBound >= 0,
+            guard (namespace == 0 && messageIds.lowerBound > 0) || ((namespace == 1 || namespace == 2) && messageIds.lowerBound >= 0), sentAt.lowerBound >= 0,
                   sentAt.upperBound <= Int64(Int32.max), (1...40).contains(limit),
                   excludingAuthors.count <= ArchiveDeletedHistoryPage.maximumExcludedAuthors,
                   let handle = self.handle else { throw ArchiveError.invalidInput }
@@ -1154,8 +1154,18 @@ public final class ArchiveStore {
             let event = ArchiveEvent(eventKey: try text(prepared, 1), message: message, kind: kind,
                                      observedAt: sqlite3_column_int64(prepared, 7), serverEditAt: optional(8),
                                      content: ArchiveContent(text: try text(prepared, 9), authorId: optional(10), sentAt: sqlite3_column_int64(prepared, 11), entities: entities))
-            let mediaCount = try scalar("SELECT COUNT(*) FROM event_media WHERE event_key=?", [.text(event.eventKey)])
-            result.append(ArchivedRecord(sequence: sqlite3_column_int64(prepared, 0), event: event, storedMediaCount: Int(mediaCount)))
+            // Slot identity matters: an absent slot zero must not hide a saved slot one.
+            let media = try statement("SELECT slot FROM event_media WHERE event_key=? ORDER BY slot LIMIT 10", [.text(event.eventKey)])
+            var slots: [Int] = []
+            var mediaCode = sqlite3_step(media)
+            while mediaCode == SQLITE_ROW {
+                slots.append(Int(sqlite3_column_int(media, 0)))
+                mediaCode = sqlite3_step(media)
+            }
+            sqlite3_finalize(media)
+            guard mediaCode == SQLITE_DONE else { throw ArchiveError.unavailable(mediaCode) }
+            result.append(ArchivedRecord(sequence: sqlite3_column_int64(prepared, 0), event: event,
+                storedMediaCount: slots.count, storedMediaSlots: slots))
             code = sqlite3_step(prepared)
         }
         guard code == SQLITE_DONE else { throw ArchiveError.unavailable(code) }

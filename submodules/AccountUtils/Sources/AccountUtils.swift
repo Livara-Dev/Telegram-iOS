@@ -4,8 +4,9 @@ import TelegramCore
 import TelegramUIPreferences
 import AccountContext
 
-public let maximumNumberOfAccounts = 3
-public let maximumPremiumNumberOfAccounts = 4
+// Local installation capacity. Telegram login and server limits remain unchanged.
+public let maximumNumberOfAccounts = 50
+public let maximumPremiumNumberOfAccounts = maximumNumberOfAccounts
 
 public func activeAccountsAndPeers(context: AccountContext, includePrimary: Bool = false) -> Signal<((AccountContext, EnginePeer)?, [(AccountContext, EnginePeer, Int32)]), NoError> {
     let sharedContext = context.sharedContext

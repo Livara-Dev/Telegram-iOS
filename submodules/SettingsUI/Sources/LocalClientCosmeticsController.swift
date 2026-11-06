@@ -61,13 +61,13 @@ public final class LocalClientCosmeticsController: ViewController, UITableViewDa
         self.selectAccent = selectAccent; self.setReducedMotion = setReducedMotion
         self.setBundledIcons = setBundledIcons; self.reset = reset; self.open = open
         super.init(navigationBarPresentationData: navigationBarPresentationData)
-        self.title = "Local cosmetics"
+        self.title = "Appearance"
         self.table.dataSource = self; self.table.delegate = self
         self.table.rowHeight = UITableView.automaticDimension
-        self.table.estimatedRowHeight = 64
+        self.table.estimatedRowHeight = 52
         self.table.contentInsetAdjustmentBehavior = .never
         self.table.accessibilityIdentifier = "ayugram.cosmetics.list"
-        self.banner.text = "AYUGRAM · LOCAL PREMIUM\nColors and motion, chosen by you.\n\nThese client-only options never grant a Telegram subscription or server privileges."
+        self.banner.text = ""
         self.banner.numberOfLines = 0
         self.banner.font = UIFont.preferredFont(forTextStyle: .headline)
         self.banner.adjustsFontForContentSizeCategory = true
@@ -138,14 +138,14 @@ public final class LocalClientCosmeticsController: ViewController, UITableViewDa
         switch section { case 0: return self.choices.count; case 1, 2: return 2; default: return 1 }
     }
     public func tableView(_ tableView: UITableView, titleForHeaderInSection section: Int) -> String? {
-        return ["CUSTOME OPTIONS ACCENT · THIS ACCOUNT", "LOCAL BEHAVIOR", "NATIVE APPEARANCE", "RESET THIS ACCOUNT’S COSMETICS"][section]
+        return ["ACCENT COLOR", "BEHAVIOR", "APP APPEARANCE", "RESET"][section]
     }
     public func tableView(_ tableView: UITableView, titleForFooterInSection section: Int) -> String? {
         switch section {
-        case 0: return self.state.information + " The chosen accent changes this account’s Custome options interface immediately; it does not change another account’s colors."
-        case 1: return "Reduced motion disables animated pushes from Custome options. System Reduce Motion is always respected. Bundled Premium icons are local image assets only: enabling the picker does not enable any server Premium feature."
-        case 2: return "The chosen iOS app icon and native Telegram theme are device-wide. They cannot be different for each Telegram account. Existing server entitlement checks for other features remain in place."
-        default: return "Reset only the local accent, dashboard motion and permission to select bundled icons. The currently chosen device-wide icon/theme, Telegram accounts, archives and other accounts’ preferences are kept."
+        case 0: return self.state.editable ? nil : "Appearance settings are read-only."
+        case 1: return "Local appearance only; no Premium subscription."
+        case 2: return "App icons and themes apply to all accounts."
+        default: return nil
         }
     }
 
@@ -182,7 +182,7 @@ public final class LocalClientCosmeticsController: ViewController, UITableViewDa
             control.accessibilityLabel = motion ? "Reduce dashboard motion" : "Allow bundled Premium icons locally"
             control.addTarget(self, action: #selector(self.switchChanged(_:)), for: .valueChanged)
             cell.textLabel?.text = control.accessibilityLabel
-            cell.detailTextLabel?.text = motion ? "Affects navigation opened from Custome options" : "Picker permission for this account; iOS icon choice is device-wide"
+            cell.detailTextLabel?.text = nil
             cell.accessoryView = control
             cell.selectionStyle = .none
         case 2:
@@ -209,7 +209,7 @@ public final class LocalClientCosmeticsController: ViewController, UITableViewDa
             self.busy = true; self.table.reloadData()
             self.selectAccent(self.choices[indexPath.row].id, self.finishedMutation)
         } else if indexPath.section == 3 {
-            let alert = UIAlertController(title: "Reset local cosmetics?", message: "Restore this account’s Custome options accent and motion defaults, and turn off local access to bundled Premium icons. The chosen device-wide app icon/theme, other accounts and all messages are kept.", preferredStyle: .alert)
+            let alert = UIAlertController(title: "Reset local cosmetics?", message: "Reset accent, motion and local icon access? Messages and accounts are kept.", preferredStyle: .alert)
             alert.addAction(UIAlertAction(title: "Cancel", style: .cancel))
             alert.addAction(UIAlertAction(title: "Reset", style: .destructive, handler: { [weak self] _ in
                 guard let self else { return }

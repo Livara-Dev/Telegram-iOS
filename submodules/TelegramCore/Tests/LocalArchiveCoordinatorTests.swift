@@ -1379,4 +1379,34 @@ final class LocalArchiveCoordinatorTests: XCTestCase {
         try self.awaitStatus(.ready, in: restarted)
         XCTAssertEqual(try self.localArchiveValue(try XCTUnwrap(restarted.coordinator).deletedMessages()).records.map { $0.messageId }, [106])
     }
+    func testAlternateCompletedVideoWithDifferentSizeSurvivesPrimaryCacheMissAndReopen() throws {
+        // Typed synthetic bytes exercise capture/storage; decoding is tested separately.
+        let bytes = Data([1, 3, 5, 7])
+        let missing = CloudDocumentMediaResource(datacenterId: 1, fileId: 9800, accessHash: 0, size: 100,
+            fileReference: nil, fileName: nil)
+        let cached = CloudDocumentMediaResource(datacenterId: 1, fileId: 9801, accessHash: 0, size: Int64(bytes.count),
+            fileReference: nil, fileName: nil)
+        let attributes: [TelegramMediaFileAttribute] = [.Video(duration: 1, size: PixelDimensions(width: 16, height: 16),
+            flags: [], preloadSize: nil, coverTime: nil, videoCodec: nil)]
+        let alternative = TelegramMediaFile(fileId: MediaId(namespace: Namespaces.Media.CloudFile, id: 9801),
+            partialReference: nil, resource: cached, previewRepresentations: [], videoThumbnails: [], immediateThumbnailData: nil,
+            mimeType: "video/mp4", size: Int64(bytes.count), attributes: attributes, alternativeRepresentations: [])
+        let file = TelegramMediaFile(fileId: MediaId(namespace: Namespaces.Media.CloudFile, id: 9800),
+            partialReference: nil, resource: missing, previewRepresentations: [], videoThumbnails: [], immediateThumbnailData: nil,
+            mimeType: "video/mp4", size: 100, attributes: attributes, alternativeRepresentations: [alternative])
+        self.fixture.postbox.mediaBox.storeResourceData(cached.id, data: bytes, synchronous: true)
+        _ = try self.queueDeletion(98, media: [file])
+        let key = try XCTUnwrap(self.pending().first?.operation?.eventKey)
+        let first = self.start()
+        try self.awaitStatus(.ready, in: first)
+        XCTAssertEqual(try self.localArchiveValue(try XCTUnwrap(first.coordinator).mediaData(eventKey: key, slot: 0)), bytes)
+        try self.stop(first)
+        try FileManager.default.removeItem(atPath: self.fixture.postbox.mediaBox.storePathsForId(cached.id).complete)
+        try self.fixture.reopen()
+        let second = self.start()
+        try self.awaitStatus(.ready, in: second)
+        XCTAssertEqual(try self.localArchiveValue(try XCTUnwrap(second.coordinator).mediaData(eventKey: key, slot: 0)), bytes)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: self.fixture.postbox.mediaBox.storePathsForId(missing.id).complete))
+    }
+
 }

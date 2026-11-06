@@ -52,8 +52,8 @@ def fixture(root):
     for name in replay.NATIVE_SOURCES:
         # This is a test of the pinned historical replay, not of the current UI.
         # Keep the production replay's source digest guard unchanged.
-        historical = Path(__file__).parent / 'fixtures/retained-c55-CustomeOptionsCatalog.swift'
-        source = historical if name == 'submodules/SettingsUI/Sources/CustomeOptionsCatalog.swift' else ROOT / name
+        historical = Path(__file__).parent / ('fixtures/retained-c55-' + Path(name).name)
+        source = historical if name in replay.RENDERER_SOURCES else ROOT / name
         data = source.read_bytes()
         if hashlib.sha256(data).hexdigest() != replay.NATIVE_SOURCES[name]:
             raise AssertionError('Historical replay fixture drifted; it cannot certify current sources')

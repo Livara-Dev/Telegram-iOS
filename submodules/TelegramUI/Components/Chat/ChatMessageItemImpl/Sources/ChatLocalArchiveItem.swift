@@ -9,16 +9,18 @@ import TelegramPresentationData
 import ChatControllerInteraction
 
 /// A distinct list item, deliberately outside ChatMessageItem/MessageItemView.
-/// Its only action opens a read-only archive timeline in the current account.
+/// Its actions open read-only history or saved media in the current account.
 public final class ChatLocalArchiveItem: ListViewItem {
     public let row: LocalArchiveDeletedHistoryItem
     public let presentationData: ChatPresentationData
     private let controllerInteraction: ChatControllerInteraction
+    fileprivate let loadThumbnail: ((String, Int) -> Signal<Data?, NoError>)?
     public var neighborDescriptor: AnyEquatable { return AnyEquatable.noNeighborInfluence }
 
     public init(row: LocalArchiveDeletedHistoryItem, presentationData: ChatPresentationData,
-                controllerInteraction: ChatControllerInteraction) {
+                controllerInteraction: ChatControllerInteraction, loadThumbnail: ((String, Int) -> Signal<Data?, NoError>)? = nil) {
         self.row = row; self.presentationData = presentationData; self.controllerInteraction = controllerInteraction
+        self.loadThumbnail = loadThumbnail
     }
 
     public func nodeConfiguredForParams(async: @escaping (@escaping () -> Void) -> Void, params: ListViewItemLayoutParams,
@@ -45,10 +47,16 @@ public final class ChatLocalArchiveItem: ListViewItem {
         if Thread.isMainThread { update() } else { Queue.mainQueue().async(update) }
     }
 
+    fileprivate func openMedia(slot: Int) {
+        guard self.row.content.text != nil, self.row.storedMediaSlots.contains(slot) else { return }
+        self.controllerInteraction.openLocalArchiveMedia?(EngineMessage.Id(peerId: self.row.peerId,
+            namespace: self.row.namespace, id: self.row.messageId), self.row.eventKey, slot)
+    }
+
     fileprivate func openHistory() {
         guard self.row.content.text != nil else { return }
         self.controllerInteraction.openLocalArchiveHistory?(EngineMessage.Id(peerId: self.row.peerId,
-            namespace: Namespaces.Message.Cloud, id: self.row.messageId))
+            namespace: self.row.namespace, id: self.row.messageId))
     }
 }
 
@@ -78,7 +86,8 @@ public final class ChatLocalArchiveItemNode: ListViewItemNode {
         let width = min(420.0, max(1.0, params.width - params.leftInset - params.rightInset - 32.0))
         self.bodyNode.frame = CGRect(x: params.leftInset + 16.0, y: 0.0, width: width, height: height)
         (self.bodyNode.view as? ChatLocalArchiveRowView)?.update(row: item.row, theme: item.presentationData.theme.theme,
-            openHistory: { [weak item] in item?.openHistory() })
+            openHistory: { [weak item] in item?.openHistory() }, loadThumbnail: item.loadThumbnail,
+            openMedia: { [weak item] slot in item?.openMedia(slot: slot) })
     }
 
     public override func layoutForParams(_ params: ListViewItemLayoutParams, item: ListViewItem, neighbors: ListViewItemNeighbors) {
@@ -90,5 +99,5 @@ public final class ChatLocalArchiveItemNode: ListViewItemNode {
 
     // Deliberately no shared ChatMessageDateHeader: a local date must never
     // replace a canonical calendar action or navigate to an archived server id.
-    // Both timestamps are shown inside the local card instead.
+    // The original time is shown inside the local bubble instead.
 }

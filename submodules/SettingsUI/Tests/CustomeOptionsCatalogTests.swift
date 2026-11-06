@@ -5,7 +5,7 @@ import XCTest
 
 final class CustomeOptionsCatalogTests: XCTestCase {
     func testAllRequestedCategoriesHaveStableIdentifiersAndActionableDestinations() {
-        XCTAssertEqual(CustomeOptionsCatalog.title, "Custome options")
+        XCTAssertEqual(CustomeOptionsCatalog.title, "AyuGram")
         XCTAssertEqual(CustomeOptionsCategory.allCases.count, 11)
         XCTAssertEqual(Set(CustomeOptionsCategory.allCases.map { $0.rawValue }).count, 11)
         for category in CustomeOptionsCategory.allCases {

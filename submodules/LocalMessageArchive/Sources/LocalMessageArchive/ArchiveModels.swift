@@ -120,8 +120,10 @@ public struct ArchivedRecord: Equatable {
     public let sequence: Int64
     public let event: ArchiveEvent
     public let storedMediaCount: Int
-    public init(sequence: Int64, event: ArchiveEvent, storedMediaCount: Int = 0) {
+    public let storedMediaSlots: [Int]
+    public init(sequence: Int64, event: ArchiveEvent, storedMediaCount: Int = 0, storedMediaSlots: [Int] = []) {
         self.sequence = sequence; self.event = event; self.storedMediaCount = storedMediaCount
+        self.storedMediaSlots = storedMediaSlots
     }
 }
 

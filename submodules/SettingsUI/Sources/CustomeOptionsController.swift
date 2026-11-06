@@ -39,92 +39,34 @@ public struct CustomeOptionsPalette {
 }
 
 private final class CustomeOptionsHeader: UIView {
-    private let card = UIView()
-    private let gradient = CAGradientLayer()
-    private let stack = UIStackView()
-    private let eyebrow = UILabel()
-    private let heading = UILabel()
-    private let subtitle = UILabel()
     let search = UISearchBar()
     private let showsSearch: Bool
 
     init(mode: CustomeOptionsMode) {
         self.showsSearch = mode == .dashboard
         super.init(frame: .zero)
-        self.card.layer.cornerRadius = 22.0
-        self.card.clipsToBounds = true
-        self.gradient.startPoint = CGPoint(x: 0.0, y: 0.0)
-        self.gradient.endPoint = CGPoint(x: 1.0, y: 1.0)
-        self.card.layer.insertSublayer(self.gradient, at: 0)
-        self.addSubview(self.card)
-        self.stack.axis = .vertical
-        self.stack.alignment = .leading
-        self.stack.spacing = 8.0
-        self.stack.translatesAutoresizingMaskIntoConstraints = false
-        self.card.addSubview(self.stack)
-        NSLayoutConstraint.activate([
-            self.stack.leadingAnchor.constraint(equalTo: self.card.leadingAnchor, constant: 20.0),
-            self.stack.trailingAnchor.constraint(equalTo: self.card.trailingAnchor, constant: -20.0),
-            self.stack.topAnchor.constraint(equalTo: self.card.topAnchor, constant: 20.0),
-            self.stack.bottomAnchor.constraint(equalTo: self.card.bottomAnchor, constant: -20.0)
-        ])
-        for label in [self.eyebrow, self.heading, self.subtitle] {
-            label.numberOfLines = 0
-            label.textColor = .white
-            label.adjustsFontForContentSizeCategory = true
-            self.stack.addArrangedSubview(label)
-        }
-        self.eyebrow.font = UIFont.preferredFont(forTextStyle: .caption1)
-        self.heading.font = UIFont.preferredFont(forTextStyle: .largeTitle)
-        self.subtitle.font = UIFont.preferredFont(forTextStyle: .subheadline)
-        self.eyebrow.text = "AYUGRAM · LOCAL OPTIONS"
-        switch mode {
-        case .dashboard:
-            self.heading.text = "Make Telegram yours."
-            self.subtitle.text = "Privacy and preserved history for this account. Appearance controls personalize this device."
-        case let .category(category):
-            self.heading.text = category.title
-            self.subtitle.text = category.detail
-        }
-        self.card.accessibilityIdentifier = "ayugram.custom-options.header"
         self.search.searchBarStyle = .minimal
-        self.search.placeholder = "Search Custome options"
+        self.search.placeholder = "Search settings"
         self.search.accessibilityIdentifier = "ayugram.custom-options.search"
+        self.accessibilityIdentifier = "ayugram.custom-options.header"
         if self.showsSearch { self.addSubview(self.search) }
     }
 
     required init?(coder: NSCoder) { fatalError("init(coder:) is not supported") }
 
     func update(palette: CustomeOptionsPalette) {
-        CATransaction.begin()
-        CATransaction.setDisableActions(true)
-        self.gradient.colors = [palette.accent.cgColor,
-                                UIColor(red: 0.08, green: 0.55, blue: 0.67, alpha: 1.0).cgColor]
-        CATransaction.commit()
         self.search.overrideUserInterfaceStyle = palette.dark ? .dark : .light
         self.search.tintColor = palette.accent
         self.search.searchTextField.textColor = palette.text
     }
 
     func height(for width: CGFloat) -> CGFloat {
-        let labelWidth = max(1, width - 72.0)
-        let height = [self.eyebrow, self.heading, self.subtitle].reduce(CGFloat(0)) { height, label in
-            return height + ceil(label.sizeThatFits(CGSize(width: labelWidth, height: .greatestFiniteMagnitude)).height)
-        } + 16.0 + 40.0
-        return 12.0 + height + (self.showsSearch ? 64.0 : 16.0)
+        return self.showsSearch ? 60.0 : 8.0
     }
 
     override func layoutSubviews() {
         super.layoutSubviews()
-        let searchHeight: CGFloat = self.showsSearch ? 64.0 : 16.0
-        self.card.frame = CGRect(x: 16.0, y: 12.0, width: max(0, self.bounds.width - 32.0), height: max(0, self.bounds.height - 12.0 - searchHeight))
-        CATransaction.begin()
-        CATransaction.setDisableActions(true)
-        self.gradient.frame = self.card.bounds
-        CATransaction.commit()
-        if self.showsSearch {
-            self.search.frame = CGRect(x: 8.0, y: self.card.frame.maxY + 8.0, width: max(0, self.bounds.width - 16.0), height: 52.0)
-        }
+        self.search.frame = CGRect(x: 8.0, y: 4.0, width: max(0, self.bounds.width - 16.0), height: 52.0)
     }
 }
 
@@ -165,7 +107,7 @@ public final class CustomeOptionsController: ViewController, UITableViewDataSour
         self.table.dataSource = self
         self.table.delegate = self
         self.table.rowHeight = UITableView.automaticDimension
-        self.table.estimatedRowHeight = 78.0
+        self.table.estimatedRowHeight = 52.0
         self.table.keyboardDismissMode = .interactive
         self.table.contentInsetAdjustmentBehavior = .never
         self.table.accessibilityIdentifier = "ayugram.custom-options.list"
@@ -269,18 +211,13 @@ public final class CustomeOptionsController: ViewController, UITableViewDataSour
 
     public func tableView(_ tableView: UITableView, titleForHeaderInSection section: Int) -> String? {
         switch self.mode {
-        case .dashboard: return self.showsQuickControls && section == 0 ? "QUICK CONTROLS · THIS ACCOUNT" : "EXPLORE CUSTOME OPTIONS"
-        case .category: return "AVAILABLE CONTROLS"
+        case .dashboard: return self.showsQuickControls && section == 0 ? "Quick toggles" : "Settings"
+        case .category: return nil
         }
     }
 
     public func tableView(_ tableView: UITableView, titleForFooterInSection section: Int) -> String? {
-        switch self.mode {
-        case .dashboard:
-            if self.showsQuickControls && section == 0 { return "These switches save directly to this account. Open each category to choose its rules and limits." }
-            return self.categories.isEmpty ? "No matching options. Try “history”, “typing”, “media” or “theme”." : "Local choices never grant Telegram Premium or guarantee invisible activity. Unsupported capabilities are explained in their category."
-        case let .category(category): return CustomeOptionsCatalog.explanation(for: category)
-        }
+        return self.mode == .dashboard && self.categories.isEmpty ? "No matching settings" : nil
     }
 
     public func tableView(_ tableView: UITableView, cellForRowAt indexPath: IndexPath) -> UITableViewCell {
@@ -291,17 +228,17 @@ public final class CustomeOptionsController: ViewController, UITableViewDataSour
         cell.backgroundColor = self.palette.surface
         cell.textLabel?.textColor = self.palette.text
         cell.textLabel?.font = UIFont.preferredFont(forTextStyle: .body)
-        cell.textLabel?.numberOfLines = 0
+        cell.textLabel?.numberOfLines = 2
         cell.textLabel?.adjustsFontForContentSizeCategory = true
         cell.detailTextLabel?.textColor = self.palette.secondaryText
         cell.detailTextLabel?.font = UIFont.preferredFont(forTextStyle: .caption1)
-        cell.detailTextLabel?.numberOfLines = 0
+        cell.detailTextLabel?.numberOfLines = 1
         cell.detailTextLabel?.adjustsFontForContentSizeCategory = true
         cell.selectionStyle = isToggle ? .none : .default
         if isToggle {
             let toggle = CustomeOptionsToggle.allCases[indexPath.row]
             cell.textLabel?.text = toggle.title
-            cell.detailTextLabel?.text = self.state.detail(for: toggle)
+            cell.detailTextLabel?.text = self.state.isAvailable(toggle) ? nil : "Unavailable"
             cell.imageView?.image = UIImage(systemName: toggle.symbol)?.withTintColor(self.palette.accent, renderingMode: .alwaysOriginal)
             let control = UISwitch()
             control.tag = indexPath.row
@@ -329,7 +266,8 @@ public final class CustomeOptionsController: ViewController, UITableViewDataSour
                 title = link.title; detail = link.detail; symbol = link.symbol; rowId = category.rawValue + "." + String(indexPath.row)
             }
             cell.textLabel?.text = title
-            cell.detailTextLabel?.text = detail
+            cell.detailTextLabel?.text = nil
+            cell.accessibilityHint = detail
             cell.imageView?.image = UIImage(systemName: symbol)?.withTintColor(self.palette.accent, renderingMode: .alwaysOriginal)
             cell.accessoryView = nil
             cell.accessoryType = .disclosureIndicator
@@ -343,7 +281,14 @@ public final class CustomeOptionsController: ViewController, UITableViewDataSour
         if self.showsQuickControls && indexPath.section == 0 { return }
         self.header.search.resignFirstResponder()
         switch self.mode {
-        case .dashboard: self.openAction(.category(self.categories[indexPath.row]))
+        case .dashboard:
+            let category = self.categories[indexPath.row]
+            let links = CustomeOptionsCatalog.links(for: category)
+            if links.count == 1, let action = links.first?.action {
+                if action == .resetActiveFeatures { self.confirmReset() } else { self.openAction(action) }
+            } else {
+                self.openAction(.category(category))
+            }
         case let .category(category):
             let action = CustomeOptionsCatalog.links(for: category)[indexPath.row].action
             if action == .resetActiveFeatures { self.confirmReset() } else { self.openAction(action) }
@@ -364,14 +309,14 @@ public final class CustomeOptionsController: ViewController, UITableViewDataSour
                 guard let self else { return }
                 self.busy.remove(toggle)
                 self.table.reloadData()
-                if !saved { self.showMessage("Could not save", "The saved settings were kept. Unlock the device or retry from this account’s feature settings.") }
+                if !saved { self.showMessage("Could not save", "Your settings were kept. Unlock the device and try again.") }
             }
         })
     }
 
     private func confirmReset() {
         guard !self.resetting else { return }
-        let alert = UIAlertController(title: "Reset active features?", message: "Turn off message capture, Ghost activity, story-view suppression, sponsored-message hiding and local message filters for this account. Previously selected protections may stop hiding new activity. Saved messages, filter rules, exclusions, retention limits, Telegram sessions and keys are kept.", preferredStyle: .alert)
+        let alert = UIAlertController(title: "Reset active features?", message: "Turn off AyuGram features for this account? Saved messages, rules and login sessions will be kept.", preferredStyle: .alert)
         alert.addAction(UIAlertAction(title: "Cancel", style: .cancel))
         alert.addAction(UIAlertAction(title: "Turn features off", style: .destructive, handler: { [weak self] _ in
             guard let self else { return }
@@ -382,7 +327,7 @@ public final class CustomeOptionsController: ViewController, UITableViewDataSour
                     guard let self else { return }
                     self.resetting = false
                     self.table.reloadData()
-                    self.showMessage(succeeded ? "Features switched off" : "Reset incomplete", succeeded ? "This account’s active switches are off. Saved messages, rules and exclusions were kept." : "Some settings could not be changed. Check the current switches before continuing; stored data was not deleted.")
+                    self.showMessage(succeeded ? "Features switched off" : "Reset incomplete", succeeded ? "Features are off. Saved messages and rules were kept." : "Some settings could not be changed. Your saved data was kept.")
                 }
             })
         }))

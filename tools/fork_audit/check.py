@@ -77,6 +77,10 @@ ADDED_FILES = {
 # gitlinks, stays pinned. An allowlist is a scope tripwire, not a semantic audit of
 # every change within these files; reviewers must inspect their Git diffs.
 REVIEWED_MODIFICATIONS = {
+    'submodules/AccountUtils/Sources/AccountUtils.swift': 'local installation account capacity of 50 without changing server entitlements or authentication',
+    'submodules/SettingsUI/Sources/LogoutOptionsController.swift': 'consistent local account count and truthful local-capacity alert',
+    'submodules/SettingsUI/Sources/DeleteAccountOptionsController.swift': 'consistent local account count and truthful local-capacity alert',
+
     'submodules/TelegramUI/Components/Chat/ChatMessageItemImpl/BUILD': 'expose the exact production local archive row renderer to native projection tests without linking an alternate renderer',
     'submodules/TelegramUI/Sources/PreparedChatHistoryViewTransition.swift': 'exclude distinct local archive rows from canonical unread, restoration and remote scroll targets while retaining ListView index accounting',
     'submodules/TelegramUI/Components/Chat/ChatMessageDateAndStatusNode/Sources/ChatMessageDateAndStatusNode.swift': 'verified saved-edit presentation and a date-only archive action preserving reaction hit regions and imported tooltips',
@@ -135,7 +139,7 @@ REVIEWED_MODIFICATIONS = {
     "submodules/TelegramCore/Sources/TelegramEngine/Peers/UpdateCachedPeerData.swift": "capture cached full-channel minimum-ID range removal and defer only queued media unlink",
     "submodules/TelegramCore/Sources/TelegramEngine/Messages/SearchMessages.swift": "preserve previous body during media-reference refetch only for the original ordinary cloud request identity",
     'submodules/TelegramCore/Sources/TelegramEngine/Calls/RateCall.swift': 'remove automatic diagnostic RPC and file upload sinks while preserving explicit rating',
-    'submodules/TelegramCore/Sources/TelegramEngine/Messages/TelegramEngineMessages.swift': 'disable optional viewport and listening analytics facades',
+    'submodules/TelegramCore/Sources/TelegramEngine/Messages/TelegramEngineMessages.swift': 'disable optional analytics and prepare opted-in timed media before unchanged consumption',
     'submodules/TelegramUI/Sources/MediaManager.swift': 'stop collecting optional music-listening analytics',
     'submodules/TelegramUI/Sources/AppDelegate.swift': 'remove AppCenter startup; fail-visible signing-aware storage initialization and bounded local diagnostics',
     'submodules/TelegramUI/BUILD': 'remove optional AppCenter dependencies',
@@ -155,7 +159,7 @@ REVIEWED_MODIFICATIONS = {
     "submodules/TelegramUI/Components/Chat/ChatMessageBubbleItemNode/BUILD": "link the local text-filter placeholder component",
     "submodules/TelegramUI/Components/Chat/ChatHistoryEntry/BUILD": "isolated local filter/archive projection tests and exact production archive UIKit renderer source",
     "submodules/TelegramUI/Components/Chat/ChatHistoryEntry/Sources/ChatHistoryEntry.swift": "presentation-only filter state and separate local archive entry identity; no canonical Telegram message fabrication",
-    "submodules/TelegramUI/Components/ChatControllerInteraction/Sources/ChatControllerInteraction.swift": "controller-scoped temporary reveal state and separate read-only archive timeline action",
+    "submodules/TelegramUI/Components/ChatControllerInteraction/Sources/ChatControllerInteraction.swift": "controller-scoped reveal state and separate read-only archive timeline/media actions",
     "submodules/TelegramUI/Sources/ChatHistoryListNode.swift": "bounded local filtering/archive projections, canonical-only read/navigation anchors and removal of optional viewport analytics",
     "submodules/TelegramUI/Sources/ChatInterfaceStateContextMenus.swift": "create local literal rule from eligible message text",
     "submodules/TelegramUI/Components/Chat/ChatMessageBubbleItemNode/Sources/ChatMessageBubbleItemNode.swift": "render local text placeholder and guard hidden-message actions",
