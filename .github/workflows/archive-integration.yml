@@ -8,7 +8,7 @@ on:
       validation_scope:
         description: Startup replay, host API probe, targeted iOS tests, or full qualification
         type: choice
-        options: [full, native-only, core-only, focused, projection, projection-only, custom-options-ui, probe, startup]
+        options: [full, native-only, core-only, focused, projection, projection-only, custom-options-ui, custom-options-replay, probe, retained-clean, startup]
         default: full
       replay_run:
         description: Required for startup or retained Projection probe; artifact run ID
@@ -59,14 +59,14 @@ permissions:
 # Development branches do not start macOS jobs; advance ci/verify-latest once
 # the next reviewed batch is ready. Existing runs retain their original policy.
 concurrency:
-  group: ${{ github.event_name == 'workflow_dispatch' && inputs.validation_scope == 'startup' && format('ayugram-startup-replay-{0}', inputs.replay_source) || github.event_name == 'workflow_dispatch' && inputs.validation_scope == 'probe' && inputs.replay_run != '' && format('ayugram-projection-replay-{0}', inputs.replay_source) || github.event_name == 'workflow_dispatch' && inputs.validation_scope == 'custom-options-ui' && 'ayugram-ui-qualification' || github.event_name == 'workflow_dispatch' && inputs.validation_scope == 'core-only' && 'ayugram-core-qualification' || 'ayugram-qualification' }}
+  group: ${{ github.event_name == 'workflow_dispatch' && inputs.validation_scope == 'startup' && format('ayugram-startup-replay-{0}', inputs.replay_source) || github.event_name == 'workflow_dispatch' && inputs.validation_scope == 'retained-clean' && 'ayugram-projection-replay-c55e19c4f5cbe0d730499035d0a0ef712f6903a9' || github.event_name == 'workflow_dispatch' && inputs.validation_scope == 'probe' && inputs.replay_run != '' && format('ayugram-projection-replay-{0}', inputs.replay_source) || github.event_name == 'workflow_dispatch' && (inputs.validation_scope == 'custom-options-ui' || inputs.validation_scope == 'custom-options-replay') && 'ayugram-ui-qualification' || github.event_name == 'workflow_dispatch' && inputs.validation_scope == 'core-only' && 'ayugram-core-qualification' || 'ayugram-qualification' }}
   cancel-in-progress: false
 
 jobs:
   integration-tests:
     # Full qualification runs these suites in the app job's same private Bazel
     # root. Unknown manual scopes still enter the strict shell case and fail.
-    if: github.event_name == 'workflow_dispatch' && inputs.validation_scope != 'full' && inputs.validation_scope != '' && inputs.validation_scope != 'probe' && inputs.validation_scope != 'startup' && inputs.validation_scope != 'custom-options-ui'
+    if: github.event_name == 'workflow_dispatch' && inputs.validation_scope != 'full' && inputs.validation_scope != '' && inputs.validation_scope != 'probe' && inputs.validation_scope != 'startup' && inputs.validation_scope != 'custom-options-ui' && inputs.validation_scope != 'custom-options-replay' && inputs.validation_scope != 'retained-clean'
     # macos-latest does not satisfy versions.json. This preview image does;
     # prepare_host.py additionally verifies the actual OS/Xcode versions.
     runs-on: xcode-27
@@ -590,7 +590,7 @@ jobs:
   native-api-probe:
     # Manual host API diagnostics, or one verified retained Projection replay.
     # Neither mode compiles Telegram, uses API Secrets, or qualifies the app.
-    if: github.event_name == 'workflow_dispatch' && (inputs.validation_scope == 'probe' || (inputs.validation_scope == 'startup' && inputs.retained_projection_tests))
+    if: github.event_name == 'workflow_dispatch' && (inputs.validation_scope == 'probe' || inputs.validation_scope == 'retained-clean' || (inputs.validation_scope == 'startup' && inputs.retained_projection_tests))
     runs-on: xcode-27
     timeout-minutes: 25
     permissions:
@@ -605,8 +605,8 @@ jobs:
         working-directory: ${{ github.workspace }}
         env:
           CHECKOUT_TOKEN: ${{ github.token }}
-          REPLAY_RUN: ${{ inputs.validation_scope == 'startup' && inputs.retained_projection_tests && '42160468600' || inputs.replay_run }}
-          REPLAY_SOURCE: ${{ inputs.replay_source }}
+          REPLAY_RUN: ${{ (inputs.validation_scope == 'retained-clean' || (inputs.validation_scope == 'startup' && inputs.retained_projection_tests)) && '42160468600' || inputs.replay_run }}
+          REPLAY_SOURCE: ${{ inputs.validation_scope == 'retained-clean' && 'c55e19c4f5cbe0d730499035d0a0ef712f6903a9' || inputs.replay_source }}
           RETAINED_WITH_STARTUP: ${{ inputs.validation_scope == 'startup' && inputs.retained_projection_tests && 'true' || 'false' }}
           STARTUP_REPLAY_RUN: ${{ inputs.replay_run }}
         run: |
@@ -662,18 +662,32 @@ jobs:
               raise SystemExit('Pinned Xcode is unavailable')
           PYTHON
 
+      - name: Test clean retained diagnostic tooling
+        if: inputs.validation_scope == 'retained-clean'
+        run: python3 -m unittest discover -s tools/fork_baseline/tests -p test_clean_user_service.py -v
+
+      - name: Refresh only the registered current-user simulator service on an exclusive hosted runner
+        if: inputs.validation_scope == 'retained-clean'
+        env:
+          RUNNER_ENVIRONMENT: ${{ runner.environment }}
+          AYU_CLEAN_RUNNER_ENVIRONMENT: ${{ runner.environment }}
+          AYU_CLEAN_SESSION: exclusive-cached-artifacts
+          AYU_CLEAN_SOURCE: c55e19c4f5cbe0d730499035d0a0ef712f6903a9
+          AYU_CLEAN_JOB: ${{ github.job }}
+        run: python3 tools/fork_baseline/clean_user_service.py --output build/fork-evidence/clean-simulator-service.json
+
       - name: Test retained Projection replay tooling
-        if: inputs.replay_run != ''
+        if: inputs.validation_scope == 'retained-clean' || inputs.replay_run != ''
         run: python3 -m unittest discover -s tools/fork_baseline/tests -p test_projection_replay.py -v
 
       - name: Replay verified synthetic Projection products without recompilation
-        if: inputs.replay_run != ''
+        if: inputs.validation_scope == 'retained-clean' || inputs.replay_run != ''
         env:
           GH_TOKEN: ${{ github.token }}
-          REPLAY_RUN: ${{ inputs.validation_scope == 'startup' && inputs.retained_projection_tests && '42160468600' || inputs.replay_run }}
-          REPLAY_SOURCE: ${{ inputs.replay_source }}
-          PROJECTION_HOST_CONTROL: ${{ inputs.projection_host_control || 'original' }}
-          PROJECTION_BOOTSTRAP_SAMPLE: ${{ inputs.projection_bootstrap_sample && 'true' || 'false' }}
+          REPLAY_RUN: ${{ (inputs.validation_scope == 'retained-clean' || (inputs.validation_scope == 'startup' && inputs.retained_projection_tests)) && '42160468600' || inputs.replay_run }}
+          REPLAY_SOURCE: ${{ inputs.validation_scope == 'retained-clean' && 'c55e19c4f5cbe0d730499035d0a0ef712f6903a9' || inputs.replay_source }}
+          PROJECTION_HOST_CONTROL: ${{ inputs.validation_scope == 'retained-clean' && 'resealed-host' || inputs.projection_host_control || 'original' }}
+          PROJECTION_BOOTSTRAP_SAMPLE: ${{ inputs.validation_scope != 'retained-clean' && inputs.projection_bootstrap_sample && 'true' || 'false' }}
         run: |
           set -euo pipefail
           umask 077
@@ -686,7 +700,7 @@ jobs:
           python3 tools/fork_baseline/projection_replay.py --run "$REPLAY_RUN" --source "$REPLAY_SOURCE" "${projection_args[@]}" --output build/fork-evidence/projection-replay
 
       - name: Prepare only the verified synthetic movie fixture
-        if: inputs.replay_run == ''
+        if: inputs.validation_scope != 'retained-clean' && inputs.replay_run == ''
         run: |
           set -euo pipefail
           umask 077
@@ -694,13 +708,13 @@ jobs:
           python3 tools/fork_baseline/prepare_probe_fixture.py --output build/native-api-probe/fixture.mp4 > build/fork-evidence/native-api-probe-fixture.json
 
       - name: Compile the production loader with the host API probe
-        if: inputs.replay_run == ''
+        if: inputs.validation_scope != 'retained-clean' && inputs.replay_run == ''
         run: |
           set -euo pipefail
           xcrun swiftc -swift-version 5 -target arm64-apple-macosx13.0 submodules/LocalMessageArchive/Sources/LocalArchivePlayback/ArchivePlaybackAsset.swift tools/fork_baseline/native_api_probe.swift -o build/native-api-probe/probe 2>&1 | tee build/fork-evidence/native-api-probe-compile.log
 
       - name: Run host API diagnostics without account data
-        if: inputs.replay_run == ''
+        if: inputs.validation_scope != 'retained-clean' && inputs.replay_run == ''
         run: |
           set -euo pipefail
           build/native-api-probe/probe build/native-api-probe/fixture.mp4 > build/fork-evidence/native-api-probe.json
@@ -712,7 +726,7 @@ jobs:
           PYTHON
 
       - name: Compare host API behavior with an ad-hoc signed app identity
-        if: inputs.replay_run == ''
+        if: inputs.validation_scope != 'retained-clean' && inputs.replay_run == ''
         run: |
           set -euo pipefail
           python3 - <<'PYTHON'
@@ -746,7 +760,7 @@ jobs:
           import hashlib, pathlib
           root = pathlib.Path('build/fork-evidence')
           root.mkdir(parents=True, exist_ok=True)
-          names = ('native-api-probe.json', 'native-api-probe-bundle.json', 'native-api-probe-fixture.json', 'native-api-probe-compile.log')
+          names = ('native-api-probe.json', 'native-api-probe-bundle.json', 'native-api-probe-fixture.json', 'native-api-probe-compile.log', 'clean-simulator-service.json')
           checksums = []
           for name in names:
               file = root / name
@@ -766,6 +780,7 @@ jobs:
             ${{ github.workspace }}/fork-source/build/fork-evidence/native-api-probe-fixture.json
             ${{ github.workspace }}/fork-source/build/fork-evidence/native-api-probe-compile.log
             ${{ github.workspace }}/fork-source/build/fork-evidence/native-api-probe-SHA256SUMS
+            ${{ github.workspace }}/fork-source/build/fork-evidence/clean-simulator-service.json
             ${{ github.workspace }}/fork-source/build/fork-evidence/projection-replay/result.json
             ${{ github.workspace }}/fork-source/build/fork-evidence/projection-replay/case-results.json
             ${{ github.workspace }}/fork-source/build/fork-evidence/projection-replay/test.log
@@ -1026,6 +1041,110 @@ jobs:
             ${{ github.workspace }}/fork-source/build/fork-evidence/startup-replay-historical/replay-controls/main-app-only/launch-smoke/launch-1.png
             ${{ github.workspace }}/fork-source/build/fork-evidence/startup-replay-historical/replay-controls/main-app-only/launch-smoke/launch-2.png
             ${{ github.workspace }}/fork-source/build/fork-evidence/startup-replay-historical/SHA256SUMS
+          if-no-files-found: warn
+          retention-days: 7
+          include-hidden-files: false
+
+  custom-options-artifact-replay:
+    # The frozen settings host is a synthetic account-free renderer, not the
+    # full app. This job records new visible evidence and executes no XCTest.
+    if: github.event_name == 'workflow_dispatch' && (inputs.validation_scope == 'custom-options-replay' || inputs.validation_scope == 'retained-clean')
+    runs-on: xcode-27
+    timeout-minutes: 25
+    permissions:
+      contents: read
+      actions: read
+    defaults:
+      run:
+        shell: bash
+        working-directory: ./fork-source
+    steps:
+      - name: Check out only the diagnostic tools and unchanged application source
+        working-directory: ${{ github.workspace }}
+        env:
+          CHECKOUT_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          python3 - <<'PYTHON'
+          import base64, os, pathlib, re, subprocess
+          root = pathlib.Path(os.environ['GITHUB_WORKSPACE']) / 'fork-source'
+          sha = os.environ['GITHUB_SHA']
+          if not re.fullmatch(r'[0-9a-f]{40}', sha) or os.environ['GITHUB_REPOSITORY'] != 'Livara-Dev/Telegram-iOS':
+              raise SystemExit('Invalid cached settings checkout')
+          root.mkdir(mode=0o700)
+          def run(args, env=None): subprocess.run(args, cwd=root, env=env, check=True)
+          run(['git', 'init', '-q'])
+          run(['git', 'remote', 'add', 'origin', 'https://github.com/Livara-Dev/Telegram-iOS.git'])
+          private = os.environ.copy()
+          token = private.pop('CHECKOUT_TOKEN')
+          private.update(GIT_CONFIG_COUNT='1', GIT_CONFIG_KEY_0='http.https://github.com/.extraheader',
+              GIT_CONFIG_VALUE_0='AUTHORIZATION: basic ' + base64.b64encode(('x-access-token:' + token).encode()).decode())
+          run(['git', 'fetch', '--no-tags', '--depth', '1', 'origin', sha, 'c55e19c4f5cbe0d730499035d0a0ef712f6903a9'], private)
+          run(['git', 'checkout', '--detach', sha])
+          (root / 'build/fork-evidence').mkdir(parents=True)
+          PYTHON
+
+      - name: Select the pinned Apple toolchain without installing Bazel
+        run: |
+          set -euo pipefail
+          sudo xcode-select -s /Applications/Xcode_27.1.app/Contents/Developer
+          python3 - <<'PYTHON'
+          import subprocess
+          if subprocess.check_output(['xcodebuild', '-version'], text=True).splitlines()[0] != 'Xcode 27.1':
+              raise SystemExit('Pinned Xcode unavailable')
+          PYTHON
+
+      - name: Test the retained settings and service lifecycle tools
+        run: |
+          set -euo pipefail
+          python3 -m unittest discover -s tools/fork_baseline/tests -p test_custom_options_replay.py -v
+          python3 -m unittest discover -s tools/fork_baseline/tests -p test_clean_user_service.py -v
+
+      - name: Refresh only the registered current-user simulator service on an exclusive hosted runner
+        if: inputs.validation_scope == 'retained-clean'
+        env:
+          RUNNER_ENVIRONMENT: ${{ runner.environment }}
+          AYU_CLEAN_RUNNER_ENVIRONMENT: ${{ runner.environment }}
+          AYU_CLEAN_SESSION: exclusive-cached-artifacts
+          AYU_CLEAN_SOURCE: c55e19c4f5cbe0d730499035d0a0ef712f6903a9
+          AYU_CLEAN_JOB: ${{ github.job }}
+        run: python3 tools/fork_baseline/clean_user_service.py --output build/fork-evidence/clean-simulator-service.json
+
+      - name: Verify the retained renderer artifact and identical current sources
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python3 tools/fork_baseline/custom_options_replay.py prepare --output build/fork-evidence/custom-options-replay
+
+      - name: Record the real retained native settings root without rebuilding it
+        run: python3 tools/fork_baseline/custom_options_replay.py run --output build/fork-evidence/custom-options-replay
+
+      - name: Publish only closed settings replay observations and bounded visuals
+        if: always()
+        run: |
+          python3 - <<'PYTHON'
+          import hashlib, pathlib, shutil
+          root = pathlib.Path('build/fork-evidence')
+          public = root / 'custom-options-replay-public'
+          public.mkdir(parents=True, mode=0o700)
+          names = ['clean-simulator-service.json']
+          for name in ('verification.json', 'result.json', 'root-light.png', 'root-light.mp4'):
+              names.append('custom-options-replay/' + name)
+          rows = []
+          for name in names:
+              source = root / name
+              if source.is_file() and not source.is_symlink():
+                  destination = public / source.name
+                  shutil.copyfile(source, destination)
+                  rows.append(hashlib.sha256(destination.read_bytes()).hexdigest() + '  ' + destination.name + '\n')
+          (public / 'SHA256SUMS').write_text(''.join(rows))
+          PYTHON
+
+      - name: Upload retained native settings evidence without its simulator IPA
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: custom-options-artifact-replay-${{ github.sha }}
+          path: ${{ github.workspace }}/fork-source/build/fork-evidence/custom-options-replay-public/
           if-no-files-found: warn
           retention-days: 7
           include-hidden-files: false

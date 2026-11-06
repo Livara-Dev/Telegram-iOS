@@ -3,10 +3,12 @@ import ast
 import contextlib
 import io
 import json
+import os
 from pathlib import Path
 import re
 import sys
 import tempfile
+import textwrap
 import unittest
 import zipfile
 from unittest.mock import patch
@@ -289,7 +291,7 @@ class FocusedWorkflowRoutingTests(unittest.TestCase):
                 self.assertTrue(self.condition('integration-tests', 'workflow_dispatch', 'projection', device))
                 for job in ('application-build', 'unsigned-device-build', 'native-api-probe', 'startup-artifact-replay'):
                     self.assertFalse(self.condition(job, 'workflow_dispatch', 'projection', device))
-        self.assertIn('options: [full, native-only, core-only, focused, projection, projection-only, custom-options-ui, probe, startup]', WORKFLOW.read_text())
+        self.assertIn('options: [full, native-only, core-only, focused, projection, projection-only, custom-options-ui, custom-options-replay, probe, retained-clean, startup]', WORKFLOW.read_text())
         self.assertIn('projection) repair_options+=(--projection-tests)', WORKFLOW.read_text())
 
     def test_projection_only_dispatch_skips_every_other_build_or_probe(self):
@@ -379,6 +381,63 @@ class FocusedWorkflowRoutingTests(unittest.TestCase):
         self.assertIn("'checker-compiler.log'", source.split('      - name: Hash startup replay diagnostics', 1)[1])
         for control in ('normal', 'no-app-groups', 'main-app-only', 'main-app-only-automatic'):
             self.assertIn('/replay-controls/' + control + '/launch-smoke/checker-compiler.log', published)
+
+    def test_clean_retained_scope_preserves_startup_and_all_compiled_products(self):
+        self.assertTrue(self.condition('native-api-probe', 'workflow_dispatch', 'retained-clean', False))
+        self.assertTrue(self.condition('custom-options-artifact-replay', 'workflow_dispatch', 'retained-clean', False))
+        self.assertTrue(self.condition('custom-options-artifact-replay', 'workflow_dispatch', 'custom-options-replay', False))
+        for scope in ('retained-clean', 'custom-options-replay'):
+            for job in ('integration-tests', 'application-build', 'unsigned-device-build', 'custom-options-ui', 'startup-artifact-replay'):
+                self.assertFalse(self.condition(job, 'workflow_dispatch', scope, False), (scope, job))
+        self.assertFalse(self.condition('custom-options-artifact-replay', 'push', 'retained-clean', False))
+        for job in ('native-api-probe', 'custom-options-artifact-replay'):
+            section = self.section(job)
+            refresh = section.index('      - name: Refresh only the registered current-user simulator service')
+            execute = section.index('      - name: Replay verified synthetic Projection products' if job == 'native-api-probe' else '      - name: Record the real retained native settings root')
+            self.assertLess(refresh, execute)
+            self.assertIn("AYU_CLEAN_RUNNER_ENVIRONMENT: ${{ runner.environment }}", section)
+            self.assertIn('AYU_CLEAN_SESSION: exclusive-cached-artifacts', section)
+
+    def test_clean_scope_fixes_product_source_signing_arm_and_queue_despite_other_inputs(self):
+        source = self.section('native-api-probe')
+        replay = source.split('      - name: Replay verified synthetic Projection products', 1)[1]
+        expected = {'REPLAY_RUN': '42160468600', 'REPLAY_SOURCE': 'c55e19c4f5cbe0d730499035d0a0ef712f6903a9',
+                    'PROJECTION_HOST_CONTROL': 'resealed-host', 'PROJECTION_BOOTSTRAP_SAMPLE': 'false'}
+        for name, value in expected.items():
+            expression = re.search(r'^          ' + name + r': \$\{\{ (.*?) \}\}$', replay, re.M).group(1)
+            self.assertEqual(self.expression(expression, 'workflow_dispatch', 'retained-clean', False,
+                                             replay_source='b' * 40, replay_run='1'), value)
+        expression = re.search(r'^  group: \$\{\{ (.*?) \}\}$', WORKFLOW.read_text(), re.M).group(1)
+        self.assertEqual(self.expression(expression, 'workflow_dispatch', 'retained-clean', False,
+                                        replay_source='b' * 40, replay_run=''),
+                         'ayugram-projection-replay-c55e19c4f5cbe0d730499035d0a0ef712f6903a9')
+
+    def test_retained_settings_publication_hashes_only_the_explicit_safe_files(self):
+        import hashlib
+        section = self.section('custom-options-artifact-replay')
+        stage = section.split('      - name: Publish only closed settings replay observations and bounded visuals', 1)[1]
+        body = stage.split("python3 - <<'PYTHON'\n", 1)[1].split('          PYTHON', 1)[0]
+        code = textwrap.dedent(body)
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve(); evidence = root / 'build/fork-evidence'; source = evidence / 'custom-options-replay'
+            source.mkdir(parents=True)
+            allowed = {'verification.json', 'result.json', 'root-light.png', 'root-light.mp4'}
+            for name in allowed: (source / name).write_bytes(('allowed-' + name).encode())
+            (evidence / 'clean-simulator-service.json').write_text('{"passed": true}')
+            for name in ('CustomeOptionsHost-simulator.ipa', 'raw-ocr.txt', 'private-compiler.out'):
+                (source / name).write_text('PRIVATE_PUBLICATION_CANARY')
+            previous = Path.cwd()
+            try:
+                os.chdir(root); exec(compile(code, '<checked-in-settings-publication>', 'exec'), {})
+            finally: os.chdir(previous)
+            public = evidence / 'custom-options-replay-public'
+            self.assertEqual({p.name for p in public.iterdir()}, allowed | {'SHA256SUMS', 'clean-simulator-service.json'})
+            rows = (public / 'SHA256SUMS').read_text().splitlines()
+            self.assertEqual(len(rows), 5)
+            for row in rows:
+                digest, name = row.split('  ', 1)
+                self.assertEqual(hashlib.sha256((public / name).read_bytes()).hexdigest(), digest)
+                self.assertNotIn(b'PRIVATE_PUBLICATION_CANARY', (public / name).read_bytes())
 
     def test_retained_startup_can_test_projection_without_enabling_any_compile_job(self):
         self.assertTrue(self.condition('startup-artifact-replay', 'workflow_dispatch', 'startup', False, retained=True))
