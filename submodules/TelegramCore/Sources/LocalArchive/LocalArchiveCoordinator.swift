@@ -177,8 +177,17 @@ public final class LocalArchiveCoordinator {
     private var retryScheduled = false
     private var epoch: Int64 = 0
     private var activeSettings = LocalArchiveSettings()
+    private var hasReadSettings = false
     private var readAccessCount = 0
     private var activeTransfer: ArchiveTransferCancellation?
+    private struct PendingTransfer {
+        let epoch: Int64
+        let settings: LocalArchiveSettings
+        let cancellation: ArchiveTransferCancellation
+        let begin: () -> Void
+        let cancel: () -> Void
+    }
+    private var pendingTransfer: PendingTransfer?
 
     public var status: Signal<LocalArchiveStatus, NoError> {
         return self.statusValue.get()
@@ -233,12 +242,16 @@ public final class LocalArchiveCoordinator {
                 }
             }
         }))
-        self.subscriptions.add(self.settings.start(next: { [weak self] _ in
+        self.subscriptions.add(self.settings.start(next: { [weak self] settings in
             self?.queue.justDispatch { [weak self] in
                 guard let self else { return }
                 // A privacy, retention or purge change cancels an uncommitted
                 // transfer rather than exporting under stale account choices.
-                if self.activeTransfer != nil { self.invalidateWork() }
+                // An unchanged initial preference view is not a policy change.
+                if (self.activeTransfer != nil && self.activeSettings != settings)
+                    || self.pendingTransfer.map({ $0.settings != settings }) == true {
+                    self.invalidateWork()
+                }
                 self.wake()
             }
         }))
@@ -274,6 +287,7 @@ public final class LocalArchiveCoordinator {
             self?.queue.justDispatch { [weak self] in
                 guard let self, !self.stopped else { return }
                 self.readAccessCount = max(0, self.readAccessCount - 1)
+                if self.readAccessCount == 0 { self.cancelPendingTransfer() }
                 if self.readAccessCount == 0 && !self.activeSettings.enabled && !self.activeSettings.pendingPurge {
                     self.invalidateWork()
                     self.needsDrain = false
@@ -387,56 +401,83 @@ public final class LocalArchiveCoordinator {
                 subscriber.putNext(.failed(.unavailable)); subscriber.putCompletion(); return EmptyDisposable
             }
             let cancellation = ArchiveTransferCancellation()
+            let subscriptionDisposed = Atomic<Bool>(value: false)
             self.queue.justDispatch { [weak self] in
+                guard !subscriptionDisposed.with({ $0 }) else { return }
                 guard let self, !self.stopped, self.mayAccessProtectedData, self.readAccessCount > 0,
-                      !self.working, self.activeTransfer == nil,
-                      self.pendingStorageOpens == 0, self.pendingStorageCloses == 0 else {
+                      self.hasReadSettings, self.activeSettings.isSupported, !self.activeSettings.pendingPurge,
+                      self.activeTransfer == nil, self.pendingTransfer == nil, !cancellation.isCancelled else {
                     subscriber.putNext(.failed(.unavailable)); subscriber.putCompletion(); return
                 }
-                self.working = true
-                self.activeTransfer = cancellation
                 let epoch = self.epoch
-                let complete: (LocalArchiveTransferResult) -> Void = { [weak self] result in
-                    guard let self else {
+                let requestedSettings = self.activeSettings
+                let begin: () -> Void = { [weak self] in
+                    guard let self, self.isCurrent(epoch), self.readAccessCount > 0,
+                          self.activeTransfer == nil, !cancellation.isCancelled else {
                         subscriber.putNext(.failed(.cancelled)); subscriber.putCompletion(); return
                     }
-                    self.queue.justDispatch { [weak self] in
+                    self.working = true
+                    self.activeTransfer = cancellation
+                    let complete: (LocalArchiveTransferResult) -> Void = { [weak self] result in
                         guard let self else {
                             subscriber.putNext(.failed(.cancelled)); subscriber.putCompletion(); return
                         }
-                        let valid = self.isCurrent(epoch) && self.activeTransfer === cancellation && !cancellation.isCancelled
-                        if valid, case let .imported(addedVersions, _, addedMedia, removedByRetention) = result,
-                           addedVersions > 0 || addedMedia > 0 || removedByRetention > 0 { self.historyDidChange() }
-                        if self.activeTransfer === cancellation {
-                            self.activeTransfer = nil
-                            if valid && !self.activeSettings.enabled {
-                                self.statusValue.set(self.storage == nil ? .disabled : .browsing)
+                        self.queue.justDispatch { [weak self] in
+                            guard let self else {
+                                subscriber.putNext(.failed(.cancelled)); subscriber.putCompletion(); return
                             }
-                            // Service wakeups that arrived during the transfer,
-                            // without reopening a paused store after every
-                            // completed or rejected password attempt.
-                            self.finished(epoch: epoch)
+                            let valid = self.isCurrent(epoch) && self.activeTransfer === cancellation && !cancellation.isCancelled
+                            if valid, case let .imported(addedVersions, _, addedMedia, removedByRetention) = result,
+                               addedVersions > 0 || addedMedia > 0 || removedByRetention > 0 { self.historyDidChange() }
+                            if self.activeTransfer === cancellation {
+                                self.activeTransfer = nil
+                                if valid && !self.activeSettings.enabled {
+                                    self.statusValue.set(self.storage == nil ? .disabled : .browsing)
+                                }
+                                // Service wakeups that arrived during the transfer,
+                                // without reopening a paused store after every
+                                // completed or rejected password attempt.
+                                self.finished(epoch: epoch)
+                            }
+                            subscriber.putNext(valid ? result : .failed(.cancelled))
+                            subscriber.putCompletion()
                         }
-                        subscriber.putNext(valid ? result : .failed(.cancelled))
-                        subscriber.putCompletion()
                     }
+                    self.transactionDisposable.set((self.postbox.transaction { transaction in
+                        return localArchiveSettings(transaction: transaction)
+                    } |> deliverOn(self.queue)).start(next: { [weak self] settings in
+                        guard let self, self.isCurrent(epoch), !cancellation.isCancelled else { complete(.failed(.cancelled)); return }
+                        self.activeSettings = settings
+                        guard settings == requestedSettings else { complete(.failed(.cancelled)); return }
+                        guard settings.isSupported, !settings.pendingPurge else { complete(.failed(.unavailable)); return }
+                        guard !settings.enabled else { complete(.failed(.captureMustBePaused)); return }
+                        operation(settings, epoch, cancellation, complete)
+                    }))
                 }
-                self.transactionDisposable.set((self.postbox.transaction { transaction in
-                    return localArchiveSettings(transaction: transaction)
-                } |> deliverOn(self.queue)).start(next: { [weak self] settings in
-                    guard let self, self.isCurrent(epoch), !cancellation.isCancelled else { complete(.failed(.cancelled)); return }
-                    self.activeSettings = settings
-                    guard settings.isSupported, !settings.pendingPurge else { complete(.failed(.unavailable)); return }
-                    guard !settings.enabled else { complete(.failed(.captureMustBePaused)); return }
-                    operation(settings, epoch, cancellation, complete)
-                }))
+                // A ready/disabled status is presentation, not acknowledgement
+                // that every startup drain/open callback has finished. Retain
+                // one explicit request until that existing work is quiescent.
+                self.pendingTransfer = PendingTransfer(epoch: epoch, settings: requestedSettings, cancellation: cancellation, begin: begin, cancel: {
+                    guard !subscriptionDisposed.with({ $0 }) else { return }
+                    subscriber.putNext(.failed(.cancelled)); subscriber.putCompletion()
+                })
+                self.drainIfNeeded()
             }
             return ActionDisposable { [self] in
+                // SwiftSignalKit marks its subscriber terminated after invoking
+                // this disposable. Suppress queued cancellation notifications
+                // immediately, including one racing the handoff queue.
+                _ = subscriptionDisposed.swap(true)
                 cancellation.cancel()
                 self.queue.justDispatch { [weak self] in
-                    guard let self, self.activeTransfer === cancellation else { return }
-                    self.invalidateWork()
-                    self.wake()
+                    guard let self else { return }
+                    if self.pendingTransfer?.cancellation === cancellation {
+                        self.cancelPendingTransfer(notify: false)
+                        self.drainIfNeeded()
+                    } else if self.activeTransfer === cancellation {
+                        self.invalidateWork()
+                        self.wake()
+                    }
                 }
             }
         }
@@ -695,6 +736,7 @@ public final class LocalArchiveCoordinator {
     }
 
     private func invalidateWork() {
+        self.cancelPendingTransfer()
         self.activeTransfer?.cancel()
         self.activeTransfer = nil
         self.epoch &+= 1
@@ -707,6 +749,7 @@ public final class LocalArchiveCoordinator {
     }
 
     private func drainIfNeeded() {
+        if self.beginPendingTransferIfPossible() { return }
         guard !self.stopped, self.mayAccessProtectedData, !self.working, !self.retryScheduled, self.needsDrain,
               self.pendingStorageOpens == 0, self.pendingStorageCloses == 0 else { return }
         self.needsDrain = false
@@ -719,6 +762,7 @@ public final class LocalArchiveCoordinator {
                     localArchivePendingCaptures(transaction: transaction, accountPeerId: accountPeerId, limit: 1))
         } |> deliverOn(self.queue)).start(next: { [weak self] settings, pending in
             guard let self, self.isCurrent(epoch) else { return }
+            self.hasReadSettings = true
             self.activeSettings = settings
             guard settings.isSupported else {
                 self.invalidateWork()
@@ -753,6 +797,28 @@ public final class LocalArchiveCoordinator {
                 }
             }
         }))
+    }
+
+    private func cancelPendingTransfer(notify: Bool = true) {
+        guard let pending = self.pendingTransfer else { return }
+        self.pendingTransfer = nil
+        pending.cancellation.cancel()
+        if notify { pending.cancel() }
+    }
+
+    private func beginPendingTransferIfPossible() -> Bool {
+        guard let pending = self.pendingTransfer else { return false }
+        guard self.isCurrent(pending.epoch), self.readAccessCount > 0,
+              self.activeTransfer == nil, !pending.cancellation.isCancelled else {
+            self.cancelPendingTransfer()
+            return false
+        }
+        guard !self.working, self.pendingStorageOpens == 0, self.pendingStorageCloses == 0 else { return false }
+        // Clear retained input/password closures before entering the operation;
+        // cancellation and a second request can never start this request twice.
+        self.pendingTransfer = nil
+        pending.begin()
+        return true
     }
 
     private func observeStorage(_ storage: LocalArchiveStorage, epoch: Int64, completion: @escaping () -> Void) {
@@ -997,6 +1063,9 @@ public final class LocalArchiveCoordinator {
         self.working = false
         self.needsDrain = true
         self.retryScheduled = true
+        // Existing automatic work failed, but an explicit authorized request
+        // need not wait for its automatic retry timer to reach quiescence.
+        self.drainIfNeeded()
         // No tight retry loop when locked, out of space or encountering a corrupt payload.
         self.queue.after(30.0) { [weak self] in
             guard let self, self.isCurrent(epoch) else { return }
