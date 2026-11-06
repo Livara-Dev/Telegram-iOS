@@ -1,9 +1,11 @@
 # Account-local message filters
 
 The current source adds explicit sender hiding and inverse rules to the existing
-bounded text, expression and media-type filters. These additions are not native
-qualified yet: this workspace is Linux, and no compilation, authenticated chat
-interaction, visual review or physical-device result is claimed here.
+bounded text, expression and media-type filters. At application source
+`c55e19c4`, the Core fixture tests passed and the complete application compiled
+for simulator and device. The 25 filter Projection cases remain unexecuted;
+authenticated chat interaction, recorded visual review and physical-device
+verification remain outstanding.
 
 ## Reference and scope
 
@@ -88,16 +90,32 @@ integer elements instead of keyed rule objects) can still trap. Normal rule
 mutations cannot produce that shape. This repair does not alter the global
 Postbox adapter or certify arbitrary corrupt binary preference data.
 
-Fifteen authored Core tests cover on-disk reopen, account isolation, cached
+All 15 `LocalMessageFilterSenderAndInverseTests` and three
+`LocalMessageFilterCodableTests` passed among the **796 TelegramCore cases** in
+macOS run [42160468600](https://github.com/Livara-Dev/Telegram-iOS/actions/runs/42160468600)
+at `c55e19c4f5cbe0d730499035d0a0ef712f6903a9`. They are included in the
+54 passing Core filter cases, not additional suite results. The
+[feature evidence record](evidence/feature-verification-c55e19c4.json) retains
+their class counts and original suite-log hash.
+
+The 15 sender/inverse Core tests cover on-disk reopen, account isolation, cached
 block separation, canonical cleanup, every mutation, limits, malformed/future
 policies, legacy-byte preservation, Unicode/case matching, expression work
 limits, input bounds, inverse media truth tables and scope/OR behavior. Three
 additional authored projection tests exercise the production snapshot bridge,
 sender identity, reveal and protected/timed/grouped/unknown metadata boundaries.
-Native execution is pending; portable guard tests are not a substitute.
-Three additional authored codec cases use real Postbox preferences/reopen to
+Those three remain within the 25 filter Projection cases that have not executed;
+portable guard tests do not establish their result.
+The three passing codec cases use real Postbox preferences/reopen to
 cover all media kinds, expression/inverse rules, version-2 numeric wire bytes,
-and unknown values in versions 1, 2 and 3. Their native execution is pending.
+and unknown values in versions 1, 2 and 3.
+
+The full device build 82 from that run and separate simulator build 1 from
+[42174474046](https://github.com/Livara-Dev/Telegram-iOS/actions/runs/42174474046)
+compiled the same application source. The original full qualification still
+failed at its 41 unexecuted Projection cases, including these 25 filter cases.
+Neither Core fixtures nor the separate synthetic settings renderer verify
+authenticated chat hide/reveal or account-bound editor callbacks.
 
 A native visual recording should show the message-prefilled editor saving its
 sender switch independently of Save; an inverse rule surviving editor reopen;

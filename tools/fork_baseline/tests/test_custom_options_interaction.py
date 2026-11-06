@@ -47,7 +47,7 @@ def attachments(root):
 
 
 class RetainedInteractionTests(unittest.TestCase):
-    def test_pinned_original_changes_only_three_exact_reversible_harness_expressions(self):
+    def test_pinned_original_changes_only_four_exact_reversible_harness_expressions(self):
         original = (REPOSITORY / interaction.SOURCE_PATH).read_bytes()
         self.assertEqual(hashlib.sha256(original).hexdigest(), interaction.SOURCE_SHA256)
         result = interaction.derived_source(original)
@@ -66,7 +66,7 @@ class RetainedInteractionTests(unittest.TestCase):
         original = (REPOSITORY / interaction.SOURCE_PATH).read_bytes()
         result = interaction.derived_source(original)
         before, after = interaction.EMPTY_SEARCH_BEFORE, interaction.EMPTY_SEARCH_AFTER
-        self.assertEqual(len(interaction.SUBSTITUTIONS), 3)
+        self.assertEqual(len(interaction.SUBSTITUTIONS), 4)
         self.assertEqual(original.count(before), 1)
         self.assertEqual(result.count(after), 1)
         self.assertNotIn(before, result)
@@ -117,6 +117,54 @@ class RetainedInteractionTests(unittest.TestCase):
         self.assertIn(b'"keyboard": keyboardValid ? [', evidence)
         self.assertEqual(evidence.count(b': []'), 2)
 
+    def test_toggle_experiment_has_one_center_event_and_preserves_exact_final_assertion(self):
+        original = (REPOSITORY / interaction.SOURCE_PATH).read_bytes()
+        generated = interaction.derived_source(original)
+        before, after = interaction.ARCHIVE_TOGGLE_BEFORE, interaction.ARCHIVE_TOGGLE_AFTER
+        self.assertEqual(original.count(before), 1)
+        self.assertEqual(generated.count(after), 1)
+        self.assertEqual(after.count(b'togglePoint.tap()'), 1)
+        self.assertNotIn(b'archive.tap()', after)
+        self.assertEqual(after.count(b'withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)'), 1)
+        self.assertEqual(after.count(b'timeout: 5'), 1)
+        self.assertIn(b'XCTAssertEqual(archive.value as? String, "1")', before)
+        self.assertEqual(after.count(b'XCTAssertEqual(archive.value as? String, "1")'), 1)
+        self.assertIn(b'NSPredicate(format: "value == %@", "1"), object: archive', after)
+        for operation in (b'while ', b'for ', b'sleep', b'togglePoint.press', b'app.tap()', b'app.launch()'):
+            self.assertNotIn(operation, after)
+
+    def test_toggle_preconditions_reject_unknown_value_geometry_and_synthetic_ledger(self):
+        after = interaction.ARCHIVE_TOGGLE_AFTER
+        self.assertIn(b'[rect.origin.x, rect.origin.y, rect.width, rect.height, rect.maxX, rect.maxY].allSatisfy { $0.isFinite }', after)
+        self.assertIn(b'&& rect.width > 0 && rect.height > 0', after)
+        self.assertIn(b'let contained = windowValid && controlValid && windowFrame.contains(controlFrame)', after)
+        self.assertIn(b'center.x.isFinite && center.y.isFinite', after)
+        self.assertIn(b'&& controlFrame.contains(center) && windowFrame.contains(center)', after)
+        self.assertIn(b'return (contained && centerValid && enabled && hittable, value == "0" && ledgerOff, ledgerOn)', after)
+        self.assertIn(b'XCTAssertEqual(archive.value as? String, "0")', after)
+        self.assertIn(b'XCTAssertTrue(archive.isEnabled)', after)
+        self.assertIn(b'XCTAssertTrue(archive.isHittable)', after)
+        self.assertIn(b'guard initialToggle.safe && initialToggle.off else { return }', after)
+        self.assertLess(after.index(b'guard initialToggle.safe'), after.index(b'togglePoint.tap()'))
+        self.assertIn(b'hasPrefix("No Telegram account; archive off;") == true', after)
+        self.assertIn(b'hasPrefix("No Telegram account; archive on;") == true', after)
+        self.assertIn(b'XCTAssertTrue(finalToggle.ledgerOn', after)
+        self.assertLess(after.index(b'let finalToggle = recordArchiveToggle("after")'),
+            after.index(b'XCTAssertEqual(toggleOutcome, .completed)'))
+
+    def test_toggle_diagnostics_publish_no_raw_ax_or_ledger_values(self):
+        after = interaction.ARCHIVE_TOGGLE_AFTER
+        evidence = after.split(b'let evidence: [String: Any] = [', 1)[1].split(b'            if let data', 1)[0]
+        self.assertEqual(re.findall(rb'"([a-z_]+)":', evidence), [b'phase', b'exists', b'enabled',
+            b'hittable', b'window_valid', b'control_valid', b'contained', b'center_valid',
+            b'value_known', b'is_on', b'ledger_known', b'ledger_on', b'window', b'control', b'center'])
+        for unsafe in (b'"value":', b'"ledger":', b'"label":', b'"text":', b'.debugDescription'):
+            self.assertNotIn(unsafe, evidence)
+        self.assertEqual(re.findall(rb'recordArchiveToggle\("([a-z]+)"', after), [b'before', b'after'])
+        self.assertEqual(after.count(b'print("AYU_OPTIONS_ARCHIVE_TOGGLE:" + text)'), 1)
+        self.assertEqual(evidence.count(b': []'), 3)
+        self.assertIn(b'"center": centerValid ? [center.x, center.y] : []', evidence)
+
     def test_every_source_mutation_is_rejected_before_private_project_creation(self):
         original = (REPOSITORY / interaction.SOURCE_PATH).read_bytes()
         mutations = (original + b'\n', original.replace(b'timeout: 5', b'timeout: 6', 1),
@@ -151,7 +199,7 @@ class RetainedInteractionTests(unittest.TestCase):
             self.assertEqual((REPOSITORY / interaction.SOURCE_PATH).read_bytes(), original)
             self.assertEqual(result['expected_case'], interaction.EXPECTED_CASE)
             self.assertEqual(result['expected_case_count'], 1)
-            self.assertEqual(result['source_substitution_count'], 3)
+            self.assertEqual(result['source_substitution_count'], 4)
             self.assertEqual(result['derived_source_sha256'], hashlib.sha256(after[source]).hexdigest())
             self.assertFalse(result['native_tests_executed']); self.assertFalse(result['application_recompiled'])
             self.assertFalse(result['renderer_recompiled'])

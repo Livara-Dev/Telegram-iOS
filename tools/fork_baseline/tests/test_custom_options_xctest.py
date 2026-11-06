@@ -4,6 +4,7 @@
 import copy
 import contextlib
 import functools
+import hashlib
 import io
 import json
 import os
@@ -113,6 +114,10 @@ class Native(retained_fixture.Native):
                 shutil.copytree(self.bound_app, self.installed)
             Path(args[args.index('-resultBundlePath') + 1]).mkdir()
             data = (interaction_log if self.interaction_profile else case_log)('failed' if self.kind == 'caseFailed' else 'passed')
+            if self.kind in ('partialRootOnly', 'noPartialRoot', 'invalidPartialRoot', 'partialMalformedCase'):
+                data = b'\n'.join(line for line in interaction_log('failed').splitlines()
+                    if not line.startswith((b'AYU_OPTIONS_FRAME:', b'AYU_OPTIONS_APPEARANCE:')) or b'root-light' in line)
+                if self.kind == 'partialMalformedCase': data = data.replace(replay.full_interaction.EXPECTED_CASE.split('.')[1].encode(), b'testUnexpectedCase')
             if self.kind == 'missingStage': data = b'\n'.join(line for line in data.splitlines() if not (line.startswith(b'AYU_OPTIONS_FRAME:') and b'root-light' in line))
             if self.kind == 'missingAppearance': data = b'\n'.join(line for line in data.splitlines() if not (line.startswith(b'AYU_OPTIONS_APPEARANCE:') and b'root-light' in line))
             if self.kind == 'missingCase': data = b''
@@ -121,7 +126,8 @@ class Native(retained_fixture.Native):
             if self.kind == 'installedMutate': (self.installed / 'CustomeOptionsHost').write_bytes(b'changed installed executable')
             if self.kind == 'runnerMutate': (self.runner / 'AppleUITestRunner').write_bytes(b'changed runner executable')
             status = retained_fixture.complete(data)[0]
-            if self.kind == 'caseFailed': status.update(status='commandFailed', exit_code=65)
+            if self.kind in ('caseFailed', 'partialRootOnly', 'noPartialRoot', 'invalidPartialRoot', 'partialMalformedCase'):
+                status.update(status='commandFailed', exit_code=65)
             if self.kind == 'timeout': status.update(status='timedOut', exit_code=None, timeout=True)
             return status, data
         if args[:4] == ['xcrun', 'xcresulttool', 'export', 'attachments']:
@@ -131,8 +137,10 @@ class Native(retained_fixture.Native):
             if self.interaction_profile:
                 manifest = []
                 for stage in replay.full_interaction.STAGES:
+                    if self.kind in ('partialRootOnly', 'invalidPartialRoot', 'partialMalformedCase') and stage != 'root-light': continue
+                    if self.kind == 'noPartialRoot' and stage != 'search-light': continue
                     if self.kind == 'missingAttachment' and stage == 'cosmetics-reset': continue
-                    (exported / (stage + '.png')).write_bytes(png())
+                    (exported / (stage + '.png')).write_bytes(b'not a PNG' if self.kind == 'invalidPartialRoot' else png())
                     manifest.append({'configuredName': 'ayu-' + stage, 'exportedFileName': stage + '.png'})
             else:
                 (exported / 'native.png').write_bytes(png())
@@ -162,6 +170,116 @@ class RetainedNativeUIDriverTests(unittest.TestCase):
         source = root / replay.full_interaction.SOURCE_PATH; source.parent.mkdir(parents=True, exist_ok=True)
         shutil.copyfile(retained_fixture.ROOT / replay.full_interaction.SOURCE_PATH, source)
         return source
+
+    def test_partial_root_retains_only_one_exact_valid_attachment_with_private_verified_copy(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve(); exported = root / 'exported'; exported.mkdir()
+            nested = exported / 'attachments'; nested.mkdir()
+            source = nested / 'native.png'; source.write_bytes(png())
+            (exported / 'manifest.json').write_text(json.dumps({'attachments': [
+                {'configuredName': 'ayu-root-light', 'exportedFileName': 'attachments/native.png'}]}))
+            destination = root / 'root-light.png'
+            record = replay.collect_partial_root_attachment(exported, destination)
+            self.assertEqual(record, {'filename': 'root-light.png', 'bytes': len(png()),
+                'sha256': hashlib.sha256(png()).hexdigest(), 'width': 1179, 'height': 2556})
+            self.assertEqual(destination.read_bytes(), source.read_bytes())
+            self.assertEqual(destination.stat().st_mode & 0o777, 0o600)
+            self.assertNotIn(str(root), json.dumps(record))
+
+    def test_partial_root_manifest_rejects_duplicates_aliases_malformed_and_unbounded_input(self):
+        documents = (
+            '[{"configuredName":"ayu-root-light","exportedFileName":"native.png"},'
+             '{"configuredName":"ayu-root-light","exportedFileName":"native.png"}]',
+            '[{"configuredName":"ayu-root-light","configuredName":"different","exportedFileName":"native.png"}]',
+            '[{"configuredName":"ayu-root-light.png","exportedFileName":"native.png"}]',
+            '[{"configuredName":"ayu-root-light_suffix","exportedFileName":"native.png"}]',
+            '[{"configuredName":"ayu-root-light","exportedFileName":false}]',
+            'null', 'true', '"arbitrary text"', '{', '[' * 34 + '[]' + ']' * 34,
+            '[{}' + ',{}' * 20000 + ']', ' ' * (replay.MAX_PLAN + 1))
+        for document in documents:
+            with self.subTest(document=document[:90]), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory).resolve(); exported = root / 'exported'; exported.mkdir()
+                (exported / 'native.png').write_bytes(png()); (exported / 'manifest.json').write_text(document)
+                with self.assertRaises((OSError, ValueError, RuntimeError)):
+                    replay.collect_partial_root_attachment(exported, root / 'root-light.png')
+                self.assertFalse((root / 'root-light.png').exists())
+
+    def test_partial_root_never_authorizes_suggested_names_or_other_stages(self):
+        for record in ({'suggestedHumanReadableName': 'ayu-root-light', 'exportedFileName': 'native.png'},
+                       {'configuredName': 'ayu-search-light', 'exportedFileName': 'native.png'}):
+            with self.subTest(record=record), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory).resolve(); exported = root / 'exported'; exported.mkdir()
+                (exported / 'native.png').write_bytes(png()); (exported / 'manifest.json').write_text(json.dumps([record]))
+                with self.assertRaises(replay.PartialRootUnavailable):
+                    replay.collect_partial_root_attachment(exported, root / 'root-light.png')
+                self.assertFalse((root / 'root-light.png').exists())
+
+    def test_partial_root_rejects_source_and_destination_aliases_and_invalid_png_before_copy(self):
+        for kind in ('traversal', 'absolute', 'symlink', 'hardlink', 'directory', 'manifestLink', 'rootLink',
+                     'destinationLink', 'destinationParentLink', 'destinationExists', 'pathAlias',
+                     'badPNG', 'headerOnly', 'truncated', 'CRC', 'oversized'):
+            with self.subTest(kind=kind), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory).resolve(); exported = root / 'exported'; exported.mkdir()
+                source = exported / 'native.png'; source.write_bytes(png())
+                outside = root / 'outside.png'; outside.write_bytes(png()); manifest_name = 'native.png'
+                destination = root / 'root-light.png'; manifest = exported / 'manifest.json'
+                if kind == 'traversal': manifest_name = '../outside.png'
+                if kind == 'absolute': manifest_name = str(outside)
+                if kind in ('symlink', 'hardlink', 'directory'):
+                    source.unlink()
+                    if kind == 'symlink': source.symlink_to(outside)
+                    elif kind == 'hardlink': os.link(outside, source)
+                    else: source.mkdir()
+                if kind == 'destinationLink': destination.symlink_to(outside)
+                if kind == 'destinationExists': destination.write_bytes(b'keep')
+                if kind == 'destinationParentLink':
+                    alias = root / 'alias'; alias.symlink_to(exported, target_is_directory=True); destination = alias / 'root-light.png'
+                if kind == 'pathAlias': destination = exported / '..' / 'root-light.png'
+                if kind == 'badPNG': source.write_bytes(b'not a PNG')
+                if kind == 'headerOnly': source.write_bytes(png()[:33])
+                if kind == 'truncated': source.write_bytes(png()[:-1])
+                if kind == 'CRC': source.write_bytes(png()[:-1] + bytes([png()[-1] ^ 1]))
+                if kind == 'oversized':
+                    with source.open('ab') as file: file.truncate(replay.MAX_PNG + 1)
+                manifest.write_text(json.dumps([{'configuredName': 'ayu-root-light', 'exportedFileName': manifest_name}]))
+                if kind == 'manifestLink':
+                    saved = root / 'manifest.json'; manifest.rename(saved); manifest.symlink_to(saved)
+                if kind == 'rootLink':
+                    alias = root / 'alias'; alias.symlink_to(exported, target_is_directory=True); exported = alias
+                with self.assertRaises((OSError, ValueError, RuntimeError)):
+                    replay.collect_partial_root_attachment(exported, destination)
+                self.assertEqual(outside.read_bytes(), png())
+                if kind == 'destinationExists': self.assertEqual(destination.read_bytes(), b'keep')
+                elif kind != 'destinationLink': self.assertFalse(destination.exists())
+
+    def test_partial_root_copy_mismatch_is_rejected(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve(); exported = root / 'exported'; exported.mkdir()
+            (exported / 'native.png').write_bytes(png())
+            (exported / 'manifest.json').write_text(json.dumps([{'configuredName': 'ayu-root-light', 'exportedFileName': 'native.png'}]))
+            destination = root / 'root-light.png'; read = replay.products.read_small
+            def changed(path, limit):
+                return b'changed copy' if Path(path) == destination else read(path, limit)
+            with patch.object(replay.products, 'read_small', side_effect=changed), \
+                    self.assertRaisesRegex(replay.DriverError, '^ui_partial_root_copy_changed$'):
+                replay.collect_partial_root_attachment(exported, destination)
+
+    def test_partial_root_is_diagnostic_only_and_never_qualifies_failed_or_malformed_full_cases(self):
+        for kind in ('partialRootOnly', 'partialMalformedCase', 'noPartialRoot', 'invalidPartialRoot'):
+            with self.subTest(kind=kind), self.prepared() as (root, output, _, _), patch.object(replay.platform, 'system', return_value='Darwin'):
+                self.interaction_source(root); native = Native(root, kind, interaction=True)
+                with self.assertRaises(ValueError): replay.execute(root=root, command=native, popen=native.popen, interaction=True)
+                result = json.loads((output / 'result.json').read_text())
+                self.assertFalse(result['passed']); self.assertFalse(result['interaction_observations_verified'])
+                self.assertFalse(result['root_title_automatically_verified']); self.assertNotIn('interaction_screenshots', result)
+                fallback = any(args[:4] == ['xcrun', 'simctl', 'io', retained_fixture.IDENTIFIER] and args[4] == 'screenshot' for args, _ in native.calls)
+                self.assertEqual(fallback, kind == 'noPartialRoot')
+                if kind in ('partialRootOnly', 'partialMalformedCase'):
+                    self.assertEqual(result['screenshot_origin'], 'xcresultPartialRootAttachment')
+                    self.assertEqual((output / 'root-light.png').read_bytes(), png())
+                    self.assertEqual(result['partial_root_attachment']['sha256'], hashlib.sha256(png()).hexdigest())
+                    self.assertFalse((output / 'screenshots').exists())
+                self.assertTrue(result['cleanup_passed'])
 
     def test_owned_driver_log_redacts_attached_flags_temp_aliases_and_secrets_before_utf8_byte_cap(self):
         private = Path('/private/var/folders/private-user/T/ayu-options-xctest-private')
@@ -350,7 +468,7 @@ class RetainedNativeUIDriverTests(unittest.TestCase):
             self.assertEqual(result['recording_maximum_video_bytes'], 128 * 1024**2)
             self.assertTrue(result['interaction_observations_verified']); self.assertFalse(result['root_title_automatically_verified'])
             self.assertEqual(result['expected_case'], replay.full_interaction.EXPECTED_CASE)
-            self.assertEqual(result['interaction_source_substitution_count'], 3)
+            self.assertEqual(result['interaction_source_substitution_count'], 4)
             self.assertEqual(result['interaction_original_source_sha256'], replay.full_interaction.SOURCE_SHA256)
             self.assertEqual(source.read_bytes(), original); self.assertEqual(result['new_xctest_cases_executed'], 1)
             self.assertEqual(len(result['interaction_screenshots']), 12)

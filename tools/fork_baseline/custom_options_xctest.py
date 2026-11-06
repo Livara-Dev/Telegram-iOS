@@ -16,6 +16,7 @@ import platform
 import plistlib
 import re
 import shutil
+import stat
 import struct
 import subprocess
 import tempfile
@@ -39,6 +40,10 @@ NATIVE_UI_TIMEOUT_SECONDS = 600
 
 
 class DriverError(ValueError):
+    pass
+
+
+class PartialRootUnavailable(DriverError):
     pass
 
 
@@ -289,6 +294,59 @@ def screenshot_attachment(exported):
     return path, png_geometry(products.read_small(path, MAX_PNG))
 
 
+def collect_partial_root_attachment(exported, destination):
+    """Retain one exact initial-stage attachment without qualifying interaction."""
+    exported, destination = Path(exported), Path(destination)
+    if (not exported.is_absolute() or any(path.is_symlink() for path in (exported, *exported.parents)) or
+            not destination.is_absolute() or destination.name != 'root-light.png' or
+            any(path.is_symlink() for path in (destination, *destination.parents)) or destination.exists() or
+            exported.resolve(strict=True) != exported or destination.parent.resolve(strict=True) != destination.parent):
+        raise DriverError('ui_partial_root_path_invalid')
+    def unique_object(pairs):
+        result = {}
+        for key, value in pairs:
+            if key in result: raise DriverError('ui_partial_root_manifest_invalid')
+            result[key] = value
+        return result
+    value = json.loads(products.read_small(products.fixed_path(exported, 'manifest.json'), MAX_PLAN), object_pairs_hook=unique_object)
+    if not isinstance(value, (dict, list)): raise DriverError('ui_partial_root_manifest_invalid')
+    found, visited = [], 0
+    def walk(node, depth=0):
+        nonlocal visited
+        visited += 1
+        if visited > 20000 or depth > 32: raise DriverError('ui_partial_root_manifest_invalid')
+        if isinstance(node, dict):
+            configured = node.get('configuredName')
+            if isinstance(configured, str) and configured.startswith('ayu-root-light') and configured != 'ayu-root-light':
+                raise DriverError('ui_partial_root_alias_invalid')
+            if configured == 'ayu-root-light':
+                name = node.get('exportedFileName')
+                if not isinstance(name, str): raise DriverError('ui_partial_root_manifest_invalid')
+                found.append(products.fixed_path(exported, name))
+            for child in node.values():
+                if isinstance(child, (dict, list)): walk(child, depth + 1)
+        elif isinstance(node, list):
+            for child in node: walk(child, depth + 1)
+    walk(value)
+    if not found: raise PartialRootUnavailable('ui_partial_root_unavailable')
+    if len(found) != 1: raise DriverError('ui_partial_root_not_unique')
+    source = found[0]
+    info = source.stat(follow_symlinks=False)
+    if source.suffix.lower() != '.png' or not stat.S_ISREG(info.st_mode) or info.st_nlink != 1:
+        raise DriverError('ui_partial_root_path_invalid')
+    data = products.read_small(source, MAX_PNG)
+    geometry = png_geometry(data)
+    digest = hashlib.sha256(data).hexdigest()
+    descriptor = os.open(destination, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+    with os.fdopen(descriptor, 'wb') as file:
+        os.fchmod(file.fileno(), 0o600)
+        file.write(data)
+    copied = products.read_small(destination, MAX_PNG)
+    if len(copied) != len(data) or hashlib.sha256(copied).hexdigest() != digest:
+        raise DriverError('ui_partial_root_copy_changed')
+    return {'filename': 'root-light.png', 'bytes': len(data), 'sha256': digest, **geometry}
+
+
 def execute(output=OUTPUT, root=None, command=retained.ui_native_command, popen=subprocess.Popen, *, interaction=False):
     if type(interaction) is not bool: raise DriverError('ui_profile_invalid')
     root, output = retained.location(output, root); head, count = retained.checkout(root)
@@ -436,10 +494,20 @@ def execute(output=OUTPUT, root=None, command=retained.ui_native_command, popen=
                         report['root_observation'] = geometry; report['screenshot_origin'] = 'xctestAttachment'
                     report['diagnostic_root_captured'] = True
                 except (OSError, ValueError, RuntimeError):
-                    captured, _ = call('captureDiagnosticRoot', ['xcrun', 'simctl', 'io', identifier, 'screenshot', str(output / 'root-light.png')], 30, False)
-                    if captured and (output / 'root-light.png').is_file() and not (output / 'root-light.png').is_symlink() and 0 < (output / 'root-light.png').stat().st_size <= MAX_PNG:
-                        (output / 'root-light.png').chmod(0o600); report['diagnostic_root_captured'] = True
-                        report['screenshot_origin'] = 'ownedSimulatorDiagnostic'
+                    partial = None
+                    if interaction and exported_okay:
+                        try: partial = collect_partial_root_attachment(exported, output / 'root-light.png')
+                        except PartialRootUnavailable: pass
+                    if partial is not None:
+                        report['partial_root_attachment'] = partial
+                        report['root_observation'] = {key: partial[key] for key in ('width', 'height')}
+                        report['diagnostic_root_captured'] = True
+                        report['screenshot_origin'] = 'xcresultPartialRootAttachment'
+                    else:
+                        captured, _ = call('captureDiagnosticRoot', ['xcrun', 'simctl', 'io', identifier, 'screenshot', str(output / 'root-light.png')], 30, False)
+                        if captured and (output / 'root-light.png').is_file() and not (output / 'root-light.png').is_symlink() and 0 < (output / 'root-light.png').stat().st_size <= MAX_PNG:
+                            (output / 'root-light.png').chmod(0o600); report['diagnostic_root_captured'] = True
+                            report['screenshot_origin'] = 'ownedSimulatorDiagnostic'
                 attest(name, 'postInstalled')
                 report['installed_host_verified'] = report['post_installed_host_verified'] = True
             finally:

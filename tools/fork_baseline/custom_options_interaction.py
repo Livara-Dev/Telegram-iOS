@@ -18,6 +18,64 @@ import tiny_ui_test_project as project
 SOURCE_PATH = 'Tests/CustomeOptionsHost/CustomeOptionsInteractionTests.swift'
 SOURCE_SHA256 = 'd6e84d693255d95638edfa8d4bb5d34719172d153ff93678271adc79171a2de1'
 EXPECTED_CASE = 'CustomeOptionsInteractionTests.testLightDarkSearchNavigationSwitchAndActualResetConfirmation'
+# Run422470 left the switch visibly off after the ordinary AX tap. Its cause is
+# unknown. This fourth substitution is a single-center-tap diagnostic experiment,
+# not an application fix or permission to retry a failed interaction.
+ARCHIVE_TOGGLE_BEFORE = b'''        let archive = app.switches[self.prefix + "toggle.archive"]
+        XCTAssertTrue(archive.isEnabled)
+        archive.tap()
+        XCTAssertEqual(archive.value as? String, "1")'''
+ARCHIVE_TOGGLE_AFTER = b'''        let archive = app.switches[self.prefix + "toggle.archive"]
+        let toggleWindow = app.windows.firstMatch
+        let togglePoint = archive.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5))
+        func validToggleFrame(_ rect: CGRect) -> Bool {
+            return [rect.origin.x, rect.origin.y, rect.width, rect.height, rect.maxX, rect.maxY].allSatisfy { $0.isFinite }
+                && rect.width > 0 && rect.height > 0
+        }
+        func recordArchiveToggle(_ phase: String) -> (safe: Bool, off: Bool, ledgerOn: Bool) {
+            let exists = archive.exists
+            let windowExists = toggleWindow.exists
+            let windowFrame = windowExists ? toggleWindow.frame : .zero
+            let controlFrame = exists ? archive.frame : .zero
+            let windowValid = windowExists && validToggleFrame(windowFrame)
+            let controlValid = exists && validToggleFrame(controlFrame)
+            let enabled = exists && archive.isEnabled
+            let hittable = exists && archive.isHittable
+            let contained = windowValid && controlValid && windowFrame.contains(controlFrame)
+            let center = contained ? togglePoint.screenPoint : .zero
+            let centerValid = contained && center.x.isFinite && center.y.isFinite
+                && controlFrame.contains(center) && windowFrame.contains(center)
+            let value = exists ? archive.value as? String : nil
+            let ledger = app.staticTexts["fixture.ledger"].firstMatch
+            let ledgerValue = ledger.exists ? ledger.value as? String : nil
+            let ledgerOff = ledgerValue?.hasPrefix("No Telegram account; archive off;") == true
+            let ledgerOn = ledgerValue?.hasPrefix("No Telegram account; archive on;") == true
+            let evidence: [String: Any] = ["phase": phase, "exists": exists,
+                "enabled": enabled, "hittable": hittable, "window_valid": windowValid,
+                "control_valid": controlValid, "contained": contained, "center_valid": centerValid,
+                "value_known": value == "0" || value == "1", "is_on": value == "1",
+                "ledger_known": ledgerOff || ledgerOn, "ledger_on": ledgerOn,
+                "window": windowValid ? [windowFrame.minX, windowFrame.minY, windowFrame.width, windowFrame.height] : [],
+                "control": controlValid ? [controlFrame.minX, controlFrame.minY, controlFrame.width, controlFrame.height] : [],
+                "center": centerValid ? [center.x, center.y] : []]
+            if let data = try? JSONSerialization.data(withJSONObject: evidence, options: [.sortedKeys]),
+               let text = String(data: data, encoding: .utf8) { print("AYU_OPTIONS_ARCHIVE_TOGGLE:" + text) }
+            return (contained && centerValid && enabled && hittable, value == "0" && ledgerOff, ledgerOn)
+        }
+        let initialToggle = recordArchiveToggle("before")
+        XCTAssertTrue(initialToggle.safe, "Archive switch must be hittable inside a valid window")
+        XCTAssertEqual(archive.value as? String, "0")
+        XCTAssertTrue(initialToggle.off, "Synthetic callback ledger must initially report archive off")
+        XCTAssertTrue(archive.isEnabled)
+        XCTAssertTrue(archive.isHittable)
+        guard initialToggle.safe && initialToggle.off else { return }
+        togglePoint.tap()
+        let expectedToggle = XCTNSPredicateExpectation(predicate: NSPredicate(format: "value == %@", "1"), object: archive)
+        let toggleOutcome = XCTWaiter.wait(for: [expectedToggle], timeout: 5)
+        let finalToggle = recordArchiveToggle("after")
+        XCTAssertEqual(toggleOutcome, .completed)
+        XCTAssertEqual(archive.value as? String, "1")
+        XCTAssertTrue(finalToggle.ledgerOn, "Synthetic callback ledger must report archive on")'''
 # This is an assertion-contract repair, not a gesture or UIKit-cause fix.
 # Apple's XCUIElement.exists describes hierarchy membership, including offscreen
 # elements. The retained run422439 visibly dismissed the key grid while the
@@ -82,6 +140,7 @@ SUBSTITUTIONS = (
     (b'let app = XCUIApplication()', b'let app = XCUIApplication(bundleIdentifier: "org.livara.ayugram.tests.custome-options")'),
     (b'app.launch()', b'app.activate()'),
     (EMPTY_SEARCH_BEFORE, EMPTY_SEARCH_AFTER),
+    (ARCHIVE_TOGGLE_BEFORE, ARCHIVE_TOGGLE_AFTER),
 )
 STAGES = visual.STAGES
 APPEARANCE_STAGES = tuple(stage for stage in STAGES if stage != 'reset-prompt')
@@ -94,7 +153,7 @@ class InteractionError(ValueError):
 
 
 def derived_source(original):
-    """Apply two app-proxy changes and one explicit reversible hidden-state repair."""
+    """Apply four exact reversible changes, including one physical-toggle experiment."""
     if not isinstance(original, bytes) or hashlib.sha256(original).hexdigest() != SOURCE_SHA256:
         raise InteractionError('interaction_source_digest_mismatch')
     result = original

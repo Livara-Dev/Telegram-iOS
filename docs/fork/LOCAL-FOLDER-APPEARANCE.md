@@ -1,8 +1,10 @@
 # Local folder colors and tags
 
-This is candidate source awaiting the current native tests, full application
-compilation and recorded visual review. No physical-device verification is
-claimed.
+At application source `c55e19c4`, all 21 local folder appearance tests passed
+and the complete application compiled for simulator and device. Authenticated
+folder-tab/editor interaction, recorded visual review and physical-device
+verification remain outstanding. These fixture and build results do not
+establish that running-app experience.
 
 `Custome options → Appearance & Themes → Themes, icons & text size` opens a
 native menu with the existing Telegram appearance screen and Local Folder Colors
@@ -59,17 +61,26 @@ tracking system. Removing an individual override or
 resetting all local overlays does not delete a native folder or change another
 account, archive data or unrelated appearance preferences.
 
-Twenty-one authored native tests use real encrypted Postbox fixtures and the same
-production projection used by tabs/list. They cover persistence/reopen,
+All 21 `LocalFolderAppearanceTests` passed among the **796 TelegramCore cases**
+in macOS run [42160468600](https://github.com/Livara-Dev/Telegram-iOS/actions/runs/42160468600)
+at `c55e19c4f5cbe0d730499035d0a0ef712f6903a9`. The
+[feature evidence record](evidence/feature-verification-c55e19c4.json) retains
+their class count and original suite-log hash. They use real encrypted Postbox
+fixtures and the same production projection used by tabs/list, covering persistence/reopen,
 observation, account isolation, Unicode/document bounds, unsupported documents,
-stale-editor writes, reset and local/server removal/recreation. An additional
+stale-editor writes, reset and local/server removal/recreation. The included
 race test rejects old canonical snapshots after rename and remove/recreate with
 the same ID and different fields, then accepts the replacement's own snapshot.
 A request invariance test compares canonical
 preference bytes, folder order and actual serialized
 `messages.updateDialogFilter` request bytes before/after local changes,
-including a shared folder. These tests require a macOS qualification run; source
-review and the Linux checks do not establish their result.
+including a shared folder. The full device build 82 from that run and separate
+simulator build 1 from [42174474046](https://github.com/Livara-Dev/Telegram-iOS/actions/runs/42174474046)
+compiled the same application source. The original full qualification still
+failed because none of its 41 Projection cases executed. Local fixture passes
+and compilation do not verify account-bound tab/editor interaction or renderer
+appearance; the separate synthetic settings-host results do not establish those
+bindings either.
 The codec regressions exercise every raw color, homogeneous records, duplicate
 IDs, incompatible shapes, an explicitly stored empty document, restoration of
 the last override and on-disk reopen using the real Postbox codec.

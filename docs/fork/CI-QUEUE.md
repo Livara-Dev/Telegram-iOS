@@ -108,6 +108,25 @@ visibility-contract repair above; it does not establish a UIKit or OS root cause
 Dark stages and reset were not reached. The successful root test and device
 package remain separate, preserved results.
 
+Run `42247024748` then passed the actual hosted control and cleaned up both
+native simulators after removing that prerequisite. Projection did run one
+600-second command, but still started zero of 41 cases. At 90 seconds its app
+and data containers were absent; both were unique after timeout, with no launch
+marker. This does not establish the startup cause. The separate UI case reached
+only root-light and failed when its archive switch stayed off after a tap; the
+keyboard repair was not reached. All 229 video frames and ten flagged changes
+were reviewed. The fixture saves synchronously, so no save-delay cause is claimed.
+
+The next UI-only profile has a fourth exact private-source substitution: it
+requires initial off state, a hittable enabled switch wholly inside the window,
+records finite geometry, sends one explicit center-coordinate tap and retains
+the exact on-state assertion plus a synthetic callback confirmation. A fixed
+five-second state wait stays within the existing 600-second command. There are
+no toggle retries. This is an unverified touch-delivery experiment, not a
+confirmed application repair. If full attachment collection is incomplete, one
+strictly validated original root attachment may be retained as diagnostic-only
+`root-light.png`; it cannot satisfy any twelve-stage qualification gate.
+
 Only bounded, explicitly selected diagnostics and visuals are uploaded. Modern
 native JSON is limited to 1 MiB per file, logs to 2 MiB and the combined selection
 to 8 MiB. Settings evidence has separate 1 MiB JSON, 2 MiB log, 16 MiB image,

@@ -134,6 +134,17 @@ repair removes only the separate boot-status prerequisite, keeps explicit boot
 acknowledgement, and cannot claim a completed boot or actual test passes from
 metadata. Both changes require new native results.
 
+The lifecycle change in `42247024748` passed its hosted control and both native
+cleanup gates. Projection still executed zero of 41 cases despite one actual
+600-second command. Post-timeout installed app/data identities were unique, but
+there was no launch marker or verified stack. The separate settings test failed
+its first archive-toggle assertion, before the keyboard change was reached.
+A fourth private-harness substitution records bounded switch geometry and
+requires one center tap, exact on-state and synthetic callback proof; it remains
+a diagnostic experiment. Partial root screenshot recovery is strictly diagnostic
+and cannot satisfy complete UI evidence. No application or captured test code,
+authentication, networking or signing policy changes with these harness updates.
+
 The actual re-sealed control `42176767770` passed strict verification while
 preserving code, signing identity metadata and all XCTest content; it still
 started zero of 41 cases. Post-command simulator queries timed out, but those
