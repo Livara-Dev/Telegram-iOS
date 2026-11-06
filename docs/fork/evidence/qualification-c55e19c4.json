@@ -1,0 +1,185 @@
+{
+  "application_source_commit": "c55e19c4f5cbe0d730499035d0a0ef712f6903a9",
+  "current_startup": {
+    "app_launches": 0,
+    "artifact_id": 13489204643,
+    "derived_device_variant": false,
+    "failure": "commandTimedOut",
+    "inner_references_verified": 5,
+    "install_limit_seconds": 120,
+    "outer_sha256": "20a166cf69ba37fffa8df479ebfba59cad21ad99e40da68c1c2fe17e5b8dbcce",
+    "phase": "installApplication",
+    "run": 42191212317,
+    "screenshots_or_recording": false
+  },
+  "historical_comparison": {
+    "artifacts": {
+      "current": {
+        "artifact_id": 13492400542,
+        "inner_references_verified": 2,
+        "outer_sha256": "d075c73b11e9c9fd6fdc135bd83f61f014bd23acb604508481f0523804b8b93e"
+      },
+      "historical": {
+        "artifact_id": 13490934282,
+        "inner_references_verified": 6,
+        "outer_sha256": "449a5439ec6ad576d590cca640c7c5c8e4e0b552c7d18bb878e4464a57297ef3"
+      }
+    },
+    "comparison_establishes_causality": false,
+    "current_arm_executed": false,
+    "current_arm_skipped_reason": "historical_cleanup_failed",
+    "derived_device_variant": false,
+    "driver": "ea38e6963e6007cd1479ceb6932523ad442ef5c5",
+    "historical_app_launches": 0,
+    "historical_build_number": 54,
+    "historical_delete_timeout_seconds": 30,
+    "historical_install_timeout_seconds": 120,
+    "historical_shutdown_timeout_seconds": 30,
+    "historical_source": "62546557807ee5d8ff468ea3d7d46ce1a090c8cf",
+    "run": 42194046857
+  },
+  "limits": [
+    "Unsigned device compilation is not signing or installation.",
+    "Current-source simulator startup and the physical black-screen repair remain unverified.",
+    "A historical app result cannot qualify the current application.",
+    "Projection started no cases; full qualification remains failed.",
+    "Static dependency resolution does not prove system-library availability or dynamic loading.",
+    "Three source/license materials are not a complete dependency-license certification."
+  ],
+  "native_tests": {
+    "artifact_id": 13482555818,
+    "failed_assertions": 0,
+    "inner_references_verified": 96,
+    "original_full_qualification": "failed",
+    "outer_sha256": "b1994fd195dc85097d8984c0eeb97508ccc60747f847de883636f137ce409f29",
+    "passed": 1473,
+    "projection_cases_unexecuted": 41,
+    "run": 42160468600,
+    "skipped_executed_cases": 0,
+    "suites": {
+      "prebuild-local-archive-playback": {
+        "failed": 0,
+        "passed": 18,
+        "skipped": 0
+      },
+      "prebuild-local-message-archive": {
+        "failed": 0,
+        "passed": 114,
+        "skipped": 0
+      },
+      "prebuild-local-text-filter-projection": {
+        "failed": 0,
+        "passed": 0,
+        "skipped": 0
+      },
+      "prebuild-passcode-core": {
+        "failed": 0,
+        "passed": 16,
+        "skipped": 0
+      },
+      "prebuild-postbox": {
+        "failed": 0,
+        "passed": 201,
+        "skipped": 0
+      },
+      "prebuild-settings-ui": {
+        "failed": 0,
+        "passed": 58,
+        "skipped": 0
+      },
+      "prebuild-telegram-core": {
+        "failed": 0,
+        "passed": 796,
+        "skipped": 0
+      },
+      "prebuild-textformat": {
+        "failed": 0,
+        "passed": 270,
+        "skipped": 0
+      }
+    }
+  },
+  "production_ready": false,
+  "recorded_date": "2026-11-06",
+  "schema": 1,
+  "simulator": {
+    "artifact_id": 13490005243,
+    "build_number": 1,
+    "device_recompiled": false,
+    "full_application_compilation": "passed",
+    "ipa_sha256": "df7a313e263440d92f2ab503e7ee1c1afb328774f6d631b3d052169f2f2e8e10",
+    "outer_sha256": "f6df42768a6c9875a1227015ac6b1080ea5517ea77dff3ac34c54750dd8246ad",
+    "run": 42174474046,
+    "textformat_cases_passed": 270,
+    "textformat_repeats_native_suite": true
+  },
+  "status": "partially_qualified_unsigned_candidate",
+  "tooling": {
+    "application_code_changed_by_tooling": false,
+    "driver": "ea38e6963e6007cd1479ceb6932523ad442ef5c5",
+    "independent_review": "passed",
+    "local_portable_cases_passed": 495,
+    "macos_replay_tooling_cases_passed": 421,
+    "postbox_import_guard": "passed",
+    "source_guard": "passed",
+    "telemetry_source_guard": "passed"
+  },
+  "unsigned_device": {
+    "artifact_id": 13479087810,
+    "artifact_url": "https://github.com/Livara-Dev/Telegram-iOS/actions/runs/42160468600/artifacts/13479087810",
+    "inner_references_verified": 11,
+    "inspection": {
+      "all_bundled_dependencies_resolved": true,
+      "all_macho_platforms": 2,
+      "bundle_executables_checked": 12,
+      "bundle_id_verified": true,
+      "bundled_load_edges_checked": 113,
+      "cpu": "arm64",
+      "dynamic_loading_verified": false,
+      "executables_checked": 7,
+      "framework_count": 5,
+      "mach_o_platform": 2,
+      "physical_device_verified": false,
+      "runtime_verified": false,
+      "signature_verified": false,
+      "signing": "disabled",
+      "supported_platform": "iPhoneOS",
+      "system_library_availability_verified": false,
+      "unsigned_macho_count": 12
+    },
+    "ipa_bytes": 76115074,
+    "ipa_sha256": "addaaf68000d010b84cea0d9798b9a234f43bfabc62845cdbf18fc5f14c4605e",
+    "job": 127704651760,
+    "license_materials": {
+      "COPYING": {
+        "hash_verified": true,
+        "sha256": "b409e426c009da876fc30b51ac3d9d6fcb965fcad27b53710d549b290331a853",
+        "size_bytes": 18062
+      },
+      "CORRESPONDING-SOURCE.md": {
+        "hash_verified": true,
+        "sha256": "a00e3b85ae22ec1a15e1c5ec11032e68bc0bb6782c43f1aa4c8d159c599e71ef",
+        "size_bytes": 2497
+      },
+      "LICENSE-NOTICE.md": {
+        "hash_verified": true,
+        "sha256": "6f1d0a294da126b98b2c188f8893d9e8c0fa4f63785754b6628b604254d53dfb",
+        "size_bytes": 1315
+      }
+    },
+    "metadata": {
+      "CFBundleDisplayName": "AyuGram",
+      "CFBundleIdentifier": "org.livara.ayugram",
+      "CFBundleShortVersionString": "13.1.2",
+      "CFBundleSupportedPlatforms": [
+        "iPhoneOS"
+      ],
+      "CFBundleVersion": "82",
+      "MinimumOSVersion": "15.0",
+      "code_signature_directories": 0,
+      "provisioning_profile_present": false
+    },
+    "outer_sha256": "3c34fa1eaeb260bddd4f16ba12b90ec07b0eec4b62feea8bc1ee3e991f75a4c6",
+    "run": 42160468600
+  }
+}

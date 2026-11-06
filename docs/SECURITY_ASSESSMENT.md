@@ -135,6 +135,21 @@ package found no explanatory platform, signature or missing-resource defect.
 This does not establish the installer's cause or repair the owner's black screen.
 A historical control must retain its own source/proof and cannot satisfy current
 application startup or device-publication gates.
+[Controlled comparison 42194046857](https://github.com/Livara-Dev/Telegram-iOS/actions/runs/42194046857)
+then attempted the older `62546557`/build54 package that had previously launched.
+It also exceeded the 120-second installation limit before any app launch; its
+owned-simulator shutdown and deletion each exceeded 30 seconds. The safety check
+rejected that control and skipped the current arm. Neither app launched in this
+comparison, and no new extension-free device variant was published. Both outer
+artifact hashes and all six historical plus two current checksum references
+were verified. Hosted installation/cleanup therefore remains a verification
+blocker. The underlying cause and the physical black-screen repair are unresolved;
+this is not proof of a global deadlock or a current application defect.
+
+The [machine-readable evidence](fork/evidence/qualification-c55e19c4.json)
+keeps successful compilation/native cases separate from failed or unexecuted
+startup checks. No signature, source, cleanup or publication guard was relaxed.
+
 
 ## Additional source review at `f295948a`
 

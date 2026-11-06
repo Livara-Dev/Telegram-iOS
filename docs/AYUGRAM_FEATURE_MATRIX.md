@@ -244,8 +244,19 @@ binary. No proprietary exteraGram components are copied.
   **120-second** bound. No application launched; no screenshot, recording or
   derived device variant was produced. All five diagnostic checksum references
   were verified. This is an installation blocker, not evidence of an application,
-  authentication or Keychain failure. A fixed historical-versus-current control
-  remains an optional diagnostic, not a replacement for the current startup gate.
+  authentication or Keychain failure. The historical diagnostic below does not
+  replace the current startup gate.
+- The fixed historical comparison
+  [42194046857](https://github.com/Livara-Dev/Telegram-iOS/actions/runs/42194046857)
+  could not reinstall the previously launching `62546557`/build54 package:
+  installation timed out at 120 seconds; shutdown and deletion each timed out
+  at 30 seconds. The safety gate correctly skipped the current arm. Both artifact
+  digests and six historical plus two current checksum references were verified.
+  No app launched, no recording exists and no new extension-free device variant
+  was published. Hosted installation/cleanup blocks verification; no application
+  cause, global deadlock, physical repair or successful current startup is proven.
+  The [bounded evidence record](fork/evidence/qualification-c55e19c4.json) includes
+  the completed full unsigned device candidate and all remaining qualification gates.
 
 ## Core features and native integration
 

@@ -28,6 +28,20 @@ main-app-only device package or physical-device repair is established by that
 run. This original full candidate includes six extensions and still requires
 valid signing before installation. Artifact ZIP and IPA checksums differ.
 
+[Controlled comparison 42194046857](https://github.com/Livara-Dev/Telegram-iOS/actions/runs/42194046857)
+then attempted the older `62546557`/build54 package that had previously launched.
+It also exceeded the 120-second installation limit before any app launch; its
+owned-simulator shutdown and deletion each exceeded 30 seconds. The safety check
+rejected that control and skipped the current arm. Neither app launched in this
+comparison, and no new extension-free device variant was published. Both outer
+artifact hashes and all six historical plus two current checksum references
+were verified. Hosted installation/cleanup therefore remains a verification
+blocker. The underlying cause and the physical black-screen repair are unresolved;
+this is not proof of a global deadlock or a current application defect.
+
+[Machine-readable build and test evidence](fork/evidence/qualification-c55e19c4.json)
+records the exact sources, artifact checksums and remaining gates.
+
 ## Historical build 54 startup control
 
 The older **main-app-only unsigned ARM64 device IPA** is available from
