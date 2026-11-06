@@ -229,23 +229,57 @@ final class LocalMessageFilterTests: XCTestCase {
 
     private func assertUnsupported(_ entry: PreferencesEntry) throws {
         try self.install(entry)
+        XCTAssertEqual(try self.storedBytes(), entry.data)
         try self.fixture.reopen()
         XCTAssertEqual(try self.localArchiveValue(self.context.settings), .unsupported)
-        XCTAssertFalse(try self.localArchiveValue(self.context.setEnabled(false)))
-        XCTAssertFalse(try self.localArchiveValue(self.context.upsertRule(LocalMessageFilterRule(id: "new", text: "offer"))))
-        XCTAssertFalse(try self.localArchiveValue(self.context.removeRule(id: "old")))
-        XCTAssertFalse(try self.localArchiveValue(self.context.setChatExcluded(peerId: self.chatId.toInt64(), excluded: true)))
+        let mutations: [(String, () -> Signal<Bool, NoError>)] = [
+            ("disable", { self.context.setEnabled(false) }),
+            ("enable", { self.context.setEnabled(true) }),
+            ("upsert rule", { self.context.upsertRule(LocalMessageFilterRule(id: "new", text: "offer")) }),
+            ("remove rule", { self.context.removeRule(id: "old") }),
+            ("exclude chat", { self.context.setChatExcluded(peerId: self.chatId.toInt64(), excluded: true) }),
+            ("include chat", { self.context.setChatExcluded(peerId: self.chatId.toInt64(), excluded: false) }),
+            ("hide blocked senders", { self.context.setHideBlockedSenders(true) }),
+            ("show blocked senders", { self.context.setHideBlockedSenders(false) }),
+            ("hide sender", { self.context.setSenderHidden(senderId: self.chatId, hidden: true) }),
+            ("show sender", { self.context.setSenderHidden(senderId: self.chatId, hidden: false) }),
+            ("reset", { self.context.reset() })
+        ]
+        for (name, update) in mutations {
+            XCTAssertFalse(try self.localArchiveValue(update()), name)
+            XCTAssertEqual(try self.storedBytes(), entry.data, name)
+            XCTAssertEqual(try self.localArchiveValue(self.context.settings), .unsupported, name)
+        }
+        try self.fixture.reopen()
+        XCTAssertEqual(try self.localArchiveValue(self.context.settings), .unsupported)
         XCTAssertEqual(try self.storedBytes(), entry.data)
         let message = try self.store("offer")
         XCTAssertEqual(try self.localArchiveValue(self.fixture.postbox.transaction { $0.getMessage(message.id)?.text }), "offer")
     }
 
     func testFutureSettingsRemainReadOnlyAcrossReopen() throws {
-        var object = try XCTUnwrap(JSONSerialization.jsonObject(with: JSONEncoder().encode(LocalMessageFilterSettings())) as? [String: Any])
-        object["schemaVersion"] = 99
-        let future = try JSONDecoder().decode(LocalMessageFilterSettings.self, from: JSONSerialization.data(withJSONObject: object))
-        try self.assertUnsupported(try XCTUnwrap(PreferencesEntry(future)))
-        XCTAssertEqual(LocalMessageFilterEvaluator(settings: future).evaluate(text: "offer", peerId: self.chatId.toInt64()), .unavailable)
+        struct FuturePolicy: Encodable {
+            let schemaVersion: Int32 = 99
+            let enabled = true
+            // An unknown version can change collection shapes. Reject its
+            // version before trying to decode these as current rule objects.
+            let rules: [Int32] = [7]
+            let excludedPeerIds: [Int64] = []
+            let futureField = "preserve this unknown field"
+        }
+        let future = FuturePolicy()
+        XCTAssertThrowsError(try JSONDecoder().decode(LocalMessageFilterSettings.self, from: JSONEncoder().encode(future))) { error in
+            guard case let DecodingError.dataCorrupted(context) = error else {
+                return XCTFail("Unknown filter versions must be rejected before reading their collections")
+            }
+            XCTAssertEqual(context.codingPath.map(\.stringValue), ["schemaVersion"])
+        }
+        // Future data is an opaque Postbox entry, not a current evaluator
+        // snapshot. The account facade must expose .unsupported and keep bytes.
+        let entry = try XCTUnwrap(PreferencesEntry(future))
+        XCTAssertNil(entry.get(LocalMessageFilterSettings.self))
+        XCTAssertEqual(localMessageFilterSettings(entry: entry), .unsupported)
+        try self.assertUnsupported(entry)
     }
 
     func testMalformedSettingsRemainReadOnlyAcrossReopen() throws {
