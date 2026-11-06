@@ -1,0 +1,38 @@
+{
+  "artifact": 13533034081,
+  "case": "ArchiveStoreTests.testBenchmarkSingleAppendAfterTenThousandSnapshots",
+  "host_macos": "27.0.1",
+  "image": "20261104.0337.1",
+  "iphone15pro_performance_verified": false,
+  "physical_device_verified": false,
+  "report": {
+    "benchmark": "archive_single_append",
+    "iphone_performance_claim": false,
+    "latency_threshold": "none",
+    "mean_ms": 1.2307584,
+    "measurement": "monotonic async API roundtrip including XCTest expectation/wait overhead",
+    "samples_ms": [
+      1.258792,
+      1.468,
+      1.279667,
+      1.161417,
+      1.178417,
+      1.284292,
+      1.245708,
+      1.099166,
+      1.224417,
+      1.107708
+    ],
+    "synthetic_seed_records": 10000,
+    "warmup_appends": 1
+  },
+  "run": 42272821047,
+  "schema": 1,
+  "scrolling_memory_battery_and_startup_benchmarked": false,
+  "simulator_device": "iPhone 17",
+  "simulator_runtime": "iOS 27.0",
+  "source_commit": "5d241267735b3958c225681d173853568bab705d",
+  "target": "//submodules/LocalMessageArchive:LocalMessageArchiveTests",
+  "test_log_sha256": "741bc8e37c7b9fd1dc706d0164237ae5c276e1d5d5e39cceb9379d51be840fe0",
+  "xcode": "27.1 (27A9275)"
+}

@@ -48,6 +48,14 @@ The retained c55 Projection verification separately passed 25 filter, 12 archive
 
 Earlier `c55e19c4` had 1,473 passing native cases across Passcode 16, Postbox 201, archive 114, Core 796, encrypted playback 18, TextFormat 270 and SettingsUI 58. Those are earlier-source results. The 18 playback tests decoded generated PNG/JPEG, GIF, PDF, AAC, Ogg/Opus and H.264/audio after encrypted reopen; they do not establish the live capture of the synthetic four-byte timed video/voice fixtures.
 
+The existing archive benchmark in run 42272821047 measured ten warm single-record
+appends after 10,000 synthetic snapshots: **1.2307584 ms mean** for the asynchronous
+API roundtrip, including XCTest expectation/wait overhead. The runner used an
+**iPhone 17 / iOS 27.0 simulator** on hosted macOS 27.0.1, not an iPhone 15 Pro.
+There was no latency threshold or device-performance pass criterion. The
+[exact samples and log hash](evidence/archive-append-5d241267.json) are retained;
+this does not measure scrolling, memory, battery, startup or full-build duration.
+
 ## What the visible Settings verification establishes
 
 The fresh full XCUI case exercised the real renderer in light/dark appearances, search/category navigation, a single archive-switch tap with the callback changing off → on, reset cancellation then confirmation, Ocean palette, reduced motion, bundled-icon permission and cosmetic reset. Twelve frame observations and eleven actual UIKit appearance observations passed. A separate fresh root case in [42239698766](https://github.com/Livara-Dev/Telegram-iOS/actions/runs/42239698766) verified its root/title contract. The 401.079 seconds is the complete `xcodebuild` command duration, not the test-case duration.
