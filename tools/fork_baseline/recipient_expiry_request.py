@@ -16,10 +16,13 @@ REPOSITORY = "Livara-Dev/Telegram-iOS"
 BRANCH = "refs/heads/test/recipient-expiry-worker"
 REQUEST = "ci/recipient-expiry-request.json"
 WORKER = "submodules/TelegramCore/Sources/State/ManagedAutoremoveMessageOperations.swift"
+ACCOUNT = "submodules/TelegramCore/Sources/Account/Account.swift"
 CANDIDATE_PATHS = frozenset({
     ".github/workflows/recipient-expiry-tests.yml",
     "docs/fork/RECIPIENT-EXPIRY-QUALIFICATION.md",
     WORKER,
+    ACCOUNT,
+    "submodules/TelegramCore/Tests/LocalArchiveStartupOrderingTests.swift",
     "submodules/TelegramCore/Tests/LocalArchiveRecipientExpiryWorkerTests.swift",
     "submodules/TelegramCore/Tests/LocalArchiveRecipientMediaFixtures.swift",
     "tools/fork_audit/check.py",
@@ -37,6 +40,25 @@ WORKER_WRAPPER = WORKER_SIGNATURE + b"""    return managedAutoremoveMessageOpera
 // constructing an unrelated live Network/session or calling expiry helpers.
 func managedAutoremoveMessageOperations(postbox: Postbox, isRemove: Bool,
                                         globalTimeDifference: @escaping () -> Double) -> Signal<Void, NoError> {
+"""
+ACCOUNT_ARCHIVE_BLOCK = b"""        if !supplementary {
+            self.localArchive = LocalArchiveCoordinator(
+                postbox: postbox,
+                accountPeerId: peerId,
+                accountId: id.int64,
+                testingEnvironment: testingEnvironment,
+                baseDirectory: URL(fileURLWithPath: basePath, isDirectory: true)
+                    .appendingPathComponent("local-message-archive", isDirectory: true)
+            )
+        }
+"""
+ACCOUNT_OLD_PREFIX = b"        self.automaticCacheEvictionContext = AutomaticCacheEvictionContext(postbox: postbox, accountManager: accountManager)\n\n"
+ACCOUNT_NEW_ANCHOR = b"        let pendingMessageManager = self.pendingMessageManager\n"
+ACCOUNT_ORDER_COMMENT = b"""        // Register the account's pre-unlink owner and subscribe its initial
+        // policy before the managed deletion/expiry workers below subscribe. The same
+        // serial Postbox queue delivers that policy before initial timer heads.
+        // This orders in-memory capture readiness, never Keychain/Store readiness;
+        // mandatory canonical cleanup must still run if protected storage fails.
 """
 
 
@@ -70,9 +92,19 @@ def expected_worker(original):
         needle, b"subscriber.putNext(globalTimeDifference())", 1)
 
 
+def expected_account(original):
+    old_location = ACCOUNT_OLD_PREFIX + ACCOUNT_ARCHIVE_BLOCK
+    if (original.count(ACCOUNT_ARCHIVE_BLOCK) != 1 or original.count(old_location) != 1
+            or original.count(ACCOUNT_NEW_ANCHOR) != 1 or ACCOUNT_ORDER_COMMENT in original):
+        raise RequestError("Pinned Account source shape changed")
+    without_old = original.replace(old_location, ACCOUNT_OLD_PREFIX, 1)
+    return without_old.replace(ACCOUNT_NEW_ANCHOR,
+        ACCOUNT_ORDER_COMMENT + ACCOUNT_ARCHIVE_BLOCK + b"\n" + ACCOUNT_NEW_ANCHOR, 1)
+
+
 def require_candidate_paths(changed):
     if changed != CANDIDATE_PATHS:
-        raise RequestError("Candidate changes differ from the exact reviewed nine-file scope")
+        raise RequestError("Candidate changes differ from the exact reviewed eleven-file scope")
 
 
 def regular_tree_file(root, revision, name):
@@ -92,6 +124,9 @@ def validate_candidate(root, candidate):
     original = regular_tree_file(root, PRODUCTION_SOURCE, WORKER)
     if regular_tree_file(root, candidate, WORKER) != expected_worker(original):
         raise RequestError("Worker differs from the exact reader-only seam")
+    original_account = regular_tree_file(root, PRODUCTION_SOURCE, ACCOUNT)
+    if regular_tree_file(root, candidate, ACCOUNT) != expected_account(original_account):
+        raise RequestError("Account differs from the exact coordinator relocation")
 
 
 def check_worktree(root):
@@ -114,6 +149,8 @@ def check_worktree(root):
             raise RequestError("Reviewed worktree source must be a regular file")
     if (Path(root) / WORKER).read_bytes() != expected_worker(regular_tree_file(root, PRODUCTION_SOURCE, WORKER)):
         raise RequestError("Worker differs from the exact reader-only seam")
+    if (Path(root) / ACCOUNT).read_bytes() != expected_account(regular_tree_file(root, PRODUCTION_SOURCE, ACCOUNT)):
+        raise RequestError("Account differs from the exact coordinator relocation")
     clean = not git(root, "status", "--porcelain", "--untracked-files=all").strip()
     candidate = git(root, "rev-parse", "HEAD").decode().strip() if clean else None
     return report(candidate, None)

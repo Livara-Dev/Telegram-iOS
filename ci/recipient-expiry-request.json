@@ -1,7 +1,0 @@
-{
-  "schemaVersion": 1,
-  "candidate_sha": "a9f97764d9a6e1ef0c576644e724762270d935d9",
-  "production_source_sha": "5d241267735b3958c225681d173853568bab705d",
-  "validation_scope": "core-only",
-  "nonce": "recipient-worker-native-20261106-01"
-}

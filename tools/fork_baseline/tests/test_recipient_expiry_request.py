@@ -26,14 +26,21 @@ class RecipientExpiryRequestTests(unittest.TestCase):
         self.command("config", "user.email", "fixture@example.invalid")
         self.original = (request.WORKER_SIGNATURE + b"subscriber.putNext(network.globalTimeDifference)\n}\n"
                          b"func managedAutoexpireStoryOperations() {\nsubscriber.putNext(network.globalTimeDifference)\n}\n")
+        self.original_account = (b"owned account prefix\n" + request.ACCOUNT_NEW_ANCHOR
+                                 + b"owned worker subscriptions\n" + request.ACCOUNT_OLD_PREFIX
+                                 + request.ACCOUNT_ARCHIVE_BLOCK + b"owned account suffix\n")
         self.write(request.WORKER, self.original)
+        self.write(request.ACCOUNT, self.original_account)
         self.write("unchanged-neighbor.txt", b"pinned\n")
         self.production = self.commit("owned baseline")
         self.pin = patch.object(request, "PRODUCTION_SOURCE", self.production)
         self.pin.start()
         self.addCleanup(self.pin.stop)
         for name in request.CANDIDATE_PATHS:
-            self.write(name, request.expected_worker(self.original) if name == request.WORKER else b"owned reviewed fixture\n")
+            content = (request.expected_worker(self.original) if name == request.WORKER
+                       else request.expected_account(self.original_account) if name == request.ACCOUNT
+                       else b"owned reviewed fixture\n")
+            self.write(name, content)
 
     def command(self, *arguments):
         return subprocess.check_output(["git", "-C", str(self.root), *arguments], stderr=subprocess.DEVNULL).decode().strip()
@@ -60,8 +67,8 @@ class RecipientExpiryRequestTests(unittest.TestCase):
         self.write(request.REQUEST, json.dumps(payload).encode())
         return self.commit("explicit owned request")
 
-    def test_exact_nine_path_worktree_and_committed_candidate_are_accepted(self):
-        self.assertEqual(len(request.CANDIDATE_PATHS), 9)
+    def test_exact_eleven_path_worktree_and_committed_candidate_are_accepted(self):
+        self.assertEqual(len(request.CANDIDATE_PATHS), 11)
         self.assertIsNone(request.check_worktree(self.root)["candidate_sha"])
         self.assertFalse((self.root / request.REQUEST).exists())
         candidate = self.commit("reviewed candidate")
@@ -119,12 +126,29 @@ class RecipientExpiryRequestTests(unittest.TestCase):
     def test_untracked_neighbor_and_missing_reviewed_path_reject(self):
         name = ".github/workflows/recipient-expiry-tests-extra.yml"
         self.write(name, b"unreviewed neighbor\n")
-        with self.assertRaisesRegex(request.RequestError, "nine-file"):
+        with self.assertRaisesRegex(request.RequestError, "eleven-file"):
             request.check_worktree(self.root)
         (self.root / name).unlink()
         (self.root / "docs/fork/RECIPIENT-EXPIRY-QUALIFICATION.md").unlink()
-        with self.assertRaisesRegex(request.RequestError, "nine-file"):
+        with self.assertRaisesRegex(request.RequestError, "eleven-file"):
             request.check_worktree(self.root)
+
+    def test_former_nine_path_scope_cannot_skip_account_or_startup_regressions(self):
+        self.write(request.ACCOUNT, self.original_account)
+        (self.root / "submodules/TelegramCore/Tests/LocalArchiveStartupOrderingTests.swift").unlink()
+        with self.assertRaisesRegex(request.RequestError, "eleven-file"):
+            request.check_worktree(self.root)
+        with self.assertRaisesRegex(request.RequestError, "eleven-file"):
+            request.validate_candidate(self.root, self.commit("incomplete old scope"))
+
+    def test_new_scope_rejects_neighbor_tests_and_unreviewed_account_files(self):
+        for name in ("submodules/TelegramCore/Tests/LocalArchiveStartupOrderingTestsExtra.swift",
+                     "submodules/TelegramCore/Sources/Account/AccountExtra.swift"):
+            with self.subTest(name=name):
+                self.write(name, b"unreviewed neighbor\n")
+                with self.assertRaisesRegex(request.RequestError, "eleven-file"):
+                    request.check_worktree(self.root)
+                (self.root / name).unlink()
 
     def test_committed_neighbor_deletion_and_executable_file_reject(self):
         self.write("unchanged-neighbor.txt", b"unreviewed change\n")
@@ -147,6 +171,50 @@ class RecipientExpiryRequestTests(unittest.TestCase):
                     request.check_worktree(self.root)
         self.write(request.WORKER, expected)
         self.assertEqual(request.expected_worker(self.original).count(b"subscriber.putNext(network.globalTimeDifference)"), 1)
+
+    def test_account_transform_moves_one_identical_block_and_preserves_other_bytes(self):
+        expected = request.expected_account(self.original_account)
+        self.assertEqual(expected.count(request.ACCOUNT_ARCHIVE_BLOCK), 1)
+        self.assertLess(expected.index(request.ACCOUNT_ARCHIVE_BLOCK), expected.index(request.ACCOUNT_NEW_ANCHOR))
+        self.assertNotIn(request.ACCOUNT_OLD_PREFIX + request.ACCOUNT_ARCHIVE_BLOCK, expected)
+        stripped = expected.replace(request.ACCOUNT_ORDER_COMMENT + request.ACCOUNT_ARCHIVE_BLOCK + b"\n", b"", 1)
+        self.assertEqual(stripped, self.original_account.replace(request.ACCOUNT_ARCHIVE_BLOCK, b"", 1))
+
+    def test_account_pinned_shape_rejects_duplicate_changed_arguments_or_old_location(self):
+        for original in (self.original_account + request.ACCOUNT_ARCHIVE_BLOCK,
+                         self.original_account.replace(b"accountId: id.int64", b"accountId: 0"),
+                         self.original_account.replace(request.ACCOUNT_OLD_PREFIX, b"different old location\n"),
+                         self.original_account + request.ACCOUNT_NEW_ANCHOR,
+                         self.original_account + request.ACCOUNT_ORDER_COMMENT):
+            with self.subTest(original=original[-80:]):
+                with self.assertRaisesRegex(request.RequestError, "Pinned Account source shape"):
+                    request.expected_account(original)
+
+    def test_extra_account_mutation_rejects_in_worktree_and_committed_candidate(self):
+        expected = request.expected_account(self.original_account)
+        for altered in (expected + b"// extra Account change\n",
+                        expected.replace(b"accountId: id.int64", b"accountId: 0"),
+                        expected.replace(b"testingEnvironment: testingEnvironment", b"testingEnvironment: false"),
+                        expected.replace(b"owned worker subscriptions", b"changed worker subscriptions"),
+                        expected.replace(b"local-message-archive", b"shared-archive"),
+                        self.original_account):
+            with self.subTest(altered=altered[-80:]):
+                self.write(request.ACCOUNT, altered)
+                # The original unchanged file removes a required scope path;
+                # other variants retain the path but fail exact byte equality.
+                with self.assertRaises(request.RequestError):
+                    request.check_worktree(self.root)
+                with self.assertRaises(request.RequestError):
+                    request.validate_candidate(self.root, self.commit("unreviewed Account variant"))
+        self.write(request.ACCOUNT, expected)
+
+    def test_startup_scope_does_not_relax_worker_timer_or_story_behavior(self):
+        expected = request.expected_worker(self.original)
+        for altered in (expected.replace(b"globalTimeDifference()", b"0"),
+                        expected.replace(b"func managedAutoexpireStoryOperations()", b"func changedStoryWorker()")):
+            self.write(request.WORKER, altered)
+            with self.assertRaisesRegex(request.RequestError, "reader-only seam"):
+                request.validate_candidate(self.root, self.commit("unreviewed worker variant"))
 
     def test_request_or_symlink_present_during_preparation_rejects(self):
         file = self.root / request.REQUEST

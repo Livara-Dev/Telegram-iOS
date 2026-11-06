@@ -1516,6 +1516,22 @@ public class Account {
             }
         }))
         
+        // Register the account's pre-unlink owner and subscribe its initial
+        // policy before the managed deletion/expiry workers below subscribe. The same
+        // serial Postbox queue delivers that policy before initial timer heads.
+        // This orders in-memory capture readiness, never Keychain/Store readiness;
+        // mandatory canonical cleanup must still run if protected storage fails.
+        if !supplementary {
+            self.localArchive = LocalArchiveCoordinator(
+                postbox: postbox,
+                accountPeerId: peerId,
+                accountId: id.int64,
+                testingEnvironment: testingEnvironment,
+                baseDirectory: URL(fileURLWithPath: basePath, isDirectory: true)
+                    .appendingPathComponent("local-message-archive", isDirectory: true)
+            )
+        }
+
         let pendingMessageManager = self.pendingMessageManager
         Logger.shared.log("Account", "Begin watching unsent message ids")
         self.managedOperationsDisposable.add(postbox.unsentMessageIdsView().start(next: { [weak pendingMessageManager] view in
@@ -1656,16 +1672,6 @@ public class Account {
         
         self.automaticCacheEvictionContext = AutomaticCacheEvictionContext(postbox: postbox, accountManager: accountManager)
 
-        if !supplementary {
-            self.localArchive = LocalArchiveCoordinator(
-                postbox: postbox,
-                accountPeerId: peerId,
-                accountId: id.int64,
-                testingEnvironment: testingEnvironment,
-                baseDirectory: URL(fileURLWithPath: basePath, isDirectory: true)
-                    .appendingPathComponent("local-message-archive", isDirectory: true)
-            )
-        }
         
         /*#if DEBUG
         self.managedOperationsDisposable.add(debugFetchAllStickers(account: self).start(completed: {
