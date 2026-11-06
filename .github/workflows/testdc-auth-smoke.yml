@@ -1,0 +1,110 @@
+name: Retained c55 official TestDC authentication only
+
+# Reviewed bounded auth-only workflow; native verification is still pending.
+# Publish reviewed tooling before a separate request
+# commit. Never retarget this workflow to ci/verify-latest or a personal session.
+on:
+  push:
+    branches: [ci/testdc-auth-smoke]
+    paths: [ci/testdc-auth-request.json]
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: ayugram-testdc-auth-c55e19c4f5cbe0d730499035d0a0ef712f6903a9
+  cancel-in-progress: false
+
+jobs:
+  authentication-only:
+    if: github.repository == 'Livara-Dev/Telegram-iOS' && github.ref == 'refs/heads/ci/testdc-auth-smoke'
+    runs-on: xcode-27
+    timeout-minutes: 30
+    steps:
+      - name: Check out exact reviewed tooling without persisted credentials
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          ref: ${{ github.sha }}
+          path: auth-tooling
+          persist-credentials: false
+          fetch-depth: 1
+      - name: Check out exact retained application source for provenance only
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          ref: c55e19c4f5cbe0d730499035d0a0ef712f6903a9
+          path: application-source
+          persist-credentials: false
+          fetch-depth: 1
+          submodules: false
+      - name: Test closed tooling before any native authentication
+        working-directory: auth-tooling/tools/fork_baseline/testdc_auth
+        run: python3 -m unittest -q test_auth_only_driver.py test_ci_gate.py
+      - name: Admit only the fixed source artifact and actually passed startup job
+        env:
+          GH_TOKEN: ${{ github.token }}
+        working-directory: auth-tooling
+        run: |
+          set -euo pipefail
+          umask 077
+          python3 tools/fork_baseline/testdc_auth/ci_gate.py admit \
+            --request ci/testdc-auth-request.json \
+            --review-gate tools/fork_baseline/testdc_auth/review-gate.REVIEWED.json
+          mkdir -m 700 "${RUNNER_TEMP}/ayu-testdc-source" "${RUNNER_TEMP}/ayu-testdc-startup" "${RUNNER_TEMP}/ayu-testdc-closed"
+      - name: Fetch only the original retained simulator artifact
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          repository: Livara-Dev/Telegram-iOS
+          run-id: 42174474046
+          artifact-ids: 13490005243
+          github-token: ${{ github.token }}
+          merge-multiple: true
+          path: ${{ runner.temp }}/ayu-testdc-source
+      - name: Fetch the already verified account-free startup evidence privately
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          repository: Livara-Dev/Telegram-iOS
+          run-id: 42204637743
+          artifact-ids: 13495439062
+          github-token: ${{ github.token }}
+          merge-multiple: true
+          path: ${{ runner.temp }}/ayu-testdc-startup
+      - name: Verify exact retained evidence and attempt one private auth-only test
+        working-directory: auth-tooling
+        run: |
+          set -euo pipefail
+          umask 077
+          unset GH_TOKEN GITHUB_TOKEN CHECKOUT_TOKEN TELEGRAM_API_ID TELEGRAM_API_HASH
+          auth_tools="${GITHUB_WORKSPACE}/auth-tooling/tools/fork_baseline/testdc_auth"
+          python3 "${auth_tools}/ci_gate.py" prepare \
+            --source-artifact "${RUNNER_TEMP}/ayu-testdc-source" \
+            --startup-artifact "${RUNNER_TEMP}/ayu-testdc-startup" \
+            --review-gate "${auth_tools}/review-gate.REVIEWED.json"
+          # Child tool environments are restricted by the driver; no GitHub/API
+          # credentials, loader injection or raw native output reach the console.
+          python3 "${auth_tools}/auth_only_driver.py" --execute \
+            --ipa "${RUNNER_TEMP}/ayu-testdc-source/fork-baseline-simulator/Telegram.ipa" \
+            --artifact-evidence "${auth_tools}/artifact-evidence.json" \
+            --source-root "${GITHUB_WORKSPACE}/application-source" \
+            --review-gate "${auth_tools}/review-gate.REVIEWED.json" \
+            --result "${RUNNER_TEMP}/ayu-testdc-closed/private-result.json"
+      - name: Validate a newly constructed closed result only
+        if: always()
+        working-directory: auth-tooling
+        run: |
+          set -euo pipefail
+          umask 077
+          result_file="${RUNNER_TEMP}/ayu-testdc-closed/private-result.json"
+          if [ -f "${result_file}" ]; then
+            python3 tools/fork_baseline/testdc_auth/ci_gate.py export \
+              --result "${result_file}" --output "${RUNNER_TEMP}/ayu-testdc-closed/public-result.json"
+          fi
+      - name: Publish only the bounded auth-only result
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: c55-official-public-testdc-auth-only-${{ github.run_id }}
+          path: ${{ runner.temp }}/ayu-testdc-closed/public-result.json
+          if-no-files-found: warn
+          retention-days: 7
+          include-hidden-files: false

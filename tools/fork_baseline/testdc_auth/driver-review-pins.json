@@ -1,0 +1,28 @@
+{
+  "application_source": "c55e19c4f5cbe0d730499035d0a0ef712f6903a9",
+  "application_sources": {
+    "submodules/AuthorizationUI/Sources/AuthorizationSequenceCodeEntryController.swift": "28ace7210206d9676f6317299b61c19d33ceba9885d94dca0b879cf1f7f90af8",
+    "submodules/AuthorizationUI/Sources/AuthorizationSequenceCodeEntryControllerNode.swift": "49fa17919ad4bc1e6db293a5783dc9ff1afef44ae6b6cb22ca168e25360deb18",
+    "submodules/AuthorizationUI/Sources/AuthorizationSequencePhoneEntryController.swift": "8393958d45fb2cf9868d6cb2312f1135b46dbd50f7ff4dc58f1543e4845a8633",
+    "submodules/AuthorizationUI/Sources/AuthorizationSequencePhoneEntryControllerNode.swift": "2845c1996dd20ef8d03f9e54b9859f4862905c24e9ac9dbfb4eb8894bb1d02e6",
+    "submodules/CodeInputView/Sources/CodeInputView.swift": "42be6bf52f6992c490c180ba999bdb30df372af43ab3a8b920574818753a19b7",
+    "submodules/PhoneInputNode/Sources/PhoneInputNode.swift": "8a6823b7dab6e955c4fdac0b275314816856696992768883ffa364ffe8f754a5",
+    "submodules/TelegramCore/Sources/Authorization.swift": "9df24f0608613b0f72145c05869065b424d1ce27e8c2521d806b03dbf3f3541f",
+    "submodules/TelegramUI/Sources/AppDelegate.swift": "bb8af22066930d58c60001c45730f7d7fc3e3a37c2d68eacfefe91490ed0bd0f",
+    "submodules/TelegramUI/Sources/ApplicationContext.swift": "d45e444a706e20539bcacc38c58f0b558a284d7fb4b869abc8211025ba524a80",
+    "submodules/TelegramUI/Sources/LocalLaunchDiagnostics.swift": "2b743917bc97c3e10b1b9eb2887d23cc5ac51ab4e2a821151618c0197195b25d",
+    "submodules/TelegramUI/Sources/SharedAccountContext.swift": "34520403d5ca71856e016b6d7b174c49cddd5a3e65b98641090fb33d5072051d"
+  },
+  "ci_sources": {
+    ".github/workflows/testdc-auth-smoke.yml": "133bd048175c0e4196515db4cb64401b90195539a684ca0410e523bcc0d066e4",
+    "tools/fork_baseline/testdc_auth/ci_gate.py": "6f20d0c4c0eea640928710a5b575eaccc40f4c0f8499043b99a4a1f6fe7d685f"
+  },
+  "private_files": {
+    "OfficialTestDCAuthenticationSmoke.swift": "847c320fc997bddea009721aafe536d431d25480e1dd43434db7a8e867ad878c",
+    "private_helpers/ipa_inspect.py": "f47b5f067772111a9f8d8535b405bad7db594e05f5605bc0a7f8b7f1c380bc1f",
+    "private_helpers/preserved_app.py": "3fbf6d736fdc433a3c662b48c0e95c8886d3c61e672159fa9a9825d67e1162f7",
+    "private_helpers/storage_evidence.py": "2bf08455ecb623576e33ac1786a60447776962e3155775fa446dc4d4e28c6e73",
+    "private_helpers/tiny_ui_test_project.py": "4d3c8e85ea874c9fc13ded3241b52fd93444e53837be5009d4337543cfd2ddb9"
+  },
+  "schema": 1
+}

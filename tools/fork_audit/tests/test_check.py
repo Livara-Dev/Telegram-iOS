@@ -106,6 +106,18 @@ class SourceGuardTests(unittest.TestCase):
         self.write("ci/unsigned-device-request-extra.json", '{"schema":1}\n')
         self.assertFailure("Addition outside audit/build scope")
 
+    def test_exact_testdc_auth_workflow_is_tooling_but_neighbor_is_not(self):
+        self.write(".github/workflows/testdc-auth-smoke.yml", "name: Retained TestDC auth only\n")
+        self.assertEqual([], self.failures())
+        self.write(".github/workflows/testdc-auth-smoke-extra.yml", "name: Unreviewed auth workflow\n")
+        self.assertFailure("Addition outside audit/build scope")
+
+    def test_exact_testdc_auth_request_is_tooling_but_neighbor_is_not(self):
+        self.write("ci/testdc-auth-request.json", '{"schema":1}\n')
+        self.assertEqual([], self.failures())
+        self.write("ci/testdc-auth-request-extra.json", '{"schema":1}\n')
+        self.assertFailure("Addition outside audit/build scope")
+
     def test_projection_dispatch_additions_are_exact_paths_only(self):
         self.write(".github/workflows/projection-discovery-dispatch.yml", "name: Fixed native dispatch\n")
         self.write("ci/projection-discovery-request.json", '{"schema":1}\n')

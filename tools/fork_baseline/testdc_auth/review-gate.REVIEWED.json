@@ -1,0 +1,23 @@
+{
+  "application_source": "c55e19c4f5cbe0d730499035d0a0ef712f6903a9",
+  "driver_pins_sha256": "4fbb029c4766469a005171c8de61c9f7beebae58dc0158e74b6c1be3a1caf7a2",
+  "driver_source_sha256": "3c3261dba5a7380f991cf8eb07a49fc28c1ade2213dd29dee4e1e2f68485f5a0",
+  "main_code_unchanged": true,
+  "private_account_store_stable_after_restart": true,
+  "private_selection_seeded": true,
+  "projection_qualification_required": false,
+  "public_testdc_auth_only": true,
+  "reviewed": true,
+  "schema": 2,
+  "simulator_artifact_id": 13490005243,
+  "simulator_ipa_sha256": "df7a313e263440d92f2ab503e7ee1c1afb328774f6d631b3d052169f2f2e8e10",
+  "simulator_source_run": 42174474046,
+  "source_codesign_verified": true,
+  "startup_artifact_id": 13495439062,
+  "startup_artifact_sha256": "aefdac1cb0edc2dff994129577da44490a44045a8e5bcb0ec432fc5eac14aa79",
+  "startup_authorization_launches": 2,
+  "startup_control_job_passed": true,
+  "startup_control_run": 42204637743,
+  "startup_proof_sha256": "baa24592c7d25ff3471f4c48e32e5d1ee9a61f197caa72d8f674aa7eaef85cd2",
+  "startup_result_sha256": "6e3a44f2f8b4222ed4164d4d590163cb38be1d4592c5b383ac0ca6d4700173d7"
+}

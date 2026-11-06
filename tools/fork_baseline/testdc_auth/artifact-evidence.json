@@ -1,0 +1,10 @@
+{
+  "schema": 1,
+  "repository": "Livara-Dev/Telegram-iOS",
+  "source_commit": "c55e19c4f5cbe0d730499035d0a0ef712f6903a9",
+  "source_run": 42174474046,
+  "artifact_id": 13490005243,
+  "ipa_sha256": "df7a313e263440d92f2ab503e7ee1c1afb328774f6d631b3d052169f2f2e8e10",
+  "bundle_id": "org.livara.ayugram",
+  "platform": "iPhoneSimulator"
+}
