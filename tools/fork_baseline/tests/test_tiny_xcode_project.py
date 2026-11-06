@@ -26,6 +26,17 @@ APP_BUNDLE = 'org.livara.ayugram.tests.modern-projection-control'
 TEST_BUNDLE = 'org.livara.ayugram.tests.modern-projection-controlTests'
 ID = re.compile(r'[0-9A-Fa-f]{24}')
 TOKEN = re.compile(r'\s+|/\*.*?\*/|//[^\n]*|"(?:\\.|[^"\\])*"|[{}()=;,]|[^\s{}()=;,"/]+(?:/[^\s{}()=;,"/]*)*', re.S)
+HARNESS_FEATURES = '''#define _POSIX_C_SOURCE 200809L
+#if defined(__APPLE__)
+#define _DARWIN_C_SOURCE 1
+#endif
+'''
+HARNESS_NOFOLLOW_GUARD = '''
+#ifndef O_NOFOLLOW
+#error "The marker harness requires the platform O_NOFOLLOW flag"
+#endif
+_Static_assert(O_NOFOLLOW != 0, "A real no-follow flag is mandatory");
+'''
 
 
 def pbx_document(text):
@@ -349,6 +360,11 @@ class TinyXcodeProjectTests(unittest.TestCase):
 
 
     def test_lifecycle_marker_has_fixed_private_path_and_only_three_ordered_call_sites(self):
+        self.assertEqual(HARNESS_FEATURES.splitlines(), ['#define _POSIX_C_SOURCE 200809L',
+            '#if defined(__APPLE__)', '#define _DARWIN_C_SOURCE 1', '#endif'])
+        self.assertIn('#ifndef O_NOFOLLOW\n#error ', HARNESS_NOFOLLOW_GUARD)
+        self.assertIn('_Static_assert(O_NOFOLLOW != 0,', HARNESS_NOFOLLOW_GUARD)
+        self.assertNotIn('#define O_NOFOLLOW', HARNESS_FEATURES + HARNESS_NOFOLLOW_GUARD)
         self.assertEqual(tiny.MARKER_RELATIVE, 'Library/Caches/ayu-modern-control/stage')
         self.assertEqual(tiny.STAGES, ('mainEntered', 'didFinish', 'sceneVisible'))
         self.generate()
@@ -392,7 +408,7 @@ class PortableMarkerWriterTests(unittest.TestCase):
         if marker is None:
             raise AssertionError('Portable marker writer block is missing')
         headers = '\n'.join(re.findall(r'^#include <[^>]+>$', tiny.APP_SOURCE, re.M))
-        harness = '#define _POSIX_C_SOURCE 200809L\n' + headers + r"""
+        harness = HARNESS_FEATURES + headers + HARNESS_NOFOLLOW_GUARD + r"""
 static int AyuHarnessMode = 0;
 static unsigned int AyuHarnessWriteCalls = 0;
 static ssize_t AyuHarnessWrite(int descriptor, const void *bytes, size_t length) {
