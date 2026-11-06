@@ -38,6 +38,9 @@ DEVICE_TYPE = 'com.apple.CoreSimulator.SimDeviceType.iPhone-17'
 DEVICE_NAME = 'BAZEL_TEST_iPhone 17_27.0'
 OUTPUT = 'build/fork-evidence/projection-replay'
 MAX_OUTPUT = 1024 * 1024
+HOST_LOG_PROCESSES = frozenset({'xcodebuild', 'CoreSimulatorService', 'testmanagerd',
+                                'runningboardd', 'xctest', 'launchd_sim'})
+HOST_LOG_IDENTITIES = simulator_probe.BOOTSTRAP_IDENTITIES
 EXECUTABLES = {'TEST_ROOT/' + products.APP + '/ProjectionTestHost',
                'TEST_ROOT/' + products.APP + '/PlugIns/' + products.TEST + '/ChatLocalTextFilterProjectionTests'}
 # Exact methods in the captured SOURCE, not a count inferred from product files.
@@ -233,7 +236,11 @@ def extract(archive_path, artifact, destination):
 
 
 def child_environment():
-    return {k: v for k, v in os.environ.items() if k in EXPORT_ENVIRONMENT_KEYS}
+    child = {k: v for k, v in os.environ.items() if k in EXPORT_ENVIRONMENT_KEYS}
+    # Match pinned xctestrunner's xcodebuild_test_executor.py. Piped Xcode
+    # startup messages must not remain buffered until after a failed replay.
+    child['NSUnbufferedIO'] = 'YES'
+    return child
 
 
 @contextmanager
@@ -307,26 +314,95 @@ def cases(data):
             if key not in started: invalid_order = True
             outcomes[key] = status
     missing = sorted(set(EXPECTED) - set(outcomes)); unstarted = sorted(set(outcomes) - started)
-    return {'expected': len(EXPECTED), 'passed': sum(v == 'passed' for v in outcomes.values()),
+    return {'expected': len(EXPECTED), 'started': len(started), 'passed': sum(v == 'passed' for v in outcomes.values()),
             'failed': sum(v == 'failed' for v in outcomes.values()), 'crashed': sum(v == 'crashed' for v in outcomes.values()), 'skipped': sum(v == 'skipped' for v in outcomes.values()),
             'missing': missing, 'outcome_without_start': unstarted, 'duplicate_case_events': duplicates,
             'unexpected_case_events': unknown, 'invalid_case_event_order': invalid_order, 'cases': dict(sorted(outcomes.items())),
             'all_expected_passed': not (missing or unstarted or duplicates or unknown or invalid_order) and len(outcomes) == len(EXPECTED) and all(v == 'passed' for v in outcomes.values())}
 
 
+def host_log_predicate(identifier):
+    if not isinstance(identifier, str) or not re.fullmatch(r'[0-9a-fA-F]{8}(?:-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}', identifier):
+        raise ValueError('Invalid owned simulator identifier')
+    processes = ' OR '.join('process == "' + name + '"' for name in sorted(HOST_LOG_PROCESSES))
+    identities = ' OR '.join('eventMessage CONTAINS[c] "' + name + '"' for name in (*HOST_LOG_IDENTITIES, identifier))
+    return '(' + processes + ') AND (' + identities + ')'
+
+
+def host_log_events(data, secrets, identifier):
+    """Select only this synthetic replay's host events, never raw records."""
+    host_log_predicate(identifier)
+    try:
+        if len(data) > simulator_probe.COMMAND_OUTPUT_LIMIT: raise ValueError('Log input limit')
+        records = json.loads(data)
+        if not isinstance(records, list): raise ValueError('Log payload must be an array')
+        events, omitted, retained_bytes = [], max(0, len(records) - 128), 2
+        own_id = re.compile(r'(?<![A-Za-z0-9_-])' + re.escape(identifier) + r'(?![A-Za-z0-9_-])', re.I)
+        for record in records[:128]:
+            if not isinstance(record, dict): continue
+            image = record.get('processImagePath')
+            process = Path(image).name if isinstance(image, str) else record.get('process')
+            message = record.get('eventMessage')
+            if (process not in HOST_LOG_PROCESSES or not isinstance(message, str) or
+                    not (any(identity.casefold() in message.casefold() for identity in HOST_LOG_IDENTITIES)
+                         or own_id.search(message))):
+                continue
+            if len(events) == 32:
+                omitted += 1
+                continue
+            event = {'process': process, 'message': simulator_probe.redact_probe_text(message.encode('utf-8'), secrets)}
+            if record.get('messageType') in {'Default', 'Info', 'Debug', 'Error', 'Fault'}:
+                event['message_type'] = record['messageType']
+            stamp = record.get('timestamp')
+            if isinstance(stamp, str) and re.fullmatch(r'\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}(?:\.\d{1,9})?(?:[+-]\d{4})?', stamp):
+                event['timestamp'] = stamp
+            count = len(json.dumps(event, ensure_ascii=True)) + 2
+            # Reserve room for the closed selection status/count fields too.
+            if retained_bytes + count > 44 * 1024 - 512:
+                omitted += 1
+                continue
+            events.append(event); retained_bytes += count
+        return {'state': 'parsed', 'events': events, 'records_seen': min(len(records), 128), 'records_omitted': omitted}
+    except (ValueError, TypeError, UnicodeError, RecursionError):
+        return {'state': 'invalidPayload', 'events': []}
+
+
+def host_bootstrap_diagnostic(identifier, secrets):
+    # The caller has created and booted this exact fresh device. Host logging
+    # remains available when simctl inventory or its service connection hangs.
+    predicate = host_log_predicate(identifier)
+    status, data = simulator_probe.diagnostic_command(['/usr/bin/log', 'show', '--style', 'json',
+        '--last', '15m', '--info', '--debug', '--predicate', predicate], secrets)
+    selected = (host_log_events(data, secrets, identifier) if status['status'] == 'completed'
+                else {'state': 'unavailable', 'reason': status['status'], 'events': []})
+    return {'command': status, 'selection': selected}
+
+
 def execute(products_root, output, root, command=native_command, probe=simulator_probe.capture):
     output, root = Path(output), Path(root); commands = {}; identifier = None
-    report = {'commands': commands, 'passed': False, 'tests_started': False, 'assertion_retries': 0}
+    report = {'commands': commands, 'passed': False, 'tests_started': False,
+              'xctest_command_attempted': False, 'assertion_retries': 0, 'diagnostics': {}}
     secrets = tuple(v for k, v in os.environ.items() if v and re.search(r'TOKEN|SECRET|PASSWORD|API_ID|API_HASH|AUTH|PRIVATE_KEY|SESSION', k, re.I))
     def call(name, arguments, timeout=30, required=True):
         status, stdout = command(arguments, timeout=timeout); commands[name] = status
         if required and status['status'] != 'completed': raise artifacts.ReplayError('projection_' + name + '_failed')
         return status, stdout
+    def retain_host_log():
+        if identifier is None or not report['xctest_command_attempted'] or 'host_bootstrap_log' in report['diagnostics']:
+            return
+        try:
+            report['diagnostics']['host_bootstrap_log'] = host_bootstrap_diagnostic(identifier, secrets)
+        except (OSError, ValueError, TypeError, KeyError, RuntimeError):
+            report['diagnostics']['host_bootstrap_log'] = {'state': 'unavailable'}
     try:
         _, version = call('xcode', ['xcodebuild', '-version'])
         _, sdk = call('sdk', ['xcrun', '--sdk', 'iphonesimulator', '--show-sdk-version'])
         if version.decode().splitlines()[0] != 'Xcode 27.1' or sdk.strip() != b'27.1':
             raise artifacts.ReplayError('projection_toolchain_mismatch')
+        status, raw = call('first_launch', ['xcodebuild', '-checkFirstLaunchStatus'], timeout=30, required=False)
+        report['diagnostics']['first_launch'] = {'output': simulator_probe.redact_probe_text(raw, secrets)}
+        if status['status'] != 'completed':
+            raise artifacts.ReplayError('projection_first_launch_not_ready')
         _, raw = call('runtimes', ['xcrun', 'simctl', 'list', 'runtimes', '--json'])
         runtimes = json.loads(raw)['runtimes']
         if len([r for r in runtimes if r.get('identifier') == RUNTIME and r.get('version') == '27.0' and r.get('isAvailable') is True]) != 1:
@@ -348,16 +424,20 @@ def execute(products_root, output, root, command=native_command, probe=simulator
             report['already_booted_state_verified'] = True
         with tempfile.TemporaryDirectory(prefix='ayu-projection-results-') as private:
             result = Path(private) / 'test.xcresult'
-            report['tests_started'] = True
+            report['xctest_command_attempted'] = True
             started_at = time.time()
             status, data = call('xctest', ['xcodebuild', 'test-without-building', '-xctestrun', str(Path(products_root) / 'TEST_ROOT/test.xctestrun'),
                 '-destination', 'id=' + identifier, '-destination-timeout', '30', '-derivedDataPath', str(Path(private) / 'derived'),
                 '-resultBundlePath', str(result), '-parallel-testing-enabled', 'NO', '-collect-test-diagnostics=never'], timeout=300, required=False)
-            outcome = cases(data); report['case_counts'] = {k: v for k, v in outcome.items() if k != 'cases'}
+            outcome = cases(data); report['tests_started'] = outcome['started'] > 0
+            report['case_counts'] = {k: v for k, v in outcome.items() if k != 'cases'}
             write(output / 'case-results.json', outcome)
             text = simulator_probe.redact_probe_text(data, secrets)
             write(output / 'test.log', text, text=True)
             report['passed'] = status['status'] == 'completed' and outcome['all_expected_passed']
+        # Snapshot before the optional standalone host launch can add unrelated
+        # later lifecycle events. Failure paths collect once in finally too.
+        retain_host_log()
         # Reuse only the synthetic-host probe, with credentials absent from every
         # nested native command; raw XCResult and simulator files stay private.
         with tempfile.TemporaryDirectory(prefix='ayu-projection-probe-') as private:
@@ -370,6 +450,7 @@ def execute(products_root, output, root, command=native_command, probe=simulator
         report['failure'] = str(error) if isinstance(error, artifacts.ReplayError) else 'projection_diagnostic_unavailable'
     finally:
         if identifier is not None:
+            retain_host_log()
             for operation in ('shutdown', 'delete'):
                 try: call(operation, ['xcrun', 'simctl', operation, identifier], timeout=30, required=False)
                 except (OSError, ValueError, TypeError): report['passed'] = False

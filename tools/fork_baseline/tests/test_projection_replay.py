@@ -160,13 +160,14 @@ class ProjectionReplayTests(unittest.TestCase):
         hash_key = 'TELEGRAM_' + 'API_HASH'
         fake_token = 'fixture-github-' + 'only'
         fake_hash = 'fixture-api-' + 'only'
-        with patch.dict(os.environ, {'GH_TOKEN': fake_token, 'GITHUB_TOKEN': 'fixture-other-' + 'only', 'TELEGRAM_API_ID': '999', hash_key: fake_hash, 'SESSION_TOKEN': 'fixture-session-' + 'only', 'AUTHORIZATION': 'fixture-bearer-' + 'only', 'PATH': os.environ['PATH']}):
+        with patch.dict(os.environ, {'GH_TOKEN': fake_token, 'GITHUB_TOKEN': 'fixture-other-' + 'only', 'TELEGRAM_API_ID': '999', hash_key: fake_hash, 'SESSION_TOKEN': 'fixture-session-' + 'only', 'AUTHORIZATION': 'fixture-bearer-' + 'only', 'NSUnbufferedIO': 'NO', 'PATH': os.environ['PATH']}):
             child = replay.child_environment()
+            self.assertEqual(child['NSUnbufferedIO'], 'YES')
             for key in ['GH_TOKEN', 'GITHUB_TOKEN', 'TELEGRAM_API_ID', 'TELEGRAM_API_HASH', 'SESSION_TOKEN', 'AUTHORIZATION']: self.assertNotIn(key, child)
             with replay.clean_environment(): self.assertEqual(dict(os.environ), child)
             self.assertEqual(os.environ['GH_TOKEN'], fake_token)
-            status, data = replay.native_command([sys.executable, '-c', 'import os;print(os.getenv("GH_TOKEN", "absent"))'])
-            self.assertEqual(status['status'], 'completed'); self.assertEqual(data.strip(), b'absent')
+            status, data = replay.native_command([sys.executable, '-c', 'import os;print(os.getenv("GH_TOKEN", "absent"),os.getenv("NSUnbufferedIO", "missing"))'])
+            self.assertEqual(status['status'], 'completed'); self.assertEqual(data.strip(), b'absent YES')
 
     def test_native_command_output_cap_and_timeout_do_not_hang(self):
         with patch.object(replay, 'MAX_OUTPUT', 1024):
@@ -199,11 +200,153 @@ class ProjectionReplayTests(unittest.TestCase):
             result = replay.execute(root, root, root, run, lambda *args: None)
             self.assertFalse(result['passed']); self.assertFalse(any('create' in a for a in calls))
 
+    def test_first_launch_readiness_is_read_only_bounded_and_precedes_device_creation(self):
+        original = replay.native_command
+        secret = 'first-launch-private-sentinel'
+        for mode in ('ready', 'failed', 'timedOut'):
+            with self.subTest(mode=mode), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory); base, calls = self.runner()
+                def run(arguments, timeout=30):
+                    if arguments == ['xcodebuild', '-checkFirstLaunchStatus']:
+                        self.assertEqual(timeout, 30)
+                        calls.append(arguments)
+                        code = 'import sys,time;sys.stdout.write(' + repr(secret + ' /private/first-launch-secret/path') + ');sys.stdout.flush();'
+                        code += 'time.sleep(10)' if mode == 'timedOut' else 'sys.exit(' + ('0' if mode == 'ready' else '1') + ')'
+                        return original([sys.executable, '-c', code], timeout=.1 if mode == 'timedOut' else 2)
+                    return base(arguments, timeout)
+                with patch.dict(os.environ, {'SESSION_TOKEN': secret}), patch.object(replay, 'host_bootstrap_diagnostic', return_value={'state': 'unavailable'}):
+                    result = replay.execute(root, root, root, run, lambda *args: None)
+                self.assertNotIn(secret, json.dumps(result)); self.assertNotIn('/private/first-launch-secret', json.dumps(result))
+                self.assertIn('<REDACTED_CREDENTIAL>', result['diagnostics']['first_launch']['output'])
+                self.assertLessEqual(len(json.dumps(result['diagnostics']['first_launch'])), 17 * 1024)
+                self.assertEqual(result['commands']['first_launch']['status'], {'ready': 'completed', 'failed': 'commandFailed', 'timedOut': 'timedOut'}[mode])
+                self.assertFalse(any('-runFirstLaunch' in args for args in calls))
+                if mode == 'ready':
+                    self.assertTrue(result['passed'])
+                    self.assertLess(calls.index(['xcodebuild', '-checkFirstLaunchStatus']), next(i for i, args in enumerate(calls) if 'create' in args))
+                else:
+                    self.assertFalse(result['passed']); self.assertFalse(result['xctest_command_attempted']); self.assertFalse(result['tests_started'])
+                    self.assertFalse(any('create' in args or 'test-without-building' in args for args in calls))
+                    self.assertEqual(result['failure'], 'projection_first_launch_not_ready')
+
+    def test_host_log_selection_rechecks_process_and_owned_identity_then_redacts_selected_fields(self):
+        owned = '12345678-1234-1234-1234-123456789ABC'
+        other = '87654321-4321-4321-4321-CBA987654321'
+        secret = 'host-private-sentinel'
+        records = [{'processImagePath': '/private/image-path/CoreSimulatorService',
+            'eventMessage': 'device ' + owned.lower() + ' failed ' + secret + ' /private/host-secret/path',
+            'timestamp': '2026-11-06 12:00:00.123456+0000', 'messageType': 'Error',
+            'environment': secret, 'pid': 123, 'unselected': 'private extra field'}]
+        records += [{'process': 'xcodebuild', 'eventMessage': 'prepare ' + identity} for identity in replay.HOST_LOG_IDENTITIES]
+        records += [
+            {'process': 'unapproved', 'eventMessage': replay.HOST_LOG_IDENTITIES[0] + ' dropped'},
+            {'process': 'CoreSimulatorService', 'eventMessage': 'other device ' + other},
+            {'process': 'xcodebuild', 'eventMessage': 'unrelated error'},
+            {'process': 'CoreSimulatorService', 'eventMessage': 'not exact ' + owned + 'ABC'},
+        ]
+        result = replay.host_log_events(json.dumps(records).encode(), [secret], owned)
+        self.assertEqual(result['state'], 'parsed'); self.assertEqual(len(result['events']), 4)
+        self.assertEqual(result['events'][0]['process'], 'CoreSimulatorService')
+        self.assertEqual(result['events'][0]['message_type'], 'Error')
+        self.assertIn('<REDACTED_ID>', result['events'][0]['message'])
+        self.assertIn('<REDACTED_CREDENTIAL>', result['events'][0]['message'])
+        text = json.dumps(result)
+        for private in (owned, owned.lower(), other, secret, '/private/', 'unrelated error', 'not exact', 'dropped', 'unselected', 'environment'):
+            self.assertNotIn(private, text)
+        self.assertEqual(set(result['events'][0]), {'process', 'message', 'timestamp', 'message_type'})
+
+    def test_host_log_predicate_rejects_unowned_or_injected_identifiers_before_starting_any_command(self):
+        owned = '12345678-1234-1234-1234-123456789ABC'
+        predicate = replay.host_log_predicate(owned)
+        self.assertEqual(replay.HOST_LOG_PROCESSES, {'xcodebuild', 'CoreSimulatorService', 'testmanagerd', 'runningboardd', 'xctest', 'launchd_sim'})
+        self.assertEqual(predicate.count('process == '), 6)
+        self.assertIn(' AND ', predicate)
+        for identity in (*replay.HOST_LOG_IDENTITIES, owned): self.assertIn('eventMessage CONTAINS[c] "' + identity + '"', predicate)
+        for identifier in (None, '', 'other device', owned + '" OR TRUE OR "', owned + '0', '{' + owned + '}'):
+            with self.subTest(identifier=identifier), patch.object(replay.simulator_probe, 'diagnostic_command') as command:
+                with self.assertRaises(ValueError): replay.host_bootstrap_diagnostic(identifier, [])
+                with self.assertRaises(ValueError): replay.host_log_events(b'[]', [], identifier)
+                command.assert_not_called()
+
+    def test_host_log_limits_and_failures_never_publish_raw_records(self):
+        owned = '12345678-1234-1234-1234-123456789ABC'
+        small = {'process': 'xcodebuild', 'eventMessage': 'ProjectionTestHost ready'}
+        result = replay.host_log_events(json.dumps([small] * 200).encode(), [], owned)
+        self.assertEqual(result['records_seen'], 128); self.assertEqual(len(result['events']), 32)
+        self.assertEqual(result['records_omitted'], 168)
+        large = {'process': 'xcodebuild', 'eventMessage': 'ProjectionTestHost ' + 'é' * 7000}
+        result = replay.host_log_events(json.dumps([large] * 4, ensure_ascii=False).encode(), [], owned)
+        self.assertEqual(result['state'], 'parsed'); self.assertGreater(result['records_omitted'], 0)
+        self.assertLessEqual(len(json.dumps(result)), 44 * 1024)
+        for state, data in [('timedOut', b'[{"private":"raw sentinel"'), ('outputLimit', b'raw sentinel' * 8000),
+                            ('commandFailed', b'raw sentinel'), ('completed', b'[{"private":"raw sentinel"')]:
+            with self.subTest(state=state):
+                status = {'status': state, 'exit_code': 0 if state == 'completed' else None,
+                    'timeout': state == 'timedOut', 'output_limit': state == 'outputLimit',
+                    'stdout_bytes': min(len(data), 65536), 'stderr_bytes': 1,
+                    'stderr': replay.simulator_probe.redact_probe_text(('secret ' * 10000).encode(), ['secret'])}
+                with patch.object(replay.simulator_probe, 'diagnostic_command', return_value=(status, data)) as command:
+                    diagnostic = replay.host_bootstrap_diagnostic(owned, ['secret'])
+                command.assert_called_once_with(['/usr/bin/log', 'show', '--style', 'json', '--last', '15m',
+                    '--info', '--debug', '--predicate', replay.host_log_predicate(owned)], ['secret'])
+                self.assertEqual(diagnostic['selection']['events'], [])
+                self.assertEqual(diagnostic['selection']['state'], 'invalidPayload' if state == 'completed' else 'unavailable')
+                self.assertNotIn('raw sentinel', json.dumps(diagnostic)); self.assertLessEqual(len(json.dumps(diagnostic)), 65536)
+        self.assertEqual(replay.host_log_events(b'[]' + b' ' * 65536, [], owned)['state'], 'invalidPayload')
+
+    def test_inventory_timeout_still_collects_host_logs_before_cleanup_without_changing_zero_case_failure(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory); base, calls = self.runner(failure='xctest'); order = []
+            def run(arguments, timeout=30):
+                if 'test-without-building' in arguments: self.assertEqual(timeout, 300)
+                if 'shutdown' in arguments or 'delete' in arguments: order.append(arguments[2])
+                return base(arguments, timeout)
+            def probe(destination, secrets, started_at):
+                order.append('inventoryTimedOut')
+                target = destination / 'build/fork-evidence'; target.mkdir(parents=True)
+                (target / 'projection-launch-probe.json').write_text(json.dumps({'probe_only_not_test_result': True,
+                    'commands': {'devices': {'status': 'timedOut', 'stdout_bytes': 0, 'stderr_bytes': 0}}}))
+            def host_log(arguments, secrets, timeout=20):
+                order.append('hostLog')
+                self.assertEqual(arguments[:2], ['/usr/bin/log', 'show']); self.assertEqual(timeout, 20)
+                data = json.dumps([{'process': 'CoreSimulatorService', 'eventMessage': 'device 12345678-1234-1234-1234-123456789ABC service unavailable'}]).encode()
+                return {'status': 'completed', 'exit_code': 0, 'stderr': ''}, data
+            with patch.object(replay.simulator_probe, 'diagnostic_command', side_effect=host_log):
+                result = replay.execute(root, root, root, run, probe)
+            self.assertEqual(order, ['hostLog', 'inventoryTimedOut', 'shutdown', 'delete'])
+            self.assertFalse(result['passed']); self.assertFalse(result['tests_started']); self.assertTrue(result['xctest_command_attempted'])
+            self.assertEqual(result['case_counts']['started'], 0); self.assertEqual(len(result['case_counts']['missing']), 41)
+            self.assertEqual(result['assertion_retries'], 0); self.assertTrue(result['owned_device_cleanup_completed'])
+            self.assertEqual(sum('test-without-building' in args for args in calls), 1)
+            self.assertEqual(len(result['diagnostics']['host_bootstrap_log']['selection']['events']), 1)
+
+    def test_only_expected_case_entry_sets_tests_started_and_failed_or_partial_run_never_passes(self):
+        key = next(iter(replay.EXPECTED))
+        single_start = ("Test Case '-[Module." + key.replace('.', ' ') + "]' started.\n").encode()
+        for mode, data in [('failedCommand', b''), ('crashed', log('crashed')), ('startedOnly', single_start),
+                           ('unknownOnly', b"Test Case '-[OtherTests testUnknown]' started.\n")]:
+            with self.subTest(mode=mode), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory); base, calls = self.runner()
+                def run(arguments, timeout=30):
+                    status, stdout = base(arguments, timeout)
+                    if 'test-without-building' in arguments:
+                        status.update(status='commandFailed', exit_code=65)
+                        stdout = data
+                    return status, stdout
+                with patch.object(replay, 'host_bootstrap_diagnostic', return_value={'state': 'unavailable'}):
+                    result = replay.execute(root, root, root, run, lambda *args: None)
+                self.assertTrue(result['xctest_command_attempted']); self.assertFalse(result['passed'])
+                self.assertEqual(result['tests_started'], mode in {'crashed', 'startedOnly'})
+                self.assertEqual(result['case_counts']['started'], {'crashed': 41, 'startedOnly': 1}.get(mode, 0))
+                self.assertTrue(result['owned_device_cleanup_completed'])
+
     def test_one_test_invocation_and_owned_device_cleanup_after_timeout(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory); run, calls = self.runner(failure='xctest')
             result = replay.execute(root, root, root, run, lambda *args: None)
             self.assertFalse(result['passed']); self.assertTrue(result['owned_device_cleanup_completed'])
+            self.assertTrue(result['xctest_command_attempted']); self.assertFalse(result['tests_started'])
+            self.assertEqual(result['case_counts']['started'], 0)
             self.assertEqual(sum('test-without-building' in a for a in calls), 1)
             invocation = next(args for args in calls if 'test-without-building' in args)
             # Xcode 27 rejects -test-iterations 1; no repetition option means
@@ -220,6 +363,8 @@ class ProjectionReplayTests(unittest.TestCase):
             root = Path(directory); run, calls = self.runner(boot149=True)
             result = replay.execute(root, root, root, run, lambda *args: None)
             self.assertTrue(result['passed']); self.assertTrue(result['already_booted_state_verified'])
+            self.assertTrue(result['xctest_command_attempted']); self.assertTrue(result['tests_started'])
+            self.assertEqual(result['case_counts']['started'], 41)
             self.assertEqual(result['case_counts']['passed'], 41)
             self.assertEqual(sum('test-without-building' in a for a in calls), 1)
 
