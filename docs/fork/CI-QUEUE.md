@@ -194,6 +194,18 @@ identify the actual test product. Original baseline and captured products remain
 immutable; final execution still stages from the untouched baseline host.
 This repair requires actual macOS validation before claiming the 41 outcomes.
 
+Run `42266084971` at `d7cb7ac4` validated the repaired hosted PlugIns layout:
+the wrapper compiled, signing passed and the separate control passed one case.
+The unchanged retained payload then executed all 41 cases successfully, with a
+passing wrapper and matching observer/public run counters. Installed bytes,
+original products and both cleanup gates passed. This is experimental assertion
+evidence, not a successful qualification: Xcode exited 65, and strict native
+42-case result accounting rejected the case document. The public log clipped
+the final error, so nested-suite warnings alone cannot establish its cause.
+The next diagnostic retains bounded redacted head/tail logs and closed JSON
+structure/rejection counts. Exit status, accepted schemas, all case counters,
+source/signature and cleanup gates remain unchanged.
+
 The retained c55 diagnostic continues on `diagnostics/c55-projection-deferred`.
 Concurrent source-publication/build workflow additions on `integration/ayu-current`
 are preserved on that branch. The isolated diagnostic avoids changing their

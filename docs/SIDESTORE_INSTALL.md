@@ -31,7 +31,10 @@ were used during replay. The app retains its registered API configuration.
 The device and simulator retain separate origins: device82 from `42160468600`,
 simulator1 from `42174474046`, at the same source. Native verification has 1,473
 passing cases across seven suites; Projection still started zero of 41 cases in
-`42204637743`. The original full qualification remains failed. The
+`42204637743`. The original full qualification remains failed. Later experimental run
+`42266084971` observed all 41 Projection methods passing, with integrity and
+cleanup verified, but Xcode exited 65 and strict native result accounting failed.
+That separate assertion evidence does not qualify this IPA or physical launch. The
 [feature evidence](fork/evidence/feature-verification-c55e19c4.json) records the
 fixture coverage and remaining gates; a current service diagnostic is not a
 claim of successful Projection execution or a fully qualified release.

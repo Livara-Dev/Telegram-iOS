@@ -530,63 +530,81 @@ EXPECTED_XCRESULT_CASES = PAYLOAD_CASES | {WRAPPER}
 PAYLOAD_MODULES = frozenset({'ChatLocalTextFilterProjectionTests', 'ChatLocalTextFilterProjectionTestsLib',
     'submodules_TelegramUI_Components_Chat_ChatHistoryEntry_ChatLocalTextFilterProjectionTestsLib'})
 WRAPPER_MODULES = frozenset({'AyuProjectionControlTests'})
+XCRESULT_REJECTIONS = {
+    'invalidStructure': 'structure', 'byteLimit': 'json', 'duplicateKey': 'json', 'invalidJSON': 'json',
+    'nonfiniteJSON': 'json', 'depthLimit': 'json', 'nodeLimit': 'json',
+    'typedObjectMismatch': 'typedValue', 'typedStringMismatch': 'typedValue', 'typedArrayMismatch': 'typedValue',
+    'stringShape': 'typedValue', 'arrayShape': 'typedValue', 'invalidTestNode': 'testNode',
+    'leafHasSubtests': 'testNode', 'unknownTestNodeType': 'testNode', 'unconsumedBranch': 'residualScan',
+    'shadowTestMetadata': 'residualScan', 'referenceShape': 'root', 'referenceCount': 'root',
+}
+XCRESULT_TYPES = ('ActionsInvocationRecord', 'ActionRecord', 'ActionResult', 'Reference',
+    'ActionTestPlanRunSummaries', 'ActionTestPlanRunSummary', 'ActionTestableSummary',
+    'ActionTestSummaryGroup', 'ActionTestMetadata', 'ActionTestSummary', 'String', 'Array')
 
 
 class InvalidXCResult(ValueError):
     """A fixed public error; never carry native source or identifier text."""
+    def __init__(self, message, reason='invalidStructure'):
+        super().__init__(message)
+        self.reason = reason if type(reason) is str and reason in XCRESULT_REJECTIONS else 'invalidStructure'
 
 
-def _invalid():
-    raise InvalidXCResult('invalid_xcresult_structure')
+def _invalid(reason='invalidStructure'):
+    raise InvalidXCResult('invalid_xcresult_structure', reason)
 
 
 def _object_pairs(pairs):
     value = {}
     for key, child in pairs:
-        if key in value: _invalid()
+        if key in value: _invalid('duplicateKey')
         value[key] = child
     return value
 
 
 def _constant(_value):
-    _invalid()
+    _invalid('nonfiniteJSON')
 
 
 def _bounded_xcresult_json(raw):
     if not isinstance(raw, bytes) or not 0 < len(raw) <= MAX_XCRESULT_JSON_BYTES:
-        _invalid()
-    value = json.loads(raw.decode('utf-8'), object_pairs_hook=_object_pairs, parse_constant=_constant)
+        _invalid('byteLimit')
+    try: value = json.loads(raw.decode('utf-8'), object_pairs_hook=_object_pairs, parse_constant=_constant)
+    except InvalidXCResult: raise
+    except (ValueError, UnicodeError, RecursionError, OverflowError):
+        _invalid('invalidJSON')
     stack, dictionaries, nodes = [(value, 0)], [], 0
     while stack:
         child, depth = stack.pop(); nodes += 1
-        if depth > MAX_XCRESULT_DEPTH or nodes > MAX_XCRESULT_NODES: _invalid()
+        if depth > MAX_XCRESULT_DEPTH: _invalid('depthLimit')
+        if nodes > MAX_XCRESULT_NODES: _invalid('nodeLimit')
         if isinstance(child, dict):
             dictionaries.append(child)
             stack.extend((item, depth + 1) for item in child.values())
         elif isinstance(child, list):
             stack.extend((item, depth + 1) for item in child)
         elif isinstance(child, float) and not math.isfinite(child):
-            _invalid()
+            _invalid('nonfiniteJSON')
     return value, dictionaries
 
 
 def _typed(value, name):
     if (not isinstance(value, dict) or not isinstance(value.get('_type'), dict) or
             value['_type'].get('_name') != name):
-        _invalid()
+        _invalid({'String': 'typedStringMismatch', 'Array': 'typedArrayMismatch'}.get(name, 'typedObjectMismatch'))
     return value
 
 
 def _string(value, maximum=512):
     value = _typed(value, 'String')
     if set(value) != {'_type', '_value'} or not isinstance(value['_value'], str) or not 0 < len(value['_value']) <= maximum:
-        _invalid()
+        _invalid('stringShape')
     return value['_value']
 
 
 def _array(value):
     value = _typed(value, 'Array')
-    if set(value) != {'_type', '_values'} or not isinstance(value['_values'], list): _invalid()
+    if set(value) != {'_type', '_values'} or not isinstance(value['_values'], list): _invalid('arrayShape')
     return value['_values']
 
 
@@ -602,11 +620,13 @@ def strict_xcresult_root(raw):
             if 'testsRef' in result:
                 reference = _typed(result['testsRef'], 'Reference')
                 token = _string(reference.get('id'), 256)
-                if re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9_~+/=-]{0,255}', token) is None: _invalid()
+                if re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9_~+/=-]{0,255}', token) is None: _invalid('referenceShape')
                 references.append(token)
         # A shadow/foreign testsRef must not be ignored alongside the real one.
-        if len(references) != 1 or sum('testsRef' in value for value in dictionaries) != 1: _invalid()
+        if len(references) != 1 or sum('testsRef' in value for value in dictionaries) != 1: _invalid('referenceCount')
         return references[0]
+    except InvalidXCResult as error:
+        raise InvalidXCResult('xcresult_root_invalid', error.reason) from None
     except (ValueError, TypeError, KeyError, UnicodeError, RecursionError, OverflowError):
         raise InvalidXCResult('xcresult_root_invalid') from None
 
@@ -633,17 +653,17 @@ def strict_xcresult_cases(raw):
             return _array(owner.get(key))
         def walk(test):
             nonlocal group_failure
-            if not isinstance(test, dict) or not isinstance(test.get('_type'), dict): _invalid()
+            if not isinstance(test, dict) or not isinstance(test.get('_type'), dict): _invalid('invalidTestNode')
             kind = test['_type'].get('_name'); visited.add(id(test))
             if kind == 'ActionTestSummaryGroup':
                 if 'testStatus' in test and _string(test['testStatus']) != 'Success': group_failure = True
                 for child in branch(test, 'subtests'): walk(child)
             elif kind in {'ActionTestMetadata', 'ActionTestSummary'}:
-                if 'subtests' in test: _invalid()
+                if 'subtests' in test: _invalid('leafHasSubtests')
                 identifier, status = _string(test.get('identifier')), _string(test.get('testStatus'))
                 records.append((_canonical_xcresult_identity(identifier), status))
             else:
-                _invalid()
+                _invalid('unknownTestNodeType')
         for summary in branch(root, 'summaries'):
             _typed(summary, 'ActionTestPlanRunSummary')
             for testable in branch(summary, 'testableSummaries'):
@@ -651,10 +671,10 @@ def strict_xcresult_cases(raw):
                 for test in branch(testable, 'tests'): walk(test)
         for value in dictionaries:
             for key in {'summaries', 'testableSummaries', 'tests', 'subtests'} & value.keys():
-                if (id(value), key) not in consumed: _invalid()
+                if (id(value), key) not in consumed: _invalid('unconsumedBranch')
             kind = value.get('_type', {}).get('_name') if isinstance(value.get('_type'), dict) else None
             if (kind in {'ActionTestSummaryGroup', 'ActionTestMetadata', 'ActionTestSummary'} or 'testStatus' in value) and id(value) not in visited:
-                _invalid()
+                _invalid('shadowTestMetadata')
         outcomes = {}
         for key, status in records:
             if key is not None: outcomes.setdefault(key, []).append(status)
@@ -672,8 +692,54 @@ def strict_xcresult_cases(raw):
                 'duplicate_case_events': duplicate, 'nonpassing_group': group_failure,
                 'wrapper_passed': cases.get(WRAPPER) == 'passed', 'payload_passed': sum(cases.get(k) == 'passed' for k in PAYLOAD_CASES),
                 'cases': cases, 'all_expected_passed': len(records) == 42 and not (missing or unknown or duplicate or group_failure) and passed == 42}
+    except InvalidXCResult as error:
+        raise InvalidXCResult('xcresult_cases_invalid', error.reason) from None
     except (ValueError, TypeError, KeyError, UnicodeError, RecursionError, OverflowError):
         raise InvalidXCResult('xcresult_cases_invalid') from None
+
+
+def xcresult_structure(raw, document, rejection=None):
+    """Closed diagnostic counts only; this never determines qualification."""
+    if type(document) is not str or document not in {'root', 'cases'}: raise ValueError('Invalid result diagnostic document')
+    reason = rejection.reason if type(rejection) is InvalidXCResult else None
+    if type(reason) is not str or reason not in XCRESULT_REJECTIONS: reason = 'none'
+    report = {'schema': 1, 'diagnostic_only': True, 'document': document, 'state': 'unavailable',
+        'raw_bytes': len(raw) if isinstance(raw, bytes) and len(raw) <= MAX_XCRESULT_JSON_BYTES else None,
+        'first_rejection': {'stage': XCRESULT_REJECTIONS.get(reason, 'none'), 'reason': reason},
+        'typed_objects': {**{kind: 0 for kind in XCRESULT_TYPES}, 'other': 0},
+        'branches': {key: 0 for key in ('summaries', 'testableSummaries', 'tests', 'subtests')},
+        'test_nodes': {'groups': 0, 'leaves': 0, 'leaves_with_subtests': 0, 'unrecognized_outcomes': 0},
+        'case_identities': {key: 0 for key in ('known', 'unknown', 'missing', 'invalid')},
+        'case_statuses': {key: 0 for key in ('success', 'failure', 'skipped', 'other', 'missing', 'invalid')}}
+    try: _root, dictionaries = _bounded_xcresult_json(raw)
+    except InvalidXCResult as error:
+        if reason == 'none': report['first_rejection'] = {'stage': XCRESULT_REJECTIONS[error.reason], 'reason': error.reason}
+        return report
+    report['state'] = 'observed'
+    def field(value, key):
+        if key not in value: return 'missing', None
+        try: return 'valid', _string(value[key])
+        except InvalidXCResult: return 'invalid', None
+    for value in dictionaries:
+        kind = value.get('_type', {}).get('_name') if isinstance(value.get('_type'), dict) else None
+        if type(kind) is not str: kind = None
+        if '_type' in value:
+            report['typed_objects'][kind if type(kind) is str and kind in XCRESULT_TYPES else 'other'] += 1
+        for key in report['branches']:
+            if key in value: report['branches'][key] += 1
+        if kind == 'ActionTestSummaryGroup': report['test_nodes']['groups'] += 1
+        leaf = kind in {'ActionTestMetadata', 'ActionTestSummary'}
+        if leaf:
+            report['test_nodes']['leaves'] += 1
+            if 'subtests' in value: report['test_nodes']['leaves_with_subtests'] += 1
+        elif 'testStatus' in value and kind != 'ActionTestSummaryGroup':
+            report['test_nodes']['unrecognized_outcomes'] += 1
+        if not leaf and not ('testStatus' in value and kind != 'ActionTestSummaryGroup'): continue
+        state, identifier = field(value, 'identifier')
+        report['case_identities'][state if state != 'valid' else 'known' if _canonical_xcresult_identity(identifier) else 'unknown'] += 1
+        state, status = field(value, 'testStatus')
+        report['case_statuses'][state if state != 'valid' else {'Success': 'success', 'Failure': 'failure', 'Skipped': 'skipped'}.get(status, 'other')] += 1
+    return report
 
 
 def wrapper_product(path):
@@ -926,8 +992,17 @@ def run(output=OUTPUT, root=None, command=projection.native_command):
                 if ref is not None: args += ['--id', ref]
                 call('xcresult_' + label, [sys.executable, '-c', JSON_WRAPPER, str(path), *args], 20)
                 return modern.private_bytes(path, MAX_XCRESULT_JSON_BYTES)
-            reference = strict_xcresult_root(query('root'))
-            return strict_xcresult_cases(query('cases', reference))
+            raw = query('root')
+            try: reference = strict_xcresult_root(raw)
+            except InvalidXCResult as error:
+                return {'state': 'unavailable', 'all_expected_passed': False, 'reason': str(error),
+                    'diagnostic': xcresult_structure(raw, 'root', error)}
+            raw = query('cases', reference)
+            try: result = strict_xcresult_cases(raw)
+            except InvalidXCResult as error:
+                return {'state': 'unavailable', 'all_expected_passed': False, 'reason': str(error),
+                    'diagnostic': xcresult_structure(raw, 'cases', error)}
+            return {'state': 'parsed', **result, 'diagnostic': xcresult_structure(raw, 'cases')}
     def suite(label, plan, host):
         identifier = None
         owned = {'attempted': True, 'expected': 1 if label == 'control' else 41,
@@ -963,11 +1038,11 @@ def run(output=OUTPUT, root=None, command=projection.native_command):
                 owned['live_bootstrap'] = status.pop('bootstrap_diagnostic')
                 counts = modern.control_cases(raw) if label == 'control' else cases(raw)
                 owned.update(counts); owned['tests_started'] = counts['started'] > 0
-                projection.write(output / (label + '-test.log'), simulator_probe.redact_probe_text(raw, secrets), text=True)
+                projection.write(output / (label + '-test.log'), modern.compiler_log(raw, secrets), text=True)
                 passed = status['status'] == 'completed' and status['exit_code'] == 0 and counts['all_expected_passed']
                 if label == 'projection':
                     owned['xcresult'] = {'state': 'unavailable', 'all_expected_passed': False}
-                    try: owned['xcresult'] = {'state': 'parsed', **xcresult(result)}
+                    try: owned['xcresult'] = xcresult(result)
                     except (DeferredError, InvalidXCResult) as error: owned['xcresult']['reason'] = str(error)
                     except Exception: owned['xcresult']['reason'] = 'xcresult_unavailable'
                     owned['post_test_filesystem'] = {'state': 'unavailable', 'captured_after_xcode_exit': True}

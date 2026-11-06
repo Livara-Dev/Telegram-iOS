@@ -200,7 +200,8 @@ def completed_summary():
 
 class DeferredRunnerTests(unittest.TestCase):
     def execute(self, root, mutation=None, control='passed', payload='passed', xc='complete', counter=None,
-                cleanup=False, identity=False, repeated=False, baseline_layout='hostedPlugIns', wrapper_layout='sibling'):
+                cleanup=False, identity=False, repeated=False, baseline_layout='hostedPlugIns', wrapper_layout='sibling',
+                projection_code=None, projection_raw=None):
         output = root / parser.OUTPUT; output.mkdir(parents=True)
         original = captured.captured(root, current=True)
         app = original / 'TEST_ROOT' / parser.modern.products.APP
@@ -313,7 +314,8 @@ class DeferredRunnerTests(unittest.TestCase):
                 directory = container / parser.REPORT_RELATIVE; directory.mkdir(parents=True)
                 (directory / 'stage').write_bytes(b'completed'); (directory / 'summary.json').write_text(json.dumps(summary))
                 if payload == 'timeout': return {'status': 'timedOut', 'exit_code': None, 'timeout': True, 'output_limit': False, 'captured_bytes': 0}, b''
-                return base.complete(native_log(payload), 0 if payload == 'passed' else 65)
+                return base.complete(native_log(payload) if projection_raw is None else projection_raw,
+                    (0 if payload == 'passed' else 65) if projection_code is None else projection_code)
             if parser.JSON_WRAPPER in args:
                 if '-showBuildSettings' in args:
                     if mutation == 'settings_failure': return base.complete(b'private-settings-failure-canary', 65)
@@ -325,7 +327,7 @@ class DeferredRunnerTests(unittest.TestCase):
                         'TARGET_BUILD_DIR': str(selected_wrapper.parent), 'CODESIGNING_FOLDER_PATH': str(selected_wrapper)}}]
                 else:
                     value = invocation() if '--id' not in args else summaries([case(parser.WRAPPER)] if xc == 'wrapperOnly' else None)
-                    if xc == 'malformed': value = {'private-canary': 'raw'}
+                    if xc == 'malformed' or xc == 'casesMalformed' and '--id' in args: value = {'private-canary': 'raw'}
                 Path(args[3]).write_text(json.dumps(value)); Path(args[3]).chmod(0o600)
                 return base.complete()
             return base.complete()
@@ -399,6 +401,36 @@ class DeferredRunnerTests(unittest.TestCase):
             self.assertEqual(report['projection']['passed'], 41); self.assertTrue(report['projection']['actual_run_counters_matched'])
             self.assertFalse(report['passed']); self.assertFalse(report['actual_native_xcresult_verified'])
             self.assertFalse(report['native_xcresult_case_accounting_verified'])
+
+    def test_exit65_and_invalid_native_schema_remain_hard_failures_despite_every_logged_pass_and_counter(self):
+        for code, schema in ((65, 'complete'), (0, 'malformed'), (65, 'malformed'), (65, 'casesMalformed')):
+            with self.subTest(code=code, schema=schema), tempfile.TemporaryDirectory() as temporary:
+                report, _ = self.execute(Path(temporary).resolve(), projection_code=code, xc=schema)
+                self.assertFalse(report['passed']); self.assertFalse(report['native_xcresult_case_accounting_verified'])
+                self.assertTrue(report['projection']['all_expected_passed'])
+                self.assertTrue(report['projection']['actual_run_counters_matched'])
+                self.assertTrue(report['projection']['installed_bytes_match'])
+                self.assertTrue(report['projection']['cleanup_completed'])
+                self.assertEqual(report['commands']['projection_xctest']['exit_code'], code)
+                if schema != 'complete':
+                    actual = report['projection']['xcresult']
+                    self.assertFalse(actual['all_expected_passed'])
+                    self.assertEqual(actual['reason'], 'xcresult_root_invalid' if schema == 'malformed' else 'xcresult_cases_invalid')
+                    self.assertEqual(actual['diagnostic']['first_rejection']['reason'], 'typedObjectMismatch')
+
+    def test_native_log_preserves_redacted_start_and_final_exit_reason_within_existing_cap(self):
+        secret = 'private-diagnostic-secret-' + 'z' * 50
+        # The same literal spans several prospective prefix/tail cut positions;
+        # full-input redaction must happen before either retained selection.
+        raw = b'XCODE_HEAD_MARKER\n' + native_log() + (b'a' * 4000 + secret.encode()) * 16
+        raw += '\nXCODE_FINAL_EXIT_REASON nested-manager-accounting\n'.encode()
+        with tempfile.TemporaryDirectory() as temporary, patch.dict(os.environ, {'AYU_TEST_SECRET': secret}):
+            root = Path(temporary).resolve(); report, _ = self.execute(root, projection_code=65, projection_raw=raw)
+            self.assertFalse(report['passed']); self.assertTrue(report['projection']['all_expected_passed'])
+            log = (root / parser.OUTPUT / 'projection-test.log').read_text()
+            self.assertIn('XCODE_HEAD_MARKER', log); self.assertIn('XCODE_FINAL_EXIT_REASON nested-manager-accounting', log)
+            self.assertNotIn(secret, log); self.assertIn('REDACTED', log)
+            self.assertLessEqual(len(json.dumps(log, ensure_ascii=True).encode()), 16 * 1024)
 
     def test_every_counter_or_runtime_status_failure_remains_failed_despite_complete_native_events(self):
         for counter in ('run_execution_count', 'observer_passed', 'run_total_failure_count', 'run_skip_count'):
@@ -816,6 +848,96 @@ class DeferredBuildLayoutTests(unittest.TestCase):
             (duplicate / parser.modern.CONTROL_TEST).write_bytes(b'changed')
             with self.assertRaisesRegex(parser.DeferredError, '^deferred_duplicate_wrapper_mismatch$'):
                 parser.verify_build_host(context)
+
+
+class DeferredXCResultDiagnosticTests(unittest.TestCase):
+    def diagnostic(self, raw):
+        try: parser.strict_xcresult_cases(raw)
+        except parser.InvalidXCResult as error: return parser.xcresult_structure(raw, 'cases', error)
+        return parser.xcresult_structure(raw, 'cases')
+
+    def assert_private(self, value):
+        public = json.dumps(value, ensure_ascii=True, allow_nan=False)
+        self.assertNotIn('private-canary', public); self.assertNotIn('/private/raw', public)
+        self.assertNotIn('RealisticOpaque', public)
+        self.assertLess(len(public.encode()), 4096)
+        self.assertNotIn('all_expected_passed', value)
+
+    def test_exact_42_accounting_has_only_closed_counts_and_cannot_qualify_independently(self):
+        value = self.diagnostic(encoded(summaries()))
+        self.assertTrue(value['diagnostic_only']); self.assertEqual(value['state'], 'observed')
+        self.assertEqual(value['first_rejection'], {'stage': 'none', 'reason': 'none'})
+        self.assertEqual(value['case_identities'], {'known': 42, 'unknown': 0, 'missing': 0, 'invalid': 0})
+        self.assertEqual(value['case_statuses']['success'], 42); self.assertEqual(value['test_nodes']['leaves'], 42)
+        self.assertEqual(value['typed_objects']['ActionTestMetadata'], 42)
+        self.assert_private(value)
+
+    def test_first_schema_rejection_is_fixed_and_preserved_without_accepting_any_new_shape(self):
+        for mutation, reason in (('leafChildren', 'leafHasSubtests'), ('unknownNode', 'unknownTestNodeType'),
+                                 ('plainIdentifier', 'typedStringMismatch'), ('booleanStatus', 'stringShape'),
+                                 ('unknownBranch', 'unconsumedBranch'), ('shadowLeaf', 'shadowTestMetadata'),
+                                 ('wrongArray', 'typedArrayMismatch'), ('arrayShape', 'arrayShape'),
+                                 ('invalidNode', 'invalidTestNode'), ('privateRootType', 'typedObjectMismatch')):
+            with self.subTest(mutation=mutation):
+                raw = summaries(); group = raw['summaries']['_values'][0]['testableSummaries']['_values'][0]['tests']['_values'][0]
+                leaf = group['subtests']['_values'][0]
+                if mutation == 'leafChildren': leaf['subtests'] = array([])
+                elif mutation == 'unknownNode': leaf['_type']['_name'] = 'private-canary'
+                elif mutation == 'plainIdentifier': leaf['identifier'] = '/private/raw'
+                elif mutation == 'booleanStatus': leaf['testStatus'] = typed('String', _value=True)
+                elif mutation == 'unknownBranch': raw['private-canary'] = {'tests': array([])}
+                elif mutation == 'shadowLeaf': raw['private-canary'] = case('ForeignTests.testPrivate')
+                elif mutation == 'wrongArray': group['subtests'] = []
+                elif mutation == 'arrayShape': group['subtests']['_values'] = '/private/raw'
+                elif mutation == 'invalidNode': group['subtests']['_values'][0] = '/private/raw'
+                else: raw['_type']['_name'] = 'private-canary'
+                value = self.diagnostic(encoded(raw))
+                self.assertEqual(value['state'], 'observed'); self.assertEqual(value['first_rejection']['reason'], reason)
+                self.assertEqual(value['first_rejection']['stage'], parser.XCRESULT_REJECTIONS[reason])
+                self.assert_private(value)
+
+    def test_unknown_identities_statuses_types_and_invalid_values_are_counted_without_retaining_them(self):
+        leaves = [case(parser.WRAPPER), case('PrivateClass.testPrivate', 'private-canary /private/raw')]
+        leaves += [typed('private-canary', identifier=string('/private/raw'), testStatus=string('Failure'))]
+        leaves += [typed('ActionTestMetadata', testStatus=string('Skipped')),
+                   typed('ActionTestSummary', identifier=True),
+                   typed('ActionTestMetadata', identifier=string('private-canary'), testStatus='private-canary')]
+        raw = summaries(leaves); raw['private-canary'] = {'_type': {'_name': {'private-canary': '/private/raw'}}}
+        value = self.diagnostic(encoded(raw))
+        self.assertEqual(value['typed_objects']['other'], 2)
+        self.assertEqual(value['case_identities'], {'known': 1, 'unknown': 3, 'missing': 1, 'invalid': 1})
+        self.assertEqual(value['case_statuses'], {'success': 1, 'failure': 1, 'skipped': 1, 'other': 1, 'missing': 1, 'invalid': 1})
+        self.assertEqual(value['test_nodes']['unrecognized_outcomes'], 1)
+        self.assert_private(value)
+
+    def test_json_duplicates_encoding_and_existing_limits_fail_closed_with_zero_partial_counts(self):
+        deep = {'private-canary': []}; child = deep['private-canary']
+        for _ in range(33): nested = []; child.append(nested); child = nested
+        fixtures = [(b'{"private-canary":', 'invalidJSON'), (b'\xff', 'invalidJSON'),
+                    (b'{"private-canary":1,"private-canary":2}', 'duplicateKey'),
+                    (b'{"private-canary":NaN}', 'nonfiniteJSON'),
+                    (b'{"private-canary":1e999}', 'nonfiniteJSON'),
+                    (b' ' * (parser.MAX_XCRESULT_JSON_BYTES + 1), 'byteLimit'),
+                    (encoded(deep), 'depthLimit'), (encoded({'private-canary': [0] * 4100}), 'nodeLimit')]
+        for raw, reason in fixtures:
+            with self.subTest(reason=reason):
+                value = self.diagnostic(raw)
+                self.assertEqual(value['first_rejection'], {'stage': 'json', 'reason': reason})
+                self.assertEqual(value['state'], 'unavailable')
+                self.assertEqual(sum(value['typed_objects'].values()), 0)
+                self.assertEqual(sum(value['case_identities'].values()), 0)
+                self.assert_private(value)
+
+    def test_root_reference_never_survives_closed_diagnostics_and_rejection_properties_are_validated(self):
+        value = parser.xcresult_structure(encoded(invocation()), 'root')
+        self.assertEqual(value['typed_objects']['Reference'], 1); self.assert_private(value)
+        error = parser.InvalidXCResult('xcresult_cases_invalid', 'private-canary')
+        self.assertEqual(error.reason, 'invalidStructure')
+        error.reason = ['private-canary']
+        value = parser.xcresult_structure(encoded(summaries()), 'cases', error)
+        self.assertEqual(value['first_rejection']['reason'], 'none'); self.assert_private(value)
+        with self.assertRaisesRegex(ValueError, '^Invalid result diagnostic document$'):
+            parser.xcresult_structure(encoded(summaries()), ['/private/raw'])
 
 
 if __name__ == '__main__': unittest.main()
