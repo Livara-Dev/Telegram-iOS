@@ -1,16 +1,145 @@
 """Bounded, closed-schema diagnostics for the synthetic projection host only."""
 import json
+import math
 import os
 from pathlib import Path
 import re
+import selectors
 import stat
 import subprocess
 import time
 from projection_crash import capture as capture_crashes
+from custom_options_smoke import EXPORT_ENVIRONMENT_KEYS, redact_export_stderr
+from launch_smoke import COMMAND_OUTPUT_LIMIT, POST_EXIT_DRAIN_SECONDS
 
 BUNDLE = 'org.livara.ayugram.tests.native-security.projection'
 MARKER = 'Library/Caches/AyuGramNativeTestHost/projection-lifecycle.json'
 STAGES = {'didFinish', 'sceneVisible'}
+BOOTSTRAP_PROCESSES = {'testmanagerd', 'runningboardd', 'xctest', 'launchd_sim'}
+BOOTSTRAP_IDENTITIES = (BUNDLE, 'ProjectionTestHost', 'ChatLocalTextFilterProjectionTests')
+BOOTSTRAP_PREDICATE = (
+    '(process == "testmanagerd" OR process == "runningboardd" OR process == "xctest" OR process == "launchd_sim") AND '
+    '(eventMessage CONTAINS[c] "org.livara.ayugram.tests.native-security.projection" OR '
+    'eventMessage CONTAINS[c] "ProjectionTestHost" OR eventMessage CONTAINS[c] "ChatLocalTextFilterProjectionTests")'
+)
+
+
+def redact_probe_text(data, secrets):
+    # Reuse the existing bounded CI-tool redactor. Explicit caller credentials
+    # may have been removed from this process's environment before diagnostics.
+    text = data[:COMMAND_OUTPUT_LIMIT].decode('utf-8', errors='replace')
+    for value in sorted((value for value in secrets if isinstance(value, str) and value), key=len, reverse=True):
+        text = text.replace(value, '<REDACTED_CREDENTIAL>')
+    text = redact_export_stderr(text.encode('utf-8'), '<UNUSED_SYNTHETIC_RESULT>', '<UNUSED_PRIVATE_EXPORT>')
+    # JSON escaping can expand Unicode/control characters. Bound the retained
+    # representation, not only Python character count or raw pipe input.
+    low, high = 0, len(text)
+    while low < high:
+        middle = (low + high + 1) // 2
+        if len(json.dumps(text[:middle], ensure_ascii=True)) <= 16 * 1024:
+            low = middle
+        else:
+            high = middle - 1
+    return text[:low]
+
+
+def diagnostic_command(arguments, secrets, timeout=20):
+    """Bound only the two fixed read-only probes; never change test outcomes.
+
+    Stdout remains transient for closed-schema log selection. Only redacted
+    stderr and fixed status/counts can be retained on cap/timeout/parse failure.
+    """
+    if type(timeout) not in (int, float) or not math.isfinite(timeout) or not 0 < timeout <= 20:
+        raise ValueError('Invalid diagnostic timeout')
+    process = None
+    captured = {'stdout': bytearray(), 'stderr': bytearray()}
+    status, code = 'unavailable', None
+    deadline = time.monotonic() + timeout
+    try:
+        child = {key: value for key, value in os.environ.items() if key in EXPORT_ENVIRONMENT_KEYS}
+        process = subprocess.Popen(arguments, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=child)
+        with selectors.DefaultSelector() as selector:
+            selector.register(process.stdout, selectors.EVENT_READ, 'stdout')
+            selector.register(process.stderr, selectors.EVENT_READ, 'stderr')
+            drain_deadline = None
+            while selector.get_map():
+                code = process.poll()
+                now = time.monotonic()
+                if code is not None and drain_deadline is None:
+                    drain_deadline = min(deadline, now + POST_EXIT_DRAIN_SECONDS)
+                remaining = (drain_deadline if drain_deadline is not None else deadline) - now
+                if remaining <= 0:
+                    if process.poll() is None: status = 'timedOut'
+                    break
+                for key, _ in selector.select(min(0.05, remaining)):
+                    chunk = os.read(key.fileobj.fileno(), 4096)
+                    if not chunk:
+                        selector.unregister(key.fileobj)
+                        continue
+                    room = COMMAND_OUTPUT_LIMIT - sum(len(value) for value in captured.values())
+                    captured[key.data].extend(chunk[:room])
+                    if len(chunk) > room:
+                        status = 'outputLimit'
+                        break
+                if status == 'outputLimit': break
+        if status not in {'timedOut', 'outputLimit'}:
+            try:
+                code = process.wait(timeout=max(0, deadline - time.monotonic()))
+                status = 'completed' if code == 0 else 'commandFailed'
+            except subprocess.TimeoutExpired:
+                status, code = 'timedOut', process.poll()
+    except OSError:
+        status = 'unavailable'
+    finally:
+        if process is not None:
+            if process.poll() is None:
+                try: process.kill()
+                except OSError: pass
+            try: process.wait(timeout=2)
+            except subprocess.SubprocessError: pass
+            for pipe in (process.stdout, process.stderr):
+                if pipe is not None: pipe.close()
+    return ({'status': status, 'exit_code': code, 'timeout': status == 'timedOut',
+             'output_limit': status == 'outputLimit', 'stdout_bytes': len(captured['stdout']),
+             'stderr_bytes': len(captured['stderr']), 'stderr': redact_probe_text(bytes(captured['stderr']), secrets)},
+            bytes(captured['stdout']))
+
+
+def bootstrap_events(data, secrets):
+    """Keep only fixed synthetic-host messages from the approved processes."""
+    try:
+        if len(data) > COMMAND_OUTPUT_LIMIT: raise ValueError('Log input limit')
+        records = json.loads(data)
+        if not isinstance(records, list): raise ValueError('Log payload must be an array')
+        events, omitted, retained_bytes = [], max(0, len(records) - 128), 2
+        for record in records[:128]:
+            if not isinstance(record, dict): continue
+            image = record.get('processImagePath')
+            process = Path(image).name if isinstance(image, str) else record.get('process')
+            message = record.get('eventMessage')
+            if (process not in BOOTSTRAP_PROCESSES or not isinstance(message, str) or
+                    not any(identity.casefold() in message.casefold() for identity in BOOTSTRAP_IDENTITIES)):
+                continue
+            if len(events) == 32:
+                omitted += 1
+                continue
+            event = {'process': process, 'message': redact_probe_text(message.encode('utf-8'), secrets)}
+            if record.get('messageType') in {'Default', 'Info', 'Debug', 'Error', 'Fault'}:
+                event['message_type'] = record['messageType']
+            stamp = record.get('timestamp')
+            if isinstance(stamp, str) and re.fullmatch(r'\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}(?:\.\d{1,9})?(?:[+-]\d{4})?', stamp):
+                event['timestamp'] = stamp
+            count = len(json.dumps(event, ensure_ascii=True)) + 2
+            # Leave room for the independently capped stderr plus fixed status
+            # fields within the 64 KiB per-command retained evidence budget.
+            if retained_bytes + count > 44 * 1024:
+                omitted += 1
+                continue
+            events.append(event)
+            retained_bytes += count
+        return {'state': 'parsed', 'events': events, 'records_seen': min(len(records), 128), 'records_omitted': omitted}
+    except (ValueError, TypeError, UnicodeError, RecursionError):
+        return {'state': 'invalidPayload', 'events': []}
 
 
 def read_marker(container):
@@ -51,16 +180,13 @@ def read_marker(container):
 
 
 def capture(root, secrets, started_at=None):
-    # Kept for the existing caller contract. No raw command or marker payload is
-    # copied, so redacting an open-ended diagnostic string is no longer needed.
-    del secrets
     root = Path(root)
     destination = root / 'build/fork-evidence'
     report = {'probe_only_not_test_result': True, 'bundle': BUNDLE, 'commands': {}}
     try:
         if (root / 'build').is_symlink() or destination.is_symlink():
             return
-        destination.mkdir(parents=True, exist_ok=True)
+        destination.mkdir(mode=0o700, parents=True, exist_ok=True)
         # Snapshot the failing XCTest host before a standalone launch changes
         # lifecycle state or generates an unrelated later crash report.
         report['crash_summary_before_standalone_launch'] = capture_crashes(started_at)
@@ -93,7 +219,17 @@ def capture(root, secrets, started_at=None):
                     # Capture XCTest's host state before a standalone launch can
                     # create/overwrite its marker and obscure the distinction.
                     report['marker_before_standalone_launch'] = read_marker(data_path)
-                    command('installed_signature', ['/usr/bin/codesign', '--verify', '--strict', '--verbose=2', container])
+                    diagnostics = report['diagnostics'] = {}
+                    signature, _ = diagnostic_command(['/usr/bin/codesign', '--verify', '--strict', '--verbose=2', container], secrets, timeout=10)
+                    diagnostics['installed_signature'] = signature
+                    report['commands']['installed_signature'] = {'exit_code': signature['exit_code']}
+                    log, stdout = diagnostic_command(['xcrun', 'simctl', 'spawn', identifier, 'log', 'show',
+                        '--style', 'json', '--last', '15m', '--info', '--debug', '--predicate', BOOTSTRAP_PREDICATE], secrets)
+                    diagnostics['test_bootstrap_log'] = log
+                    report['commands']['test_bootstrap_log'] = {'exit_code': log['exit_code']}
+                    report['bootstrap_events_before_standalone_launch'] = (
+                        {'state': 'unavailable', 'reason': log['status'], 'events': []}
+                        if log['status'] in {'outputLimit', 'timedOut', 'unavailable'} else bootstrap_events(stdout, secrets))
                     # Strict sealing can differ after XCTest bundle injection;
                     # neither this check nor standalone launch proves test entry.
                     launch_code, _ = command('standalone_host_launch', ['xcrun', 'simctl', 'launch', '--terminate-running-process', identifier, BUNDLE])
@@ -103,7 +239,8 @@ def capture(root, secrets, started_at=None):
                         time.sleep(0.1)
                         marker = read_marker(data_path)
                     report['marker_after_standalone_launch'] = marker
-        with (destination / 'projection-launch-probe.json').open('x') as file:
+        descriptor = os.open(destination / 'projection-launch-probe.json', os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+        with os.fdopen(descriptor, 'w') as file:
             json.dump(report, file, indent=2)
             file.write('\n')
     except (OSError, ValueError, TypeError, KeyError):
