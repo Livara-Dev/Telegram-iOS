@@ -68,8 +68,12 @@ the new synthetic root test nor the historical eight controller and one UI test
 proves authenticated full-app Settings navigation.
 
 The full interaction profile compiles the original SHA-pinned interaction source
-into the same private driver. Only its application bundle initializer and launch
-method change; the original assertions and source file stay intact. One fresh
+into the same private driver. The application bundle initializer and launch
+method change. A third, exact reversible substitution repairs only the empty-search
+keyboard visibility contract: the same drag and five-second wait require absence
+or valid non-hittable, offscreen keyboard geometry, with initially visible geometry
+required before the drag. Invalid geometry fails closed. All other assertions and
+the original source file stay intact. This harness repair still needs native proof. One fresh
 case must supply twelve complete named screenshots, twelve frame records and
 eleven observed UIKit appearance records, in addition to all source, installed
 bundle, recording and cleanup proofs. Its case does not explicitly assert the
@@ -85,9 +89,24 @@ or guaranteed fix. The root UI case later passed in `42239698766` with a measure
 167.376-second whole command and a 23.351-second case, so the longer allowance is
 not established as the cause of that success. Projection's app was absent at
 the early observation but unique after its 300-second timeout; its next controlled
-command has a 600-second bound too. The independent hosted control remains at
-300 seconds. There are no assertion retries or automatic timeout increases.
+command has a 600-second bound too. Run `42243934171` then stalled at the
+separate 240-second boot-status prerequisite before any XCTest command. The next
+profile retains a required explicit boot acknowledgement and identity checks,
+but delegates readiness, installation, launch and testing to each single
+600-second Xcode command. Its destination-discovery allowance is bounded by that
+same command lifetime; an acknowledged boot is never reported as ready. The native
+job has a 35-minute ceiling for the two fixed commands, driver compilation and
+mandatory cleanup. There are no assertion retries or automatic timeout increases.
 Both profiles retain strict pass, immutable-product and owned-cleanup requirements.
+
+Run `42243934171` executed the full settings case and failed its empty-search
+keyboard-existence assertion after three light-stage observations. Installed
+bytes/signature and owned-device cleanup passed. All 743 original video frames
+were reviewed: the interactive drag visibly dismissed the key grid, but XCTest
+continued reporting the keyboard element present. This supports the explicit
+visibility-contract repair above; it does not establish a UIKit or OS root cause.
+Dark stages and reset were not reached. The successful root test and device
+package remain separate, preserved results.
 
 Only bounded, explicitly selected diagnostics and visuals are uploaded. Modern
 native JSON is limited to 1 MiB per file, logs to 2 MiB and the combined selection

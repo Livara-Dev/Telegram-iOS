@@ -350,7 +350,7 @@ class RetainedNativeUIDriverTests(unittest.TestCase):
             self.assertEqual(result['recording_maximum_video_bytes'], 128 * 1024**2)
             self.assertTrue(result['interaction_observations_verified']); self.assertFalse(result['root_title_automatically_verified'])
             self.assertEqual(result['expected_case'], replay.full_interaction.EXPECTED_CASE)
-            self.assertEqual(result['interaction_source_substitution_count'], 2)
+            self.assertEqual(result['interaction_source_substitution_count'], 3)
             self.assertEqual(result['interaction_original_source_sha256'], replay.full_interaction.SOURCE_SHA256)
             self.assertEqual(source.read_bytes(), original); self.assertEqual(result['new_xctest_cases_executed'], 1)
             self.assertEqual(len(result['interaction_screenshots']), 12)

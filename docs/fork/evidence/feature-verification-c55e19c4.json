@@ -175,6 +175,91 @@
       "unsigned": true
     }
   },
+  "current_retained_settings_full_interaction_verification": {
+    "actual_diagnostic_visuals_present": true,
+    "all_original_video_frames_reviewed": true,
+    "application_recompiled": false,
+    "artifact_id": 13516258910,
+    "assertion": "XCTWaiterResult timedOut (2), expected completed (1), while waiting for Keyboard.exists == false",
+    "case_seconds": 72.93,
+    "cleanup_passed": true,
+    "cleanup_results": {
+      "delete_command_completed": true,
+      "owned_uuid_absent": true,
+      "shutdown_completed": true
+    },
+    "dark_reset_cosmetics_stages_reached": false,
+    "driver_codesign_verified": true,
+    "driver_commit": "971e6a816645a2d48db0d64e5f6bbea3ab7a0719",
+    "driver_compiled": true,
+    "expected_appearance_observations": 11,
+    "expected_case": "CustomeOptionsInteractionTests.testLightDarkSearchNavigationSwitchAndActualResetConfirmation",
+    "expected_new_xctest_cases": 1,
+    "expected_recorded_stages": 12,
+    "expected_settings_root_visible": true,
+    "failure": "keyboard_existence_wait_timed_out_after_light_category",
+    "full_appearance_observations_verified": false,
+    "full_frame_observations_verified": false,
+    "full_interaction_completed": false,
+    "full_interaction_executed": true,
+    "independent_visual_review_completed": true,
+    "inner_references_verified": 7,
+    "installation_strategy": "appleXcodeUITestRunner",
+    "job": 127981100179,
+    "logged_in_settings_verified": false,
+    "manual_visual_review": {
+      "all_original_pts_frames_reviewed": true,
+      "app_performance_benchmark": false,
+      "contact_sheets_reviewed": 15,
+      "coordinate_hit_defect_established": false,
+      "dark_stages_reached": false,
+      "fixture_toolbar_is_not_keyboard": true,
+      "keyboard_grid_absent_frame_range": [
+        650,
+        716
+      ],
+      "keyboard_grid_absent_pts_range": [
+        108.558,
+        114.168
+      ],
+      "return_to_home_frame": 717,
+      "reviewer": "root_and_independent_agent",
+      "visual_keyboard_grid_absent": true
+    },
+    "native_command_exit_code": 65,
+    "native_command_timed_out": false,
+    "native_timeout_seconds": 600,
+    "native_xctest_attempted": true,
+    "new_xctest_cases_executed": 1,
+    "new_xctest_cases_failed": 1,
+    "new_xctest_cases_passed": 0,
+    "new_xctest_cases_started": 1,
+    "observed_appearance_stages": [
+      "root-light",
+      "search-light",
+      "category-light"
+    ],
+    "observed_frame_stages": [
+      "root-light",
+      "search-light",
+      "category-light"
+    ],
+    "outer_sha256": "b216ce734d96d5d860b9e73f3ec48856842d549075ee56582527cdcf14136623",
+    "passed": false,
+    "physical_device_verified": false,
+    "post_installed_host_verified": true,
+    "recording_readiness_before_launch": false,
+    "release_qualified": false,
+    "renderer_recompiled": false,
+    "role": "retained_settings_full_interaction",
+    "root_title_automatically_verified": false,
+    "run": 42243934171,
+    "source_and_runner_postflight_unchanged": true,
+    "video_frames": 743,
+    "video_seconds": 213.581667,
+    "whole_native_command_seconds": 260.108,
+    "whole_request_startup_recording_verified": false
+  },
   "current_retained_settings_root_verification": {
     "all_original_video_frames_reviewed": true,
     "application_recompiled": false,
@@ -954,6 +1039,28 @@
     "source": "Actual XCTest started/terminal markers in published test.log files, including markers preceded by concurrent console output; Bazel test.xml wrapper counts are not native method counts.",
     "unique_started_equal_unique_passed": true
   },
+  "pending_diagnostic_repair_verification": {
+    "full_settings_keyboard_contract": {
+      "accepted_states": "keyboard_absent_or_verified_offscreen",
+      "coordinate_change_claimed": false,
+      "expected_appearance_observations_still_required": 11,
+      "expected_stages_still_required": 12,
+      "full_interaction_pass_verified": false,
+      "physical_device_verified": false,
+      "status": "prepared_not_yet_verified_in_native_run"
+    },
+    "native_owned_simulator_lifecycle": {
+      "actual_control_or_projection_cases_executed_with_repair": 0,
+      "bootstatus_not_a_pre_xctest_hard_gate": true,
+      "cleanup_and_integrity_still_required": true,
+      "control_and_projection_xcode_deadline_seconds": 600,
+      "explicit_boot_acknowledgement_required": true,
+      "release_qualified": false,
+      "status": "prepared_not_yet_verified_in_native_run"
+    },
+    "new_ci_run_claimed": false,
+    "portable_checks_are_not_native_success": true
+  },
   "production_ready": false,
   "projection_cases": {
     "ChatLocalArchiveProjectionTests": {
@@ -1476,6 +1583,133 @@
         83.98
       ],
       "whole_native_command_seconds": 167.376,
+      "whole_request_startup_recording_verified": false
+    },
+    {
+      "application_recompiled": false,
+      "artifact_id": 13516294674,
+      "control": {
+        "attempted": true,
+        "boot_request_completed": true,
+        "bootstatus_seconds": 241.239,
+        "bootstatus_timed_out": true,
+        "cleanup_passed": false,
+        "expected": 1,
+        "passed": 0,
+        "started": 0,
+        "xctest_command_attempted": false
+      },
+      "driver_commit": "971e6a816645a2d48db0d64e5f6bbea3ab7a0719",
+      "failure": "modern_boot_failed",
+      "inner_references_verified": 3,
+      "job": 127981099576,
+      "observed_wait_stack_available": false,
+      "original_products_unchanged": true,
+      "outer_sha256": "a7de78e8e95be137972e6cea229fc49d2fbb4e2a25618fac1de18937a541cad4",
+      "passed": false,
+      "phase": "testTinyControl",
+      "physical_device_verified": false,
+      "projection": {
+        "assertion_failures": 0,
+        "attempted": false,
+        "expected": 41,
+        "passed": 0,
+        "started": 0,
+        "timeout_exercised": false,
+        "timeout_seconds": 600,
+        "xctest_command_attempted": false
+      },
+      "projection_tests_recompiled": false,
+      "release_qualified": false,
+      "role": "alternate_xcode_uikit_projection",
+      "run": 42243934171,
+      "startup_cause_verified": false,
+      "tiny_control_compiled": true,
+      "tiny_control_signing_verified": true
+    },
+    {
+      "actual_diagnostic_visuals_present": true,
+      "all_original_video_frames_reviewed": true,
+      "application_recompiled": false,
+      "artifact_id": 13516258910,
+      "assertion": "XCTWaiterResult timedOut (2), expected completed (1), while waiting for Keyboard.exists == false",
+      "case_seconds": 72.93,
+      "cleanup_passed": true,
+      "cleanup_results": {
+        "delete_command_completed": true,
+        "owned_uuid_absent": true,
+        "shutdown_completed": true
+      },
+      "dark_reset_cosmetics_stages_reached": false,
+      "driver_codesign_verified": true,
+      "driver_commit": "971e6a816645a2d48db0d64e5f6bbea3ab7a0719",
+      "driver_compiled": true,
+      "expected_appearance_observations": 11,
+      "expected_case": "CustomeOptionsInteractionTests.testLightDarkSearchNavigationSwitchAndActualResetConfirmation",
+      "expected_new_xctest_cases": 1,
+      "expected_recorded_stages": 12,
+      "expected_settings_root_visible": true,
+      "failure": "keyboard_existence_wait_timed_out_after_light_category",
+      "full_appearance_observations_verified": false,
+      "full_frame_observations_verified": false,
+      "full_interaction_completed": false,
+      "full_interaction_executed": true,
+      "independent_visual_review_completed": true,
+      "inner_references_verified": 7,
+      "installation_strategy": "appleXcodeUITestRunner",
+      "job": 127981100179,
+      "logged_in_settings_verified": false,
+      "manual_visual_review": {
+        "all_original_pts_frames_reviewed": true,
+        "app_performance_benchmark": false,
+        "contact_sheets_reviewed": 15,
+        "coordinate_hit_defect_established": false,
+        "dark_stages_reached": false,
+        "fixture_toolbar_is_not_keyboard": true,
+        "keyboard_grid_absent_frame_range": [
+          650,
+          716
+        ],
+        "keyboard_grid_absent_pts_range": [
+          108.558,
+          114.168
+        ],
+        "return_to_home_frame": 717,
+        "reviewer": "root_and_independent_agent",
+        "visual_keyboard_grid_absent": true
+      },
+      "native_command_exit_code": 65,
+      "native_command_timed_out": false,
+      "native_timeout_seconds": 600,
+      "native_xctest_attempted": true,
+      "new_xctest_cases_executed": 1,
+      "new_xctest_cases_failed": 1,
+      "new_xctest_cases_passed": 0,
+      "new_xctest_cases_started": 1,
+      "observed_appearance_stages": [
+        "root-light",
+        "search-light",
+        "category-light"
+      ],
+      "observed_frame_stages": [
+        "root-light",
+        "search-light",
+        "category-light"
+      ],
+      "outer_sha256": "b216ce734d96d5d860b9e73f3ec48856842d549075ee56582527cdcf14136623",
+      "passed": false,
+      "physical_device_verified": false,
+      "post_installed_host_verified": true,
+      "recording_readiness_before_launch": false,
+      "release_qualified": false,
+      "renderer_recompiled": false,
+      "role": "retained_settings_full_interaction",
+      "root_title_automatically_verified": false,
+      "run": 42243934171,
+      "source_and_runner_postflight_unchanged": true,
+      "video_frames": 743,
+      "video_seconds": 213.581667,
+      "whole_native_command_seconds": 260.108,
       "whole_request_startup_recording_verified": false
     }
   ],

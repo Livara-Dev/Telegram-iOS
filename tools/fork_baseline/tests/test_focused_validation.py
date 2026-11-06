@@ -344,7 +344,7 @@ class FocusedWorkflowRoutingTests(unittest.TestCase):
     def test_probe_replay_and_compilation_paths_are_mutually_exclusive(self):
         section = self.section('native-api-probe')
         self.assertIn('      actions: read', section)
-        self.assertIn('timeout-minutes: 25', section)
+        self.assertIn('timeout-minutes: 35', section)
         steps = {name: body for name, body in re.findall(r'(?ms)^      - name: ([^\n]+)\n(.*?)(?=^      - name: |\Z)', section)}
         replay_steps = ('Test retained Projection replay tooling', 'Replay verified synthetic Projection products without recompilation')
         compile_steps = ('Prepare only the verified synthetic movie fixture', 'Compile the production loader with the host API probe',

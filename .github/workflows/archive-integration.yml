@@ -592,7 +592,7 @@ jobs:
     # Neither mode compiles Telegram, uses API Secrets, or qualifies the app.
     if: github.event_name == 'workflow_dispatch' && (inputs.validation_scope == 'probe' || inputs.validation_scope == 'retained-clean' || (inputs.validation_scope == 'retained-modern' || inputs.validation_scope == 'projection-plan-only' || inputs.validation_scope == 'retained-interaction') || (inputs.validation_scope == 'startup' && inputs.retained_projection_tests))
     runs-on: xcode-27
-    timeout-minutes: 25
+    timeout-minutes: 35
     permissions:
       contents: read
       actions: read

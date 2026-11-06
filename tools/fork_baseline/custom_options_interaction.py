@@ -18,9 +18,70 @@ import tiny_ui_test_project as project
 SOURCE_PATH = 'Tests/CustomeOptionsHost/CustomeOptionsInteractionTests.swift'
 SOURCE_SHA256 = 'd6e84d693255d95638edfa8d4bb5d34719172d153ff93678271adc79171a2de1'
 EXPECTED_CASE = 'CustomeOptionsInteractionTests.testLightDarkSearchNavigationSwitchAndActualResetConfirmation'
+# This is an assertion-contract repair, not a gesture or UIKit-cause fix.
+# Apple's XCUIElement.exists describes hierarchy membership, including offscreen
+# elements. The retained run422439 visibly dismissed the key grid while the
+# empty-search existence-only assertion failed. Keep that exact gesture and its
+# five-second deadline, but require verified hidden geometry. The original
+# repository test and the retained application remain byte-for-byte unchanged.
+EMPTY_SEARCH_BEFORE = b'''        // Empty searches disable the keyboard's Search action. Exercise the
+        // production table's interactive dismissal with stable window-relative
+        // coordinates on this fixed portrait iPhone profile, without querying
+        // keyboard geometry between a visibility check and an animation.
+        let window = app.windows.firstMatch
+        let start = window.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.45))
+        let end = window.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.9))
+        if keyboard.exists {
+            start.press(forDuration: 0.1, thenDragTo: end)
+        }
+        let hidden = XCTNSPredicateExpectation(predicate: isHidden, object: keyboard)
+        XCTAssertEqual(XCTWaiter.wait(for: [hidden], timeout: 5), .completed)'''
+EMPTY_SEARCH_AFTER = b'''        // Empty-search assertion-contract repair: hierarchy membership does
+        // not prove visibility. Preserve the real interactive-dismissal drag
+        // and five-second deadline; invalid geometry must never prove hidden.
+        let window = app.windows.firstMatch
+        func validFrame(_ rect: CGRect) -> Bool {
+            return [rect.origin.x, rect.origin.y, rect.size.width, rect.size.height, rect.maxX, rect.maxY].allSatisfy { $0.isFinite }
+                && rect.size.width > 0 && rect.size.height > 0
+        }
+        func keyboardState() -> (visible: Bool, hidden: Bool, evidence: [String: Any]) {
+            let windowFrame = window.frame
+            let windowValid = validFrame(windowFrame)
+            let exists = keyboard.exists
+            let keyboardFrame = exists ? keyboard.frame : .zero
+            let keyboardValid = exists && validFrame(keyboardFrame)
+            let hittable = exists && keyboard.isHittable
+            let intersectsWindow = windowValid && keyboardValid && !keyboardFrame.intersection(windowFrame).isEmpty
+            let hidden = windowValid && (!exists || (keyboardValid && !hittable && !intersectsWindow))
+            let evidence: [String: Any] = ["exists": exists, "hittable": hittable,
+                "window_valid": windowValid, "keyboard_valid": keyboardValid,
+                "intersects_window": intersectsWindow, "hidden": hidden,
+                "window": windowValid ? [windowFrame.minX, windowFrame.minY, windowFrame.width, windowFrame.height] : [],
+                "keyboard": keyboardValid ? [keyboardFrame.minX, keyboardFrame.minY, keyboardFrame.width, keyboardFrame.height] : []]
+            return (exists && windowValid && keyboardValid && intersectsWindow, hidden, evidence)
+        }
+        func recordKeyboard(_ phase: String, state: (visible: Bool, hidden: Bool, evidence: [String: Any])) {
+            var evidence = state.evidence
+            evidence["phase"] = phase
+            if let data = try? JSONSerialization.data(withJSONObject: evidence, options: [.sortedKeys]),
+               let value = String(data: data, encoding: .utf8) { print("AYU_OPTIONS_KEYBOARD:" + value) }
+        }
+        let initial = keyboardState()
+        recordKeyboard("before", state: initial)
+        XCTAssertTrue(initial.visible, "Keyboard must initially intersect the valid application window")
+        guard initial.visible else { return }
+        let start = window.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.45))
+        let end = window.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.9))
+        start.press(forDuration: 0.1, thenDragTo: end)
+        let hiddenState = NSPredicate { _, _ in keyboardState().hidden }
+        let hidden = XCTNSPredicateExpectation(predicate: hiddenState, object: keyboard)
+        let outcome = XCTWaiter.wait(for: [hidden], timeout: 5)
+        recordKeyboard("after", state: keyboardState())
+        XCTAssertEqual(outcome, .completed)'''
 SUBSTITUTIONS = (
     (b'let app = XCUIApplication()', b'let app = XCUIApplication(bundleIdentifier: "org.livara.ayugram.tests.custome-options")'),
     (b'app.launch()', b'app.activate()'),
+    (EMPTY_SEARCH_BEFORE, EMPTY_SEARCH_AFTER),
 )
 STAGES = visual.STAGES
 APPEARANCE_STAGES = tuple(stage for stage in STAGES if stage != 'reset-prompt')
@@ -33,7 +94,7 @@ class InteractionError(ValueError):
 
 
 def derived_source(original):
-    """Preserve the pinned harness except for two reversible app-proxy changes."""
+    """Apply two app-proxy changes and one explicit reversible hidden-state repair."""
     if not isinstance(original, bytes) or hashlib.sha256(original).hexdigest() != SOURCE_SHA256:
         raise InteractionError('interaction_source_digest_mismatch')
     result = original
@@ -66,7 +127,7 @@ def create_inputs(repository, destination):
     return {**result, 'source': generated, 'expected_case': EXPECTED_CASE,
             'original_source_sha256': SOURCE_SHA256,
             'derived_source_sha256': hashlib.sha256(source).hexdigest(),
-            'source_substitution_count': 2, 'expected_case_count': 1,
+            'source_substitution_count': len(SUBSTITUTIONS), 'expected_case_count': 1,
             'expected_stages': STAGES, 'expected_appearance_stages': APPEARANCE_STAGES,
             'application_recompiled': False, 'renderer_recompiled': False,
             'native_tests_executed': False}

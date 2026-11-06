@@ -294,7 +294,7 @@ class ModernPlanTests(unittest.TestCase):
                 with self.assertRaises(modern.PlanError): modern.private_bytes(path)
 
     def execute_fixture(self, root, control_outcome='passed', mutate=False, readback='correct', entitlements=None, warming='correct',
-                        test_entitlements=None, test_readback='missing', host_input=True, device_metadata='correct', boot_status=0,
+                        test_entitlements=None, test_readback='missing', host_input=True, device_metadata='correct', boot_request='completed',
                         projection_outcome='passed', cleanup_failure=False, mutate_control=False, repeat_uuid=False,
                         post_app_only=False):
         output = root / modern.OUTPUT; output.mkdir(parents=True)
@@ -364,14 +364,18 @@ class ModernPlanTests(unittest.TestCase):
                 created_ids.append(identifier)
                 device = root / 'Library/Developer/CoreSimulator/Devices' / identifier; device.mkdir(parents=True, exist_ok=True)
                 metadata = device / 'device.plist'
-                value = {'UDID': identifier, 'name': args[3], 'deviceType': modern.DEVICE_TYPE, 'runtime': modern.RUNTIME}
+                value = {'UDID': identifier, 'name': args[3], 'deviceType': modern.DEVICE_TYPE, 'runtime': modern.RUNTIME, 'state': 'Shutdown'}
                 if warming == 'wrong_identity': value['name'] = 'other'
                 if device_metadata in {'unsupported', 'fallback_timeout'}: value = {'UDID': identifier}
                 if device_metadata == 'partial_mismatch': value = {'UDID': '00000000-0000-0000-0000-000000000000'}
                 if device_metadata != 'missing': metadata.write_bytes(plistlib.dumps(value))
                 return complete(identifier.encode())
             elif args[:3] == ['xcrun', 'simctl', 'bootstatus']:
-                return complete(code=boot_status)
+                raise AssertionError('A separate readiness RPC must not prevent the actual Xcode test command')
+            elif args[:3] == ['xcrun', 'simctl', 'boot']:
+                if boot_request == 'timeout':
+                    return {'status': 'timedOut', 'exit_code': None, 'timeout': True, 'output_limit': False, 'captured_bytes': 0}, b''
+                return complete(code=1 if boot_request == 'failed' else 0)
             elif args[:4] == ['xcrun', 'simctl', 'list', 'devices']:
                 if device_metadata == 'fallback_timeout':
                     return {'status': 'timedOut', 'exit_code': None, 'timeout': True, 'output_limit': False, 'captured_bytes': 0}, b''
@@ -436,13 +440,17 @@ class ModernPlanTests(unittest.TestCase):
             self.assertEqual(result['projection']['started'], 41); self.assertEqual(result['projection']['passed'], 41)
             self.assertTrue(result['original_products_unchanged']); self.assertTrue(result['projection']['cleanup_completed'])
             self.assertEqual(result['native_projection_timeout_seconds'], 600)
-            self.assertEqual([timeout for args, timeout in calls if 'test-without-building' in args], [300, 600])
+            self.assertEqual(result['native_control_timeout_seconds'], 600)
+            self.assertEqual(result['native_destination_timeout_seconds'], 600)
+            self.assertEqual([timeout for args, timeout in calls if 'test-without-building' in args], [600, 600])
+            self.assertEqual([args[args.index('-destination-timeout') + 1] for args, _ in calls
+                if 'test-without-building' in args], ['600', '600'])
             self.assertEqual(sum('build-for-testing' in args for args, _ in calls), 1)
             for key in ('application_recompiled', 'projection_tests_recompiled', 'physical_device_verified', 'release_qualified'):
                 self.assertFalse(result[key])
             self.assertFalse(any('bazel' in ' '.join(args).lower() for args, _ in calls))
 
-    def test_projection_cold_start_experiment_changes_only_its_budget_and_never_accepts_zero_case_timeout(self):
+    def test_bounded_xcode_readiness_budgets_never_accept_zero_case_timeout_or_change_other_command_limits(self):
         with tempfile.TemporaryDirectory() as directory:
             result, calls = self.execute_fixture(Path(directory).resolve(), projection_outcome='timeout')
             self.assertEqual(result['native_projection_timeout_seconds'], 600)
@@ -451,10 +459,11 @@ class ModernPlanTests(unittest.TestCase):
             self.assertEqual(result['projection']['started'], 0); self.assertEqual(len(result['projection']['missing']), 41)
             self.assertFalse(result['projection']['passed_own_cases']); self.assertFalse(result['passed'])
             self.assertTrue(result['projection']['cleanup_completed']); self.assertTrue(result['original_products_unchanged'])
-            self.assertEqual([timeout for args, timeout in calls if 'test-without-building' in args], [300, 600])
+            self.assertEqual([timeout for args, timeout in calls if 'test-without-building' in args], [600, 600])
             self.assertEqual(sum('test-without-building' in args for args, _ in calls), 2)
             self.assertEqual([timeout for args, timeout in calls if 'build-for-testing' in args], [180])
-            for operation, expected_timeout in (('create', 30), ('boot', 30), ('bootstatus', 240), ('shutdown', 30), ('delete', 30)):
+            self.assertFalse(any(args[:3] == ['xcrun', 'simctl', 'bootstatus'] for args, _ in calls))
+            for operation, expected_timeout in (('create', 30), ('boot', 30), ('shutdown', 30), ('delete', 30)):
                 self.assertEqual([timeout for args, timeout in calls if args[:3] == ['xcrun', 'simctl', operation]], [expected_timeout] * 2)
 
     def test_missing_unsafe_false_or_malformed_signature_output_blocks_all_tests_despite_valid_input_and_stdout(self):
@@ -490,8 +499,7 @@ class ModernPlanTests(unittest.TestCase):
                 self.assertIn('CODE_SIGN_IDENTITY=-', build); self.assertIn('CODE_SIGN_INJECT_BASE_ENTITLEMENTS=YES', build)
                 self.assertIn('DEVELOPMENT_TEAM=', build); self.assertNotIn('-allowProvisioningUpdates', build)
                 actions = [args[2] for args, _ in calls if args[:2] == ['xcrun', 'simctl']]
-                self.assertLess(actions.index('boot'), actions.index('bootstatus'))
-                self.assertTrue(all(action not in {'install', 'launch', 'terminate'} for action in actions))
+                self.assertTrue(all(action not in {'bootstatus', 'install', 'launch', 'terminate'} for action in actions))
                 for role in ('control', 'projection'):
                     self.assertTrue(result[role]['xcode_manages_install_and_launch'])
                     self.assertFalse(result[role]['manual_prewarm_performed']); self.assertTrue(result[role]['device_identity']['identity_verified'])
@@ -672,15 +680,47 @@ class ModernPlanTests(unittest.TestCase):
                 self.assertEqual(sum(args[:4] == ['xcrun', 'simctl', 'list', 'devices'] for args, _ in calls),
                                  0 if kind == 'partial_mismatch' else 1)
 
-    def test_bootstatus_149_still_requires_actual_fresh_booted_inventory_even_with_valid_metadata(self):
+    def test_unknown_schema_fallback_still_requires_actual_fresh_booted_inventory_without_a_bootstatus_call(self):
         for warming in ('correct', 'not_booted'):
             with self.subTest(warming=warming), tempfile.TemporaryDirectory() as directory:
-                result, calls = self.execute_fixture(Path(directory).resolve(), boot_status=149, warming=warming)
+                result, calls = self.execute_fixture(Path(directory).resolve(), device_metadata='unsupported', warming=warming)
                 self.assertEqual(result['passed'], warming == 'correct')
                 self.assertTrue(any(args[:4] == ['xcrun', 'simctl', 'list', 'devices'] for args, _ in calls))
+                self.assertFalse(any(args[:3] == ['xcrun', 'simctl', 'bootstatus'] for args, _ in calls))
                 if warming != 'correct':
                     self.assertFalse(result['control']['xctest_command_attempted'])
                     self.assertFalse(any(args[:3] == ['xcrun', 'simctl', 'install'] for args, _ in calls))
+
+    def test_one_acknowledged_boot_request_precedes_each_xcode_command_without_claiming_boot_completion(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve(); result, calls = self.execute_fixture(root)
+            self.assertTrue(result['passed'])
+            for role in ('control', 'projection'):
+                value = result[role]
+                self.assertTrue(value['boot_requested']); self.assertFalse(value['bootstatus_prerequisite_used'])
+                self.assertTrue(value['xcode_waits_for_device_readiness']); self.assertFalse(value['readiness_asserted'])
+                self.assertTrue(value['device_identity']['identity_verified']); self.assertFalse(value['device_identity']['readiness_asserted'])
+            tests = [(index, args) for index, (args, _) in enumerate(calls) if 'test-without-building' in args]
+            self.assertEqual(len(tests), 2)
+            for index, args in tests:
+                identifier = args[args.index('-destination') + 1].removeprefix('id=')
+                boot = [(number, timeout) for number, (command, timeout) in enumerate(calls)
+                    if command == ['xcrun', 'simctl', 'boot', identifier]]
+                self.assertEqual(len(boot), 1); self.assertLess(boot[0][0], index); self.assertEqual(boot[0][1], 30)
+                metadata = root / 'Library/Developer/CoreSimulator/Devices' / identifier / 'device.plist'
+                self.assertEqual(plistlib.loads(metadata.read_bytes())['state'], 'Shutdown')
+            self.assertFalse(any(args[:3] == ['xcrun', 'simctl', 'bootstatus'] for args, _ in calls))
+
+    def test_failed_or_timed_out_boot_acknowledgement_blocks_tests_and_keeps_cleanup_gate(self):
+        for state in ('failed', 'timeout'):
+            with self.subTest(state=state), tempfile.TemporaryDirectory() as directory:
+                result, calls = self.execute_fixture(Path(directory).resolve(), boot_request=state)
+                self.assertFalse(result['passed']); self.assertFalse(result['control']['boot_requested'])
+                self.assertFalse(result['control']['xcode_waits_for_device_readiness'])
+                self.assertFalse(result['control']['xctest_command_attempted']); self.assertFalse(result['projection']['attempted'])
+                self.assertTrue(result['control']['cleanup_completed']); self.assertEqual(result['failure'], 'modern_control_boot_request_failed')
+                self.assertEqual(sum(args[:3] == ['xcrun', 'simctl', 'boot'] for args, _ in calls), 1)
+                self.assertFalse(any('test-without-building' in args for args, _ in calls))
 
     def test_direct_filesystem_discovery_binds_exact_owned_uuid_and_both_bundle_metadata_identities(self):
         with tempfile.TemporaryDirectory() as directory:

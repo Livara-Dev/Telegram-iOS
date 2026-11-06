@@ -122,6 +122,18 @@ attempt retains every assertion, source, signature, account-isolation and cleanu
 gate. Neither diagnostic success resolves the separately reported Apple/SideStore
 HTTP 403 or establishes a production-qualified signed application.
 
+Run `42243934171` did not attempt either native suite because a separate
+boot-status check timed out; all 41 Projection tests remain unexecuted. Its full
+settings interaction failed an empty-search keyboard-existence assertion after
+three light stages, despite video showing visible dismissal; installed integrity
+and UI cleanup passed. The derived harness repair accepts only absence or valid,
+non-hittable offscreen geometry, preserves the gesture and five-second bound,
+and requires visible initial geometry. It does not relax source, signature,
+account-isolation, twelve-stage evidence or cleanup gates. The native readiness
+repair removes only the separate boot-status prerequisite, keeps explicit boot
+acknowledgement, and cannot claim a completed boot or actual test passes from
+metadata. Both changes require new native results.
+
 The actual re-sealed control `42176767770` passed strict verification while
 preserving code, signing identity metadata and all XCTest content; it still
 started zero of 41 cases. Post-command simulator queries timed out, but those

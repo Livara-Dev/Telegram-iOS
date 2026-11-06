@@ -43,7 +43,9 @@ CONTROL_TEST_ID = tiny.TEST_BUNDLE
 CONTROL_CASE = CONTROL_TEST + '.testRunsInApplicationHost'
 MAX_PRIVATE = 65536
 MAX_OWNED_CONTAINERS = 512
+NATIVE_CONTROL_TIMEOUT_SECONDS = 600
 NATIVE_PROJECTION_TIMEOUT_SECONDS = 600
+NATIVE_DESTINATION_TIMEOUT_SECONDS = 600
 GROUP_ROLES = ('CoreSimulatorService', 'SimulatorTrampoline', 'simctl', 'launchd_sim', 'xcodebuild', CONTROL_APP, 'other')
 KERNEL_PATH = (
     "import ctypes,os,sys;"
@@ -1034,7 +1036,9 @@ def run(output=OUTPUT, root=None, command=projection.native_command, signing=sim
               'original_products_unchanged': False,
               'release_qualified': False, 'physical_device_verified': False, 'passed': False,
               'different_harness': True, 'original_bazel_host_executed': False, 'tiny_control_language': 'Swift',
+              'native_control_timeout_seconds': NATIVE_CONTROL_TIMEOUT_SECONDS,
               'native_projection_timeout_seconds': NATIVE_PROJECTION_TIMEOUT_SECONDS,
+              'native_destination_timeout_seconds': NATIVE_DESTINATION_TIMEOUT_SECONDS,
               'control': {'attempted': False, 'expected': 1}, 'projection': {'attempted': False, 'expected': 41},
               'commands': {}, 'command_timing': {}, 'post_exit_group_observations': {}, 'phase': 'preflight'}
     secrets = tuple(value for key, value in os.environ.items() if value and re.search(r'TOKEN|SECRET|AUTH|PASSWORD|API_ID|API_HASH|SESSION|PRIVATE_KEY', key, re.I))
@@ -1065,7 +1069,9 @@ def run(output=OUTPUT, root=None, command=projection.native_command, signing=sim
     used_identifiers = set()
     def suite(label, plan, expected, observed_app):
         identifier = None; owned = {'attempted': True, 'expected': expected, 'cleanup_completed': False,
-            'xctest_command_attempted': False, 'tests_started': False, 'started': 0, 'passed': 0}
+            'xctest_command_attempted': False, 'tests_started': False, 'started': 0, 'passed': 0,
+            'boot_requested': False, 'bootstatus_prerequisite_used': False,
+            'xcode_waits_for_device_readiness': False, 'readiness_asserted': False}
         report[label] = owned
         try:
             name = projection.DEVICE_NAME if label == 'projection' else 'AYU_MODERN_CONTROL_' + uuid.uuid4().hex
@@ -1076,16 +1082,9 @@ def run(output=OUTPUT, root=None, command=projection.native_command, signing=sim
             used_identifiers.add(candidate.casefold())
             identifier = candidate
             call(label + '_boot_request', ['xcrun', 'simctl', 'boot', identifier], 30, groups=True)
-            status, _ = call(label + '_boot', ['xcrun', 'simctl', 'bootstatus', identifier, '-b'], 240, False, groups=True)
-            if status.get('status') != 'completed' or status.get('exit_code') != 0:
-                if (status.get('status') != 'commandFailed' or status.get('exit_code') != 149 or
-                        status.get('timeout') or status.get('output_limit')): raise PlanError('modern_boot_failed')
-                _, raw = call(label + '_boot_state', ['xcrun', 'simctl', 'list', 'devices', 'available', '--json'], 15)
-                rows = [(runtime, row) for runtime, values in json.loads(raw)['devices'].items() for row in values
-                        if isinstance(row, dict) and isinstance(row.get('udid'), str) and row['udid'].casefold() == identifier.casefold()]
-                if (len(rows) != 1 or rows[0][0] != RUNTIME or rows[0][1].get('name') != name or
-                        rows[0][1].get('deviceTypeIdentifier') != DEVICE_TYPE or rows[0][1].get('state') != 'Booted'):
-                    raise PlanError('modern_owned_boot_unverified')
+            # The acknowledged request does not prove a completed boot. The
+            # single bounded Xcode command owns readiness, install and launch.
+            owned['boot_requested'] = True
             identity = owned_device_identity(identifier, name)
             owned['device_identity'] = identity
             if identity['state'] == 'rejected': raise PlanError('modern_owned_simulator_identity_rejected')
@@ -1103,10 +1102,11 @@ def run(output=OUTPUT, root=None, command=projection.native_command, signing=sim
             with tempfile.TemporaryDirectory(prefix='ayu-modern-xcresult-') as temporary:
                 started_at = time.time()
                 owned['xctest_command_attempted'] = True
+                owned['xcode_waits_for_device_readiness'] = True
                 status, raw = call(label + '_xctest', ['xcodebuild', 'test-without-building', '-xctestrun', str(plan),
-                    '-destination', 'id=' + identifier, '-destination-timeout', '30', '-parallel-testing-enabled', 'NO',
+                    '-destination', 'id=' + identifier, '-destination-timeout', str(NATIVE_DESTINATION_TIMEOUT_SECONDS), '-parallel-testing-enabled', 'NO',
                     '-derivedDataPath', str(Path(temporary) / 'derived'), '-resultBundlePath', str(Path(temporary) / 'result.xcresult'),
-                    '-collect-test-diagnostics=never'], NATIVE_PROJECTION_TIMEOUT_SECONDS if label == 'projection' else 300, False, observer=observer)
+                    '-collect-test-diagnostics=never'], NATIVE_PROJECTION_TIMEOUT_SECONDS if label == 'projection' else NATIVE_CONTROL_TIMEOUT_SECONDS, False, observer=observer)
                 if observer is not None: owned['live_bootstrap'] = status.pop('bootstrap_diagnostic')
                 counts = control_cases(raw) if expected == 1 else projection.cases(raw)
                 owned.update(counts)

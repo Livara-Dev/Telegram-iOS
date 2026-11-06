@@ -47,7 +47,7 @@ def attachments(root):
 
 
 class RetainedInteractionTests(unittest.TestCase):
-    def test_pinned_original_changes_only_two_exact_reversible_harness_expressions(self):
+    def test_pinned_original_changes_only_three_exact_reversible_harness_expressions(self):
         original = (REPOSITORY / interaction.SOURCE_PATH).read_bytes()
         self.assertEqual(hashlib.sha256(original).hexdigest(), interaction.SOURCE_SHA256)
         result = interaction.derived_source(original)
@@ -61,6 +61,81 @@ class RetainedInteractionTests(unittest.TestCase):
         self.assertEqual(result, original)
         with self.assertRaisesRegex(interaction.InteractionError, '^interaction_source_digest_mismatch$'):
             interaction.derived_source(original + b'\n')
+
+    def test_assertion_contract_repair_keeps_the_same_drag_deadline_and_nonempty_search(self):
+        original = (REPOSITORY / interaction.SOURCE_PATH).read_bytes()
+        result = interaction.derived_source(original)
+        before, after = interaction.EMPTY_SEARCH_BEFORE, interaction.EMPTY_SEARCH_AFTER
+        self.assertEqual(len(interaction.SUBSTITUTIONS), 3)
+        self.assertEqual(original.count(before), 1)
+        self.assertEqual(result.count(after), 1)
+        self.assertNotIn(before, result)
+        # This is precisely one contract repair, not a new dismissal action or
+        # permission to silently change any of the twelve behavioral stages.
+        for expression in (b'CGVector(dx: 0.5, dy: 0.45)', b'CGVector(dx: 0.5, dy: 0.9)',
+                           b'start.press(forDuration: 0.1, thenDragTo: end)'):
+            self.assertEqual(before.count(expression), 1)
+            self.assertEqual(after.count(expression), 1)
+        self.assertEqual(before.count(b'timeout: 5'), 1)
+        self.assertEqual(after.count(b'timeout: 5'), 1)
+        nonempty = original.split(b'        if !text.isEmpty {\n', 1)[1].split(before, 1)[0]
+        self.assertIn(nonempty, result)
+        self.assertEqual(result.count(b'let isHidden = NSPredicate(format: "exists == false")'), 1)
+        self.assertEqual(result.count(b'predicate: isHidden, object: keyboard'), 1)
+        self.assertNotIn(b'sleep', after)
+        self.assertNotIn(b'.tap()', after)
+        self.assertNotIn(b'while ', after)
+
+    def test_hidden_contract_fails_closed_for_invalid_or_obstructing_geometry(self):
+        # Pin the actual generated Swift expressions. These portable checks do
+        # not execute UIKit or claim that native AX geometry matches its pixels.
+        after = interaction.EMPTY_SEARCH_AFTER
+        self.assertIn(b'[rect.origin.x, rect.origin.y, rect.size.width, rect.size.height, rect.maxX, rect.maxY].allSatisfy { $0.isFinite }', after)
+        self.assertIn(b'&& rect.size.width > 0 && rect.size.height > 0', after)
+        self.assertIn(b'let keyboardValid = exists && validFrame(keyboardFrame)', after)
+        self.assertIn(b'let intersectsWindow = windowValid && keyboardValid && !keyboardFrame.intersection(windowFrame).isEmpty', after)
+        self.assertIn(b'let hidden = windowValid && (!exists || (keyboardValid && !hittable && !intersectsWindow))', after)
+        self.assertIn(b'return (exists && windowValid && keyboardValid && intersectsWindow, hidden, evidence)', after)
+        self.assertLess(after.index(b'XCTAssertTrue(initial.visible'), after.index(b'start.press('))
+        self.assertLess(after.index(b'guard initial.visible else { return }'), after.index(b'start.press('))
+        self.assertIn(b'let hiddenState = NSPredicate { _, _ in keyboardState().hidden }', after)
+        self.assertLess(after.index(b'recordKeyboard("after"'), after.index(b'XCTAssertEqual(outcome, .completed)'))
+
+    def test_keyboard_observation_can_publish_only_fixed_booleans_and_rectangles(self):
+        source = interaction.EMPTY_SEARCH_AFTER
+        evidence = source.split(b'let evidence: [String: Any] = [', 1)[1].split(b'            return ', 1)[0]
+        self.assertEqual(re.findall(rb'"([a-z_]+)":', evidence),
+            [b'exists', b'hittable', b'window_valid', b'keyboard_valid', b'intersects_window',
+             b'hidden', b'window', b'keyboard'])
+        self.assertIn(b'evidence["phase"] = phase', source)
+        self.assertEqual(re.findall(rb'recordKeyboard\("([a-z]+)"', source), [b'before', b'after'])
+        self.assertEqual(source.count(b'print("AYU_OPTIONS_KEYBOARD:" + value)'), 1)
+        for private in (b'.label', b'.value', b'.debugDescription', b'print(error)', b'print(app)', b'print(keyboard)'):
+            self.assertNotIn(private, source)
+        # Finite geometry alone reaches JSON; invalid rectangles are empty arrays.
+        self.assertIn(b'"window": windowValid ? [', evidence)
+        self.assertIn(b'"keyboard": keyboardValid ? [', evidence)
+        self.assertEqual(evidence.count(b': []'), 2)
+
+    def test_every_source_mutation_is_rejected_before_private_project_creation(self):
+        original = (REPOSITORY / interaction.SOURCE_PATH).read_bytes()
+        mutations = (original + b'\n', original.replace(b'timeout: 5', b'timeout: 6', 1),
+            original.replace(b'dy: 0.45', b'dy: 0.40', 1),
+            original.replace(b'XCTAssertTrue(archive.isEnabled)', b'// removed assertion', 1),
+            original.replace(interaction.EMPTY_SEARCH_BEFORE, interaction.EMPTY_SEARCH_AFTER, 1))
+        for mutated in mutations:
+            with self.subTest(digest=hashlib.sha256(mutated).hexdigest()):
+                self.assertNotEqual(mutated, original)
+                with self.assertRaisesRegex(interaction.InteractionError, '^interaction_source_digest_mismatch$'):
+                    interaction.derived_source(mutated)
+        # Independently exercise uniqueness guards, even if a future maintainer
+        # intentionally changes the digest pin without updating the exact repair.
+        for before, after in interaction.SUBSTITUTIONS:
+            for mutated in (original.replace(before, b'', 1), original + before, original + after):
+                with self.subTest(before=before[:30], digest=hashlib.sha256(mutated).hexdigest()), \
+                        patch.object(interaction, 'SOURCE_SHA256', hashlib.sha256(mutated).hexdigest()), \
+                        self.assertRaisesRegex(interaction.InteractionError, '^interaction_substitution_not_unique$'):
+                    interaction.derived_source(mutated)
 
     def test_private_project_replaces_only_generated_swift_and_preserves_every_original_assertion(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -76,7 +151,7 @@ class RetainedInteractionTests(unittest.TestCase):
             self.assertEqual((REPOSITORY / interaction.SOURCE_PATH).read_bytes(), original)
             self.assertEqual(result['expected_case'], interaction.EXPECTED_CASE)
             self.assertEqual(result['expected_case_count'], 1)
-            self.assertEqual(result['source_substitution_count'], 2)
+            self.assertEqual(result['source_substitution_count'], 3)
             self.assertEqual(result['derived_source_sha256'], hashlib.sha256(after[source]).hexdigest())
             self.assertFalse(result['native_tests_executed']); self.assertFalse(result['application_recompiled'])
             self.assertFalse(result['renderer_recompiled'])
