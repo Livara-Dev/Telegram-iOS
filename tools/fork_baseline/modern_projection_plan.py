@@ -13,6 +13,7 @@ import os
 from pathlib import Path
 import plistlib
 import re
+import shlex
 import shutil
 import stat
 import sys
@@ -284,25 +285,113 @@ def typed_equal(first, second):
     return first == second
 
 
-def signed_xcent(derived, product, required):
+def actual_signing_inputs(raw, derived, app, bundle, report):
+    """Use actual Xcode CodeSign arguments, never a guessed .xcent basename."""
+    roles = {'host': (app, CONTROL_APP_ID), 'test': (bundle, CONTROL_TEST_ID)}
+    matches = {role: [] for role in roles}
+    report['code_sign_log_scan_completed'] = False
+    for role in roles:
+        report[role]['code_sign_argv'] = {'matching_invocations': 0, 'verified': False,
+            'entitlement_input_kind': 'unavailable', 'entitlement_name_kind': 'notSelected'}
+    if not isinstance(raw, bytes) or not 0 < len(raw) <= projection.MAX_OUTPUT:
+        raise PlanError('invalid_private_build_output')
+    try: lines = raw.decode('utf-8', errors='strict').splitlines()
+    except UnicodeError: raise PlanError('private_build_output_not_utf8') from None
+    for line in lines:
+        if '/usr/bin/codesign' not in line: continue
+        if len(line) > 16384: raise PlanError('codesign_argv_limit')
+        try: arguments = shlex.split(line)
+        except ValueError: raise PlanError('codesign_argv_unparseable') from None
+        if '/usr/bin/codesign' not in arguments: continue
+        if arguments[0] != '/usr/bin/codesign': raise PlanError('unsupported_codesign_prefix')
+        if not 3 <= len(arguments) <= 64 or arguments[0] != '/usr/bin/codesign':
+            raise PlanError('codesign_argv_unparseable')
+        for role, (product, _) in roles.items():
+            if str(product) in arguments:
+                matches[role].append(arguments)
+                report[role]['code_sign_argv']['matching_invocations'] = len(matches[role])
+                if arguments[-1] != str(product): raise PlanError('nonterminal_codesign_product')
+    report['code_sign_log_scan_completed'] = True
+    result = {}
     root = derived / 'Build/Intermediates.noindex'
-    if root.is_symlink() or not root.is_dir(): raise PlanError('generated_entitlements_unavailable')
-    matches, count, pending = [], 0, [root]
-    while pending:
-        with os.scandir(pending.pop()) as entries:
-            for entry in entries:
-                count += 1
-                if count > 2048: raise PlanError('generated_entitlements_inventory_limit')
-                if entry.is_dir(follow_symlinks=False): pending.append(Path(entry.path))
-                elif entry.name == product.name + '.xcent': matches.append(Path(entry.path))
-    if len(matches) > 1 or (required and not matches): raise PlanError('generated_entitlements_not_unique')
-    return entitlement_document(private_bytes(matches[0])) if matches else None
+    for role, (product, identifier) in roles.items():
+        observation = report[role]['code_sign_argv']
+        if len(matches[role]) != 1: raise PlanError('actual_codesign_invocation_not_unique')
+        arguments = matches[role][0]; position, seen, values = 1, set(), {}
+        while position < len(arguments) - 1:
+            option = arguments[position]; position += 1
+            if option in {'--force', '-f', '--generate-entitlement-der', '--timestamp=none'}:
+                key = '--force' if option == '-f' else option
+                if key in seen: raise PlanError('repeated_codesign_option')
+                seen.add(key); continue
+            key, separator, value = option.partition('=')
+            key = {'-s': '--sign', '-i': '--identifier'}.get(key, key)
+            if key not in {'--sign', '--entitlements', '--identifier', '--options'} or key in seen:
+                raise PlanError('unsupported_codesign_option')
+            seen.add(key)
+            if not separator:
+                if position >= len(arguments) - 1: raise PlanError('missing_codesign_option_value')
+                value = arguments[position]; position += 1
+            if not value: raise PlanError('missing_codesign_option_value')
+            values[key] = value
+        if values.get('--sign') != '-' or ('--identifier' in values and values['--identifier'] != identifier):
+            raise PlanError('actual_codesign_identity_mismatch')
+        if '--options' in values and values['--options'] not in {'runtime', '0x10000', '0x0'}:
+            raise PlanError('unsupported_codesign_flags')
+        if '--entitlements' not in values:
+            observation.update(verified=True, entitlement_input_kind='none', entitlement_name_kind='none')
+            result[role] = None
+            continue
+        path = Path(values['--entitlements'])
+        observation['entitlement_input_kind'] = 'explicitFile'
+        observation['entitlement_name_kind'] = ('simulatedNamedXcent' if path.name.endswith('-Simulated.xcent') else
+            'xcent' if path.suffix == '.xcent' else 'other')
+        if not path.is_absolute() or '..' in path.parts or '\\' in str(path) or '\0' in str(path):
+            raise PlanError('unsafe_actual_entitlement_input')
+        try: relative = path.relative_to(root)
+        except ValueError: raise PlanError('actual_entitlement_input_outside_intermediates') from None
+        for ancestor in (path, *path.parents):
+            if ancestor.is_symlink(): raise PlanError('unsafe_actual_entitlement_input')
+            if ancestor == derived: break
+        else: raise PlanError('unsafe_actual_entitlement_input')
+        result[role] = entitlement_document(private_bytes(path))
+        observation['verified'] = True
+    return result
 
 
-def verify_xcode_signing(derived, app, bundle, call, report):
+def compiler_log(raw, secrets):
+    """Retain both compiler startup and final signing diagnostics within 16KiB."""
+    if not isinstance(raw, bytes) or len(raw) > projection.MAX_OUTPUT: return '[compiler output unavailable]\n'
+    text = raw.decode('utf-8', errors='replace')
+    literals = sorted({value for value in secrets if isinstance(value, str) and value}, key=len, reverse=True)
+    if literals:
+        # One pass avoids reprocessing the replacement text as another secret.
+        text = re.sub('|'.join(re.escape(value) for value in literals), '<REDACTED_CREDENTIAL>', text)
+    encoded = text.encode()
+    def selected(tail):
+        size = min(32768, len(encoded))
+        while True:
+            data = encoded[-size:] if tail and size else encoded[:size]
+            value = simulator_probe.redact_export_stderr(data, '<UNUSED_SYNTHETIC_RESULT>', '<UNUSED_PRIVATE_EXPORT>')
+            # The existing redactor caps its prefix. Shrink toward the chosen
+            # end until that cap did not discard the final signing records.
+            if len(value) < 16384 or size == 0: break
+            size //= 2
+        low, high = 0, len(value)
+        while low < high:
+            middle = (low + high + 1) // 2
+            section = value[-middle:] if tail else value[:middle]
+            if len(json.dumps(section, ensure_ascii=True).encode()) <= 7600: low = middle
+            else: high = middle - 1
+        return (value[-low:] if low else '') if tail else value[:low]
+    return '[first compiler segment]\n' + selected(False) + '\n[last compiler segment]\n' + selected(True)
+
+
+def verify_xcode_signing(derived, app, bundle, build_output, call, report):
     report['tiny_signing'] = {'mode': 'xcodeAdhocGeneratedEntitlements', 'host': {'verified': False}, 'test': {'verified': False}}
+    inputs = actual_signing_inputs(build_output, derived, app, bundle, report['tiny_signing'])
     for role, product, expected_id in (('host', app, CONTROL_APP_ID), ('test', bundle, CONTROL_TEST_ID)):
-        expected = signed_xcent(derived, product, required=role == 'host')
+        expected = inputs[role]
         state = report['tiny_signing'][role]
         state['generated_signed_entitlements_present'] = expected is not None
         # Verify Xcode's real identity as well as the resource/code seal.
@@ -322,12 +411,12 @@ def verify_xcode_signing(derived, app, bundle, call, report):
                 actual = None; state['readback'] = 'missingFile'
             else:
                 try:
-                    data = private_bytes(readback, allow_empty=role == 'test' and expected in (None, {}))
+                    data = private_bytes(readback, allow_empty=expected in (None, {}))
                     actual = entitlement_document(data) if data else None
                     state['readback'] = 'parsedPrivateXML' if data else 'emptyRegularFile'
                 except PlanError:
                     state['readback'] = 'unsafeOrInvalidFile'; raise
-            if role == 'test' and expected in (None, {}):
+            if expected in (None, {}):
                 if actual not in (None, {}): raise PlanError('tiny_unsigned_entitlement_input_unverified')
             elif actual is None or not typed_equal(expected, actual):
                 state['readback'] = 'generatedSignatureMismatch'; raise PlanError('tiny_generated_signature_entitlements_mismatch')
@@ -597,10 +686,10 @@ def run(output=OUTPUT, root=None, command=projection.native_command, signing=sim
     if read_json(output / 'verification.json') != verification(original, verified):
         raise PlanError('modern_prepared_capture_mismatch')
     original_snapshot = projection.snapshot_tree(original)
-    report = {'schema': 1, 'source_commit': SOURCE, 'role': 'appleGeneratedXCTestPlanControl',
+    report = {'schema': 2, 'source_commit': SOURCE, 'role': 'appleGeneratedXCTestPlanControl',
               'application_recompiled': False, 'projection_tests_recompiled': False,
-              'tiny_control_compiled': False, 'tiny_control_debug_entitlement_verified': False,
-              'tiny_control_debug_entitlement_readback': 'notAttempted',
+              'tiny_control_compiled': False, 'tiny_control_signing_verified': False,
+              'tiny_control_entitlement_readback': 'notAttempted',
               'original_products_unchanged': False,
               'release_qualified': False, 'physical_device_verified': False, 'passed': False,
               'control': {'attempted': False, 'expected': 1}, 'projection': {'attempted': False, 'expected': 41},
@@ -636,6 +725,7 @@ def run(output=OUTPUT, root=None, command=projection.native_command, signing=sim
             candidate = raw.decode().strip()
             if str(uuid.UUID(candidate)).casefold() != candidate.casefold(): raise PlanError('modern_device_invalid')
             identifier = candidate
+            call(label + '_boot_request', ['xcrun', 'simctl', 'boot', identifier], 30, groups=True)
             status, _ = call(label + '_boot', ['xcrun', 'simctl', 'bootstatus', identifier, '-b'], 240, False, groups=True)
             if status.get('status') != 'completed' or status.get('exit_code') != 0:
                 if (status.get('status') != 'commandFailed' or status.get('exit_code') != 149 or
@@ -736,7 +826,7 @@ def run(output=OUTPUT, root=None, command=projection.native_command, signing=sim
             '-derivedDataPath', str(derived), 'CODE_SIGNING_ALLOWED=YES', 'CODE_SIGN_IDENTITY=-',
             'CODE_SIGN_STYLE=Manual', 'CODE_SIGN_INJECT_BASE_ENTITLEMENTS=YES',
             'DEVELOPMENT_TEAM=', 'PROVISIONING_PROFILE=', 'PROVISIONING_PROFILE_SPECIFIER='], 180, False)
-        projection.write(output / 'control-build.log', simulator_probe.redact_probe_text(raw, secrets), text=True)
+        projection.write(output / 'control-build.log', compiler_log(raw, (*secrets, str(output))), text=True)
         if status.get('status') != 'completed' or status.get('exit_code') != 0: raise PlanError('tiny_control_compile_failed')
         report['tiny_control_compiled'] = True
         plans = list((derived / 'Build/Products').glob('*.xctestrun'))
@@ -744,9 +834,9 @@ def run(output=OUTPUT, root=None, command=projection.native_command, signing=sim
         generated = _read_plan(plans[0]); _, _, app, bundle, kind = generated_products(generated, plans[0].parent)
         report['apple_plan'] = {'host_path_kind': kind, 'format_version': target(generated)[0],
                                 'host_bundle_identifier_present': 'TestHostBundleIdentifier' in target(generated)[1]}
-        verify_xcode_signing(derived, app, bundle, call, report)
-        report['tiny_control_debug_entitlement_readback'] = 'matchedXcodeGeneratedSignedEntitlements'
-        report['tiny_control_debug_entitlement_verified'] = True
+        verify_xcode_signing(derived, app, bundle, raw, call, report)
+        report['tiny_control_entitlement_readback'] = 'matchedActualCodeSignInput'
+        report['tiny_control_signing_verified'] = True
         control_app, control_expected = app, control_inventory(app)
         report['phase'] = 'testTinyControl'
         if not suite('control', plans[0], 1): raise PlanError('tiny_hosted_control_not_passed')

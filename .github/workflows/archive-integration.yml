@@ -667,7 +667,7 @@ jobs:
         run: python3 -m unittest discover -s tools/fork_baseline/tests -p test_clean_user_service.py -v
 
       - name: Refresh only the registered current-user simulator service on an exclusive hosted runner
-        if: inputs.validation_scope == 'retained-clean' || (inputs.validation_scope == 'retained-modern' || inputs.validation_scope == 'projection-plan-only')
+        if: inputs.validation_scope == 'retained-clean'
         env:
           RUNNER_ENVIRONMENT: ${{ runner.environment }}
           AYU_CLEAN_RUNNER_ENVIRONMENT: ${{ runner.environment }}
@@ -1163,6 +1163,7 @@ jobs:
           python3 -m unittest discover -s tools/fork_baseline/tests -p test_clean_user_service.py -v
 
       - name: Refresh only the registered current-user simulator service on an exclusive hosted runner
+        if: inputs.validation_scope == 'retained-clean'
         env:
           RUNNER_ENVIRONMENT: ${{ runner.environment }}
           AYU_CLEAN_RUNNER_ENVIRONMENT: ${{ runner.environment }}

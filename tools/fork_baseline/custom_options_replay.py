@@ -229,6 +229,7 @@ def simctl_phase(arguments):
     if (len(arguments) == 6 and arguments[:3] == ['xcrun', 'simctl', 'io'] and identifier(arguments[3]) and
             arguments[4] == 'screenshot' and Path(arguments[5]).is_absolute()): return 'captureScreenshot'
     if len(arguments) == 4 and arguments[:2] == ['xcrun', 'simctl'] and identifier(arguments[3]):
+        if arguments[2] == 'boot': return 'bootDevice'
         if arguments[2] == 'shutdown': return 'shutdownDevice'
         if arguments[2] == 'delete': return 'deleteDevice'
     raise ReplayError('settings_simulator_command_not_allowed')
@@ -803,6 +804,9 @@ def execute(output=OUTPUT, root=None, command=ui_native_command, pause=time.slee
             except ValueError: raise ReplayError('settings_owned_device_invalid') from None
             identifier = value
             try:
+                # Match the exercised startup lifecycle. bootstatus -b can also
+                # request boot; this explicit request is not a root-cause claim.
+                call('requestOwnedBoot', ['xcrun', 'simctl', 'boot', identifier], timeout=120)
                 try:
                     call('bootOwnedSimulator', ['xcrun', 'simctl', 'bootstatus', identifier, '-b'], timeout=240)
                 except ReplayError:

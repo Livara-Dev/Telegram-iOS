@@ -7,6 +7,7 @@ import os
 from pathlib import Path
 import plistlib
 import shutil
+import shlex
 import struct
 import sys
 import tempfile
@@ -195,7 +196,7 @@ class ModernPlanTests(unittest.TestCase):
                 with self.assertRaises(modern.PlanError): modern.private_bytes(path)
 
     def execute_fixture(self, root, control_outcome='passed', mutate=False, readback='correct', entitlements=None, warming='correct',
-                        test_entitlements=None, test_readback='missing'):
+                        test_entitlements=None, test_readback='missing', host_input=True):
         output = root / modern.OUTPUT; output.mkdir(parents=True)
         capture = fixtures.captured(root, current=True)
         info = capture / 'TEST_ROOT' / modern.products.APP / 'PlugIns' / modern.products.TEST / 'Info.plist'
@@ -222,6 +223,7 @@ class ModernPlanTests(unittest.TestCase):
                     if test_readback == 'empty': path.write_bytes(b'')
                     elif test_readback == 'xml': path.write_bytes(plistlib.dumps(test_entitlements or {}))
                     return complete()
+                if not host_input and readback == 'correct': return complete()
                 if readback == 'correct': path.write_bytes(xml)
                 elif readback == 'wrong': path.write_bytes(plistlib.dumps({'get-task-allow': False}))
                 elif readback == 'malformed': path.write_bytes(b'<?xml version="1.0"?><plist><dict><key>private-canary</key>')
@@ -236,13 +238,22 @@ class ModernPlanTests(unittest.TestCase):
                 return complete(b'Executable=/private/readback-private-canary\n' + xml)
             if 'build-for-testing' in args:
                 products = Path(args[args.index('-derivedDataPath') + 1]) / 'Build/Products'
-                plan, _, _ = apple_fixture(products, 2)
+                plan, app, test = apple_fixture(products, 2)
                 (products / 'control.xctestrun').write_bytes(plistlib.dumps(plan))
                 intermediates = products.parent / 'Intermediates.noindex'; intermediates.mkdir()
-                (intermediates / (modern.CONTROL_APP + '.app.xcent')).write_bytes(plistlib.dumps(entitlements))
-                (intermediates / (modern.CONTROL_APP + '.app-Simulated.xcent')).write_bytes(plistlib.dumps({'different-variant': True}))
+                host_path = intermediates / (modern.CONTROL_APP + ('.app-Simulated.xcent' if host_input == 'simulated' else '.app.xcent'))
+                if host_input: host_path.write_bytes(plistlib.dumps(entitlements))
+                unused_name = modern.CONTROL_APP + ('.app.xcent' if host_input == 'simulated' else '.app-Simulated.xcent')
+                (intermediates / unused_name).write_bytes(plistlib.dumps({'different-variant': True}))
                 if test_entitlements is not None:
-                    (intermediates / (modern.CONTROL_TEST + '.xctest.xcent')).write_bytes(plistlib.dumps(test_entitlements))
+                    test_path = intermediates / (modern.CONTROL_TEST + '.xctest.xcent')
+                    test_path.write_bytes(plistlib.dumps(test_entitlements))
+                commands = []
+                for product, explicit in ((app, host_path if host_input else None), (test, test_path if test_entitlements is not None else None)):
+                    arguments = ['/usr/bin/codesign', '--force', '--sign', '-']
+                    if explicit is not None: arguments += ['--entitlements', str(explicit)]
+                    commands.append(shlex.join(arguments + ['--timestamp=none', '--generate-entitlement-der', str(product)]))
+                return complete(('\n'.join(commands) + '\n').encode())
             elif args[:3] == ['xcrun', 'simctl', 'create']: return complete(b'11111111-2222-3333-4444-555555555555')
             elif args[:4] == ['xcrun', 'simctl', 'list', 'devices']:
                 name = next(value[0][3] for value in calls if value[0][:3] == ['xcrun', 'simctl', 'create'])
@@ -289,7 +300,8 @@ class ModernPlanTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             result, calls = self.execute_fixture(Path(directory).resolve())
             self.assertTrue(result['passed']); self.assertEqual(result['control']['passed'], 1)
-            self.assertEqual(result['tiny_control_debug_entitlement_readback'], 'matchedXcodeGeneratedSignedEntitlements')
+            self.assertEqual(result['schema'], 2)
+            self.assertEqual(result['tiny_control_entitlement_readback'], 'matchedActualCodeSignInput')
             self.assertEqual(result['projection']['started'], 41); self.assertEqual(result['projection']['passed'], 41)
             self.assertTrue(result['original_products_unchanged']); self.assertTrue(result['projection']['cleanup_completed'])
             self.assertEqual([timeout for args, timeout in calls if 'test-without-building' in args], [300, 300])
@@ -302,7 +314,7 @@ class ModernPlanTests(unittest.TestCase):
         for readback in ('missing', 'symlink', 'wrong', 'malformed', 'command_failed', 'timed_out'):
             with self.subTest(readback=readback), tempfile.TemporaryDirectory() as directory:
                 root = Path(directory).resolve(); result, calls = self.execute_fixture(root, readback=readback)
-                self.assertFalse(result['passed']); self.assertFalse(result['tiny_control_debug_entitlement_verified'])
+                self.assertFalse(result['passed']); self.assertFalse(result['tiny_control_signing_verified'])
                 self.assertEqual(result['tiny_signing']['host']['readback'], {
                     'missing': 'generatedSignatureMismatch', 'symlink': 'unsafeOrInvalidFile', 'wrong': 'generatedSignatureMismatch',
                     'malformed': 'unsafeOrInvalidFile', 'command_failed': 'commandFailed', 'timed_out': 'commandFailed'}[readback])
@@ -332,6 +344,7 @@ class ModernPlanTests(unittest.TestCase):
                 actions = [args[2] for args, _ in calls if args[:2] == ['xcrun', 'simctl']]
                 self.assertLess(actions.index('install'), actions.index('launch'))
                 self.assertLess(actions.index('launch'), actions.index('terminate'))
+                self.assertLess(actions.index('boot'), actions.index('bootstatus'))
                 first_xctest = next(index for index, (args, _) in enumerate(calls) if 'test-without-building' in args)
                 self.assertTrue(any(args[:3] == ['xcrun', 'simctl', 'terminate'] for args, _ in calls[:first_xctest]))
                 self.assertTrue(result['control']['standalone']['marker_cleared_before_xctest'])
@@ -352,17 +365,69 @@ class ModernPlanTests(unittest.TestCase):
                 self.assertNotIn('private-marker-canary', json.dumps(result))
                 self.assertNotIn('private-termination-canary', json.dumps(result))
 
-    def test_signed_xcent_requires_unique_host_file_and_excludes_simulated_variant(self):
+    def test_actual_signing_arguments_bind_unique_exact_products_and_explicit_input_without_filename_guessing(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory).resolve(); derived = root / 'derived'; intermediate = derived / 'Build/Intermediates.noindex'
-            intermediate.mkdir(parents=True); product = root / (modern.CONTROL_APP + '.app')
-            simulated = intermediate / (product.name.replace('.app', '.app-Simulated') + '.xcent')
-            simulated.write_bytes(plistlib.dumps({'wrong-variant': True}))
-            with self.assertRaises(modern.PlanError): modern.signed_xcent(derived, product, True)
-            source = intermediate / (product.name + '.xcent'); source.write_bytes(plistlib.dumps(EXPECTED_ENTITLEMENTS))
-            self.assertEqual(modern.signed_xcent(derived, product, True), EXPECTED_ENTITLEMENTS)
-            duplicate = intermediate / 'duplicate'; duplicate.mkdir(); shutil.copyfile(source, duplicate / source.name)
-            with self.assertRaises(modern.PlanError): modern.signed_xcent(derived, product, True)
+            intermediate.mkdir(parents=True); app, test = root / 'Real Product.app', root / 'Tests.xctest'
+            explicit = intermediate / 'Unpredicted-Simulated.xcent'; explicit.write_bytes(plistlib.dumps(EXPECTED_ENTITLEMENTS))
+            unused = intermediate / (app.name + '.xcent'); unused.write_bytes(plistlib.dumps({'unconsumed': True}))
+            commands = [shlex.join(['/usr/bin/codesign', '--force', '--sign', '-', '--entitlements', str(explicit), str(app)]),
+                        shlex.join(['/usr/bin/codesign', '--force', '--sign', '-', str(test)])]
+            report = {'host': {}, 'test': {}}
+            inputs = modern.actual_signing_inputs('\n'.join(commands).encode(), derived, app, test, report)
+            self.assertEqual(inputs, {'host': EXPECTED_ENTITLEMENTS, 'test': None})
+            self.assertEqual(report['host']['code_sign_argv']['entitlement_name_kind'], 'simulatedNamedXcent')
+            self.assertEqual(report['test']['code_sign_argv']['entitlement_input_kind'], 'none')
+            for text, count in ((commands[1], 0), ('\n'.join(commands + commands[:1]), 2)):
+                report = {'host': {}, 'test': {}}
+                with self.assertRaises(modern.PlanError): modern.actual_signing_inputs(text.encode(), derived, app, test, report)
+                self.assertEqual(report['host']['code_sign_argv']['matching_invocations'], count)
+                self.assertEqual(report['host']['code_sign_argv']['entitlement_input_kind'], 'unavailable')
+            for extra in (shlex.join(['/usr/bin/env', 'KEY=private-canary', '/usr/bin/codesign', '--sign', '-', str(app)]),
+                          shlex.join(['/usr/bin/codesign', '--sign', '-', str(app), 'unrelated.app'])):
+                report = {'host': {}, 'test': {}}
+                with self.assertRaises(modern.PlanError):
+                    modern.actual_signing_inputs(('\n'.join(commands) + '\n' + extra).encode(), derived, app, test, report)
+                self.assertFalse(report['code_sign_log_scan_completed'])
+                self.assertFalse(report['host']['code_sign_argv']['verified'])
+                self.assertNotIn('private-canary', json.dumps(report))
+
+    def test_unknown_duplicate_or_unsafe_codesign_arguments_never_become_no_entitlement_authority(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve(); derived = root / 'derived'; intermediate = derived / 'Build/Intermediates.noindex'
+            intermediate.mkdir(parents=True); app, test = root / 'App.app', root / 'Tests.xctest'
+            outside = root / 'outside'; outside.write_bytes(plistlib.dumps(EXPECTED_ENTITLEMENTS))
+            linked = intermediate / 'linked'; linked.symlink_to(outside)
+            unsafe = [[], ['--sign', 'certificate'], ['--sign', '-', '--sign', '-'],
+                ['--sign', '-', '--entitlements'], ['--sign', '-', '--entitlements', str(outside)],
+                ['--sign', '-', '--entitlements', str(linked)], ['--sign', '-', '--preserve-metadata=entitlements'],
+                ['--sign', '-', '--unexpected-option'], ['--sign', '-', str(test)]]
+            for options in unsafe:
+                with self.subTest(options=options):
+                    lines = [shlex.join(['/usr/bin/codesign', *options, str(app)]),
+                        shlex.join(['/usr/bin/codesign', '--sign', '-', str(test)])]
+                    report = {'host': {}, 'test': {}}
+                    with self.assertRaises(modern.PlanError): modern.actual_signing_inputs('\n'.join(lines).encode(), derived, app, test, report)
+                    self.assertFalse(report['host']['code_sign_argv']['verified'])
+                    self.assertNotEqual(report['host']['code_sign_argv']['entitlement_input_kind'], 'none')
+                    self.assertNotIn(str(root), json.dumps(report))
+
+    def test_actual_no_input_host_requires_zero_rights_and_explicit_simulated_named_input_is_honored(self):
+        for host_input in (False, 'simulated'):
+            with self.subTest(host_input=host_input), tempfile.TemporaryDirectory() as directory:
+                result, _ = self.execute_fixture(Path(directory).resolve(), host_input=host_input)
+                self.assertTrue(result['passed'])
+                self.assertEqual(result['tiny_signing']['host']['code_sign_argv']['entitlement_input_kind'], 'none' if host_input is False else 'explicitFile')
+        with tempfile.TemporaryDirectory() as directory:
+            result, _ = self.execute_fixture(Path(directory).resolve(), host_input=False, readback='wrong')
+            self.assertFalse(result['passed']); self.assertFalse(result['control']['attempted'])
+
+    def test_compiler_log_keeps_both_bounded_redacted_segments_including_final_signing_evidence(self):
+        secret = 'private-compiler-canary'
+        raw = ('FIRST '+secret+'\n').encode() + b'x' * 70000 + ('\nLAST CodeSign '+secret+'\n').encode()
+        value = modern.compiler_log(raw, (secret,))
+        self.assertIn('FIRST', value); self.assertIn('LAST CodeSign', value); self.assertNotIn(secret, value)
+        self.assertLess(len(json.dumps(value).encode()), 16384)
 
     def test_exact_owned_uuid_model_runtime_name_and_booted_state_are_all_required(self):
         correct = {'udid': IDENTIFIER, 'name': 'owned', 'state': 'Booted', 'isAvailable': True,

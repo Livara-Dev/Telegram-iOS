@@ -526,6 +526,30 @@ class FocusedWorkflowRoutingTests(unittest.TestCase):
         upload = settings.split('      - name: Upload retained native settings evidence without its simulator IPA', 1)[1]
         self.assertIn("if: always() && steps.settings_evidence.outcome == 'success'", upload)
 
+    def test_ordinary_settings_replay_does_not_force_a_simulator_service_restart(self):
+        source = self.section('custom-options-artifact-replay')
+        step = source.split('      - name: Refresh only the registered current-user simulator service on an exclusive hosted runner\n', 1)[1].split('      - name: ', 1)[0]
+        condition = re.search(r'^        if: (.*?)$', step, re.M).group(1)
+        for scope in ('retained-clean', 'retained-modern', 'custom-options-replay', 'projection-plan-only', 'startup', 'full'):
+            self.assertEqual(self.expression(condition, 'workflow_dispatch', scope, False), scope == 'retained-clean')
+        self.assertEqual(source.count('run: python3 tools/fork_baseline/clean_user_service.py '), 1)
+        self.assertIn('AYU_CLEAN_SESSION: exclusive-cached-artifacts', step)
+        execute = source.split('      - name: Record the real retained native settings root without rebuilding it\n', 1)[1].split('      - name: ', 1)[0]
+        self.assertNotIn('        if:', execute)
+        self.assertIn('custom_options_replay.py run', execute)
+
+    def test_modern_native_control_uses_fresh_devices_without_forced_service_restart(self):
+        source = self.section('native-api-probe')
+        step = source.split('      - name: Refresh only the registered current-user simulator service on an exclusive hosted runner\n', 1)[1].split('      - name: ', 1)[0]
+        condition = re.search(r'^        if: (.*?)$', step, re.M).group(1)
+        for scope in ('retained-clean', 'retained-modern', 'projection-plan-only', 'probe', 'startup', 'full'):
+            self.assertEqual(self.expression(condition, 'workflow_dispatch', scope, False), scope == 'retained-clean')
+        self.assertIn('AYU_CLEAN_SESSION: exclusive-cached-artifacts', step)
+        execute = source.split('      - name: Test Apple-generated hosting before executing all retained Projection cases\n', 1)[1].split('      - name: ', 1)[0]
+        condition = re.search(r'^        if: (.*?)$', execute, re.M).group(1)
+        for scope in ('retained-modern', 'projection-plan-only'):
+            self.assertTrue(self.expression(condition, 'workflow_dispatch', scope, False))
+
     def test_retained_settings_publication_hashes_only_the_explicit_safe_files(self):
         import hashlib
         section = self.section('custom-options-artifact-replay')

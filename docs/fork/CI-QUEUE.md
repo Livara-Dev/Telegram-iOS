@@ -11,10 +11,12 @@ diagnostic repair, `projection-plan-only` preserves the settings result and
 executes only the modern native job. Do not advance
 `ci/verify-latest` for diagnostic tools or documentation alone.
 
-The native job verifies the fixed captured products and their source/hashes,
-refreshes only the registered current-user simulator service on an exclusive
-hosted runner, then builds a tiny account-free Apple UIKit/XCTest control. This
-compiles diagnostic code only. Its one hosted identity test and owned-device
+The modern native job verifies the fixed captured products and their source/hashes,
+then builds a tiny account-free Apple UIKit/XCTest control. This compiles
+diagnostic code only. Both modern artifact jobs use freshly created devices
+without a forced service restart. The separate `retained-clean` intervention
+can refresh only the registered current-user service on an exclusive hosted
+runner; it is not the ordinary replay setup. The tiny control’s one hosted identity test and owned-device
 cleanup must pass before Xcode's actual generated plan can be rebound to the
 unchanged captured application/test code and all 41 Projection tests. Its
 independent diagnostic copy is resealed without changing that code. The control is separate

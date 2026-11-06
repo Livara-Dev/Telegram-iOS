@@ -149,6 +149,10 @@ class Native:
             return complete(json.dumps({'devicetypes': [{'identifier': replay.DEVICE_TYPE}]}).encode())
         elif args[:3] == ['xcrun', 'simctl', 'create']:
             self.device_name = args[3]; return complete(IDENTIFIER.encode())
+        elif args[:3] == ['xcrun', 'simctl', 'boot'] and self.kind in ('bootFailed', 'bootTimedOut'):
+            return {'status': 'timedOut' if self.kind == 'bootTimedOut' else 'commandFailed',
+                    'exit_code': None if self.kind == 'bootTimedOut' else 149, 'timeout': self.kind == 'bootTimedOut',
+                    'output_limit': False, 'captured_bytes': 0}, b''
         elif args[:3] == ['xcrun', 'simctl', 'bootstatus'] and self.kind in ('149', '149wrong'):
             return {'status': 'commandFailed', 'exit_code': 149, 'timeout': False, 'output_limit': False, 'captured_bytes': 0}, b''
         elif args[:4] == ['xcrun', 'simctl', 'list', 'devices']:
@@ -342,6 +346,33 @@ class RetainedSettingsReplayTests(unittest.TestCase):
                     self.assertEqual(entry['captured_bytes_scope'], 'returnedStdoutPayloadBytes')
                     self.assertIsNone(entry['failure'])
             self.assertTrue(any('supervisor' in entry for entry in report['commands']))
+
+    def test_fresh_device_lifecycle_explicitly_boots_before_waiting_and_installing(self):
+        with self.prepared() as (root, _, _, _), patch.object(replay.platform, 'system', return_value='Darwin'):
+            native = Native(root)
+            report = replay.execute(root=root, command=native, popen=native.popen, pause=lambda _: None)
+            self.assertTrue(report['passed'])
+            operations = [(arguments[2], timeout) for arguments, timeout in native.calls
+                          if arguments[:2] == ['xcrun', 'simctl'] and arguments[2] in {'create', 'boot', 'bootstatus', 'install'}]
+            self.assertEqual(operations, [('create', 30), ('boot', 120), ('bootstatus', 240), ('install', 120)])
+            boots = [a for a, _ in native.calls if a[:3] == ['xcrun', 'simctl', 'boot']]
+            self.assertEqual(boots, [['xcrun', 'simctl', 'boot', IDENTIFIER]])
+            self.assertEqual(replay.simctl_phase(boots[0]), 'bootDevice')
+
+    def test_failed_explicit_boot_cannot_continue_to_wait_install_or_launch_but_still_cleans_own_uuid(self):
+        for kind in ('bootFailed', 'bootTimedOut'):
+            with self.subTest(kind=kind), self.prepared() as (root, output, _, _), patch.object(replay.platform, 'system', return_value='Darwin'):
+                native = Native(root, kind)
+                with self.assertRaisesRegex(replay.ReplayError, '^settings_native_command_failed$'):
+                    replay.execute(root=root, command=native, popen=native.popen, pause=lambda _: None)
+                report = json.loads((output / 'result.json').read_text())
+                self.assertFalse(report['passed']); self.assertEqual(report['phase'], 'requestOwnedBoot')
+                self.assertFalse(report['installed_host_verified']); self.assertFalse(report['warmup_launch_completed'])
+                self.assertTrue(report['cleanup_passed'])
+                self.assertFalse(any(a[:3] == ['xcrun', 'simctl', operation]
+                                     for a, _ in native.calls for operation in ('bootstatus', 'install', 'launch')))
+                self.assertEqual(native.calls[-3:], [(['xcrun', 'simctl', 'shutdown', IDENTIFIER], 30),
+                    (['xcrun', 'simctl', 'delete', IDENTIFIER], 30), (['xcrun', 'simctl', 'list', 'devices', '--json'], 10)])
 
     @contextlib.contextmanager
     def prepared(self):
