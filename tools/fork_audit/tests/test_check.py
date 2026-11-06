@@ -94,6 +94,12 @@ class SourceGuardTests(unittest.TestCase):
             self.write(path, "// feature fixture\n")
         self.assertEqual([], self.failures())
 
+    def test_exact_unsigned_delivery_workflow_is_tooling_but_neighbor_is_not(self):
+        self.write(".github/workflows/unsigned-device-delivery.yml", "name: Qualified unsigned delivery\n")
+        self.assertEqual([], self.failures())
+        self.write(".github/workflows/unsigned-device-delivery-extra.yml", "name: Unreviewed workflow\n")
+        self.assertFailure("Addition outside audit/build scope")
+
     def test_exact_source_snapshot_workflow_is_tooling_but_neighbor_is_not(self):
         self.write(".github/workflows/ayu-source-snapshot.yml", "name: Tracked source snapshot\n")
         self.assertEqual([], self.failures())
