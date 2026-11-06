@@ -33,6 +33,14 @@ is not substituted for a successful test result. The unsigned device mode builds
 build artifact, not an installable independently signed release. Device mode does not
 run simulator tests, and its manifest records `not_run`.
 
+Unsigned device publication and later device-variant inspection use the same
+bounded package check. Every embedded Mach-O must be unsigned ARM64 iPhoneOS;
+profiles, signature directories, missing declared executables and unresolved
+bundled framework load paths fail publication. Load paths are resolved from the
+actual loader, executable and inherited `LC_RPATH` commands. This is a static
+check: Apple system-library availability, dynamically loaded resources, valid
+signing and successful device startup still require separate verification.
+
 The Actions `native-only` scope runs all eight integration suites and the
 account-free production options renderer in the same workflow, on separate
 macOS runners. Neither job builds the complete messaging application. The

@@ -11,12 +11,12 @@ import math
 from pathlib import Path, PurePosixPath
 import re
 import stat
-import struct
 import subprocess
 import tempfile
 import zipfile
 
-from ipa_inspect import inspect_ipa
+from ipa_inspect import inspect_ipa, InvalidIPA
+from ipa_device_inspect import inspect_unsigned_device
 from launch_smoke import PHASES, SMOKE_CODES, ERROR_DOMAINS
 from storage_evidence import STORAGE_FIELDS
 from artifact_licensing import MATERIAL_NAMES, validate_materials, write_materials
@@ -285,53 +285,11 @@ def prior_smoke_report(value):
 
 
 def unsigned_device_inspection(path):
-    """Check every Mach-O, not just the main executable, without executing code."""
-    inspection = inspect_ipa(path, 'unsigned-device', BUNDLE)
-    count = 0
-    with zipfile.ZipFile(path) as archive:
-        entries = archive.infolist()
-        if len(entries) > MAX_FILES or len({e.filename for e in entries}) != len(entries):
-            raise ReplayError('invalid_ipa_entries')
-        total = 0
-        for entry in entries:
-            name = member_name(entry.filename, directory=entry.is_dir())
-            if (entry.flag_bits & 1 or stat.S_IFMT(entry.external_attr >> 16) not in {0, stat.S_IFREG, stat.S_IFDIR}
-                    or '_CodeSignature' in PurePosixPath(name).parts or name.endswith('/embedded.mobileprovision')):
-                raise ReplayError('device_ipa_not_unsigned')
-            total += entry.file_size
-            if entry.file_size > MAX_ZIP_BYTES or total > MAX_CONTENT_BYTES:
-                raise ReplayError('ipa_content_limit_exceeded')
-            if entry.is_dir(): continue
-            with archive.open(entry) as stream:
-                magic = stream.read(4)
-                if magic != b'\xcf\xfa\xed\xfe':
-                    if magic in {b'\xfe\xed\xfa\xcf', b'\xce\xfa\xed\xfe', b'\xfe\xed\xfa\xce',
-                                 b'\xca\xfe\xba\xbe', b'\xbe\xba\xfe\xca', b'\xca\xfe\xba\xbf', b'\xbf\xba\xfe\xca'}:
-                        raise ReplayError('unsupported_device_macho')
-                    continue
-                header = magic + stream.read(28)
-                if len(header) != 32: raise ReplayError('invalid_device_macho')
-                _, cpu, _, filetype, commands, size, _, _ = struct.unpack('<8I', header)
-                if (cpu != 0x0100000c or filetype not in {2, 6, 8} or not 1 <= commands <= 4096 or
-                        not commands * 8 <= size <= min(1024**2, entry.file_size - 32)):
-                    raise ReplayError('invalid_device_macho')
-                data = stream.read(size)
-                if len(data) != size: raise ReplayError('invalid_device_macho')
-                position, platform = 0, None
-                for _ in range(commands):
-                    if position + 8 > len(data): raise ReplayError('invalid_device_macho')
-                    code, length = struct.unpack_from('<II', data, position)
-                    if length < 8 or length % 8 or position + length > len(data):
-                        raise ReplayError('invalid_device_macho')
-                    if code == 0x1d: raise ReplayError('device_ipa_not_unsigned')  # LC_CODE_SIGNATURE
-                    if code == 0x32:
-                        if length < 24 or platform is not None: raise ReplayError('invalid_device_macho')
-                        platform = struct.unpack_from('<I', data, position + 8)[0]
-                    position += length
-                if position != len(data) or platform != 2: raise ReplayError('device_macho_platform_mismatch')
-                count += 1
-    if not count: raise ReplayError('device_macho_missing')
-    return {**inspection, 'unsigned_macho_count': count, 'all_macho_platforms': 2, 'signing': 'disabled'}
+    """Use the same complete unsigned-device gate as first publication."""
+    try:
+        return inspect_unsigned_device(path, BUNDLE)
+    except InvalidIPA:
+        raise ReplayError('invalid_unsigned_device_contents') from None
 
 
 def verify_extract(archive_path, artifact, source, destination, mode='simulator'):

@@ -21,10 +21,21 @@ from test_replay_artifact import API
 SOURCE, RUN = 'c' * 40, 42031063759
 
 
-def macho(platform=2, signature=False, filetype=2):
+def macho(platform=2, signature=False, filetype=2, media=False):
     commands = struct.pack('<6I', 0x32, 24, platform, 0x000f0000, 0x001b0100, 0)
+    count = 1
+    if media:
+        for code, header_size, text in (
+                (0x8000001c, 12, '@executable_path/Frameworks'),
+                (0xc, 24, '@rpath/Media.framework/Media')):
+            payload = text.encode() + b'\0'
+            length = (header_size + len(payload) + 7) & ~7
+            command = struct.pack('<III', code, length, header_size)
+            command += b'\0' * (header_size - len(command))
+            commands += command + payload + b'\0' * (length - header_size - len(payload))
+            count += 1
     if signature: commands += struct.pack('<4I', 0x1d, 16, 0, 0)
-    return struct.pack('<8I', 0xfeedfacf, 0x0100000c, 0, filetype, 2 if signature else 1,
+    return struct.pack('<8I', 0xfeedfacf, 0x0100000c, 0, filetype, count + int(signature),
                        len(commands), 0, 0) + commands
 
 
@@ -32,14 +43,16 @@ def ipa(path, extra=None):
     files = {'Payload/Telegram.app/Info.plist': plistlib.dumps({
         'CFBundleIdentifier': replay.BUNDLE, 'CFBundleExecutable': 'Telegram',
         'CFBundleSupportedPlatforms': ['iPhoneOS'], 'CFBundleVersion': '54'}),
-        'Payload/Telegram.app/Telegram': macho(),
+        'Payload/Telegram.app/Telegram': macho(media=True),
         'Payload/Telegram.app/Frameworks/Media.framework/Media': macho(filetype=6),
-        'Payload/Telegram.app/Frameworks/Media.framework/Info.plist': b'framework metadata',
+        'Payload/Telegram.app/Frameworks/Media.framework/Info.plist': plistlib.dumps({
+            'CFBundleIdentifier': 'test.framework.media', 'CFBundleExecutable': 'Media'}),
         'Payload/Telegram.app/Assets.car': b'preserved application resource',
         'Payload/Telegram.app/Other/PlugIns/keep.txt': b'not the main PlugIns directory'}
     for n in range(6):
         base = 'Payload/Telegram.app/PlugIns/Extension' + str(n) + '.appex/'
-        files[base + 'Info.plist'] = plistlib.dumps({'CFBundleIdentifier': 'test.extension.' + str(n)})
+        files[base + 'Info.plist'] = plistlib.dumps({
+            'CFBundleIdentifier': 'test.extension.' + str(n), 'CFBundleExecutable': 'Executable'})
         files[base + 'Executable'] = macho()
     files.update(extra or {})
     with zipfile.ZipFile(path, 'w', compression=zipfile.ZIP_DEFLATED) as archive:

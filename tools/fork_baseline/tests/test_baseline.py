@@ -252,6 +252,9 @@ class PrivacyAndArtifactsTests(unittest.TestCase):
         inspection = patch.object(baseline, "inspect_ipa", return_value={"test_fixture": True})
         inspection.start()
         self.addCleanup(inspection.stop)
+        device_inspection = patch.object(baseline, "inspect_unsigned_device", return_value={"test_fixture": True})
+        device_inspection.start()
+        self.addCleanup(device_inspection.stop)
         probe = patch.object(baseline, "capture_projection_launch")
         probe.start()
         self.addCleanup(probe.stop)
@@ -264,9 +267,10 @@ class PrivacyAndArtifactsTests(unittest.TestCase):
             source.parent.mkdir(parents=True)
             def fake_command(args, env, secrets):
                 source.write_bytes(b"wrong-platform fixture")
-            with patch.object(baseline, "ROOT", root), patch.object(baseline, "preflight", return_value=Path('/bazel')), patch.object(baseline, "run_redacted", side_effect=fake_command), patch.object(baseline.subprocess, "run"), patch.object(baseline, "inspect_ipa", side_effect=baseline.InvalidIPA("Wrong platform")), patch.object(baseline, "publish_artifact") as publish:
+            with patch.object(baseline, "ROOT", root), patch.object(baseline, "preflight", return_value=Path('/bazel')), patch.object(baseline, "run_redacted", side_effect=fake_command), patch.object(baseline.subprocess, "run"), patch.object(baseline, "inspect_unsigned_device", side_effect=baseline.InvalidIPA("Wrong platform")) as inspection, patch.object(baseline, "publish_artifact") as publish:
                 with self.assertRaisesRegex(baseline.InvalidSetup, "Wrong platform"):
                     baseline.build("unsigned-device", fixture(), 1)
+                inspection.assert_called_once()
                 publish.assert_not_called()
             self.assertFalse((root / "build/fork-baseline-unsigned-device").exists())
 

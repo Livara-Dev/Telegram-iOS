@@ -23,6 +23,7 @@ from artifact_licensing import material_bytes, validate_materials, write_materia
 
 from unsigned_rules import prepare_unsigned_rules
 from ipa_inspect import inspect_ipa, InvalidIPA
+from ipa_device_inspect import inspect_unsigned_device
 from simulator_probe import capture as capture_projection_launch
 from dependency_cache import active_path as public_dependency_cache
 from test_product_capture import retain_captured as retain_projection_products
@@ -575,7 +576,9 @@ def build(mode, env, build_number, integration_tests=False, tests_only=False, fo
                 captured_ipa = temporary / "Telegram.ipa"
                 shutil.copyfile(ROOT / "bazel-bin/Telegram/Telegram.ipa", captured_ipa)
                 try:
-                    binary_report = inspect_ipa(captured_ipa, mode, config["bundle_id"])
+                    binary_report = (inspect_unsigned_device(captured_ipa, config["bundle_id"])
+                                     if mode == "unsigned-device" else
+                                     inspect_ipa(captured_ipa, mode, config["bundle_id"]))
                 except InvalidIPA as error:
                     raise InvalidSetup(str(error)) from error
                 if mode == "simulator" and not integration_tests:
