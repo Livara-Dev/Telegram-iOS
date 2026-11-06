@@ -1,0 +1,78 @@
+name: AyuGram exact-revision source snapshot
+
+on:
+  push:
+    branches: [integration/ayu-current]
+    paths: [.github/workflows/ayu-source-snapshot.yml]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  source-snapshot:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Archive only tracked files from the exact requested revision
+        env:
+          CHECKOUT_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import base64
+          import hashlib
+          import json
+          import os
+          from pathlib import Path
+          import re
+          import subprocess
+
+          repository = os.environ['GITHUB_REPOSITORY']
+          revision = os.environ['GITHUB_SHA']
+          if repository != 'Livara-Dev/Telegram-iOS' or not re.fullmatch(r'[0-9a-f]{40}', revision):
+              raise SystemExit('Unexpected source coordinates')
+          root = Path(os.environ['RUNNER_TEMP']) / 'ayu-source-snapshot'
+          root.mkdir(mode=0o700)
+          checkout = root / 'checkout'
+          checkout.mkdir(mode=0o700)
+          output = root / 'output'
+          output.mkdir(mode=0o700)
+          def run(*args, env=None):
+              return subprocess.run(args, cwd=checkout, env=env, check=True, timeout=600)
+          run('git', 'init', '-q')
+          run('git', 'remote', 'add', 'origin', 'https://github.com/' + repository + '.git')
+          private = os.environ.copy()
+          token = private.pop('CHECKOUT_TOKEN')
+          private.update(GIT_CONFIG_COUNT='1', GIT_CONFIG_KEY_0='http.https://github.com/.extraheader',
+                         GIT_CONFIG_VALUE_0='AUTHORIZATION: basic ' + base64.b64encode(('x-access-token:' + token).encode()).decode())
+          run('git', 'fetch', '--no-tags', '--depth=1', 'origin', revision, env=private)
+          actual = subprocess.check_output(['git', 'rev-parse', 'FETCH_HEAD'], cwd=checkout, text=True).strip()
+          if actual != revision:
+              raise SystemExit('Exact source revision mismatch')
+          archive = output / ('Telegram-iOS-' + revision + '.tar.gz')
+          run('git', 'archive', '--format=tar.gz', '--prefix=Telegram-iOS/', '--output=' + str(archive), revision)
+          digest = hashlib.file_digest(archive.open('rb'), 'sha256').hexdigest()
+          (output / 'SHA256SUMS').write_text(digest + '  ' + archive.name + '\n')
+          gitlinks = []
+          tree = subprocess.check_output(['git', 'ls-tree', '-r', '-z', revision], cwd=checkout)
+          for record in tree.split(b'\0'):
+              if record.startswith(b'160000 '):
+                  metadata, path = record.split(b'\t', 1)
+                  gitlinks.append({'path': path.decode('utf-8'), 'commit': metadata.split()[2].decode('ascii')})
+          (output / 'source-manifest.json').write_text(json.dumps({
+              'repository': repository, 'source_commit': revision,
+              'archive_sha256': digest, 'submodules_included': False,
+              'submodules': gitlinks, 'application_built': False,
+              'description': 'Tracked source snapshot only; not an IPA or application qualification.'
+          }, indent=2) + '\n')
+          print('Exact tracked-source snapshot created; no application build claimed.')
+          PY
+      - name: Publish source snapshot and checksums
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: ayugram-source-${{ github.sha }}
+          path: ${{ runner.temp }}/ayu-source-snapshot/output/
+          if-no-files-found: error
+          retention-days: 7
