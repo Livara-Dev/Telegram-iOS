@@ -295,7 +295,8 @@ class ModernPlanTests(unittest.TestCase):
 
     def execute_fixture(self, root, control_outcome='passed', mutate=False, readback='correct', entitlements=None, warming='correct',
                         test_entitlements=None, test_readback='missing', host_input=True, device_metadata='correct', boot_status=0,
-                        projection_outcome='passed', cleanup_failure=False, mutate_control=False, repeat_uuid=False):
+                        projection_outcome='passed', cleanup_failure=False, mutate_control=False, repeat_uuid=False,
+                        post_app_only=False):
         output = root / modern.OUTPUT; output.mkdir(parents=True)
         capture = fixtures.captured(root, current=True)
         info = capture / 'TEST_ROOT' / modern.products.APP / 'PlugIns' / modern.products.TEST / 'Info.plist'
@@ -389,6 +390,15 @@ class ModernPlanTests(unittest.TestCase):
                         return {'status': 'timedOut', 'exit_code': None, 'timeout': True, 'output_limit': False, 'captured_bytes': 0}, b''
                     return complete(control_log(control_outcome), 0 if control_outcome == 'passed' else 65)
                 if mutate: (output / 'private-products/capture.json').write_bytes(b'private-corruption-canary')
+                if post_app_only:
+                    plan_path = Path(args[args.index('-xctestrun') + 1])
+                    _, runner = modern.target(modern._read_plan(plan_path))
+                    host = modern.resolved_path(runner['TestHostPath'], plan_path.parent)
+                    if host.suffix != '.app': host = host.parent
+                    parent = root / 'Library/Developer/CoreSimulator/Devices' / created_ids[-1] / 'data/Containers/Bundle/Application' / IDENTIFIER
+                    parent.mkdir(parents=True)
+                    (parent / '.com.apple.mobile_container_manager.metadata.plist').write_bytes(plistlib.dumps({'MCMMetadataIdentifier': modern.CONTROL_APP_ID}))
+                    shutil.copytree(host, parent / (modern.CONTROL_APP + '.app'))
                 return complete(fixtures.log(projection_outcome), 0 if projection_outcome == 'passed' else 65)
             return complete()
         def reseal(original, destination, *args, **kwargs):
@@ -676,6 +686,59 @@ class ModernPlanTests(unittest.TestCase):
                 with patch.object(modern.Path, 'home', return_value=root), self.assertRaises(modern.PlanError):
                     modern.control_containers(IDENTIFIER)
 
+    def test_independent_roles_observe_installed_app_without_a_prelaunch_data_container(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve(); expected = owned_fixture(root)
+            shutil.rmtree(expected['data'].parent)
+            with patch.object(modern.Path, 'home', return_value=root):
+                paths, roles = modern.container_observations(IDENTIFIER)
+                with self.assertRaises(modern.PlanError): modern.control_containers(IDENTIFIER)
+            self.assertEqual(paths, {'app': expected['app']})
+            self.assertEqual(roles['app'], {'state': 'unique', 'reason': None, 'verified_candidates': 1, 'unidentified_records': 0})
+            self.assertEqual(roles['data'], {'state': 'absent', 'reason': 'containerLayoutAbsent', 'verified_candidates': 0, 'unidentified_records': 0})
+            value = modern.public_live_observation({'containers': roles})
+            self.assertEqual(value['containers'], roles); self.assertNotIn(str(root), json.dumps(value))
+
+    def test_ambiguous_unknown_invalid_and_over_limit_data_never_hide_the_independent_app_role(self):
+        for kind in ('duplicate', 'missing', 'malformed', 'empty', 'whitespace', 'nul', 'type', 'knownPlusUnknown', 'limit', 'symlink'):
+            with self.subTest(kind=kind), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory).resolve(); expected = owned_fixture(root)
+                metadata = expected['data'] / '.com.apple.mobile_container_manager.metadata.plist'
+                if kind == 'duplicate': shutil.copytree(expected['data'], expected['data'].with_name('duplicate'))
+                elif kind == 'missing': metadata.unlink()
+                elif kind == 'malformed': metadata.write_bytes(b'<?xml version="1.0"?><plist><dict><key>private-canary</key>')
+                elif kind in ('empty', 'whitespace', 'nul', 'type'):
+                    metadata.write_bytes(plistlib.dumps({'MCMMetadataIdentifier': {'empty': '', 'whitespace': ' ', 'nul': '\x00', 'type': 1}[kind]}, fmt=plistlib.FMT_BINARY))
+                elif kind == 'knownPlusUnknown': expected['data'].with_name('unknown').mkdir()
+                elif kind == 'limit':
+                    for index in range(128): expected['data'].with_name(str(index)).mkdir()
+                elif kind == 'symlink':
+                    outside = root / 'outside'; metadata.rename(outside); metadata.symlink_to(outside)
+                with patch.object(modern.Path, 'home', return_value=root):
+                    paths, roles = modern.container_observations(IDENTIFIER)
+                self.assertEqual(paths, {'app': expected['app']}); self.assertEqual(roles['app']['state'], 'unique')
+                self.assertEqual(roles['data']['state'], 'ambiguous' if kind == 'duplicate' else 'unavailable')
+                self.assertNotIn('private-canary', json.dumps(roles)); self.assertNotIn(str(root), json.dumps(roles))
+                if kind == 'knownPlusUnknown':
+                    self.assertEqual(roles['data']['verified_candidates'], 1); self.assertEqual(roles['data']['unidentified_records'], 1)
+
+    def test_failed_suite_retains_post_test_app_role_when_data_container_does_not_exist(self):
+        with tempfile.TemporaryDirectory() as directory:
+            result, _ = self.execute_fixture(Path(directory).resolve(), projection_outcome='failed', post_app_only=True)
+            self.assertFalse(result['passed']); self.assertTrue(result['projection']['cleanup_completed'])
+            post = result['projection']['post_test_filesystem']
+            self.assertTrue(post['captured_after_xcode_exit']); self.assertEqual(post['state'], 'observed')
+            self.assertEqual(post['containers']['app']['state'], 'unique'); self.assertEqual(post['containers']['data']['state'], 'absent')
+            self.assertEqual(result['projection']['post_test_marker'], {'state': 'unavailable', 'captured_after_xcode_exit': True})
+
+    def test_command_wall_time_is_closed_bounded_and_does_not_change_test_outcomes(self):
+        with tempfile.TemporaryDirectory() as directory:
+            result, _ = self.execute_fixture(Path(directory).resolve())
+            self.assertTrue(result['passed']); self.assertEqual(set(result['command_timing']), set(result['commands']))
+            for timing in result['command_timing'].values():
+                self.assertEqual(set(timing), {'state', 'elapsed_ms'}); self.assertEqual(timing['state'], 'measured')
+                self.assertIs(type(timing['elapsed_ms']), int); self.assertTrue(0 <= timing['elapsed_ms'] <= 86400000)
+
     def test_marker_reads_exact_frozen_c_writer_bytes_and_clear_never_follows_links(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory).resolve(); path = root / modern.tiny.MARKER_RELATIVE; path.parent.mkdir(parents=True)
@@ -722,15 +785,96 @@ class ModernPlanTests(unittest.TestCase):
     def test_live_callback_private_paths_or_unbounded_extra_fields_never_enter_public_result(self):
         secret = 'private-observer-canary'
         value = {'state': secret, 'marker': {'state': 'observed', 'stage': secret, 'path': secret},
+                 'phase': secret, 'reason': secret, 'pid': 987,
+                 'containers': {'app': {'state': 'unique', 'verified_candidates': 1, 'unidentified_records': 1,
+                     'reason': secret, 'path': secret}, 'data': {'state': 'absent', 'verified_candidates': 0,
+                     'unidentified_records': None, 'reason': secret}},
+                 'xcode_process': {'parse_state': secret, 'pid': 987, 'command': {'status': secret,
+                     'stdout_bytes': 65537, 'stderr_bytes': True, 'stderr': secret, 'path': secret}},
                  'host_process': {'state': secret, 'pid': 987}, 'sample': {'state': secret, 'target': secret,
                     'selection': {'wait_categories': {'mach_message_wait': True, secret: 123}}}, secret: secret}
         actual = modern.public_live_observation(value)
         self.assertNotIn(secret, json.dumps(actual)); self.assertNotIn('987', json.dumps(actual))
         self.assertEqual(actual['sample']['selection']['wait_categories']['mach_message_wait'], 0)
+        self.assertEqual(actual['containers']['app']['state'], 'unavailable'); self.assertEqual(actual['containers']['data']['state'], 'unavailable')
+        self.assertEqual(actual['xcode_process']['command']['stdout_bytes'], 0); self.assertEqual(actual['xcode_process']['command']['stderr_bytes'], 0)
+        self.assertEqual(actual['reason'], 'unreported'); self.assertEqual(actual['phase'], 'nativeSupervisor')
         self.assertFalse(modern.public_group_observation({**value, 'received_before_retirement': True})['received_before_retirement'])
         for item in ([], {}, 1, True, None):
-            value = {'state': item, 'marker': {'state': item}, 'host_process': {'state': item}, 'sample': {'target': item, 'state': item}}
+            value = {'state': item, 'phase': item, 'reason': item, 'marker': {'state': item},
+                'containers': {'app': {'state': item, 'reason': item}, 'data': item},
+                'xcode_process': {'parse_state': item}, 'host_process': {'state': item}, 'sample': {'target': item, 'state': item}}
             self.assertEqual(modern.public_live_observation(value)['state'], 'unavailable')
+
+    def test_supervisor_fast_child_keeps_not_triggered_reason_instead_of_claiming_failed_observation(self):
+        observer = Mock(side_effect=AssertionError('Fast child must not invoke observer'))
+        status, raw = modern.projection.native_command([sys.executable, '-c', 'print("ok")'], timeout=2,
+                                                       bootstrap_diagnostic=observer)
+        observer.assert_not_called(); self.assertEqual(raw, b'ok\n'); self.assertEqual(status['status'], 'completed')
+        value = modern.public_live_observation(status['bootstrap_diagnostic'])
+        self.assertEqual(value['state'], 'notTriggered'); self.assertEqual(value['reason'], 'commandEndedBeforeTrigger')
+        self.assertEqual(value['phase'], 'nativeSupervisor'); self.assertFalse(value['callback_result_received'])
+
+    def test_unknown_child_liveness_never_becomes_measured_exit_or_permits_filesystem_or_pid_sampling(self):
+        for alive, reason in ((lambda: False, 'childNotAlive'), (lambda: None, 'childLivenessUnknown'),
+                              (lambda: 1, 'childLivenessUnknown'),
+                              (Mock(side_effect=ValueError('private-liveness-canary')), 'childLivenessUnknown')):
+            with self.subTest(alive=alive), patch.object(modern, 'owned_device_identity') as identity, \
+                 patch.object(modern.bootstrap, 'command') as command:
+                value = modern.public_live_observation(modern.live_control_observation(123, 123, IDENTIFIER, '', (), alive, 'owned-control'))
+            identity.assert_not_called(); command.assert_not_called()
+            self.assertEqual(value['reason'], reason); self.assertEqual(value['phase'], 'checkChild')
+            self.assertFalse(value['marker']['captured_while_child_alive']); self.assertEqual(value['sample']['state'], 'notAttempted')
+            self.assertNotIn('private-liveness-canary', json.dumps(value))
+
+    def test_failed_xcode_ps_keeps_prior_owned_filesystem_evidence_and_samples_only_independently_verified_host(self):
+        for ps_mode, host_mode, data_absent in (('timeout', 'verified', False), ('invalid', 'verified', True),
+                                                ('timeout', 'path', False), ('timeout', 'uid', False), ('timeout', 'absent', False)):
+            with self.subTest(ps=ps_mode, host=host_mode, data_absent=data_absent), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory).resolve(); containers = owned_fixture(root)
+                marker = containers['data'] / modern.tiny.MARKER_RELATIVE; marker.parent.mkdir(parents=True); marker.write_bytes(b'mainEntered')
+                if data_absent: shutil.rmtree(containers['data'].parent)
+                calls, uid = [], os.getuid()
+                def command(args, secrets, timeout=3):
+                    calls.append((args, timeout))
+                    if args[:4] == ['/bin/ps', '-p', '123', '-o']:
+                        self.assertTrue(roles.called, 'Owned filesystem must be measured before PS')
+                        raw = b'private-invalid-process-canary' if ps_mode == 'invalid' else b''
+                        return {'status': 'completed' if ps_mode == 'invalid' else 'timedOut', 'exit_code': 0 if ps_mode == 'invalid' else None,
+                            'timeout': ps_mode == 'timeout', 'output_limit': False, 'stdout_bytes': len(raw), 'stderr_bytes': 0}, raw
+                    if args[:3] == ['/usr/bin/pgrep', '-x', '-u']:
+                        return complete(b'456\n') if host_mode != 'absent' else complete(code=1)
+                    if modern.KERNEL_PATH in args:
+                        return complete(str(containers['app'] / modern.CONTROL_APP).encode() if host_mode != 'path' else b'/private/foreign-executable')
+                    if args[:4] == ['/bin/ps', '-p', '456', '-o']:
+                        return complete(('456 ' + str(uid + 1 if host_mode == 'uid' else uid)).encode())
+                    if modern.bootstrap.SAMPLE_EXEC_WRAPPER in args:
+                        self.assertEqual(args[-2], '456', 'Never sample the unverified Xcode PID')
+                        Path(args[-1]).write_bytes(b'Call graph:\n    1 Thread_0 DispatchQueue_1: com.apple.main-thread (serial)\n    1 mach_msg2_trap (in libsystem_kernel.dylib) + 0 [0xabc]\nBinary Images:\nprivate-sample-canary\n')
+                        return complete()
+                    raise AssertionError(args)
+                with patch.object(modern.Path, 'home', return_value=root), \
+                     patch.object(modern, 'container_observations', wraps=modern.container_observations) as roles, \
+                     patch.object(modern.bootstrap, 'command', side_effect=command):
+                    observed = modern.live_control_observation(123, 123, IDENTIFIER,
+                        modern.projection.digest(containers['app'] / modern.CONTROL_APP), (), lambda: True, 'owned-control')
+                value = modern.public_live_observation(observed)
+                self.assertEqual(value['containers']['app']['state'], 'unique'); self.assertTrue(value['host_executable_bytes_match'])
+                self.assertEqual(value['containers']['data']['state'], 'absent' if data_absent else 'unique')
+                self.assertFalse(value['xcode_identity_verified']); self.assertTrue(value['callback_result_received'])
+                self.assertEqual(value['xcode_process']['command']['status'], 'timedOut' if ps_mode == 'timeout' else 'completed')
+                self.assertEqual(value['xcode_process']['parse_state'], 'notParsed' if ps_mode == 'timeout' else 'invalidPayload')
+                self.assertEqual(value['marker']['captured_while_child_alive'], not data_absent)
+                if not data_absent: self.assertEqual(value['marker']['stage'], 'mainEntered')
+                if host_mode == 'verified':
+                    self.assertEqual(value['sample']['target'], 'tinyControl'); self.assertEqual(value['sample']['state'], 'observed')
+                    self.assertEqual(value['phase'], 'complete'); self.assertEqual(value['reason'], 'observed')
+                else:
+                    self.assertEqual(value['reason'], 'samplingTargetUnverified'); self.assertEqual(value['state'], 'partial')
+                    self.assertFalse(any(modern.bootstrap.SAMPLE_EXEC_WRAPPER in args for args, _ in calls))
+                self.assertTrue(all(timeout <= 10 for _, timeout in calls))
+                for secret in (str(root), IDENTIFIER, 'private-invalid-process-canary', 'private-sample-canary', '/private/foreign-executable'):
+                    self.assertNotIn(secret, json.dumps(value))
 
     def test_only_optional_test_zero_rights_accepts_missing_empty_or_xml_empty_signature_output(self):
         for expected in (None, {}):

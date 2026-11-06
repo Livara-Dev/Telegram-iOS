@@ -19,6 +19,7 @@ import shutil
 import struct
 import subprocess
 import tempfile
+import time
 import uuid
 import zlib
 from xml.parsers.expat import ExpatError
@@ -33,6 +34,7 @@ ROLE = 'retainedSyntheticSettingsNativeUI'
 OUTPUT = retained.OUTPUT
 MAX_PLAN = 2 * 1024**2
 MAX_PNG = 16 * 1024**2
+NATIVE_UI_TIMEOUT_SECONDS = 600
 
 
 class DriverError(ValueError):
@@ -300,6 +302,7 @@ def execute(output=OUTPUT, root=None, command=retained.ui_native_command, popen=
         'historical_interaction_cases_passed': 1, 'new_xctest_cases_executed': 0, 'expected_new_cases': 1,
         'application_recompiled': False, 'renderer_recompiled': False, 'logged_in_settings_verified': False,
         'physical_device_verified': False, 'release_qualified': False, 'visual_review_required': True,
+        'native_ui_timeout_seconds': NATIVE_UI_TIMEOUT_SECONDS,
         'device_model': 'iPhone 15 Pro', 'runtime': '27.0', 'passed': False, 'phase': 'preflight', 'commands': [],
         'source_codesign_verified': False, 'installed_host_verified': False, 'post_installed_host_verified': False,
         'installation_strategy': 'appleXcodeUITestRunner', 'installed_host_pre_execution_verified': False,
@@ -310,7 +313,10 @@ def execute(output=OUTPUT, root=None, command=retained.ui_native_command, popen=
     identifier = recorder = None
     secrets = [value for key, value in os.environ.items() if len(value) >= 6 and re.search(r'TOKEN|SECRET|PASSWORD|API_HASH|API_ID', key, re.I)]
     def call(label, arguments, timeout=30, require=True):
-        report['phase'] = label; status, data = command(arguments, timeout=timeout)
+        report['phase'] = label; started = time.monotonic()
+        status, data = command(arguments, timeout=timeout)
+        elapsed = (time.monotonic() - started) * 1000
+        elapsed_ms = int(elapsed) if 0 <= elapsed <= 86400000 else None
         fields = {'status', 'exit_code', 'timeout', 'output_limit', 'captured_bytes'}
         if (not isinstance(status, dict) or set(status) not in (fields, fields | retained.SIMCTL_STATUS_FIELDS) or
                 status.get('status') not in {'completed', 'commandFailed', 'timedOut', 'outputLimit', 'unavailable'} or
@@ -320,7 +326,7 @@ def execute(output=OUTPUT, root=None, command=retained.ui_native_command, popen=
                 not (status.get('exit_code') is None or type(status['exit_code']) is int)):
             raise DriverError('ui_command_evidence_invalid')
         if set(status) != fields: retained.validate_simctl_status(status, arguments)
-        report['commands'].append({'command': label, **status})
+        report['commands'].append({'command': label, **status, 'elapsed_ms': elapsed_ms})
         okay = status['status'] == 'completed' and status['exit_code'] == 0 and not status['timeout'] and not status['output_limit']
         if require and not okay: raise DriverError('ui_native_command_failed')
         return okay, data
@@ -387,7 +393,7 @@ def execute(output=OUTPUT, root=None, command=retained.ui_native_command, popen=
                 result_bundle = private / 'test.xcresult'
                 okay, data = call('nativeUITest', ['xcodebuild', 'test-without-building', '-xctestrun', str(plan),
                     '-destination', 'platform=iOS Simulator,id=' + identifier, '-parallel-testing-enabled', 'NO',
-                    '-maximum-concurrent-test-simulator-destinations', '1', '-resultBundlePath', str(result_bundle)], 300, False)
+                    '-maximum-concurrent-test-simulator-destinations', '1', '-resultBundlePath', str(result_bundle)], NATIVE_UI_TIMEOUT_SECONDS, False)
                 log('xctest.log', data); cases = case_results(data); write_json(output / 'case-results.json', cases)
                 report['new_xctest_cases_executed'] = cases['executed']; report['native_ui_case_passed'] = okay and cases['all_expected_passed']
                 exported = private / 'attachments'; exported.mkdir(mode=0o700)

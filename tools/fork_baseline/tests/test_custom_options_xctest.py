@@ -115,7 +115,7 @@ class Native(retained_fixture.Native):
         return super().__call__(args, timeout)
 
     def assert_native_args(self, args, timeout):
-        if timeout != 300: raise AssertionError('XCTest deadline changed')
+        if timeout != 600: raise AssertionError('Bounded UI experiment deadline changed')
         if args[args.index('-parallel-testing-enabled') + 1] != 'NO': raise AssertionError('Parallel XCTest enabled')
         if args[args.index('-destination') + 1] != 'platform=iOS Simulator,id=' + retained_fixture.IDENTIFIER: raise AssertionError('Wrong device')
         for forbidden in ('-test-iterations', '-retry-tests-on-failure', '-run-tests-until-failure', '-only-testing', '-skip-testing'):
@@ -270,6 +270,7 @@ class RetainedNativeUIDriverTests(unittest.TestCase):
                 patch.dict(os.environ, {'GH_TOKEN': 'PRIVATE-CANARY'}):
             native = Native(root); report = replay.execute(root=root, command=native, popen=native.popen)
             self.assertTrue(report['passed']); self.assertEqual(report['new_xctest_cases_executed'], 1)
+            self.assertEqual(report['native_ui_timeout_seconds'], 600)
             self.assertEqual(report['installation_strategy'], 'appleXcodeUITestRunner')
             self.assertFalse(report['installed_host_pre_execution_verified'])
             for key in ('installed_host_verified', 'post_installed_host_verified', 'source_host_unchanged', 'cleanup_passed', 'recording_available', 'driver_codesign_verified'):
@@ -288,6 +289,19 @@ class RetainedNativeUIDriverTests(unittest.TestCase):
             for name in ('result.json', 'xctest.log', 'case-results.json', 'driver-compiler.log'):
                 text = (output / name).read_text()
                 for private in ('PRIVATE-CANARY', '/Users/private', str(root), retained_fixture.IDENTIFIER): self.assertNotIn(private, text)
+
+    def test_only_native_ui_budget_changes_and_per_command_elapsed_is_measured_separately_from_status(self):
+        ticks = iter(index / 8 for index in range(1000))
+        with self.prepared() as (root, _, _, _), patch.object(replay.platform, 'system', return_value='Darwin'), \
+                patch.object(replay.time, 'monotonic', side_effect=lambda: next(ticks)):
+            native = Native(root); report = replay.execute(root=root, command=native, popen=native.popen)
+            self.assertTrue(report['passed']); self.assertEqual(report['native_ui_timeout_seconds'], 600)
+            self.assertTrue(all(item['elapsed_ms'] == 125 for item in report['commands']))
+            operations = {args[2]: timeout for args, timeout in native.calls if args[:2] == ['xcrun', 'simctl']}
+            self.assertEqual(operations['boot'], 120); self.assertEqual(operations['bootstatus'], 240)
+            self.assertEqual(operations['shutdown'], 30); self.assertEqual(operations['delete'], 30)
+            self.assertEqual([timeout for args, timeout in native.calls if args[:2] == ['xcodebuild', 'build-for-testing']], [180])
+            self.assertEqual([timeout for args, timeout in native.calls if args[:2] == ['xcodebuild', 'test-without-building']], [600])
 
     def test_native_failures_mutations_and_missing_attachment_never_pass(self):
         for kind in ('compile', 'plan', 'driverSignature', 'caseFailed', 'missingCase', 'timeout', 'export', 'sourceMutate', 'installedMutate', 'installedSignature', 'missingInstalled', 'runnerMutate', 'cleanup', 'recordSpawn'):

@@ -673,38 +673,71 @@ def verify_owned_device(raw, identifier, name):
         return False
 
 
-def control_containers(identifier):
-    """Read only metadata inside this invocation's freshly owned simulator."""
-    data_root = owned_data_root(identifier)
+def container_observations(identifier):
+    """Observe the two owned roles independently; return paths only privately."""
+    roles = {role: {'state': 'unavailable', 'reason': 'ownedDataRootUnavailable',
+                    'verified_candidates': None, 'unidentified_records': None} for role in ('app', 'data')}
     found = {}
-    for role, relative in (('data', 'Containers/Data/Application'), ('app', 'Containers/Bundle/Application')):
-        root = data_root / relative
-        if any(path.is_symlink() for path in (root, *list(root.parents)[:3])) or not root.is_dir():
-            raise PlanError('unsafe_owned_control_containers')
-        candidates = []
-        with os.scandir(root) as entries:
-            for entry in entries:
-                if len(candidates) == 128: raise PlanError('owned_control_container_limit')
-                candidates.append(Path(entry.path))
-        matches = []
-        for candidate in candidates:
-            info = candidate.lstat()
-            if not stat.S_ISDIR(info.st_mode) or info.st_uid != os.getuid(): raise PlanError('unsafe_owned_control_container')
-            metadata = candidate / '.com.apple.mobile_container_manager.metadata.plist'
-            if not metadata.exists() and not metadata.is_symlink(): continue
-            value = plistlib.loads(private_bytes(metadata, 16384))
-            if not isinstance(value, dict): raise PlanError('invalid_owned_container_metadata')
-            if value.get('MCMMetadataIdentifier') != CONTROL_APP_ID: continue
-            selected = candidate if role == 'data' else candidate / (CONTROL_APP + '.app')
-            if selected.is_symlink() or not selected.is_dir(): raise PlanError('unsafe_owned_control_container')
-            if role == 'app':
-                info = plistlib.loads(private_bytes(selected / 'Info.plist'))
-                if (not isinstance(info, dict) or info.get('CFBundleIdentifier') != CONTROL_APP_ID
-                        or info.get('CFBundleExecutable') != CONTROL_APP): raise PlanError('installed_control_identity_mismatch')
-            matches.append(selected)
-        if len(matches) != 1: raise PlanError('owned_control_container_not_unique')
-        found[role] = matches[0]
-    return found
+    try: data_root = owned_data_root(identifier)
+    except Exception: return found, roles
+    for role, relative in (('app', 'Containers/Bundle/Application'), ('data', 'Containers/Data/Application')):
+        reason = 'filesystemUnavailable'
+        try:
+            root = data_root
+            missing = False
+            for part in Path(relative).parts:
+                root = root / part
+                try: info = root.lstat()
+                except FileNotFoundError: missing = True; break
+                if not stat.S_ISDIR(info.st_mode) or info.st_uid != os.getuid():
+                    reason = 'unsafeLayout'; raise PlanError('unsafe_container')
+            if missing:
+                roles[role].update(state='absent', reason='containerLayoutAbsent', verified_candidates=0, unidentified_records=0); continue
+            candidates = []
+            with os.scandir(root) as entries:
+                for entry in entries:
+                    if len(candidates) == 128:
+                        reason = 'inventoryLimit'; raise PlanError('container_limit')
+                    candidates.append(Path(entry.path))
+            matches, unidentified = [], 0
+            for candidate in candidates:
+                info = candidate.lstat()
+                if not stat.S_ISDIR(info.st_mode) or info.st_uid != os.getuid():
+                    reason = 'unsafeLayout'; raise PlanError('unsafe_container')
+                metadata = candidate / '.com.apple.mobile_container_manager.metadata.plist'
+                if not metadata.exists() and not metadata.is_symlink(): unidentified += 1; continue
+                try: value = plistlib.loads(private_bytes(metadata, 16384))
+                except Exception:
+                    reason = 'unsafeOrInvalidMetadata'; raise PlanError('invalid_container_metadata') from None
+                if (not isinstance(value, dict) or type(value.get('MCMMetadataIdentifier')) is not str
+                        or re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9_.-]{0,254}', value['MCMMetadataIdentifier']) is None):
+                    unidentified += 1; continue
+                if value['MCMMetadataIdentifier'] != CONTROL_APP_ID: continue
+                selected = candidate if role == 'data' else candidate / (CONTROL_APP + '.app')
+                info = selected.lstat()
+                if not stat.S_ISDIR(info.st_mode) or info.st_uid != os.getuid():
+                    reason = 'unsafeLayout'; raise PlanError('unsafe_container')
+                if role == 'app':
+                    value = plistlib.loads(private_bytes(selected / 'Info.plist'))
+                    if (not isinstance(value, dict) or value.get('CFBundleIdentifier') != CONTROL_APP_ID
+                            or value.get('CFBundleExecutable') != CONTROL_APP):
+                        reason = 'applicationIdentityMismatch'; raise PlanError('invalid_container_identity')
+                matches.append(selected)
+            state = 'ambiguous' if len(matches) > 1 else 'unavailable' if unidentified else 'unique' if matches else 'absent'
+            roles[role].update(state=state, reason='metadataUnidentified' if unidentified and state != 'ambiguous' else None if matches else 'noMatchingContainer',
+                               verified_candidates=len(matches), unidentified_records=unidentified)
+            if state == 'unique': found[role] = matches[0]
+        except Exception:
+            roles[role].update(state='unavailable', reason=reason)
+    return found, roles
+
+
+def control_containers(identifier):
+    """Strict compatibility wrapper: both independently verified roles required."""
+    paths, roles = container_observations(identifier)
+    if any(roles[role]['state'] != 'unique' for role in ('app', 'data')):
+        raise PlanError('owned_control_container_not_unique')
+    return paths
 
 
 def control_marker(container, clear=False):
@@ -780,31 +813,49 @@ def group_observation(pid, group, secrets):
 
 def live_control_observation(pid, group, identifier, expected, secrets, is_alive, device_name):
     """Inspect the exact owned control without relying on live simctl IPC."""
-    report = {'diagnostic_only': True, 'state': 'unavailable', 'xcode_identity_verified': False,
+    report = {'diagnostic_only': True, 'state': 'unavailable', 'phase': 'checkChild', 'reason': 'notObserved',
+              'callback_result_received': True, 'xcode_identity_verified': False,
               'owned_container_verified': False, 'installed_bytes_match': False, 'host_executable_bytes_match': False,
               'marker': {'state': 'unavailable', 'captured_while_child_alive': False},
+              'containers': {}, 'xcode_process': {'parse_state': 'notAttempted', 'identity_verified': False},
               'host_process': {'state': 'notMeasured'}, 'sample': {'target': 'none', 'state': 'notAttempted'}}
+    def child_alive():
+        alive = bootstrap._alive(is_alive)
+        if alive is not True:
+            report['reason'] = 'childNotAlive' if alive is False else 'childLivenessUnknown'
+        return alive is True
     try:
         deadline = time.monotonic() + 18
-        if not bootstrap._alive(is_alive): return report
+        if not child_alive(): return report
+        selected_pid, target, app = None, 'none', None
+        # Filesystem identity is independent of a responsive ps process. It
+        # grants no permission to sample either an unknown PID or another app.
+        report['phase'] = 'ownedFilesystem'
+        report['device_identity'] = identity = owned_device_identity(identifier, device_name)
+        if identity['identity_verified'] is True:
+            containers, report['containers'] = container_observations(identifier)
+            report['owned_container_verified'] = all(role in containers for role in ('app', 'data'))
+            app = containers.get('app')
+            if not child_alive(): return report
+            if 'data' in containers:
+                marker = control_marker(containers['data'])
+                if not child_alive(): return report
+                report['marker'] = {**marker, 'captured_while_child_alive': True}
+            if app is not None:
+                observed_digest = owned_executable_digest(app / CONTROL_APP)
+                report['host_executable_bytes_match'] = observed_digest is not None and observed_digest == expected
+        if not child_alive(): return report
+        report['phase'] = 'verifyXcodeProcess'
         status, raw = bootstrap._run(['/bin/ps', '-p', str(pid), '-o', 'pid=,ppid=,pgid=,uid=,ucomm='], secrets, 2, deadline)
         proof = bootstrap._process_snapshot(raw, pid, group, os.getuid()) if bootstrap._completed(status) else {}
         report['xcode_identity_verified'] = proof.get('owned_xcodebuild_verified') is True
-        if not report['xcode_identity_verified'] or not bootstrap._alive(is_alive): return report
-        selected_pid, target = pid, 'xcodebuild'
+        report['xcode_process'] = {'command': status, 'parse_state': proof.get('state', 'notParsed'),
+                                   'identity_verified': report['xcode_identity_verified']}
+        if report['xcode_identity_verified']: selected_pid, target = pid, 'xcodebuild'
+        if not child_alive(): return report
+        report['phase'] = 'selectHostProcess'
         try:
-            if owned_device_identity(identifier, device_name)['identity_verified'] is not True:
-                raise PlanError('live_control_device_identity_unavailable')
-            containers = control_containers(identifier)
-            report['owned_container_verified'] = True
-            marker = control_marker(containers['data'])
-            if not bootstrap._alive(is_alive): return report
-            report['marker'] = {**marker, 'captured_while_child_alive': True}
-            # The full captured test module is 163MB. Keep the live budget for
-            # lifecycle/sampling; complete tree hashes are checked outside it.
-            observed_digest = owned_executable_digest(containers['app'] / CONTROL_APP)
-            report['host_executable_bytes_match'] = observed_digest is not None and observed_digest == expected
-            if report['host_executable_bytes_match']:
+            if app is not None and report['host_executable_bytes_match']:
                 status, raw = bootstrap._run(['/usr/bin/pgrep', '-x', '-u', str(os.getuid()), CONTROL_APP], secrets, 1, deadline)
                 report['host_process'] = {'state': 'unavailable'}
                 if bootstrap._completed(status) and re.fullmatch(rb'[0-9]{1,10}\n?', raw):
@@ -813,13 +864,17 @@ def live_control_observation(pid, group, identifier, expected, secrets, is_alive
                         path_status, path = bootstrap._run([sys.executable, '-c', KERNEL_PATH, str(candidate)], secrets, 1, deadline)
                         uid_status, uid = bootstrap._run(['/bin/ps', '-p', str(candidate), '-o', 'pid=,uid='], secrets, 1, deadline)
                         if (bootstrap._completed(path_status) and bootstrap._completed(uid_status)
-                                and path == str(containers['app'] / CONTROL_APP).encode()
+                                and path == str(app / CONTROL_APP).encode()
                                 and uid.split() == [str(candidate).encode(), str(os.getuid()).encode()]):
                             selected_pid, target = candidate, 'tinyControl'
                             report['host_process'] = {'state': 'verifiedOwnedPathAndUID'}
         except Exception:
             pass
-        if not bootstrap._alive(is_alive): return report
+        if not child_alive(): return report
+        if selected_pid is None:
+            report.update(state='partial' if report['containers'] else 'unavailable', reason='samplingTargetUnverified')
+            return report
+        report['phase'] = 'sampleVerifiedProcess'
         with tempfile.TemporaryDirectory(prefix='ayu-modern-live-sample-') as directory:
             root = Path(directory).resolve(); root.chmod(0o700); path = root / 'sample.txt'
             descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600); os.close(descriptor)
@@ -829,12 +884,13 @@ def live_control_observation(pid, group, identifier, expected, secrets, is_alive
             if bootstrap._completed(status):
                 data = bootstrap._sample_file(path, os.getuid())
                 if data is not None: selection = bootstrap.parse_sample(data, secrets)
-            if not bootstrap._alive(is_alive): return report
+            if not child_alive(): return report
             report['sample'] = {'target': target, 'state': 'observed' if selection['state'] == 'parsed' else 'unavailable',
                                 'command': status, 'selection': selection}
-        report['state'] = 'observed'
+        report.update(state='observed' if report['sample']['state'] == 'observed' else 'partial',
+                      phase='complete', reason='observed' if report['sample']['state'] == 'observed' else 'sampleUnavailable')
     except Exception:
-        pass
+        report['reason'] = 'observationUnavailable'
     return report
 
 
@@ -845,6 +901,13 @@ def public_live_observation(value):
         return item if type(item) is str and item in choices else fallback
     result = {'diagnostic_only': True, 'state': choice(value.get('state'),
         {'unavailable', 'observed', 'partial', 'notTriggered'}, 'unavailable')}
+    result['callback_result_received'] = value.get('callback_result_received') is True
+    result['phase'] = choice(value.get('phase'), {'checkChild', 'ownedFilesystem', 'verifyXcodeProcess',
+        'selectHostProcess', 'sampleVerifiedProcess', 'complete'}, 'nativeSupervisor')
+    result['reason'] = choice(value.get('reason'), {'notObserved', 'childNotAlive', 'childLivenessUnknown', 'samplingTargetUnverified',
+        'observed', 'sampleUnavailable', 'observationUnavailable', 'commandEndedBeforeTrigger', 'expectedCaseStarted',
+        'ownedProcessGroupUnverified', 'diagnosticDidNotFinishBeforeDeadline', 'diagnosticOutputLimit',
+        'diagnosticFailed', 'diagnosticWorkerUnavailable'}, 'unreported')
     for key in ('xcode_identity_verified', 'owned_container_verified', 'installed_bytes_match', 'host_executable_bytes_match'):
         result[key] = value.get(key) is True
     marker = value.get('marker', {}); marker = marker if isinstance(marker, dict) else {}
@@ -852,6 +915,26 @@ def public_live_observation(value):
     result['marker'] = {'state': state, 'captured_while_child_alive': marker.get('captured_while_child_alive') is True}
     if state == 'observed' and marker.get('stage') in tiny.STAGES: result['marker']['stage'] = marker['stage']
     elif state == 'observed': result['marker']['state'] = 'unavailable'
+    containers = value.get('containers', {}); containers = containers if isinstance(containers, dict) else {}
+    result['containers'] = {}
+    for role in ('app', 'data'):
+        record = containers.get(role, {}); record = record if isinstance(record, dict) else {}
+        selected = {'state': choice(record.get('state'), {'unique', 'absent', 'ambiguous', 'unavailable'}, 'unavailable'),
+            'reason': choice(record.get('reason'), {'ownedDataRootUnavailable', 'containerLayoutAbsent', 'unsafeLayout',
+                'inventoryLimit', 'unsafeOrInvalidMetadata', 'applicationIdentityMismatch', 'metadataUnidentified',
+                'noMatchingContainer', 'filesystemUnavailable'}, None)}
+        for key in ('verified_candidates', 'unidentified_records'):
+            count = record.get(key); selected[key] = count if type(count) is int and 0 <= count <= 128 else None
+        if ((selected['state'] == 'unique' and (selected['verified_candidates'] != 1 or selected['unidentified_records'] != 0))
+                or selected['state'] == 'ambiguous' and not (type(selected['verified_candidates']) is int and selected['verified_candidates'] >= 2)
+                or selected['state'] == 'absent' and (selected['verified_candidates'] != 0 or selected['unidentified_records'] != 0)):
+            selected.update(state='unavailable', reason=None)
+        result['containers'][role] = selected
+    process = value.get('xcode_process', {}); process = process if isinstance(process, dict) else {}
+    result['xcode_process'] = {'parse_state': choice(process.get('parse_state'),
+        {'notAttempted', 'notParsed', 'observed', 'ownershipUnverified', 'invalidPayload'}, 'notAttempted'),
+        'identity_verified': process.get('identity_verified') is True}
+    if isinstance(process.get('command'), dict): result['xcode_process']['command'] = bootstrap._metadata(process['command'])
     host = value.get('host_process', {}); host = host if isinstance(host, dict) else {}
     result['host_process'] = {'state': choice(host.get('state'),
         {'notMeasured', 'unavailable', 'notObserved', 'verifiedOwnedPathAndUID'}, 'unavailable')}
@@ -929,13 +1012,17 @@ def run(output=OUTPUT, root=None, command=projection.native_command, signing=sim
               'release_qualified': False, 'physical_device_verified': False, 'passed': False,
               'different_harness': True, 'original_bazel_host_executed': False, 'tiny_control_language': 'Swift',
               'control': {'attempted': False, 'expected': 1}, 'projection': {'attempted': False, 'expected': 41},
-              'commands': {}, 'post_exit_group_observations': {}, 'phase': 'preflight'}
+              'commands': {}, 'command_timing': {}, 'post_exit_group_observations': {}, 'phase': 'preflight'}
     secrets = tuple(value for key, value in os.environ.items() if value and re.search(r'TOKEN|SECRET|AUTH|PASSWORD|API_ID|API_HASH|SESSION|PRIVATE_KEY', key, re.I))
     def call(label, args, timeout=30, required=True, groups=False, observer=None):
         options = {}
         if groups: options['post_exit_diagnostic'] = lambda pid, group: group_observation(pid, group, secrets)
         if observer is not None: options['bootstrap_diagnostic'] = observer
+        command_started = time.monotonic()
         status, data = command(args, timeout=timeout, **options)
+        elapsed = time.monotonic() - command_started
+        report['command_timing'][label] = ({'state': 'measured', 'elapsed_ms': int(elapsed * 1000)}
+            if type(elapsed) in (int, float) and 0 <= elapsed <= 86400 else {'state': 'unavailable'})
         if isinstance(status, dict):
             status = dict(status)
             if groups: report['post_exit_group_observations'][label] = public_group_observation(status.pop('post_exit_diagnostic', None))
@@ -1009,10 +1096,15 @@ def run(output=OUTPUT, root=None, command=projection.native_command, signing=sim
                     # The captured-host probe hardcodes a different executable.
                     # This alternate harness uses only its exact owned metadata.
                     owned['post_test_marker'] = {'state': 'unavailable', 'captured_after_xcode_exit': True}
+                    owned['post_test_filesystem'] = {'state': 'unavailable', 'captured_after_xcode_exit': True}
                     try:
-                        if owned_device_identity(identifier, name)['identity_verified'] is True:
-                            containers = control_containers(identifier)
-                            owned['post_test_marker'] = {**control_marker(containers['data']), 'captured_after_xcode_exit': True}
+                        identity = owned_device_identity(identifier, name)
+                        if identity['identity_verified'] is True:
+                            containers, roles = container_observations(identifier)
+                            selected = public_live_observation({'containers': roles})['containers']
+                            owned['post_test_filesystem'] = {'state': 'observed', 'containers': selected, 'captured_after_xcode_exit': True}
+                            if 'data' in containers:
+                                owned['post_test_marker'] = {**control_marker(containers['data']), 'captured_after_xcode_exit': True}
                     except Exception:
                         pass
         finally:

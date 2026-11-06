@@ -39,6 +39,12 @@ simctl requests; full bundle hashes are checked outside the observation budget.
 Diagnostic markers and samples
 cannot manufacture XCTest outcomes.
 
+Owned app and data-container observations are independent and precede the
+process-query check. An unavailable process query cannot suppress filesystem
+evidence or authorize sampling. Closed lifecycle/reason fields and command
+elapsed milliseconds distinguish an untriggered observer from a failed probe;
+raw process data, paths and samples stay private.
+
 The modern settings job verifies the retained account-free host against five
 unchanged source files and gives Xcode its fixed `UITargetAppPath` and dependent
 product for installation on an owned disposable iPhone 15 Pro / iOS 27.0 simulator.
@@ -53,6 +59,15 @@ deletion are required for success. The earlier CLI launch diagnostic remains
 available under `custom-options-replay`; it is not a passing UI test. Neither
 the new synthetic root test nor the historical eight controller and one UI test
 proves authenticated full-app Settings navigation.
+
+The single UI-test command has a bounded 600-second installation/startup/test
+allowance. Run `42236670490` showed visible Apple runner installation progress
+late in its original variable-rate recording before the previous 300-second
+attempt ended without a case start. Video timestamps are not aligned Xcode wall
+times; this motivates one longer controlled observation, not a confirmed cause
+or guaranteed fix. There are no assertion retries or automatic timeout increases.
+The separate Projection command retains its 300-second limit. Both profiles
+retain strict pass, immutable-product and owned-cleanup requirements.
 
 Only bounded, explicitly selected diagnostics and visuals are uploaded. Modern
 native JSON is limited to 1 MiB per file, logs to 2 MiB and the combined selection
