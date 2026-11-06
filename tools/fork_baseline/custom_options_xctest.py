@@ -25,6 +25,7 @@ import zlib
 from xml.parsers.expat import ExpatError
 
 import custom_options_replay as retained
+import custom_options_interaction as full_interaction
 import projection_replay as projection
 import test_product_capture as products
 import tiny_ui_test_project as driver
@@ -288,13 +289,15 @@ def screenshot_attachment(exported):
     return path, png_geometry(products.read_small(path, MAX_PNG))
 
 
-def execute(output=OUTPUT, root=None, command=retained.ui_native_command, popen=subprocess.Popen):
+def execute(output=OUTPUT, root=None, command=retained.ui_native_command, popen=subprocess.Popen, *, interaction=False):
+    if type(interaction) is not bool: raise DriverError('ui_profile_invalid')
     root, output = retained.location(output, root); head, count = retained.checkout(root)
     retained.validate_proof(read_json(output / 'verification.json'), head, count)
     if platform.system() != 'Darwin': raise DriverError('macos_required')
     ipa = output / 'CustomeOptionsHost-simulator.ipa'
     if ipa.is_symlink() or not ipa.is_file() or retained.digest(ipa) != retained.IPA_SHA256: raise DriverError('ui_source_digest_mismatch')
-    names = ('result.json', 'root-light.png', 'root-light.mp4', 'xctest.log', 'case-results.json', 'driver-compiler.log')
+    names = ('result.json', 'root-light.png', 'root-light.mp4', 'interaction.mp4', 'screenshots',
+             'frame-observations.json', 'appearance-observations.json', 'xctest.log', 'case-results.json', 'driver-compiler.log')
     if any((output / name).exists() or (output / name).is_symlink() for name in names): raise DriverError('ui_replay_already_exists')
     retained.inspect_ipa(ipa, 'simulator', retained.BUNDLE)
     report = {'schema': 1, 'diagnostic_role': ROLE, 'source_commit': retained.SOURCE,
@@ -303,6 +306,9 @@ def execute(output=OUTPUT, root=None, command=retained.ui_native_command, popen=
         'application_recompiled': False, 'renderer_recompiled': False, 'logged_in_settings_verified': False,
         'physical_device_verified': False, 'release_qualified': False, 'visual_review_required': True,
         'native_ui_timeout_seconds': NATIVE_UI_TIMEOUT_SECONDS,
+        'interaction_profile': interaction, 'interaction_observations_verified': False,
+        'recording_maximum_video_bytes': (128 if interaction else 32) * 1024**2,
+        'expected_case': full_interaction.EXPECTED_CASE if interaction else driver.EXPECTED_CASE,
         'device_model': 'iPhone 15 Pro', 'runtime': '27.0', 'passed': False, 'phase': 'preflight', 'commands': [],
         'source_codesign_verified': False, 'installed_host_verified': False, 'post_installed_host_verified': False,
         'installation_strategy': 'appleXcodeUITestRunner', 'installed_host_pre_execution_verified': False,
@@ -352,8 +358,13 @@ def execute(output=OUTPUT, root=None, command=retained.ui_native_command, popen=
             report['source_codesign_verified'] = True
             if call('verifyXcode', ['xcodebuild', '-version'])[1].decode().strip() != 'Xcode 27.1\nBuild version 27A9275': raise DriverError('ui_xcode_mismatch')
             if call('verifySDK', ['xcrun', '--sdk', 'iphonesimulator', '--show-sdk-version'])[1].strip() != b'27.1': raise DriverError('ui_sdk_mismatch')
-            project = driver.create_project(private / 'driver')
-            report['driver_source_sha256'] = hashlib.sha256(driver.TEST_SOURCE.encode('utf-8')).hexdigest()
+            project = full_interaction.create_inputs(root, private / 'driver') if interaction else driver.create_project(private / 'driver')
+            source = private / 'driver' / driver.TARGET / (driver.TARGET + '.swift')
+            report['driver_source_sha256'] = hashlib.sha256(products.read_small(source, 1024**2)).hexdigest()
+            if interaction:
+                if report['driver_source_sha256'] != project['derived_source_sha256']: raise DriverError('ui_interaction_driver_source_changed')
+                report['interaction_original_source_sha256'] = project['original_source_sha256']
+                report['interaction_source_substitution_count'] = project['source_substitution_count']
             derived = private / 'derived'
             okay, data = call('compileDriver', ['xcodebuild', 'build-for-testing', '-project', str(project['project']), '-scheme', driver.TARGET,
                 '-configuration', 'Debug', '-sdk', 'iphonesimulator', '-destination', 'generic/platform=iOS Simulator',
@@ -387,22 +398,42 @@ def execute(output=OUTPUT, root=None, command=retained.ui_native_command, popen=
                 # Apple owns installation of the exact signature-checked app
                 # bound by UITargetAppPath/DependentProductPaths. There is no
                 # independent pre-execution installed-app verification claim.
-                recorder = retained.Recording(identifier, output / 'root-light.mp4', popen, lambda _: None)
+                video_name = 'interaction.mp4' if interaction else 'root-light.mp4'
+                video_limit = (128 if interaction else 32) * 1024**2
+                recorder = retained.Recording(identifier, output / video_name, popen, lambda _: None, maximum_video_bytes=video_limit)
                 report['phase'] = 'requestRecording'; report['recording_requested_before_launch'] = recorder.start()
                 report['recording_readiness_observed_before_launch'] = recorder.ready
                 result_bundle = private / 'test.xcresult'
                 okay, data = call('nativeUITest', ['xcodebuild', 'test-without-building', '-xctestrun', str(plan),
                     '-destination', 'platform=iOS Simulator,id=' + identifier, '-parallel-testing-enabled', 'NO',
                     '-maximum-concurrent-test-simulator-destinations', '1', '-resultBundlePath', str(result_bundle)], NATIVE_UI_TIMEOUT_SECONDS, False)
-                log('xctest.log', data); cases = case_results(data); write_json(output / 'case-results.json', cases)
+                # Parse bounded original bytes; the published redacted log may
+                # be truncated before later interaction stages.
+                cases = full_interaction.case_results(data) if interaction else case_results(data)
+                write_json(output / 'case-results.json', cases); log('xctest.log', data)
                 report['new_xctest_cases_executed'] = cases['executed']; report['native_ui_case_passed'] = okay and cases['all_expected_passed']
+                if interaction:
+                    try:
+                        observations = full_interaction.parsed_observations(data)
+                        write_json(output / 'frame-observations.json', observations['frames'])
+                        write_json(output / 'appearance-observations.json', observations['appearances'])
+                        report['interaction_frames_verified'] = len(observations['frames']) == 12
+                        report['interaction_appearances_verified'] = len(observations['appearances']) == 11
+                    except (OSError, ValueError, RuntimeError):
+                        report['interaction_frames_verified'] = report['interaction_appearances_verified'] = False
                 exported = private / 'attachments'; exported.mkdir(mode=0o700)
                 exported_okay, _ = call('exportUIAttachment', ['xcrun', 'xcresulttool', 'export', 'attachments', '--path', str(result_bundle), '--output-path', str(exported)], 120, False)
                 try:
                     if not exported_okay: raise DriverError('ui_attachment_unavailable')
-                    screenshot, geometry = screenshot_attachment(exported)
-                    shutil.copyfile(screenshot, output / 'root-light.png'); (output / 'root-light.png').chmod(0o600)
-                    report['root_observation'] = geometry; report['screenshot_origin'] = 'xctestAttachment'
+                    if interaction:
+                        records = full_interaction.collect_attachments(exported, output / 'screenshots', png_geometry)
+                        report['interaction_screenshots'] = records
+                        report['interaction_screenshots_verified'] = len(records) == 12
+                        report['screenshot_origin'] = 'xctestInteractionAttachments'
+                    else:
+                        screenshot, geometry = screenshot_attachment(exported)
+                        shutil.copyfile(screenshot, output / 'root-light.png'); (output / 'root-light.png').chmod(0o600)
+                        report['root_observation'] = geometry; report['screenshot_origin'] = 'xctestAttachment'
                     report['diagnostic_root_captured'] = True
                 except (OSError, ValueError, RuntimeError):
                     captured, _ = call('captureDiagnosticRoot', ['xcrun', 'simctl', 'io', identifier, 'screenshot', str(output / 'root-light.png')], 30, False)
@@ -429,21 +460,41 @@ def execute(output=OUTPUT, root=None, command=retained.ui_native_command, popen=
             if retained.digest(ipa) != retained.IPA_SHA256 or retained.host_snapshot(app) != original or projection.snapshot_tree(runner) != runner_snapshot:
                 raise DriverError('ui_products_changed')
             report['source_host_unchanged'] = True
-            if not all(report.get(key) is True for key in ('native_ui_case_passed', 'installed_host_verified', 'post_installed_host_verified', 'cleanup_passed', 'recording_available')) or report.get('screenshot_origin') != 'xctestAttachment':
+            required = ['native_ui_case_passed', 'installed_host_verified', 'post_installed_host_verified', 'cleanup_passed', 'recording_available']
+            if interaction:
+                required += ['interaction_frames_verified', 'interaction_appearances_verified', 'interaction_screenshots_verified']
+            origin = 'xctestInteractionAttachments' if interaction else 'xctestAttachment'
+            if not all(report.get(key) is True for key in required) or report.get('screenshot_origin') != origin:
                 raise DriverError('ui_native_observation_not_qualified')
-            report['root_title_automatically_verified'] = True; report.update(passed=True, phase='complete')
+            # The original full case verifies navigation/search/reset/cosmetics,
+            # not the separate root case's explicit navbar-title assertion.
+            report['root_title_automatically_verified'] = not interaction
+            report['interaction_observations_verified'] = interaction
+            report.update(passed=True, phase='complete')
     finally:
-        for name, limit in (('root-light.png', MAX_PNG), ('root-light.mp4', 32 * 1024**2)):
+        unsafe_parent = False
+        media_limits = [('root-light.png', MAX_PNG), ('root-light.mp4', 32 * 1024**2),
+                        ('interaction.mp4', (128 if interaction else 32) * 1024**2)]
+        if interaction: media_limits += [('screenshots/' + stage + '.png', MAX_PNG) for stage in full_interaction.STAGES]
+        for name, limit in media_limits:
             path = output / name
+            if any(parent.is_symlink() for parent in path.parents):
+                unsafe_parent = True
+                continue
             if path.is_symlink() or path.is_file() and path.stat().st_size > limit: path.unlink()
+        if unsafe_parent:
+            report['passed'] = False; report['phase'] = 'unsafeVisualOutput'
+            report['interaction_observations_verified'] = report['root_title_automatically_verified'] = False
         write_json(output / 'result.json', report)
+        if unsafe_parent: raise DriverError('ui_visual_parent_link_invalid')
     return report
 
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__); parser.add_argument('command', choices=('run',))
+    parser.add_argument('--interaction', action='store_true', help='Run only the pinned complete twelve-stage interaction case')
     parser.add_argument('--output', type=Path, default=Path(OUTPUT)); args = parser.parse_args(argv)
-    try: result = execute(args.output)
+    try: result = execute(args.output, interaction=True) if args.interaction else execute(args.output)
     except (OSError, ValueError, RuntimeError, TypeError, KeyError, subprocess.SubprocessError):
         print(json.dumps({'diagnostic_role': ROLE, 'passed': False, 'error': 'native_ui_replay_rejected'})); return 1
     print(json.dumps(result, sort_keys=True)); return 0

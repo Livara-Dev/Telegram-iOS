@@ -1,6 +1,7 @@
 """Focused native repair validation cannot accidentally compile/publish an app."""
 import ast
 import contextlib
+import hashlib
 import io
 import json
 import os
@@ -291,7 +292,7 @@ class FocusedWorkflowRoutingTests(unittest.TestCase):
                 self.assertTrue(self.condition('integration-tests', 'workflow_dispatch', 'projection', device))
                 for job in ('application-build', 'unsigned-device-build', 'native-api-probe', 'startup-artifact-replay'):
                     self.assertFalse(self.condition(job, 'workflow_dispatch', 'projection', device))
-        self.assertIn('options: [full, native-only, core-only, focused, projection, projection-only, custom-options-ui, custom-options-replay, custom-options-xctest, probe, retained-clean, retained-modern, projection-plan-only, startup]', WORKFLOW.read_text())
+        self.assertIn('options: [full, native-only, core-only, focused, projection, projection-only, custom-options-ui, custom-options-replay, custom-options-xctest, custom-options-interaction, retained-interaction, probe, retained-clean, retained-modern, projection-plan-only, startup]', WORKFLOW.read_text())
         self.assertIn('projection) repair_options+=(--projection-tests)', WORKFLOW.read_text())
 
     def test_projection_only_dispatch_skips_every_other_build_or_probe(self):
@@ -620,6 +621,96 @@ class FocusedWorkflowRoutingTests(unittest.TestCase):
                     os.chdir(root)
                     with self.assertRaisesRegex(SystemExit, '^Invalid bounded settings evidence$'):
                         exec(compile(code, '<checked-in-settings-publication>', 'exec'), {})
+                finally: os.chdir(previous)
+                self.assertEqual(list((evidence / 'custom-options-replay-public').iterdir()), [])
+
+    def test_full_retained_interaction_routes_only_ui_and_never_repeats_root_or_app_jobs(self):
+        scope = 'custom-options-interaction'
+        for device in (False, True):
+            self.assertTrue(self.condition('custom-options-artifact-replay', 'workflow_dispatch', scope, device))
+            for job in ('native-api-probe', 'integration-tests', 'application-build', 'unsigned-device-build', 'custom-options-ui', 'startup-artifact-replay'):
+                self.assertFalse(self.condition(job, 'workflow_dispatch', scope, device), job)
+        self.assertFalse(self.condition('custom-options-artifact-replay', 'push', scope, False))
+        source = self.section('custom-options-artifact-replay')
+        root_step = source.split('      - name: Verify the retained native settings root through Apple UI testing\n', 1)[1].split('      - name: ', 1)[0]
+        full_step = source.split('      - name: Verify all retained settings interaction paths without rebuilding the renderer\n', 1)[1].split('      - name: ', 1)[0]
+        root_if = re.search(r'^        if: (.*?)$', root_step, re.M).group(1)
+        full_if = re.search(r'^        if: (.*?)$', full_step, re.M).group(1)
+        for candidate in (scope, 'retained-interaction', 'custom-options-xctest', 'retained-modern', 'custom-options-replay', 'retained-clean'):
+            self.assertEqual(self.expression(full_if, 'workflow_dispatch', candidate, False), candidate in {scope, 'retained-interaction'})
+        self.assertFalse(self.expression(root_if, 'workflow_dispatch', scope, False))
+        self.assertIn('custom_options_xctest.py run --interaction --output build/fork-evidence/custom-options-replay', full_step)
+        self.assertNotIn('GH_TOKEN', full_step)
+        group = re.search(r'^  group: \$\{\{ (.*?) \}\}$', WORKFLOW.read_text(), re.M).group(1)
+        self.assertEqual(self.expression(group, 'workflow_dispatch', scope, False), 'ayugram-ui-qualification')
+
+    def test_combined_retained_interaction_runs_only_native_replay_and_full_ui(self):
+        scope = 'retained-interaction'
+        for device in (False, True):
+            for job in ('native-api-probe', 'custom-options-artifact-replay'):
+                self.assertTrue(self.condition(job, 'workflow_dispatch', scope, device), job)
+            for job in ('integration-tests', 'application-build', 'unsigned-device-build', 'custom-options-ui', 'startup-artifact-replay'):
+                self.assertFalse(self.condition(job, 'workflow_dispatch', scope, device), job)
+        source = self.section('custom-options-artifact-replay')
+        for title in ('Record the real retained native settings root without rebuilding it', 'Verify the retained native settings root through Apple UI testing'):
+            step = source.split('      - name: ' + title + '\n', 1)[1].split('      - name: ', 1)[0]
+            condition = re.search(r'^        if: (.*?)$', step, re.M).group(1)
+            self.assertFalse(self.expression(condition, 'workflow_dispatch', scope, False))
+        native = self.section('native-api-probe')
+        for title in ('Verify the captured Projection products and prepare the tiny diagnostic project', 'Test Apple-generated hosting before executing all retained Projection cases'):
+            step = native.split('      - name: ' + title + '\n', 1)[1].split('      - name: ', 1)[0]
+            condition = re.search(r'^        if: (.*?)$', step, re.M).group(1)
+            self.assertTrue(self.expression(condition, 'workflow_dispatch', scope, False))
+        group = re.search(r'^  group: \$\{\{ (.*?) \}\}$', WORKFLOW.read_text(), re.M).group(1)
+        self.assertEqual(self.expression(group, 'workflow_dispatch', scope, False), 'ayugram-projection-replay-c55e19c4f5cbe0d730499035d0a0ef712f6903a9')
+
+    def test_full_settings_publisher_keeps_twelve_screens_and_only_fixed_profile_evidence(self):
+        stage = self.section('custom-options-artifact-replay').split('      - name: Publish only closed settings replay observations and bounded visuals', 1)[1]
+        code = textwrap.dedent(stage.split("python3 - <<'PYTHON'\n", 1)[1].split('          PYTHON', 1)[0])
+        stages = ('root-light', 'search-light', 'category-light', 'root-dark', 'search-dark', 'category-dark', 'reset-prompt', 'reset-cancelled', 'reset-confirmed', 'cosmetics-before', 'cosmetics-changed', 'cosmetics-reset')
+        allowed = {'verification.json', 'result.json', 'root-light.png', 'xctest.log', 'case-results.json', 'driver-compiler.log',
+                   'interaction.mp4', 'frame-observations.json', 'appearance-observations.json'} | {'screenshots/' + name + '.png' for name in stages}
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve(); evidence = root / 'build/fork-evidence'; source = evidence / 'custom-options-replay'
+            (source / 'screenshots').mkdir(parents=True)
+            for name in allowed: (source / name).write_bytes(('allowed-' + name).encode())
+            for name in ('screenshots/private.png', 'raw.xcresult', 'root-light.mp4', 'title-check-positive.png'):
+                (source / name).write_bytes(b'PRIVATE_FULL_PROFILE_CANARY')
+            previous = Path.cwd()
+            try:
+                os.chdir(root)
+                with patch.dict(os.environ, {'AYU_SETTINGS_EVIDENCE_PROFILE': 'interaction'}):
+                    exec(compile(code, '<checked-in-full-settings-publication>', 'exec'), {})
+            finally: os.chdir(previous)
+            public = evidence / 'custom-options-replay-public'
+            self.assertEqual({p.relative_to(public).as_posix() for p in public.rglob('*') if p.is_file()}, allowed | {'SHA256SUMS'})
+            rows = (public / 'SHA256SUMS').read_text().splitlines(); self.assertEqual(len(rows), len(allowed))
+            for row in rows:
+                digest, name = row.split('  ', 1)
+                self.assertEqual(hashlib.sha256((public / name).read_bytes()).hexdigest(), digest)
+                self.assertNotIn(b'PRIVATE_FULL_PROFILE_CANARY', (public / name).read_bytes())
+
+    def test_full_settings_publication_rejects_caps_unknown_profile_and_screen_alias_before_copy(self):
+        stage = self.section('custom-options-artifact-replay').split('      - name: Publish only closed settings replay observations and bounded visuals', 1)[1]
+        code = textwrap.dedent(stage.split("python3 - <<'PYTHON'\n", 1)[1].split('          PYTHON', 1)[0])
+        stages = ('root-light', 'search-light', 'category-light', 'root-dark', 'search-dark', 'category-dark', 'reset-prompt', 'reset-cancelled')
+        for kind in ('video', 'image', 'screenAlias', 'screenParentAlias', 'unknown', 'aggregate'):
+            with self.subTest(kind=kind), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory).resolve(); evidence = root / 'build/fork-evidence'; source = evidence / 'custom-options-replay'
+                (source / 'screenshots').mkdir(parents=True)
+                if kind == 'screenAlias': (source / 'screenshots/root-light.png').symlink_to(root / 'private.png')
+                elif kind == 'screenParentAlias':
+                    (source / 'screenshots').rmdir(); (root / 'private').mkdir(); (source / 'screenshots').symlink_to(root / 'private', target_is_directory=True)
+                else:
+                    sizes = {'video': [('interaction.mp4', 128 * 1024**2 + 1)], 'image': [('screenshots/root-light.png', 16 * 1024**2 + 1)],
+                             'unknown': [], 'aggregate': [('interaction.mp4', 128 * 1024**2), ('result.json', 1)] + [('screenshots/' + s + '.png', 16 * 1024**2) for s in stages]}[kind]
+                    for name, size in sizes:
+                        with (source / name).open('wb') as output: output.truncate(size)
+                previous = Path.cwd()
+                try:
+                    os.chdir(root)
+                    with patch.dict(os.environ, {'AYU_SETTINGS_EVIDENCE_PROFILE': 'unexpected' if kind == 'unknown' else 'interaction'}), self.assertRaisesRegex(SystemExit, '^Invalid bounded settings evidence$'):
+                        exec(compile(code, '<checked-in-full-settings-publication>', 'exec'), {})
                 finally: os.chdir(previous)
                 self.assertEqual(list((evidence / 'custom-options-replay-public').iterdir()), [])
 

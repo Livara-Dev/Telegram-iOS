@@ -59,6 +59,19 @@ def case_log(state='passed'):
             f"Test Case '-[{name}.{name} {method}]' {state} (1.0 seconds).\n").encode()
 
 
+def interaction_log(state='passed'):
+    name, method = replay.full_interaction.EXPECTED_CASE.split('.')
+    lines = [f"Test Case '-[{replay.driver.TARGET}.{name} {method}]' started."]
+    for stage in replay.full_interaction.STAGES:
+        lines.append('AYU_OPTIONS_FRAME:' + json.dumps({'stage': stage, 'window': [0, 0, 393, 852], 'table': [0, 80, 393, 700]}))
+        if stage != 'reset-prompt':
+            dark = not stage.endswith('-light')
+            lines.append('AYU_OPTIONS_APPEARANCE:' + json.dumps({'stage': stage, 'window_dark': dark,
+                'table_found': True, 'table_dark': dark, 'background_sampled': True, 'background_dark': dark}))
+    lines.append(f"Test Case '-[{replay.driver.TARGET}.{name} {method}]' {state} (180.0 seconds).")
+    return ('\n'.join(lines) + '\n').encode()
+
+
 def universal(endian='>', wide=False):
     arm = macho(b'synthetic ARM64 executable'); other = bytearray(macho(b'synthetic x86 executable'))
     struct.pack_into('<II', other, 4, 0x01000007, 3)
@@ -71,6 +84,9 @@ def universal(endian='>', wide=False):
 
 
 class Native(retained_fixture.Native):
+    def __init__(self, root, kind=None, *, interaction=False):
+        super().__init__(root, kind); self.interaction_profile = interaction
+
     def __call__(self, args, timeout=30):
         if args[:3] == ['xcrun', 'simctl', 'install']: raise AssertionError('Only the bound Apple UI runner may install this target')
         if args == ['xcrun', '--sdk', 'iphonesimulator', '--show-sdk-version']:
@@ -96,7 +112,9 @@ class Native(retained_fixture.Native):
                 self.installed.parent.mkdir(parents=True, exist_ok=True)
                 shutil.copytree(self.bound_app, self.installed)
             Path(args[args.index('-resultBundlePath') + 1]).mkdir()
-            data = case_log('failed' if self.kind == 'caseFailed' else 'passed')
+            data = (interaction_log if self.interaction_profile else case_log)('failed' if self.kind == 'caseFailed' else 'passed')
+            if self.kind == 'missingStage': data = b'\n'.join(line for line in data.splitlines() if not (line.startswith(b'AYU_OPTIONS_FRAME:') and b'root-light' in line))
+            if self.kind == 'missingAppearance': data = b'\n'.join(line for line in data.splitlines() if not (line.startswith(b'AYU_OPTIONS_APPEARANCE:') and b'root-light' in line))
             if self.kind == 'missingCase': data = b''
             if self.kind == 'timeout': data = case_log().splitlines(keepends=True)[0]
             if self.kind == 'sourceMutate': (self.bound_app / 'CustomeOptionsHost').write_bytes(b'changed source executable')
@@ -109,10 +127,25 @@ class Native(retained_fixture.Native):
         if args[:4] == ['xcrun', 'xcresulttool', 'export', 'attachments']:
             self.calls.append((args, timeout))
             if self.kind == 'export': return {**retained_fixture.complete()[0], 'status': 'commandFailed', 'exit_code': 1}, b''
-            exported = Path(args[args.index('--output-path') + 1]); (exported / 'native.png').write_bytes(png())
-            (exported / 'manifest.json').write_text(json.dumps([{'configuredName': 'retained-root', 'exportedFileName': 'native.png'}]))
+            exported = Path(args[args.index('--output-path') + 1])
+            if self.interaction_profile:
+                manifest = []
+                for stage in replay.full_interaction.STAGES:
+                    if self.kind == 'missingAttachment' and stage == 'cosmetics-reset': continue
+                    (exported / (stage + '.png')).write_bytes(png())
+                    manifest.append({'configuredName': 'ayu-' + stage, 'exportedFileName': stage + '.png'})
+            else:
+                (exported / 'native.png').write_bytes(png())
+                manifest = [{'configuredName': 'retained-root', 'exportedFileName': 'native.png'}]
+            (exported / 'manifest.json').write_text(json.dumps(manifest))
             return retained_fixture.complete()
         return super().__call__(args, timeout)
+
+    def popen(self, args, **kwargs):
+        result = super().popen(args, **kwargs)
+        if self.kind == 'largeInteractionVideo':
+            with Path(args[-1]).open('ab') as file: file.truncate(80_229_800)
+        return result
 
     def assert_native_args(self, args, timeout):
         if timeout != 600: raise AssertionError('Bounded UI experiment deadline changed')
@@ -124,6 +157,11 @@ class Native(retained_fixture.Native):
 
 class RetainedNativeUIDriverTests(unittest.TestCase):
     def prepared(self): return retained_fixture.RetainedSettingsReplayTests().prepared()
+
+    def interaction_source(self, root):
+        source = root / replay.full_interaction.SOURCE_PATH; source.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(retained_fixture.ROOT / replay.full_interaction.SOURCE_PATH, source)
+        return source
 
     def test_owned_driver_log_redacts_attached_flags_temp_aliases_and_secrets_before_utf8_byte_cap(self):
         private = Path('/private/var/folders/private-user/T/ayu-options-xctest-private')
@@ -302,6 +340,101 @@ class RetainedNativeUIDriverTests(unittest.TestCase):
             self.assertEqual(operations['shutdown'], 30); self.assertEqual(operations['delete'], 30)
             self.assertEqual([timeout for args, timeout in native.calls if args[:2] == ['xcodebuild', 'build-for-testing']], [180])
             self.assertEqual([timeout for args, timeout in native.calls if args[:2] == ['xcodebuild', 'test-without-building']], [600])
+
+    def test_explicit_full_interaction_runs_only_original_case_and_requires_all_stage_evidence(self):
+        with self.prepared() as (root, output, _, _), patch.object(replay.platform, 'system', return_value='Darwin'):
+            source = self.interaction_source(root); original = source.read_bytes()
+            native = Native(root, interaction=True)
+            result = replay.execute(root=root, command=native, popen=native.popen, interaction=True)
+            self.assertTrue(result['passed']); self.assertTrue(result['interaction_profile'])
+            self.assertEqual(result['recording_maximum_video_bytes'], 128 * 1024**2)
+            self.assertTrue(result['interaction_observations_verified']); self.assertFalse(result['root_title_automatically_verified'])
+            self.assertEqual(result['expected_case'], replay.full_interaction.EXPECTED_CASE)
+            self.assertEqual(result['interaction_source_substitution_count'], 2)
+            self.assertEqual(result['interaction_original_source_sha256'], replay.full_interaction.SOURCE_SHA256)
+            self.assertEqual(source.read_bytes(), original); self.assertEqual(result['new_xctest_cases_executed'], 1)
+            self.assertEqual(len(result['interaction_screenshots']), 12)
+            self.assertEqual(len(json.loads((output / 'frame-observations.json').read_text())), 12)
+            self.assertEqual(len(json.loads((output / 'appearance-observations.json').read_text())), 11)
+            self.assertEqual({p.name for p in (output / 'screenshots').iterdir()}, {stage + '.png' for stage in replay.full_interaction.STAGES})
+            self.assertTrue((output / 'interaction.mp4').is_file()); self.assertFalse((output / 'root-light.mp4').exists())
+            self.assertEqual(len([a for a, _ in native.calls if a[:2] == ['xcodebuild', 'test-without-building']]), 1)
+            self.assertFalse(any(a[:3] == ['xcrun', 'simctl', 'install'] for a, _ in native.calls))
+            self.assertEqual(json.loads((output / 'case-results.json').read_text())['cases'], {replay.full_interaction.EXPECTED_CASE: 'passed'})
+            for key in ('post_installed_host_verified', 'source_host_unchanged', 'cleanup_passed', 'recording_available'): self.assertTrue(result[key])
+
+    def test_full_profile_cannot_pass_missing_stage_appearance_attachment_case_or_integrity(self):
+        for kind in ('missingStage', 'missingAppearance', 'missingAttachment', 'caseFailed', 'missingCase', 'timeout',
+                     'sourceMutate', 'installedMutate', 'installedSignature', 'runnerMutate', 'cleanup', 'recordSpawn'):
+            with self.subTest(kind=kind), self.prepared() as (root, output, _, _), patch.object(replay.platform, 'system', return_value='Darwin'):
+                self.interaction_source(root); native = Native(root, kind, interaction=True)
+                with self.assertRaises(ValueError): replay.execute(root=root, command=native, popen=native.popen, interaction=True)
+                result = json.loads((output / 'result.json').read_text())
+                self.assertFalse(result['passed']); self.assertFalse(result['interaction_observations_verified'])
+                self.assertFalse(result['root_title_automatically_verified'])
+                self.assertTrue(any(a[:3] == ['xcrun', 'simctl', 'delete'] for a, _ in native.calls))
+
+    def test_full_source_digest_mismatch_stops_before_compilation_or_owned_device_creation(self):
+        with self.prepared() as (root, output, _, _), patch.object(replay.platform, 'system', return_value='Darwin'):
+            source = self.interaction_source(root); source.write_bytes(source.read_bytes() + b'\n')
+            native = Native(root, interaction=True)
+            with self.assertRaises(ValueError): replay.execute(root=root, command=native, popen=native.popen, interaction=True)
+            self.assertFalse(any(a[:2] == ['xcodebuild', 'build-for-testing'] or a[:3] == ['xcrun', 'simctl', 'create'] for a, _ in native.calls))
+            self.assertFalse(json.loads((output / 'result.json').read_text())['passed'])
+
+    def test_private_full_driver_change_after_factory_cannot_reach_compilation_or_native_execution(self):
+        with self.prepared() as (root, output, _, _), patch.object(replay.platform, 'system', return_value='Darwin'):
+            self.interaction_source(root); native = Native(root, interaction=True)
+            create = replay.full_interaction.create_inputs
+            def mutated(repository, destination):
+                result = create(repository, destination)
+                result['source'].write_bytes(result['source'].read_bytes() + b'\n')
+                return result
+            with patch.object(replay.full_interaction, 'create_inputs', side_effect=mutated), \
+                    self.assertRaisesRegex(replay.DriverError, '^ui_interaction_driver_source_changed$'):
+                replay.execute(root=root, command=native, popen=native.popen, interaction=True)
+            self.assertFalse(any(a[:2] == ['xcodebuild', 'build-for-testing'] or a[:3] == ['xcrun', 'simctl', 'create'] for a, _ in native.calls))
+            self.assertFalse(json.loads((output / 'result.json').read_text())['passed'])
+
+    def test_large_complete_recording_is_allowed_only_in_explicit_full_profile(self):
+        for interaction in (False, True):
+            with self.subTest(interaction=interaction), self.prepared() as (root, output, _, _), patch.object(replay.platform, 'system', return_value='Darwin'):
+                if interaction: self.interaction_source(root)
+                native = Native(root, 'largeInteractionVideo', interaction=interaction)
+                if interaction:
+                    result = replay.execute(root=root, command=native, popen=native.popen, interaction=True)
+                    self.assertTrue(result['passed']); self.assertEqual((output / 'interaction.mp4').stat().st_size, 80_229_800)
+                else:
+                    with self.assertRaises(ValueError): replay.execute(root=root, command=native, popen=native.popen)
+                    self.assertFalse((output / 'root-light.mp4').exists())
+
+    def test_visual_cleanup_cannot_follow_a_replaced_screenshots_parent_to_an_external_file(self):
+        with self.prepared() as (root, output, _, _), patch.object(replay.platform, 'system', return_value='Darwin'):
+            self.interaction_source(root); native = Native(root, interaction=True)
+            outside = root / 'outside'; outside.mkdir(); untouched = outside / 'root-light.png'
+            with untouched.open('wb') as file: file.truncate(replay.MAX_PNG + 1)
+            collect = replay.full_interaction.collect_attachments
+            def replaced(exported, destination, validator):
+                records = collect(exported, destination, validator)
+                destination.rename(output / 'moved-screenshots'); destination.symlink_to(outside, target_is_directory=True)
+                return records
+            with patch.object(replay.full_interaction, 'collect_attachments', side_effect=replaced), \
+                    self.assertRaisesRegex(replay.DriverError, '^ui_visual_parent_link_invalid$'):
+                replay.execute(root=root, command=native, popen=native.popen, interaction=True)
+            self.assertTrue(untouched.is_file()); self.assertEqual(untouched.stat().st_size, replay.MAX_PNG + 1)
+            self.assertFalse(json.loads((output / 'result.json').read_text())['passed'])
+
+    def test_interaction_cli_requires_explicit_flag_and_retains_failure_after_diagnostic_capture(self):
+        with self.prepared() as (root, output, _, _), patch.object(replay.platform, 'system', return_value='Darwin'):
+            self.interaction_source(root); native = Native(root, 'missingStage', interaction=True)
+            execute = replay.execute; capture = io.StringIO()
+            def invoke(destination, *, interaction=False):
+                self.assertTrue(interaction)
+                return execute(destination, root=root, command=native, popen=native.popen, interaction=interaction)
+            with patch.object(replay, 'execute', side_effect=invoke), contextlib.redirect_stdout(capture):
+                code = replay.main(['run', '--interaction', '--output', str(output)])
+            self.assertEqual(code, 1); self.assertFalse(json.loads((output / 'result.json').read_text())['passed'])
+            self.assertTrue((output / 'interaction.mp4').exists())
 
     def test_native_failures_mutations_and_missing_attachment_never_pass(self):
         for kind in ('compile', 'plan', 'driverSignature', 'caseFailed', 'missingCase', 'timeout', 'export', 'sourceMutate', 'installedMutate', 'installedSignature', 'missingInstalled', 'runnerMutate', 'cleanup', 'recordSpawn'):

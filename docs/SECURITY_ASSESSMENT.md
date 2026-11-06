@@ -105,7 +105,22 @@ simulator build **1** only with the already verified same-source device build
 numbers. The separate success does not change the original failed qualification.
 The test-host signing diagnostic uses only synthetic captured products, preserves
 all executable code and XCTest content, and cannot sign a production device app.
-Current c55 authorization startup and physical-device behavior remain unverified.
+Current c55 authorization startup has a separately identified, explicitly seeded
+private-storage simulator control below. Physical-device behavior remains unverified.
+
+Retained-artifact run `42239698766` separately passed one new root UI XCTest,
+complete installed-host bytes/Info/strict signature, original source/runner
+immutability, recording completion and exact owned-simulator deletion. Manual
+and independent reviews of the actual PNG and all 214 video frames verified the
+initial “Custome options” renderer. This is an account-free synthetic host; it
+does not verify authenticated settings callbacks, real Telegram behavior or
+physical installation. The native control passed in the same run, while all
+41 Projection cases remained unexecuted. Its app inventory advanced from absent
+to one verified candidate, and its data inventory exceeded the diagnostic cap;
+no startup root cause or wait stack was established. The longer, bounded next
+attempt retains every assertion, source, signature, account-isolation and cleanup
+gate. Neither diagnostic success resolves the separately reported Apple/SideStore
+HTTP 403 or establishes a production-qualified signed application.
 
 The actual re-sealed control `42176767770` passed strict verification while
 preserving code, signing identity metadata and all XCTest content; it still

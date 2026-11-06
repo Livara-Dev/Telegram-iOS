@@ -10,6 +10,7 @@ import argparse
 import copy
 import hashlib
 import json
+import math
 import os
 from pathlib import Path
 import plistlib
@@ -41,6 +42,8 @@ CONTROL_APP_ID = products.BUNDLE
 CONTROL_TEST_ID = tiny.TEST_BUNDLE
 CONTROL_CASE = CONTROL_TEST + '.testRunsInApplicationHost'
 MAX_PRIVATE = 65536
+MAX_OWNED_CONTAINERS = 512
+NATIVE_PROJECTION_TIMEOUT_SECONDS = 600
 GROUP_ROLES = ('CoreSimulatorService', 'SimulatorTrampoline', 'simctl', 'launchd_sim', 'xcodebuild', CONTROL_APP, 'other')
 KERNEL_PATH = (
     "import ctypes,os,sys;"
@@ -673,34 +676,52 @@ def verify_owned_device(raw, identifier, name):
         return False
 
 
-def container_observations(identifier):
+def container_observations(identifier, *, deadline=None):
     """Observe the two owned roles independently; return paths only privately."""
     roles = {role: {'state': 'unavailable', 'reason': 'ownedDataRootUnavailable',
                     'verified_candidates': None, 'unidentified_records': None} for role in ('app', 'data')}
     found = {}
+    def expired():
+        try:
+            return deadline is not None and (type(deadline) not in (int, float) or not math.isfinite(deadline)
+                                             or time.monotonic() >= deadline)
+        except OverflowError:
+            return True
+    if expired():
+        for record in roles.values(): record['reason'] = 'inventoryDeadline'
+        return found, roles
     try: data_root = owned_data_root(identifier)
     except Exception: return found, roles
     for role, relative in (('app', 'Containers/Bundle/Application'), ('data', 'Containers/Data/Application')):
         reason = 'filesystemUnavailable'
+        def within_budget():
+            nonlocal reason
+            if expired():
+                reason = 'inventoryDeadline'; raise PlanError('container_inventory_deadline')
         try:
+            within_budget()
             root = data_root
             missing = False
             for part in Path(relative).parts:
+                within_budget()
                 root = root / part
                 try: info = root.lstat()
                 except FileNotFoundError: missing = True; break
                 if not stat.S_ISDIR(info.st_mode) or info.st_uid != os.getuid():
                     reason = 'unsafeLayout'; raise PlanError('unsafe_container')
             if missing:
+                within_budget()
                 roles[role].update(state='absent', reason='containerLayoutAbsent', verified_candidates=0, unidentified_records=0); continue
             candidates = []
             with os.scandir(root) as entries:
                 for entry in entries:
-                    if len(candidates) == 128:
+                    within_budget()
+                    if len(candidates) == MAX_OWNED_CONTAINERS:
                         reason = 'inventoryLimit'; raise PlanError('container_limit')
                     candidates.append(Path(entry.path))
             matches, unidentified = [], 0
             for candidate in candidates:
+                within_budget()
                 info = candidate.lstat()
                 if not stat.S_ISDIR(info.st_mode) or info.st_uid != os.getuid():
                     reason = 'unsafeLayout'; raise PlanError('unsafe_container')
@@ -709,6 +730,7 @@ def container_observations(identifier):
                 try: value = plistlib.loads(private_bytes(metadata, 16384))
                 except Exception:
                     reason = 'unsafeOrInvalidMetadata'; raise PlanError('invalid_container_metadata') from None
+                within_budget()
                 if (not isinstance(value, dict) or type(value.get('MCMMetadataIdentifier')) is not str
                         or re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9_.-]{0,254}', value['MCMMetadataIdentifier']) is None):
                     unidentified += 1; continue
@@ -723,6 +745,7 @@ def container_observations(identifier):
                             or value.get('CFBundleExecutable') != CONTROL_APP):
                         reason = 'applicationIdentityMismatch'; raise PlanError('invalid_container_identity')
                 matches.append(selected)
+            within_budget()
             state = 'ambiguous' if len(matches) > 1 else 'unavailable' if unidentified else 'unique' if matches else 'absent'
             roles[role].update(state=state, reason='metadataUnidentified' if unidentified and state != 'ambiguous' else None if matches else 'noMatchingContainer',
                                verified_candidates=len(matches), unidentified_records=unidentified)
@@ -833,7 +856,7 @@ def live_control_observation(pid, group, identifier, expected, secrets, is_alive
         report['phase'] = 'ownedFilesystem'
         report['device_identity'] = identity = owned_device_identity(identifier, device_name)
         if identity['identity_verified'] is True:
-            containers, report['containers'] = container_observations(identifier)
+            containers, report['containers'] = container_observations(identifier, deadline=deadline)
             report['owned_container_verified'] = all(role in containers for role in ('app', 'data'))
             app = containers.get('app')
             if not child_alive(): return report
@@ -921,10 +944,10 @@ def public_live_observation(value):
         record = containers.get(role, {}); record = record if isinstance(record, dict) else {}
         selected = {'state': choice(record.get('state'), {'unique', 'absent', 'ambiguous', 'unavailable'}, 'unavailable'),
             'reason': choice(record.get('reason'), {'ownedDataRootUnavailable', 'containerLayoutAbsent', 'unsafeLayout',
-                'inventoryLimit', 'unsafeOrInvalidMetadata', 'applicationIdentityMismatch', 'metadataUnidentified',
+                'inventoryLimit', 'inventoryDeadline', 'unsafeOrInvalidMetadata', 'applicationIdentityMismatch', 'metadataUnidentified',
                 'noMatchingContainer', 'filesystemUnavailable'}, None)}
         for key in ('verified_candidates', 'unidentified_records'):
-            count = record.get(key); selected[key] = count if type(count) is int and 0 <= count <= 128 else None
+            count = record.get(key); selected[key] = count if type(count) is int and 0 <= count <= MAX_OWNED_CONTAINERS else None
         if ((selected['state'] == 'unique' and (selected['verified_candidates'] != 1 or selected['unidentified_records'] != 0))
                 or selected['state'] == 'ambiguous' and not (type(selected['verified_candidates']) is int and selected['verified_candidates'] >= 2)
                 or selected['state'] == 'absent' and (selected['verified_candidates'] != 0 or selected['unidentified_records'] != 0)):
@@ -1011,6 +1034,7 @@ def run(output=OUTPUT, root=None, command=projection.native_command, signing=sim
               'original_products_unchanged': False,
               'release_qualified': False, 'physical_device_verified': False, 'passed': False,
               'different_harness': True, 'original_bazel_host_executed': False, 'tiny_control_language': 'Swift',
+              'native_projection_timeout_seconds': NATIVE_PROJECTION_TIMEOUT_SECONDS,
               'control': {'attempted': False, 'expected': 1}, 'projection': {'attempted': False, 'expected': 41},
               'commands': {}, 'command_timing': {}, 'post_exit_group_observations': {}, 'phase': 'preflight'}
     secrets = tuple(value for key, value in os.environ.items() if value and re.search(r'TOKEN|SECRET|AUTH|PASSWORD|API_ID|API_HASH|SESSION|PRIVATE_KEY', key, re.I))
@@ -1082,7 +1106,7 @@ def run(output=OUTPUT, root=None, command=projection.native_command, signing=sim
                 status, raw = call(label + '_xctest', ['xcodebuild', 'test-without-building', '-xctestrun', str(plan),
                     '-destination', 'id=' + identifier, '-destination-timeout', '30', '-parallel-testing-enabled', 'NO',
                     '-derivedDataPath', str(Path(temporary) / 'derived'), '-resultBundlePath', str(Path(temporary) / 'result.xcresult'),
-                    '-collect-test-diagnostics=never'], 300, False, observer=observer)
+                    '-collect-test-diagnostics=never'], NATIVE_PROJECTION_TIMEOUT_SECONDS if label == 'projection' else 300, False, observer=observer)
                 if observer is not None: owned['live_bootstrap'] = status.pop('bootstrap_diagnostic')
                 counts = control_cases(raw) if expected == 1 else projection.cases(raw)
                 owned.update(counts)

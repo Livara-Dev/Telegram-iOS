@@ -623,6 +623,23 @@ class RetainedSettingsReplayTests(unittest.TestCase):
             self.assertEqual(result['recording_diagnostic']['stderr_bytes'], 0)
             self.assertEqual(result['recording_diagnostic']['state'], 'complete')
 
+    def test_per_instance_full_video_limit_is_explicit_bounded_and_does_not_change_root_default(self):
+        for limit, size, expected in ((32 * 1024**2, 32 * 1024**2 + 1, False),
+                                       (128 * 1024**2, 80_229_800, True),
+                                       (128 * 1024**2, 128 * 1024**2 + 1, False)):
+            with self.subTest(limit=limit, size=size), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory).resolve(); video = root / 'interaction.mp4'; native = Native(root)
+                recorder = replay.Recording(IDENTIFIER, video, native.popen, lambda _: None, maximum_video_bytes=limit)
+                self.assertTrue(recorder.start())
+                with video.open('ab') as file: file.truncate(size)
+                self.assertEqual(recorder.finish(), expected); self.assertEqual(video.exists(), expected)
+                self.assertEqual(replay.Recording(IDENTIFIER, root / 'root.mp4', Mock(), lambda _: None).maximum_video_bytes, 32 * 1024**2)
+        for value in (0, 1024, 32 * 1024**2 + 1, 129 * 1024**2, True, '128'):
+            popen = Mock()
+            with self.subTest(value=value), self.assertRaisesRegex(replay.ReplayError, '^settings_recording_limit_invalid$'):
+                replay.Recording(IDENTIFIER, Path('/private/unused.mp4'), popen, lambda _: None, maximum_video_bytes=value)
+            popen.assert_not_called()
+
     def test_recording_request_never_waits_for_readiness_and_late_sentinel_cannot_rewrite_early_timing(self):
         for kind in ('recordNoReady', 'recordLateReady'):
             with self.subTest(kind=kind), self.prepared() as (root, _, _, _), patch.object(replay.platform, 'system', return_value='Darwin'):

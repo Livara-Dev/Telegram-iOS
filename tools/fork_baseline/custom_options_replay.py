@@ -632,8 +632,11 @@ def owned_uuid_absent(data, identifier):
 
 class Recording:
     """The one fixed simctl recorder, with bounded private copies of both pipes."""
-    def __init__(self, identifier, video, popen, pause):
+    def __init__(self, identifier, video, popen, pause, *, maximum_video_bytes=32 * 1024**2):
+        if type(maximum_video_bytes) is not int or maximum_video_bytes not in {32 * 1024**2, 128 * 1024**2}:
+            raise ReplayError('settings_recording_limit_invalid')
         self.identifier, self.video, self.popen, self.pause = identifier, Path(video), popen, pause
+        self.maximum_video_bytes = maximum_video_bytes
         self.process = self.reader = None
         self.stop = threading.Event(); self.lock = threading.Lock()
         self.data = {'stdout': bytearray(), 'stderr': bytearray()}
@@ -699,7 +702,7 @@ class Recording:
                     stream = getattr(self.process, name, None)
                     if stream is not None: stream.close()
         complete = (complete and not self.limited and self.state in {'starting', 'ready'} and not self.video.is_symlink()
-                    and self.video.is_file() and 1024 <= self.video.stat().st_size <= 32 * 1024**2)
+                    and self.video.is_file() and 1024 <= self.video.stat().st_size <= self.maximum_video_bytes)
         if complete:
             self.video.chmod(0o600); self.state = 'complete'
         else:

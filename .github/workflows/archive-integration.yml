@@ -8,7 +8,7 @@ on:
       validation_scope:
         description: Startup replay, host API probe, targeted iOS tests, or full qualification
         type: choice
-        options: [full, native-only, core-only, focused, projection, projection-only, custom-options-ui, custom-options-replay, custom-options-xctest, probe, retained-clean, retained-modern, projection-plan-only, startup]
+        options: [full, native-only, core-only, focused, projection, projection-only, custom-options-ui, custom-options-replay, custom-options-xctest, custom-options-interaction, retained-interaction, probe, retained-clean, retained-modern, projection-plan-only, startup]
         default: full
       replay_run:
         description: Required for startup or retained Projection probe; artifact run ID
@@ -59,14 +59,14 @@ permissions:
 # Development branches do not start macOS jobs; advance ci/verify-latest once
 # the next reviewed batch is ready. Existing runs retain their original policy.
 concurrency:
-  group: ${{ github.event_name == 'workflow_dispatch' && inputs.validation_scope == 'startup' && format('ayugram-startup-replay-{0}', inputs.replay_source) || github.event_name == 'workflow_dispatch' && (inputs.validation_scope == 'retained-clean' || inputs.validation_scope == 'retained-modern' || inputs.validation_scope == 'projection-plan-only') && 'ayugram-projection-replay-c55e19c4f5cbe0d730499035d0a0ef712f6903a9' || github.event_name == 'workflow_dispatch' && inputs.validation_scope == 'probe' && inputs.replay_run != '' && format('ayugram-projection-replay-{0}', inputs.replay_source) || github.event_name == 'workflow_dispatch' && (inputs.validation_scope == 'custom-options-ui' || inputs.validation_scope == 'custom-options-replay' || inputs.validation_scope == 'custom-options-xctest') && 'ayugram-ui-qualification' || github.event_name == 'workflow_dispatch' && inputs.validation_scope == 'core-only' && 'ayugram-core-qualification' || 'ayugram-qualification' }}
+  group: ${{ github.event_name == 'workflow_dispatch' && inputs.validation_scope == 'startup' && format('ayugram-startup-replay-{0}', inputs.replay_source) || github.event_name == 'workflow_dispatch' && (inputs.validation_scope == 'retained-clean' || inputs.validation_scope == 'retained-modern' || inputs.validation_scope == 'projection-plan-only' || inputs.validation_scope == 'retained-interaction') && 'ayugram-projection-replay-c55e19c4f5cbe0d730499035d0a0ef712f6903a9' || github.event_name == 'workflow_dispatch' && inputs.validation_scope == 'probe' && inputs.replay_run != '' && format('ayugram-projection-replay-{0}', inputs.replay_source) || github.event_name == 'workflow_dispatch' && (inputs.validation_scope == 'custom-options-ui' || inputs.validation_scope == 'custom-options-replay' || inputs.validation_scope == 'custom-options-xctest' || inputs.validation_scope == 'custom-options-interaction') && 'ayugram-ui-qualification' || github.event_name == 'workflow_dispatch' && inputs.validation_scope == 'core-only' && 'ayugram-core-qualification' || 'ayugram-qualification' }}
   cancel-in-progress: false
 
 jobs:
   integration-tests:
     # Full qualification runs these suites in the app job's same private Bazel
     # root. Unknown manual scopes still enter the strict shell case and fail.
-    if: github.event_name == 'workflow_dispatch' && inputs.validation_scope != 'full' && inputs.validation_scope != '' && inputs.validation_scope != 'probe' && inputs.validation_scope != 'startup' && inputs.validation_scope != 'custom-options-ui' && inputs.validation_scope != 'custom-options-replay' && inputs.validation_scope != 'custom-options-xctest' && inputs.validation_scope != 'retained-clean' && inputs.validation_scope != 'retained-modern' && inputs.validation_scope != 'projection-plan-only'
+    if: github.event_name == 'workflow_dispatch' && inputs.validation_scope != 'full' && inputs.validation_scope != '' && inputs.validation_scope != 'probe' && inputs.validation_scope != 'startup' && inputs.validation_scope != 'custom-options-ui' && inputs.validation_scope != 'custom-options-replay' && inputs.validation_scope != 'custom-options-xctest' && inputs.validation_scope != 'custom-options-interaction' && inputs.validation_scope != 'retained-clean' && inputs.validation_scope != 'retained-modern' && inputs.validation_scope != 'projection-plan-only' && inputs.validation_scope != 'retained-interaction'
     # macos-latest does not satisfy versions.json. This preview image does;
     # prepare_host.py additionally verifies the actual OS/Xcode versions.
     runs-on: xcode-27
@@ -590,7 +590,7 @@ jobs:
   native-api-probe:
     # Manual host API diagnostics, or one verified retained Projection replay.
     # Neither mode compiles Telegram, uses API Secrets, or qualifies the app.
-    if: github.event_name == 'workflow_dispatch' && (inputs.validation_scope == 'probe' || inputs.validation_scope == 'retained-clean' || (inputs.validation_scope == 'retained-modern' || inputs.validation_scope == 'projection-plan-only') || (inputs.validation_scope == 'startup' && inputs.retained_projection_tests))
+    if: github.event_name == 'workflow_dispatch' && (inputs.validation_scope == 'probe' || inputs.validation_scope == 'retained-clean' || (inputs.validation_scope == 'retained-modern' || inputs.validation_scope == 'projection-plan-only' || inputs.validation_scope == 'retained-interaction') || (inputs.validation_scope == 'startup' && inputs.retained_projection_tests))
     runs-on: xcode-27
     timeout-minutes: 25
     permissions:
@@ -605,8 +605,8 @@ jobs:
         working-directory: ${{ github.workspace }}
         env:
           CHECKOUT_TOKEN: ${{ github.token }}
-          REPLAY_RUN: ${{ (inputs.validation_scope == 'retained-clean' || (inputs.validation_scope == 'retained-modern' || inputs.validation_scope == 'projection-plan-only') || (inputs.validation_scope == 'startup' && inputs.retained_projection_tests)) && '42160468600' || inputs.replay_run }}
-          REPLAY_SOURCE: ${{ (inputs.validation_scope == 'retained-clean' || (inputs.validation_scope == 'retained-modern' || inputs.validation_scope == 'projection-plan-only')) && 'c55e19c4f5cbe0d730499035d0a0ef712f6903a9' || inputs.replay_source }}
+          REPLAY_RUN: ${{ (inputs.validation_scope == 'retained-clean' || (inputs.validation_scope == 'retained-modern' || inputs.validation_scope == 'projection-plan-only' || inputs.validation_scope == 'retained-interaction') || (inputs.validation_scope == 'startup' && inputs.retained_projection_tests)) && '42160468600' || inputs.replay_run }}
+          REPLAY_SOURCE: ${{ (inputs.validation_scope == 'retained-clean' || (inputs.validation_scope == 'retained-modern' || inputs.validation_scope == 'projection-plan-only' || inputs.validation_scope == 'retained-interaction')) && 'c55e19c4f5cbe0d730499035d0a0ef712f6903a9' || inputs.replay_source }}
           RETAINED_WITH_STARTUP: ${{ inputs.validation_scope == 'startup' && inputs.retained_projection_tests && 'true' || 'false' }}
           STARTUP_REPLAY_RUN: ${{ inputs.replay_run }}
         run: |
@@ -663,7 +663,7 @@ jobs:
           PYTHON
 
       - name: Test clean retained diagnostic tooling
-        if: inputs.validation_scope == 'retained-clean' || (inputs.validation_scope == 'retained-modern' || inputs.validation_scope == 'projection-plan-only')
+        if: inputs.validation_scope == 'retained-clean' || (inputs.validation_scope == 'retained-modern' || inputs.validation_scope == 'projection-plan-only' || inputs.validation_scope == 'retained-interaction')
         run: python3 -m unittest discover -s tools/fork_baseline/tests -p test_clean_user_service.py -v
 
       - name: Refresh only the registered current-user simulator service on an exclusive hosted runner
@@ -677,15 +677,15 @@ jobs:
         run: python3 tools/fork_baseline/clean_user_service.py --output build/fork-evidence/clean-simulator-service.json
 
       - name: Test retained Projection replay tooling
-        if: inputs.validation_scope != 'retained-modern' && inputs.validation_scope != 'projection-plan-only' && (inputs.validation_scope == 'retained-clean' || inputs.replay_run != '')
+        if: inputs.validation_scope != 'retained-modern' && inputs.validation_scope != 'projection-plan-only' && inputs.validation_scope != 'retained-interaction' && (inputs.validation_scope == 'retained-clean' || inputs.replay_run != '')
         run: python3 -m unittest discover -s tools/fork_baseline/tests -p test_projection_replay.py -v
 
       - name: Replay verified synthetic Projection products without recompilation
-        if: inputs.validation_scope != 'retained-modern' && inputs.validation_scope != 'projection-plan-only' && (inputs.validation_scope == 'retained-clean' || inputs.replay_run != '')
+        if: inputs.validation_scope != 'retained-modern' && inputs.validation_scope != 'projection-plan-only' && inputs.validation_scope != 'retained-interaction' && (inputs.validation_scope == 'retained-clean' || inputs.replay_run != '')
         env:
           GH_TOKEN: ${{ github.token }}
-          REPLAY_RUN: ${{ (inputs.validation_scope == 'retained-clean' || (inputs.validation_scope == 'retained-modern' || inputs.validation_scope == 'projection-plan-only') || (inputs.validation_scope == 'startup' && inputs.retained_projection_tests)) && '42160468600' || inputs.replay_run }}
-          REPLAY_SOURCE: ${{ (inputs.validation_scope == 'retained-clean' || (inputs.validation_scope == 'retained-modern' || inputs.validation_scope == 'projection-plan-only')) && 'c55e19c4f5cbe0d730499035d0a0ef712f6903a9' || inputs.replay_source }}
+          REPLAY_RUN: ${{ (inputs.validation_scope == 'retained-clean' || (inputs.validation_scope == 'retained-modern' || inputs.validation_scope == 'projection-plan-only' || inputs.validation_scope == 'retained-interaction') || (inputs.validation_scope == 'startup' && inputs.retained_projection_tests)) && '42160468600' || inputs.replay_run }}
+          REPLAY_SOURCE: ${{ (inputs.validation_scope == 'retained-clean' || (inputs.validation_scope == 'retained-modern' || inputs.validation_scope == 'projection-plan-only' || inputs.validation_scope == 'retained-interaction')) && 'c55e19c4f5cbe0d730499035d0a0ef712f6903a9' || inputs.replay_source }}
           PROJECTION_HOST_CONTROL: ${{ inputs.validation_scope == 'retained-clean' && 'resealed-host' || inputs.projection_host_control || 'original' }}
           PROJECTION_BOOTSTRAP_SAMPLE: ${{ (inputs.validation_scope == 'retained-clean' || inputs.projection_bootstrap_sample) && 'true' || 'false' }}
         run: |
@@ -700,25 +700,25 @@ jobs:
           python3 tools/fork_baseline/projection_replay.py --run "$REPLAY_RUN" --source "$REPLAY_SOURCE" "${projection_args[@]}" --output build/fork-evidence/projection-replay
 
       - name: Test the tiny Apple control and immutable Projection plan adapter
-        if: (inputs.validation_scope == 'retained-modern' || inputs.validation_scope == 'projection-plan-only')
+        if: (inputs.validation_scope == 'retained-modern' || inputs.validation_scope == 'projection-plan-only' || inputs.validation_scope == 'retained-interaction')
         run: |
           set -euo pipefail
           python3 -m unittest discover -s tools/fork_baseline/tests -p test_modern_projection_plan.py -v
           python3 -m unittest discover -s tools/fork_baseline/tests -p test_tiny_xcode_project.py -v
 
       - name: Verify the captured Projection products and prepare the tiny diagnostic project
-        if: (inputs.validation_scope == 'retained-modern' || inputs.validation_scope == 'projection-plan-only')
+        if: (inputs.validation_scope == 'retained-modern' || inputs.validation_scope == 'projection-plan-only' || inputs.validation_scope == 'retained-interaction')
         env:
           GH_TOKEN: ${{ github.token }}
         run: python3 tools/fork_baseline/modern_projection_plan.py prepare
 
       - name: Test Apple-generated hosting before executing all retained Projection cases
-        if: (inputs.validation_scope == 'retained-modern' || inputs.validation_scope == 'projection-plan-only')
+        if: (inputs.validation_scope == 'retained-modern' || inputs.validation_scope == 'projection-plan-only' || inputs.validation_scope == 'retained-interaction')
         run: python3 tools/fork_baseline/modern_projection_plan.py run
 
       - name: Stage only bounded modern XCTest plan evidence
         id: modern_evidence
-        if: always() && (inputs.validation_scope == 'retained-modern' || inputs.validation_scope == 'projection-plan-only')
+        if: always() && (inputs.validation_scope == 'retained-modern' || inputs.validation_scope == 'projection-plan-only' || inputs.validation_scope == 'retained-interaction')
         run: |
           python3 - <<'PYTHON'
           import hashlib, pathlib, shutil, stat
@@ -752,7 +752,7 @@ jobs:
           PYTHON
 
       - name: Publish modern hosting diagnostics without projects or test products
-        if: always() && (inputs.validation_scope == 'retained-modern' || inputs.validation_scope == 'projection-plan-only') && steps.modern_evidence.outcome == 'success'
+        if: always() && (inputs.validation_scope == 'retained-modern' || inputs.validation_scope == 'projection-plan-only' || inputs.validation_scope == 'retained-interaction') && steps.modern_evidence.outcome == 'success'
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
           name: modern-projection-plan-${{ github.sha }}
@@ -762,7 +762,7 @@ jobs:
           include-hidden-files: false
 
       - name: Prepare only the verified synthetic movie fixture
-        if: inputs.validation_scope != 'retained-clean' && inputs.validation_scope != 'retained-modern' && inputs.validation_scope != 'projection-plan-only' && inputs.replay_run == ''
+        if: inputs.validation_scope != 'retained-clean' && inputs.validation_scope != 'retained-modern' && inputs.validation_scope != 'projection-plan-only' && inputs.validation_scope != 'retained-interaction' && inputs.replay_run == ''
         run: |
           set -euo pipefail
           umask 077
@@ -770,13 +770,13 @@ jobs:
           python3 tools/fork_baseline/prepare_probe_fixture.py --output build/native-api-probe/fixture.mp4 > build/fork-evidence/native-api-probe-fixture.json
 
       - name: Compile the production loader with the host API probe
-        if: inputs.validation_scope != 'retained-clean' && inputs.validation_scope != 'retained-modern' && inputs.validation_scope != 'projection-plan-only' && inputs.replay_run == ''
+        if: inputs.validation_scope != 'retained-clean' && inputs.validation_scope != 'retained-modern' && inputs.validation_scope != 'projection-plan-only' && inputs.validation_scope != 'retained-interaction' && inputs.replay_run == ''
         run: |
           set -euo pipefail
           xcrun swiftc -swift-version 5 -target arm64-apple-macosx13.0 submodules/LocalMessageArchive/Sources/LocalArchivePlayback/ArchivePlaybackAsset.swift tools/fork_baseline/native_api_probe.swift -o build/native-api-probe/probe 2>&1 | tee build/fork-evidence/native-api-probe-compile.log
 
       - name: Run host API diagnostics without account data
-        if: inputs.validation_scope != 'retained-clean' && inputs.validation_scope != 'retained-modern' && inputs.validation_scope != 'projection-plan-only' && inputs.replay_run == ''
+        if: inputs.validation_scope != 'retained-clean' && inputs.validation_scope != 'retained-modern' && inputs.validation_scope != 'projection-plan-only' && inputs.validation_scope != 'retained-interaction' && inputs.replay_run == ''
         run: |
           set -euo pipefail
           build/native-api-probe/probe build/native-api-probe/fixture.mp4 > build/fork-evidence/native-api-probe.json
@@ -788,7 +788,7 @@ jobs:
           PYTHON
 
       - name: Compare host API behavior with an ad-hoc signed app identity
-        if: inputs.validation_scope != 'retained-clean' && inputs.validation_scope != 'retained-modern' && inputs.validation_scope != 'projection-plan-only' && inputs.replay_run == ''
+        if: inputs.validation_scope != 'retained-clean' && inputs.validation_scope != 'retained-modern' && inputs.validation_scope != 'projection-plan-only' && inputs.validation_scope != 'retained-interaction' && inputs.replay_run == ''
         run: |
           set -euo pipefail
           python3 - <<'PYTHON'
@@ -1111,7 +1111,7 @@ jobs:
     # The frozen settings host is a synthetic account-free renderer, not the
     # full app. Modern mode builds only an Apple UI driver for this frozen host;
     # the legacy replay remains available as an explicit CLI diagnostic.
-    if: github.event_name == 'workflow_dispatch' && (inputs.validation_scope == 'custom-options-replay' || inputs.validation_scope == 'custom-options-xctest' || inputs.validation_scope == 'retained-clean' || inputs.validation_scope == 'retained-modern')
+    if: github.event_name == 'workflow_dispatch' && (inputs.validation_scope == 'custom-options-replay' || inputs.validation_scope == 'custom-options-xctest' || inputs.validation_scope == 'custom-options-interaction' || inputs.validation_scope == 'retained-interaction' || inputs.validation_scope == 'retained-clean' || inputs.validation_scope == 'retained-modern')
     runs-on: xcode-27
     timeout-minutes: 25
     permissions:
@@ -1164,11 +1164,12 @@ jobs:
           python3 -m unittest discover -s tools/fork_baseline/tests -p test_clean_user_service.py -v
 
       - name: Test the native retained-host UI driver tools
-        if: inputs.validation_scope == 'retained-modern' || inputs.validation_scope == 'custom-options-xctest'
+        if: inputs.validation_scope == 'retained-modern' || inputs.validation_scope == 'custom-options-xctest' || inputs.validation_scope == 'custom-options-interaction' || inputs.validation_scope == 'retained-interaction'
         run: |
           set -euo pipefail
           python3 -m unittest discover -s tools/fork_baseline/tests -p test_custom_options_xctest.py -v
           python3 -m unittest discover -s tools/fork_baseline/tests -p test_tiny_ui_test_project.py -v
+          python3 -m unittest discover -s tools/fork_baseline/tests -p test_custom_options_interaction.py -v
 
       - name: Refresh only the registered current-user simulator service on an exclusive hosted runner
         if: inputs.validation_scope == 'retained-clean'
@@ -1186,26 +1187,42 @@ jobs:
         run: python3 tools/fork_baseline/custom_options_replay.py prepare --output build/fork-evidence/custom-options-replay
 
       - name: Record the real retained native settings root without rebuilding it
-        if: inputs.validation_scope != 'retained-modern' && inputs.validation_scope != 'custom-options-xctest'
+        if: inputs.validation_scope != 'retained-modern' && inputs.validation_scope != 'custom-options-xctest' && inputs.validation_scope != 'custom-options-interaction' && inputs.validation_scope != 'retained-interaction'
         run: python3 tools/fork_baseline/custom_options_replay.py run --output build/fork-evidence/custom-options-replay
 
       - name: Verify the retained native settings root through Apple UI testing
         if: inputs.validation_scope == 'retained-modern' || inputs.validation_scope == 'custom-options-xctest'
         run: python3 tools/fork_baseline/custom_options_xctest.py run --output build/fork-evidence/custom-options-replay
 
+      - name: Verify all retained settings interaction paths without rebuilding the renderer
+        if: inputs.validation_scope == 'custom-options-interaction' || inputs.validation_scope == 'retained-interaction'
+        run: python3 tools/fork_baseline/custom_options_xctest.py run --interaction --output build/fork-evidence/custom-options-replay
+
       - name: Publish only closed settings replay observations and bounded visuals
         id: settings_evidence
         if: always()
+        env:
+          AYU_SETTINGS_EVIDENCE_PROFILE: ${{ (inputs.validation_scope == 'custom-options-interaction' || inputs.validation_scope == 'retained-interaction') && 'interaction' || 'root' }}
         run: |
           python3 - <<'PYTHON'
-          import hashlib, pathlib, shutil, stat
+          import hashlib, os, pathlib, shutil, stat
           root = pathlib.Path('build/fork-evidence').absolute()
           if any(p.is_symlink() for p in (root, *root.parents)) or not root.is_dir():
               raise SystemExit('Invalid bounded settings evidence')
           public = root / 'custom-options-replay-public'
           public.mkdir(parents=True, mode=0o700)
+          profile = os.environ.get('AYU_SETTINGS_EVIDENCE_PROFILE', 'root')
+          if profile not in {'root', 'interaction'}:
+              raise SystemExit('Invalid bounded settings evidence')
           names = ['clean-simulator-service.json']
-          for name in ('verification.json', 'result.json', 'root-light.png', 'root-light.mp4', 'title-check-positive.png', 'xctest.log', 'case-results.json', 'driver-compiler.log'):
+          selected = ['verification.json', 'result.json', 'root-light.png', 'xctest.log', 'case-results.json', 'driver-compiler.log']
+          if profile == 'root':
+              selected += ['root-light.mp4', 'title-check-positive.png']
+          else:
+              selected += ['interaction.mp4', 'frame-observations.json', 'appearance-observations.json']
+              stages = ('root-light', 'search-light', 'category-light', 'root-dark', 'search-dark', 'category-dark', 'reset-prompt', 'reset-cancelled', 'reset-confirmed', 'cosmetics-before', 'cosmetics-changed', 'cosmetics-reset')
+              selected += ['screenshots/' + stage + '.png' for stage in stages]
+          for name in selected:
               names.append('custom-options-replay/' + name)
           checked, total = [], 0
           for name in names:
@@ -1215,16 +1232,18 @@ jobs:
               if not source.exists():
                   continue
               info = source.stat()
-              limit = (32 if source.suffix == '.mp4' else 16 if source.suffix == '.png' else 2 if source.suffix == '.log' else 1) * 1024**2
+              limit = (128 if profile == 'interaction' and source.name == 'interaction.mp4' else 32 if source.suffix == '.mp4' else 16 if source.suffix == '.png' else 2 if source.suffix == '.log' else 1) * 1024**2
               total += info.st_size
-              if not stat.S_ISREG(info.st_mode) or not 0 <= info.st_size <= limit or total > 64 * 1024**2:
+              if not stat.S_ISREG(info.st_mode) or not 0 <= info.st_size <= limit or total > (256 if profile == 'interaction' else 64) * 1024**2:
                   raise SystemExit('Invalid bounded settings evidence')
-              checked.append(source)
+              relative = 'screenshots/' + source.name if source.parent.name == 'screenshots' else source.name
+              checked.append((source, relative))
           rows = []
-          for source in checked:
-              destination = public / source.name
+          for source, relative in checked:
+              destination = public / relative
+              destination.parent.mkdir(parents=True, mode=0o700, exist_ok=True)
               shutil.copyfile(source, destination)
-              rows.append(hashlib.sha256(destination.read_bytes()).hexdigest() + '  ' + destination.name + '\n')
+              rows.append(hashlib.sha256(destination.read_bytes()).hexdigest() + '  ' + relative + '\n')
           (public / 'SHA256SUMS').write_text(''.join(rows))
           PYTHON
 

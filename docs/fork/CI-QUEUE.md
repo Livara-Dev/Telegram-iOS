@@ -9,7 +9,11 @@ rebuild job is excluded. It shares the fixed c55 Projection queue with
 `retained-clean`, and never cancels an active run. For a further native-only
 diagnostic repair, `projection-plan-only` preserves the settings result and
 executes only the modern native job. `custom-options-xctest` selects only the
-retained renderer's Apple UI test job and shares the existing UI queue. Do not advance
+retained renderer's root UI test. `custom-options-interaction` selects only the
+full twelve-stage settings interaction. `retained-interaction` combines that
+full interaction with the modern native job and excludes the already verified
+root case. It shares the c55 Projection queue; the UI-only scopes share the
+existing UI queue. Do not advance
 `ci/verify-latest` for diagnostic tools or documentation alone.
 
 The modern native job verifies the fixed captured products and their source/hashes,
@@ -44,6 +48,9 @@ process-query check. An unavailable process query cannot suppress filesystem
 evidence or authorize sampling. Closed lifecycle/reason fields and command
 elapsed milliseconds distinguish an untriggered observer from a failed probe;
 raw process data, paths and samples stay private.
+The fixed app/data inventory cap is 512, with deadline-aware live scans. A real
+iOS 27 data inventory exceeded the earlier 128-entry cap in `42239698766`;
+unknown, truncated or late inventories cannot assert absence or uniqueness.
 
 The modern settings job verifies the retained account-free host against five
 unchanged source files and gives Xcode its fixed `UITargetAppPath` and dependent
@@ -60,19 +67,35 @@ available under `custom-options-replay`; it is not a passing UI test. Neither
 the new synthetic root test nor the historical eight controller and one UI test
 proves authenticated full-app Settings navigation.
 
+The full interaction profile compiles the original SHA-pinned interaction source
+into the same private driver. Only its application bundle initializer and launch
+method change; the original assertions and source file stay intact. One fresh
+case must supply twelve complete named screenshots, twelve frame records and
+eleven observed UIKit appearance records, in addition to all source, installed
+bundle, recording and cleanup proofs. Its case does not explicitly assert the
+root navbar title; the separate root-test origin is retained. This still uses
+synthetic account callbacks and never qualifies authentication or account bindings.
+
 The single UI-test command has a bounded 600-second installation/startup/test
 allowance. Run `42236670490` showed visible Apple runner installation progress
 late in its original variable-rate recording before the previous 300-second
 attempt ended without a case start. Video timestamps are not aligned Xcode wall
 times; this motivates one longer controlled observation, not a confirmed cause
-or guaranteed fix. There are no assertion retries or automatic timeout increases.
-The separate Projection command retains its 300-second limit. Both profiles
-retain strict pass, immutable-product and owned-cleanup requirements.
+or guaranteed fix. The root UI case later passed in `42239698766` with a measured
+167.376-second whole command and a 23.351-second case, so the longer allowance is
+not established as the cause of that success. Projection's app was absent at
+the early observation but unique after its 300-second timeout; its next controlled
+command has a 600-second bound too. The independent hosted control remains at
+300 seconds. There are no assertion retries or automatic timeout increases.
+Both profiles retain strict pass, immutable-product and owned-cleanup requirements.
 
 Only bounded, explicitly selected diagnostics and visuals are uploaded. Modern
 native JSON is limited to 1 MiB per file, logs to 2 MiB and the combined selection
 to 8 MiB. Settings evidence has separate 1 MiB JSON, 2 MiB log, 16 MiB image,
-32 MiB recording and 64 MiB total limits. Symbolic links and nonregular files
+32 MiB recording and 64 MiB total limits for the root profile. The explicit full
+interaction profile permits a 128 MiB recording and 256 MiB combined selection,
+including only the twelve fixed screenshot names and bounded observation files.
+The historical full recording was about 76.5 MiB. Symbolic links and nonregular files
 are rejected before copying. Uploads require
 a successful staging step even when the preceding native check failed. Raw test
 plans, project products, simulator IPAs, credentials and account data stay private.

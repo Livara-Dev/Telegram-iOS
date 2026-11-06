@@ -52,7 +52,7 @@ class CIRoutingTests(unittest.TestCase):
         source = (WORKFLOWS / "archive-integration.yml").read_text()
         self.assertIn("concurrency:\n  group: ${{", source)
         self.assertIn("format('ayugram-startup-replay-{0}', inputs.replay_source)", source)
-        self.assertIn("(inputs.validation_scope == 'custom-options-ui' || inputs.validation_scope == 'custom-options-replay' || inputs.validation_scope == 'custom-options-xctest') && 'ayugram-ui-qualification'", source)
+        self.assertIn("(inputs.validation_scope == 'custom-options-ui' || inputs.validation_scope == 'custom-options-replay' || inputs.validation_scope == 'custom-options-xctest' || inputs.validation_scope == 'custom-options-interaction') && 'ayugram-ui-qualification'", source)
         self.assertIn("inputs.validation_scope == 'core-only' && 'ayugram-core-qualification'", source)
         self.assertIn("|| 'ayugram-qualification' }}\n  cancel-in-progress: false\n", source)
         self.assertEqual(len(re.findall(r"^\s*concurrency:", source, re.M)), 1)
@@ -136,7 +136,7 @@ class CIRoutingTests(unittest.TestCase):
     def test_projection_signing_control_cannot_reach_application_or_device_builds(self):
         probe = self.job("native-api-probe")
         replay = self.step(probe, "Replay verified synthetic Projection products without recompilation")
-        self.assertIn("if: inputs.validation_scope != 'retained-modern' && inputs.validation_scope != 'projection-plan-only' && (inputs.validation_scope == 'retained-clean' || inputs.replay_run != '')", replay)
+        self.assertIn("if: inputs.validation_scope != 'retained-modern' && inputs.validation_scope != 'projection-plan-only' && inputs.validation_scope != 'retained-interaction' && (inputs.validation_scope == 'retained-clean' || inputs.replay_run != '')", replay)
         self.assertIn("PROJECTION_HOST_CONTROL: ${{ inputs.validation_scope == 'retained-clean' && 'resealed-host' || inputs.projection_host_control || 'original' }}", replay)
         self.assertIn('--host-control "$PROJECTION_HOST_CONTROL"', replay)
         self.assertIn("PROJECTION_BOOTSTRAP_SAMPLE: ${{ (inputs.validation_scope == 'retained-clean' || inputs.projection_bootstrap_sample) && 'true' || 'false' }}", replay)

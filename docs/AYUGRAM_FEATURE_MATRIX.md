@@ -323,10 +323,57 @@ results identify CI boundaries; they add no feature-test passes or physical
 installation evidence. The original compiled applications and successful
 welcome-screen startup evidence remain preserved.
 
+[42233885595](https://github.com/Livara-Dev/Telegram-iOS/actions/runs/42233885595)
+passed the independently built Swift hosted control's one actual XCTest and
+verified its simulator cleanup. The same run preserved the complete captured
+Projection test bundle and presentation resources in a separately identified
+Xcode UIKit host, but **zero of 41 cases started** before its 300-second limit;
+that device's cleanup passed too. The control is diagnostic evidence, not new
+AyuGram feature coverage. The alternate harness did not execute or qualify the
+original Bazel host, and no wait-stack or startup cause was established.
+
+The settings driver compiled and passed signature checks in that run, but its
+manual app-install command and cleanup timed out before XCTest. The subsequent
+[Xcode-managed installation replay 42236670490](https://github.com/Livara-Dev/Telegram-iOS/actions/runs/42236670490)
+reached `Testing started` yet started **zero of its one new UI case** before the
+300-second bound. The target settings bundle was unavailable afterward; shutdown,
+deletion and exact simulator absence were verified. Its actual screenshot and
+all **88 original video frames** were reviewed: only SpringBoard and a
+runner-labelled installation are visible, with no “Custome options” interface.
+The 217.306667-second recording became ready after the launch request, so its
+timestamps are not aligned Xcode wall times or proof of whole-launch coverage.
+Visible installation progress motivates a separately bounded 600-second UI
+experiment; it does not establish that the old limit caused failure. None of
+these failed attempts adds feature-test passes or physical-device evidence.
+
+[42239698766](https://github.com/Livara-Dev/Telegram-iOS/actions/runs/42239698766)
+then passed **one new native root UI case** against the unchanged retained
+renderer. The foreground state, exact “Custome options” navbar title, hittable
+settings table and archive control passed actual XCTest assertions. The case
+took 23.351 seconds; the whole native command took 167.376 seconds under its
+600-second bound, so the old timeout is not established as the previous failure's
+cause. Full installed bytes/Info/signature, unchanged source/runner, recording
+completion, shutdown, deletion and exact simulator absence all passed. Two
+reviewers inspected the actual PNG and all **214 original video frames**:
+frames 188–191 (77.690–83.980s) show the expected initial root. A roughly seven
+second white launch interval precedes it, and the fixture toolbar overlaps the
+partly offscreen following category row. This is fresh initial-root evidence,
+separate from the historical full interaction; it does not verify scrolling,
+dark appearance, account callbacks, authentication or a physical iPhone.
+
+That run's separate Swift hosted control passed too, but Projection still
+started zero of 41 cases before 300 seconds. Its app inventory changed from
+absent at the early live observation to one verified candidate after timeout;
+the data inventory exceeded the diagnostic's 128-entry cap, so no launch marker
+or wait stack was established. Both native simulators were cleaned up. The next
+controlled Projection profile uses a 600-second bound and deadline-aware,
+512-entry inventory; all assertions and pass/signature/cleanup gates remain
+strict. No result of that next attempt is implied here.
+
 | Candidate change | Current evidence | Remaining qualification or boundary |
 | --- | --- | --- |
 | Welcome-screen startup and current unsigned device package | [42204637743](https://github.com/Livara-Dev/Telegram-iOS/actions/runs/42204637743) passed two actual full-app simulator launches with explicitly seeded private storage and stable account-store directory after restart. Both screenshots and all 390 video frames were reviewed. The main-app-only device artifact retains all 880 retained entries byte-for-byte with matching metadata | Simulator iPhone 15 Pro / iOS 27.0, not physical iOS 27.2. Automatic fallback, login, Apple HTTP 403/signing and installation remain unverified. The device IPA is unsigned; six extensions are absent. Device build 82 and simulator build 1 retain distinct origins; application code was not recompiled |
-| Prominent **Custome options**, eleven searchable categories, quick toggles | [42147021107](https://github.com/Livara-Dev/Telegram-iOS/actions/runs/42147021107) passed 8 controller tests and 1 complete XCUI scenario, with twelve recorded stages, eleven appearance observations and twelve exported PNGs. All three production renderer files are byte-identical at `c55e19c4`; this is reuse of that identified evidence, not a fresh nine-test run | Synthetic account-free host. The current full app reaches the welcome screen and has a source-wired leading Settings entry, but authenticated entry/routing remain unverified. The retained host IPA has no XCTest bundles or test plan. No device-performance claim; dark cosmetics prose still needs a dedicated contrast review |
+| Prominent **Custome options**, eleven searchable categories, quick toggles | [42147021107](https://github.com/Livara-Dev/Telegram-iOS/actions/runs/42147021107) passed 8 controller tests and 1 complete twelve-stage XCUI scenario. [42239698766](https://github.com/Livara-Dev/Telegram-iOS/actions/runs/42239698766) separately passed one fresh root UI case, installed-bundle/signature/source/cleanup proofs, and manual review of all 214 frames. Production renderer sources are byte-identical at `c55e19c4`; the fresh root case does not rerun the historical nine tests | Synthetic account-free host. The full app reaches the welcome screen and has a source-wired leading Settings entry, but authenticated entry/routing remain unverified. The full interaction profile still needs its own fresh runtime result. No device-performance claim; dark cosmetics prose still needs a dedicated contrast review |
 | Account-bound archive/Ghost/filter controls and disable-only reset | Core account facades passed local native cases; Settings catalog 8 and navigation-helper 10 cases passed at `c55e19c4`. Source routes use the selected `AccountContext`; the full app compiled | Actual account-bound dashboard callbacks, reset behavior and account switching in the running application remain unverified. Synthetic renderer callbacks do not verify those bindings |
 | Browse retained archives with capture disabled; chat search and profile links | At `c55e19c4`, Core inline-history classes passed 17 cases and deleted-history classes passed 19; Settings gallery 4 and navigation-helper 10 cases passed. Fixtures exercise foreground read leases and separate local destinations | Authenticated chat search, profile navigation and gallery recordings remain unverified. These are separate local destinations, not merged server search or the canonical media grid |
 | Bulk clear-history/date/thread and author/forward-author deletion capture | Production selected-row observer paths are source-wired; all 11 `LocalArchiveHistoryRemovalTests` and the 26-case replay class passed at `c55e19c4` using actual local Postbox helpers | No live two-client deletion claim. Handoff remains capped at 256 records / 8 MiB; overflow increments missed-capture count while canonical deletion proceeds. No extra full history scan; performance unmeasured |

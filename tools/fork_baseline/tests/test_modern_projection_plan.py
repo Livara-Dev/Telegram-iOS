@@ -399,6 +399,8 @@ class ModernPlanTests(unittest.TestCase):
                     parent.mkdir(parents=True)
                     (parent / '.com.apple.mobile_container_manager.metadata.plist').write_bytes(plistlib.dumps({'MCMMetadataIdentifier': modern.CONTROL_APP_ID}))
                     shutil.copytree(host, parent / (modern.CONTROL_APP + '.app'))
+                if projection_outcome == 'timeout':
+                    return {'status': 'timedOut', 'exit_code': None, 'timeout': True, 'output_limit': False, 'captured_bytes': 0}, b''
                 return complete(fixtures.log(projection_outcome), 0 if projection_outcome == 'passed' else 65)
             return complete()
         def reseal(original, destination, *args, **kwargs):
@@ -433,11 +435,27 @@ class ModernPlanTests(unittest.TestCase):
             self.assertEqual(result['tiny_control_entitlement_readback'], 'matchedActualCodeSignInput')
             self.assertEqual(result['projection']['started'], 41); self.assertEqual(result['projection']['passed'], 41)
             self.assertTrue(result['original_products_unchanged']); self.assertTrue(result['projection']['cleanup_completed'])
-            self.assertEqual([timeout for args, timeout in calls if 'test-without-building' in args], [300, 300])
+            self.assertEqual(result['native_projection_timeout_seconds'], 600)
+            self.assertEqual([timeout for args, timeout in calls if 'test-without-building' in args], [300, 600])
             self.assertEqual(sum('build-for-testing' in args for args, _ in calls), 1)
             for key in ('application_recompiled', 'projection_tests_recompiled', 'physical_device_verified', 'release_qualified'):
                 self.assertFalse(result[key])
             self.assertFalse(any('bazel' in ' '.join(args).lower() for args, _ in calls))
+
+    def test_projection_cold_start_experiment_changes_only_its_budget_and_never_accepts_zero_case_timeout(self):
+        with tempfile.TemporaryDirectory() as directory:
+            result, calls = self.execute_fixture(Path(directory).resolve(), projection_outcome='timeout')
+            self.assertEqual(result['native_projection_timeout_seconds'], 600)
+            self.assertTrue(result['control']['passed_own_cases']); self.assertEqual(result['control']['passed'], 1)
+            self.assertTrue(result['projection']['xctest_command_attempted']); self.assertFalse(result['projection']['tests_started'])
+            self.assertEqual(result['projection']['started'], 0); self.assertEqual(len(result['projection']['missing']), 41)
+            self.assertFalse(result['projection']['passed_own_cases']); self.assertFalse(result['passed'])
+            self.assertTrue(result['projection']['cleanup_completed']); self.assertTrue(result['original_products_unchanged'])
+            self.assertEqual([timeout for args, timeout in calls if 'test-without-building' in args], [300, 600])
+            self.assertEqual(sum('test-without-building' in args for args, _ in calls), 2)
+            self.assertEqual([timeout for args, timeout in calls if 'build-for-testing' in args], [180])
+            for operation, expected_timeout in (('create', 30), ('boot', 30), ('bootstatus', 240), ('shutdown', 30), ('delete', 30)):
+                self.assertEqual([timeout for args, timeout in calls if args[:3] == ['xcrun', 'simctl', operation]], [expected_timeout] * 2)
 
     def test_missing_unsafe_false_or_malformed_signature_output_blocks_all_tests_despite_valid_input_and_stdout(self):
         for readback in ('missing', 'symlink', 'wrong', 'malformed', 'command_failed', 'timed_out'):
@@ -711,7 +729,7 @@ class ModernPlanTests(unittest.TestCase):
                     metadata.write_bytes(plistlib.dumps({'MCMMetadataIdentifier': {'empty': '', 'whitespace': ' ', 'nul': '\x00', 'type': 1}[kind]}, fmt=plistlib.FMT_BINARY))
                 elif kind == 'knownPlusUnknown': expected['data'].with_name('unknown').mkdir()
                 elif kind == 'limit':
-                    for index in range(128): expected['data'].with_name(str(index)).mkdir()
+                    for index in range(modern.MAX_OWNED_CONTAINERS): expected['data'].with_name(str(index)).mkdir()
                 elif kind == 'symlink':
                     outside = root / 'outside'; metadata.rename(outside); metadata.symlink_to(outside)
                 with patch.object(modern.Path, 'home', return_value=root):
@@ -721,6 +739,58 @@ class ModernPlanTests(unittest.TestCase):
                 self.assertNotIn('private-canary', json.dumps(roles)); self.assertNotIn(str(root), json.dumps(roles))
                 if kind == 'knownPlusUnknown':
                     self.assertEqual(roles['data']['verified_candidates'], 1); self.assertEqual(roles['data']['unidentified_records'], 1)
+
+    def test_owned_inventory_accepts_129_and_512_verified_records_but_rejects_513_before_claiming_unique(self):
+        self.assertEqual(modern.MAX_OWNED_CONTAINERS, 512)
+        for count in (129, 512, 513):
+            with self.subTest(count=count), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory).resolve(); expected = owned_fixture(root)
+                for index in range(count - 1):
+                    foreign = expected['data'].with_name('foreign-' + str(index)); foreign.mkdir()
+                    (foreign / '.com.apple.mobile_container_manager.metadata.plist').write_bytes(plistlib.dumps({'MCMMetadataIdentifier': 'org.apple.fixture' + str(index)}))
+                with patch.object(modern.Path, 'home', return_value=root):
+                    paths, roles = modern.container_observations(IDENTIFIER)
+                self.assertEqual(roles['app']['state'], 'unique'); self.assertEqual(paths['app'], expected['app'])
+                if count <= 512:
+                    self.assertEqual(paths['data'], expected['data']); self.assertEqual(roles['data']['state'], 'unique')
+                    self.assertEqual(roles['data']['verified_candidates'], 1); self.assertEqual(roles['data']['unidentified_records'], 0)
+                else:
+                    self.assertNotIn('data', paths); self.assertEqual(roles['data']['state'], 'unavailable')
+                    self.assertEqual(roles['data']['reason'], 'inventoryLimit')
+        for count in (129, 512, 513, True, -1):
+            value = modern.public_live_observation({'containers': {'data': {'state': 'ambiguous',
+                'verified_candidates': count, 'unidentified_records': 0}}})['containers']['data']
+            self.assertEqual(value['state'], 'ambiguous' if type(count) is int and 2 <= count <= 512 else 'unavailable')
+
+    def test_live_inventory_deadline_never_turns_unfinished_or_late_missing_metadata_into_absence_or_uniqueness(self):
+        with patch.object(modern, 'owned_data_root') as locate:
+            for deadline in (True, float('nan'), float('inf'), 10**1000, 'private-deadline-canary'):
+                paths, roles = modern.container_observations(IDENTIFIER, deadline=deadline)
+                self.assertEqual(paths, {}); self.assertTrue(all(role['reason'] == 'inventoryDeadline' for role in roles.values()))
+            locate.assert_not_called()
+        for phase in ('before', 'metadata', 'absent'):
+            with self.subTest(phase=phase), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory).resolve(); expected = owned_fixture(root); now = [18 if phase == 'before' else 0]
+                read = modern.private_bytes; lstat = modern.Path.lstat
+                if phase == 'absent': shutil.rmtree(expected['data'].parent)
+                def delayed_read(path, *args, **kwargs):
+                    value = read(path, *args, **kwargs)
+                    if phase == 'metadata': now[0] = 19
+                    return value
+                def delayed_lstat(path, *args, **kwargs):
+                    try: return lstat(path, *args, **kwargs)
+                    except FileNotFoundError:
+                        if phase == 'absent' and path == expected['data'].parent: now[0] = 19
+                        raise
+                with patch.object(modern.Path, 'home', return_value=root), patch.object(modern.time, 'monotonic', side_effect=lambda: now[0]), \
+                     patch.object(modern, 'private_bytes', side_effect=delayed_read), patch.object(modern.Path, 'lstat', delayed_lstat):
+                    paths, roles = modern.container_observations(IDENTIFIER, deadline=18)
+                self.assertNotIn('data', paths); self.assertEqual(roles['data']['state'], 'unavailable')
+                self.assertEqual(roles['data']['reason'], 'inventoryDeadline')
+                if phase == 'absent': self.assertEqual(paths['app'], expected['app'])
+                else: self.assertNotIn('app', paths); self.assertEqual(roles['app']['reason'], 'inventoryDeadline')
+                public = modern.public_live_observation({'containers': roles})
+                self.assertEqual(public['containers'], roles); self.assertNotIn(str(root), json.dumps(public))
 
     def test_failed_suite_retains_post_test_app_role_when_data_container_does_not_exist(self):
         with tempfile.TemporaryDirectory() as directory:
