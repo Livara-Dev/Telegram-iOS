@@ -12,7 +12,7 @@ import plistlib
 
 APP_NAME = 'AyuProjectionControl'
 TEST_NAME = 'AyuProjectionControlTests'
-APP_BUNDLE = 'org.livara.ayugram.tests.modern-projection-control'
+APP_BUNDLE = 'org.livara.ayugram.tests.native-security.projection'
 TEST_BUNDLE = 'org.livara.ayugram.tests.modern-projection-controlTests'
 EXPECTED_CASE = 'AyuProjectionControlTests.testRunsInApplicationHost'
 MARKER_RELATIVE = 'Library/Caches/ayu-modern-control/stage'
@@ -157,19 +157,17 @@ int main(int argc, char *argv[]) {
 
 TEST_SOURCE = '''// SPDX-License-Identifier: GPL-2.0-or-later
 // Created for the AyuGram iOS fork on 2026-11-06.
-#import <XCTest/XCTest.h>
-#import <UIKit/UIKit.h>
+import XCTest
+import UIKit
 
-@interface AyuProjectionControlTests : XCTestCase
-@end
-
-@implementation AyuProjectionControlTests
-- (void)testRunsInApplicationHost {
-    XCTAssertEqualObjects([NSBundle mainBundle].bundleIdentifier,
-        @"org.livara.ayugram.tests.modern-projection-control");
-    XCTAssertNotNil([UIApplication sharedApplication]);
+final class AyuProjectionControlTests: XCTestCase {
+    @MainActor
+    func testRunsInApplicationHost() {
+        XCTAssertEqual(Bundle.main.bundleIdentifier,
+            "org.livara.ayugram.tests.native-security.projection")
+        XCTAssertNotNil(UIApplication.shared)
+    }
 }
-@end
 '''
 
 PROJECT = '''// !$*UTF8*$!
@@ -181,12 +179,12 @@ PROJECT = '''// !$*UTF8*$!
 	objectVersion = 56;
 	objects = {
 		100000000000000000000001 /* main.m in Sources */ = {isa = PBXBuildFile; fileRef = 200000000000000000000001 /* main.m */; };
-		100000000000000000000002 /* Tests.m in Sources */ = {isa = PBXBuildFile; fileRef = 200000000000000000000002 /* Tests.m */; };
+		100000000000000000000002 /* Tests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 200000000000000000000002 /* Tests.swift */; };
 		100000000000000000000003 /* UIKit.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 200000000000000000000003 /* UIKit.framework */; };
 		100000000000000000000004 /* UIKit.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 200000000000000000000003 /* UIKit.framework */; };
 		100000000000000000000005 /* XCTest.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 200000000000000000000004 /* XCTest.framework */; };
 		200000000000000000000001 /* main.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = main.m; sourceTree = "<group>"; };
-		200000000000000000000002 /* Tests.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = AyuProjectionControlTests.m; sourceTree = "<group>"; };
+		200000000000000000000002 /* Tests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AyuProjectionControlTests.swift; sourceTree = "<group>"; };
 		200000000000000000000003 /* UIKit.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = UIKit.framework; path = System/Library/Frameworks/UIKit.framework; sourceTree = SDKROOT; };
 		200000000000000000000004 /* XCTest.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = XCTest.framework; path = Platforms/iPhoneSimulator.platform/Developer/Library/Frameworks/XCTest.framework; sourceTree = DEVELOPER_DIR; };
 		200000000000000000000005 /* AyuProjectionControl.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = AyuProjectionControl.app; sourceTree = BUILT_PRODUCTS_DIR; };
@@ -231,11 +229,11 @@ PROJECT = '''// !$*UTF8*$!
 		};
 		900000000000000000000002 /* App Debug */ = {
 			isa = XCBuildConfiguration; name = Debug;
-			buildSettings = {GENERATE_INFOPLIST_FILE = NO; INFOPLIST_FILE = AyuProjectionControl/Info.plist; LD_RUNPATH_SEARCH_PATHS = ("$(inherited)", "@executable_path/Frameworks", ); PRODUCT_BUNDLE_IDENTIFIER = "org.livara.ayugram.tests.modern-projection-control"; PRODUCT_NAME = "$(TARGET_NAME)"; };
+			buildSettings = {GENERATE_INFOPLIST_FILE = NO; INFOPLIST_FILE = AyuProjectionControl/Info.plist; LD_RUNPATH_SEARCH_PATHS = ("$(inherited)", "@executable_path/Frameworks", ); PRODUCT_BUNDLE_IDENTIFIER = "org.livara.ayugram.tests.native-security.projection"; PRODUCT_NAME = "$(TARGET_NAME)"; };
 		};
 		900000000000000000000003 /* Test Debug */ = {
 			isa = XCBuildConfiguration; name = Debug;
-			buildSettings = {BUNDLE_LOADER = "$(TEST_HOST)"; FRAMEWORK_SEARCH_PATHS = ("$(inherited)", "$(PLATFORM_DIR)/Developer/Library/Frameworks", ); GENERATE_INFOPLIST_FILE = NO; INFOPLIST_FILE = AyuProjectionControlTests/Info.plist; LD_RUNPATH_SEARCH_PATHS = ("$(inherited)", "@executable_path/Frameworks", "@loader_path/Frameworks", ); PRODUCT_BUNDLE_IDENTIFIER = "org.livara.ayugram.tests.modern-projection-controlTests"; PRODUCT_NAME = "$(TARGET_NAME)"; TEST_HOST = "$(BUILT_PRODUCTS_DIR)/AyuProjectionControl.app/AyuProjectionControl"; TEST_TARGET_NAME = AyuProjectionControl; };
+			buildSettings = {BUNDLE_LOADER = "$(TEST_HOST)"; FRAMEWORK_SEARCH_PATHS = ("$(inherited)", "$(PLATFORM_DIR)/Developer/Library/Frameworks", ); GENERATE_INFOPLIST_FILE = NO; INFOPLIST_FILE = AyuProjectionControlTests/Info.plist; LD_RUNPATH_SEARCH_PATHS = ("$(inherited)", "@executable_path/Frameworks", "@loader_path/Frameworks", ); PRODUCT_BUNDLE_IDENTIFIER = "org.livara.ayugram.tests.modern-projection-controlTests"; PRODUCT_NAME = "$(TARGET_NAME)"; SWIFT_VERSION = 5.0; TEST_HOST = "$(BUILT_PRODUCTS_DIR)/AyuProjectionControl.app/AyuProjectionControl"; TEST_TARGET_NAME = AyuProjectionControl; };
 		};
 	};
 	rootObject = 600000000000000000000001 /* Project */;
@@ -297,14 +295,14 @@ def create_project(root):
                      APP_NAME + '.xcodeproj/xcshareddata', APP_NAME + '.xcodeproj/xcshareddata/xcschemes'):
         (root / relative).mkdir(mode=0o700)
     app_info = _info('APPL')
-    app_info.update(LSRequiresIPhoneOS=True, UILaunchScreen={}, UISupportedInterfaceOrientations=['UIInterfaceOrientationPortrait'],
+    app_info.update(AyuGramProjectionHostDiagnostics=True, LSRequiresIPhoneOS=True, UILaunchScreen={}, UISupportedInterfaceOrientations=['UIInterfaceOrientationPortrait'],
                     UIApplicationSceneManifest={'UIApplicationSupportsMultipleScenes': False,
                         'UISceneConfigurations': {'UIWindowSceneSessionRoleApplication': [
                             {'UISceneConfigurationName': 'Default Configuration',
                              'UISceneDelegateClassName': 'AyuProjectionControlSceneDelegate'}]}})
     files = {APP_NAME + '/main.m': APP_SOURCE.encode(),
              APP_NAME + '/Info.plist': plistlib.dumps(app_info),
-             TEST_NAME + '/' + TEST_NAME + '.m': TEST_SOURCE.encode(),
+             TEST_NAME + '/' + TEST_NAME + '.swift': TEST_SOURCE.encode(),
              TEST_NAME + '/Info.plist': plistlib.dumps(_info('BNDL')),
              APP_NAME + '.xcodeproj/project.pbxproj': PROJECT.encode(),
              APP_NAME + '.xcodeproj/xcshareddata/xcschemes/' + APP_NAME + '.xcscheme': SCHEME.encode()}

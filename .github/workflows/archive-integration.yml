@@ -8,7 +8,7 @@ on:
       validation_scope:
         description: Startup replay, host API probe, targeted iOS tests, or full qualification
         type: choice
-        options: [full, native-only, core-only, focused, projection, projection-only, custom-options-ui, custom-options-replay, probe, retained-clean, retained-modern, projection-plan-only, startup]
+        options: [full, native-only, core-only, focused, projection, projection-only, custom-options-ui, custom-options-replay, custom-options-xctest, probe, retained-clean, retained-modern, projection-plan-only, startup]
         default: full
       replay_run:
         description: Required for startup or retained Projection probe; artifact run ID
@@ -59,14 +59,14 @@ permissions:
 # Development branches do not start macOS jobs; advance ci/verify-latest once
 # the next reviewed batch is ready. Existing runs retain their original policy.
 concurrency:
-  group: ${{ github.event_name == 'workflow_dispatch' && inputs.validation_scope == 'startup' && format('ayugram-startup-replay-{0}', inputs.replay_source) || github.event_name == 'workflow_dispatch' && (inputs.validation_scope == 'retained-clean' || inputs.validation_scope == 'retained-modern' || inputs.validation_scope == 'projection-plan-only') && 'ayugram-projection-replay-c55e19c4f5cbe0d730499035d0a0ef712f6903a9' || github.event_name == 'workflow_dispatch' && inputs.validation_scope == 'probe' && inputs.replay_run != '' && format('ayugram-projection-replay-{0}', inputs.replay_source) || github.event_name == 'workflow_dispatch' && (inputs.validation_scope == 'custom-options-ui' || inputs.validation_scope == 'custom-options-replay') && 'ayugram-ui-qualification' || github.event_name == 'workflow_dispatch' && inputs.validation_scope == 'core-only' && 'ayugram-core-qualification' || 'ayugram-qualification' }}
+  group: ${{ github.event_name == 'workflow_dispatch' && inputs.validation_scope == 'startup' && format('ayugram-startup-replay-{0}', inputs.replay_source) || github.event_name == 'workflow_dispatch' && (inputs.validation_scope == 'retained-clean' || inputs.validation_scope == 'retained-modern' || inputs.validation_scope == 'projection-plan-only') && 'ayugram-projection-replay-c55e19c4f5cbe0d730499035d0a0ef712f6903a9' || github.event_name == 'workflow_dispatch' && inputs.validation_scope == 'probe' && inputs.replay_run != '' && format('ayugram-projection-replay-{0}', inputs.replay_source) || github.event_name == 'workflow_dispatch' && (inputs.validation_scope == 'custom-options-ui' || inputs.validation_scope == 'custom-options-replay' || inputs.validation_scope == 'custom-options-xctest') && 'ayugram-ui-qualification' || github.event_name == 'workflow_dispatch' && inputs.validation_scope == 'core-only' && 'ayugram-core-qualification' || 'ayugram-qualification' }}
   cancel-in-progress: false
 
 jobs:
   integration-tests:
     # Full qualification runs these suites in the app job's same private Bazel
     # root. Unknown manual scopes still enter the strict shell case and fail.
-    if: github.event_name == 'workflow_dispatch' && inputs.validation_scope != 'full' && inputs.validation_scope != '' && inputs.validation_scope != 'probe' && inputs.validation_scope != 'startup' && inputs.validation_scope != 'custom-options-ui' && inputs.validation_scope != 'custom-options-replay' && inputs.validation_scope != 'retained-clean' && inputs.validation_scope != 'retained-modern' && inputs.validation_scope != 'projection-plan-only'
+    if: github.event_name == 'workflow_dispatch' && inputs.validation_scope != 'full' && inputs.validation_scope != '' && inputs.validation_scope != 'probe' && inputs.validation_scope != 'startup' && inputs.validation_scope != 'custom-options-ui' && inputs.validation_scope != 'custom-options-replay' && inputs.validation_scope != 'custom-options-xctest' && inputs.validation_scope != 'retained-clean' && inputs.validation_scope != 'retained-modern' && inputs.validation_scope != 'projection-plan-only'
     # macos-latest does not satisfy versions.json. This preview image does;
     # prepare_host.py additionally verifies the actual OS/Xcode versions.
     runs-on: xcode-27
@@ -1109,8 +1109,9 @@ jobs:
 
   custom-options-artifact-replay:
     # The frozen settings host is a synthetic account-free renderer, not the
-    # full app. This job records new visible evidence and executes no XCTest.
-    if: github.event_name == 'workflow_dispatch' && (inputs.validation_scope == 'custom-options-replay' || inputs.validation_scope == 'retained-clean' || inputs.validation_scope == 'retained-modern')
+    # full app. Modern mode builds only an Apple UI driver for this frozen host;
+    # the legacy replay remains available as an explicit CLI diagnostic.
+    if: github.event_name == 'workflow_dispatch' && (inputs.validation_scope == 'custom-options-replay' || inputs.validation_scope == 'custom-options-xctest' || inputs.validation_scope == 'retained-clean' || inputs.validation_scope == 'retained-modern')
     runs-on: xcode-27
     timeout-minutes: 25
     permissions:
@@ -1162,6 +1163,13 @@ jobs:
           python3 -m unittest discover -s tools/fork_baseline/tests -p test_custom_options_replay.py -v
           python3 -m unittest discover -s tools/fork_baseline/tests -p test_clean_user_service.py -v
 
+      - name: Test the native retained-host UI driver tools
+        if: inputs.validation_scope == 'retained-modern' || inputs.validation_scope == 'custom-options-xctest'
+        run: |
+          set -euo pipefail
+          python3 -m unittest discover -s tools/fork_baseline/tests -p test_custom_options_xctest.py -v
+          python3 -m unittest discover -s tools/fork_baseline/tests -p test_tiny_ui_test_project.py -v
+
       - name: Refresh only the registered current-user simulator service on an exclusive hosted runner
         if: inputs.validation_scope == 'retained-clean'
         env:
@@ -1178,27 +1186,45 @@ jobs:
         run: python3 tools/fork_baseline/custom_options_replay.py prepare --output build/fork-evidence/custom-options-replay
 
       - name: Record the real retained native settings root without rebuilding it
+        if: inputs.validation_scope != 'retained-modern' && inputs.validation_scope != 'custom-options-xctest'
         run: python3 tools/fork_baseline/custom_options_replay.py run --output build/fork-evidence/custom-options-replay
+
+      - name: Verify the retained native settings root through Apple UI testing
+        if: inputs.validation_scope == 'retained-modern' || inputs.validation_scope == 'custom-options-xctest'
+        run: python3 tools/fork_baseline/custom_options_xctest.py run --output build/fork-evidence/custom-options-replay
 
       - name: Publish only closed settings replay observations and bounded visuals
         id: settings_evidence
         if: always()
         run: |
           python3 - <<'PYTHON'
-          import hashlib, pathlib, shutil
-          root = pathlib.Path('build/fork-evidence')
+          import hashlib, pathlib, shutil, stat
+          root = pathlib.Path('build/fork-evidence').absolute()
+          if any(p.is_symlink() for p in (root, *root.parents)) or not root.is_dir():
+              raise SystemExit('Invalid bounded settings evidence')
           public = root / 'custom-options-replay-public'
           public.mkdir(parents=True, mode=0o700)
           names = ['clean-simulator-service.json']
-          for name in ('verification.json', 'result.json', 'root-light.png', 'root-light.mp4', 'title-check-positive.png'):
+          for name in ('verification.json', 'result.json', 'root-light.png', 'root-light.mp4', 'title-check-positive.png', 'xctest.log', 'case-results.json', 'driver-compiler.log'):
               names.append('custom-options-replay/' + name)
-          rows = []
+          checked, total = [], 0
           for name in names:
               source = root / name
-              if source.is_file() and not source.is_symlink():
-                  destination = public / source.name
-                  shutil.copyfile(source, destination)
-                  rows.append(hashlib.sha256(destination.read_bytes()).hexdigest() + '  ' + destination.name + '\n')
+              if any(p.is_symlink() for p in (source, *source.parents)):
+                  raise SystemExit('Invalid bounded settings evidence')
+              if not source.exists():
+                  continue
+              info = source.stat()
+              limit = (32 if source.suffix == '.mp4' else 16 if source.suffix == '.png' else 2 if source.suffix == '.log' else 1) * 1024**2
+              total += info.st_size
+              if not stat.S_ISREG(info.st_mode) or not 0 <= info.st_size <= limit or total > 64 * 1024**2:
+                  raise SystemExit('Invalid bounded settings evidence')
+              checked.append(source)
+          rows = []
+          for source in checked:
+              destination = public / source.name
+              shutil.copyfile(source, destination)
+              rows.append(hashlib.sha256(destination.read_bytes()).hexdigest() + '  ' + destination.name + '\n')
           (public / 'SHA256SUMS').write_text(''.join(rows))
           PYTHON
 

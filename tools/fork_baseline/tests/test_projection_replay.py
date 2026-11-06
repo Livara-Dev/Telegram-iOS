@@ -285,6 +285,60 @@ class ProjectionReplayTests(unittest.TestCase):
                      log() + b"Test Case '-[Module.OtherTests testUnknown]' passed (0.1 seconds).\n", log().replace(b"' passed", b"' crashed")]:
             with self.subTest(data=data[:80]): self.assertFalse(replay.cases(data)['all_expected_passed'])
 
+    def test_all_41_events_remain_counted_with_prefixes_and_merged_writes(self):
+        lines = log().splitlines()
+        without_suffixes = b''.join(line.split(b' (', 1)[0].rstrip(b'.') for line in lines)
+        for data in (b'\n'.join(b'2026-11-06 xcodebuild[42:7] ' + line for line in lines),
+                     b'prefix ' + b' '.join(lines), b''.join(lines),
+                     b'\r\n'.join(lines), b'\t'.join(lines),
+                     b'\x1b[0m'.join(lines), without_suffixes):
+            with self.subTest(data=data[:100]):
+                result = replay.cases(data)
+                self.assertTrue(result['all_expected_passed'])
+                self.assertEqual((result['started'], result['passed']), (41, 41))
+
+    def test_extra_prefixed_or_inline_events_cannot_hide_after_41_passes(self):
+        identity = sorted(replay.EXPECTED)[0].replace('.', ' ').encode()
+        for status in (b'started', b'passed', b'failed', b'skipped', b'crashed'):
+            event = b"Test Case '-[Module." + identity + b"]' " + status + b'.'
+            for prefix in (b'\n2026-11-06 xcodebuild[42:7] ', b'earlier output ', b''):
+                with self.subTest(status=status, prefix=prefix):
+                    result = replay.cases(log().rstrip(b'\n') + prefix + event)
+                    self.assertFalse(result['all_expected_passed'])
+                    self.assertTrue(result['duplicate_case_events'])
+                    if status in (b'failed', b'skipped', b'crashed'):
+                        self.assertEqual(result[status.decode()], 1)
+
+    def test_same_line_failure_before_pass_cannot_be_consumed_by_start_suffix(self):
+        identity = sorted(replay.EXPECTED)[0].replace('.', ' ').encode()
+        event = b"Test Case '-[Module." + identity + b"]' failed."
+        lines = log().splitlines()
+        result = replay.cases(lines[0] + b' emitted diagnostic ' + event + lines[1] + b'\n' + b'\n'.join(lines[2:]))
+        self.assertFalse(result['all_expected_passed'])
+        self.assertTrue(result['duplicate_case_events'])
+        self.assertEqual(result['passed'], 41)
+
+    def test_unknown_prefixed_and_merged_xctest_events_reject_otherwise_complete_run(self):
+        for identity in (b'OtherTests testUnknown', b'Package.Module.OtherTests arbitraryMethod'):
+            for status in (b'started', b'passed', b'failed', b'skipped', b'crashed'):
+                event = b"Test Case '-[" + identity + b"]' " + status + b'.'
+                for prefix in (b'\n2026-11-06 xcodebuild[42:7] ', b'inline output ', b''):
+                    with self.subTest(identity=identity, status=status, prefix=prefix):
+                        result = replay.cases(log().rstrip(b'\n') + prefix + event)
+                        self.assertFalse(result['all_expected_passed'])
+                        self.assertTrue(result['unexpected_case_events'])
+
+    def test_merged_events_preserve_order_and_do_not_accept_status_prefixes(self):
+        lines = log().splitlines()
+        result = replay.cases(b'prefix ' + lines[1] + lines[0] + b''.join(lines[2:]))
+        self.assertFalse(result['all_expected_passed'])
+        self.assertTrue(result['invalid_case_event_order'])
+        for suffix in (b'Suffix', b'_suffix', b'2'):
+            with self.subTest(suffix=suffix):
+                result = replay.cases(log().replace(b"' passed", b"' passed" + suffix, 1))
+                self.assertFalse(result['all_expected_passed'])
+                self.assertEqual(result['passed'], 40)
+
     def test_native_children_receive_no_auth_api_or_session_environment(self):
         hash_key = 'TELEGRAM_' + 'API_HASH'
         fake_token = 'fixture-github-' + 'only'

@@ -52,7 +52,7 @@ class CIRoutingTests(unittest.TestCase):
         source = (WORKFLOWS / "archive-integration.yml").read_text()
         self.assertIn("concurrency:\n  group: ${{", source)
         self.assertIn("format('ayugram-startup-replay-{0}', inputs.replay_source)", source)
-        self.assertIn("(inputs.validation_scope == 'custom-options-ui' || inputs.validation_scope == 'custom-options-replay') && 'ayugram-ui-qualification'", source)
+        self.assertIn("(inputs.validation_scope == 'custom-options-ui' || inputs.validation_scope == 'custom-options-replay' || inputs.validation_scope == 'custom-options-xctest') && 'ayugram-ui-qualification'", source)
         self.assertIn("inputs.validation_scope == 'core-only' && 'ayugram-core-qualification'", source)
         self.assertIn("|| 'ayugram-qualification' }}\n  cancel-in-progress: false\n", source)
         self.assertEqual(len(re.findall(r"^\s*concurrency:", source, re.M)), 1)

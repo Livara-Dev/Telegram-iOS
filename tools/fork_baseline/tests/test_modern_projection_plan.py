@@ -22,14 +22,18 @@ import test_projection_replay as fixtures
 EXPECTED_ENTITLEMENTS = {'get-task-allow': True}
 
 
-def binary(kind):
+def binary(kind, info=None):
+    if kind == 2:
+        return fixtures.ProjectionHostControlTests.signed_host(info or plistlib.dumps({}), plistlib.dumps({}))
     return fixtures.macho(b'private-synthetic-machine-code', kind=kind)
 
 
 def bundle(path, identifier, executable, kind):
     path.mkdir(parents=True)
-    (path / 'Info.plist').write_bytes(plistlib.dumps({'CFBundleIdentifier': identifier, 'CFBundleExecutable': executable}))
-    (path / executable).write_bytes(binary(kind)); (path / executable).chmod(0o700)
+    info = {'CFBundleIdentifier': identifier, 'CFBundleExecutable': executable}
+    if executable == modern.CONTROL_APP: info['AyuGramProjectionHostDiagnostics'] = True
+    encoded = plistlib.dumps(info); (path / 'Info.plist').write_bytes(encoded)
+    (path / executable).write_bytes(binary(kind, encoded)); (path / executable).chmod(0o700)
     return path
 
 
@@ -53,6 +57,13 @@ def captured_app(root):
     bundle(app / 'PlugIns' / modern.products.TEST, 'org.livara.ayugram.tests.native-security.projectionTests', 'ChatLocalTextFilterProjectionTests', 8)
     (app / 'unchanged-resource.data').write_bytes(b'captured-private-resource-canary')
     return app
+
+
+def captured_resources(app):
+    (app / 'PresentationStrings.data').write_bytes(b'exact-captured-presentation-data')
+    for language in modern.CAPTURED_LANGUAGES:
+        directory = app / (language + '.lproj'); directory.mkdir(exist_ok=True)
+        (directory / 'Localizable.strings').write_bytes(('captured-' + language).encode())
 
 
 def complete(data=b'', code=0):
@@ -84,6 +95,81 @@ def owned_fixture(home):
 
 
 class ModernPlanTests(unittest.TestCase):
+    def alternate_fixture(self, root, mutation=None, version=1, executable=False, sibling=False):
+        plan, app, test = apple_fixture(root / 'Products', version, executable, sibling)
+        capture = captured_app(root / 'captured'); captured_resources(capture)
+        grammar = capture / 'PlugIns' / modern.products.TEST / 'LibprismaBundle.bundle/grammars.dat'
+        grammar.parent.mkdir(); grammar.write_bytes(b'exact-full-test-bundle-resource')
+        clone = root / 'alternate' / (modern.CONTROL_APP + '.app')
+        calls, report = [], {}
+        policy = {'options': None, 'generate_der': True, 'timestamp_none': True, 'identifier_explicit': False, 'entitlements': None}
+        def call(label, args):
+            calls.append(args)
+            if '--sign' in args:
+                if mutation == 'test': (clone / 'PlugIns' / modern.products.TEST / 'LibprismaBundle.bundle/grammars.dat').write_bytes(b'changed')
+                if mutation == 'resource': (clone / 'en.lproj/Localizable.strings').write_bytes(b'changed')
+                if mutation == 'extra': (clone / 'unexpected-private-file').write_bytes(b'changed')
+                if mutation == 'code':
+                    path = clone / modern.CONTROL_APP; data = bytearray(path.read_bytes()); data[256] ^= 1; path.write_bytes(data)
+                if mutation == 'source': (app / 'unexpected-source-file').write_bytes(b'changed')
+            if '--verbose=4' in args:
+                return complete(('Identifier=' + modern.products.BUNDLE + '\nSignature=adhoc\nTeamIdentifier=not set\n').encode())
+            if '--entitlements' in args and '--display' in args and mutation == 'rights':
+                Path(args[args.index('--entitlements') + 1]).write_bytes(plistlib.dumps({'unexpected': True}))
+            return complete()
+        before_control, before_capture = modern.projection.snapshot_tree(app), modern.projection.snapshot_tree(capture)
+        result = modern.prepare_alternate_host(app, test, capture, clone, policy, call, report)
+        return plan, app, capture, result, report, calls, before_control, before_capture
+
+    def test_alternate_host_keeps_coherent_built_identity_all_test_bytes_and_all_twenty_presentation_resources(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            _, app, capture, clone, report, calls, source, captured = self.alternate_fixture(root)
+            self.assertEqual(modern.projection.snapshot_tree(app), source)
+            self.assertEqual(modern.projection.snapshot_tree(capture), captured)
+            self.assertEqual((clone / 'Info.plist').read_bytes(), (app / 'Info.plist').read_bytes())
+            self.assertEqual(modern.projection.main_code_digest(clone), modern.projection.main_code_digest(app))
+            self.assertFalse((clone / 'PlugIns' / (modern.CONTROL_TEST + '.xctest')).exists())
+            self.assertEqual(modern.projection.snapshot_tree(clone / 'PlugIns' / modern.products.TEST),
+                modern.projection.snapshot_tree(capture / 'PlugIns' / modern.products.TEST))
+            self.assertEqual(modern.presentation_resources(clone), modern.presentation_resources(capture))
+            self.assertEqual(report['captured_resource_files'], 20); self.assertEqual(report['captured_localizations'], 19)
+            self.assertTrue(report['different_harness']); self.assertFalse(report['original_bazel_host_executed'])
+            signed = [args for args in calls if '--sign' in args]
+            self.assertEqual(len(signed), 1); self.assertNotIn('--deep', signed[0])
+
+    def test_alternate_signing_cannot_change_test_grammar_strings_code_inventory_sources_or_granted_rights(self):
+        for mutation in ('test', 'resource', 'extra', 'code', 'source', 'rights'):
+            with self.subTest(mutation=mutation), tempfile.TemporaryDirectory() as directory:
+                with self.assertRaises(modern.PlanError): self.alternate_fixture(Path(directory).resolve(), mutation)
+
+    def test_alternate_plan_preserves_real_host_executable_semantics_and_maps_embedded_or_sibling_test_products(self):
+        for version, executable, sibling in ((1, False, False), (2, True, False), (2, True, True)):
+            with self.subTest(version=version, executable=executable, sibling=sibling), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory).resolve()
+                plan, app, capture, clone, *_ = self.alternate_fixture(root, version=version, executable=executable, sibling=sibling)
+                path, host, proof = modern.bind_alternate_plan(plan, root / 'Products', clone, root / 'bound')
+                bound = modern._read_plan(path); _, runner = modern.target(bound)
+                self.assertEqual(host.name, modern.CONTROL_APP + '.app')
+                self.assertEqual(modern.resolved_path(runner['TestHostPath'], root / 'bound'), host / modern.CONTROL_APP if executable else host)
+                self.assertEqual(modern.resolved_path(runner['TestBundlePath'], root / 'bound', host), host / 'PlugIns' / modern.products.TEST)
+                self.assertEqual(runner['ProductModuleName'], 'ChatLocalTextFilterProjectionTests')
+                self.assertTrue(proof['different_harness']); self.assertFalse(proof['original_bazel_host_executed'])
+                self.assertEqual(modern.projection.snapshot_tree(host), modern.projection.snapshot_tree(clone))
+                for value in runner['DependentProductPaths']: self.assertTrue(Path(value).exists())
+
+    def test_sdk_dependency_evidence_checks_both_first_party_files_and_rejects_missing_or_external_links(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve(); platform = root / 'iPhoneSimulator.platform'
+            framework = platform / 'Developer/Library/Frameworks/XCTest.framework/XCTest'
+            swift = platform / 'Developer/usr/lib/libXCTestSwiftSupport.dylib'
+            for path in (framework, swift): path.parent.mkdir(parents=True, exist_ok=True); path.write_bytes(b'first-party-SDK-fixture')
+            self.assertTrue(modern.swift_support_available(str(platform).encode())['both_available'])
+            swift.unlink(); self.assertFalse(modern.swift_support_available(str(platform).encode())['both_available'])
+            outside = root / 'outside'; outside.write_bytes(b'private-canary'); swift.symlink_to(outside)
+            value = modern.swift_support_available(str(platform).encode())
+            self.assertFalse(value['both_available']); self.assertNotIn('private-canary', json.dumps(value))
+
     def test_observed_v1_bundle_and_v2_executable_models_are_preserved_without_changing_capture(self):
         for version, executable, sibling in [(1, False, False), (2, True, False), (2, True, True)]:
             with self.subTest(version=version, executable=executable, sibling=sibling), tempfile.TemporaryDirectory() as directory:
@@ -165,6 +251,15 @@ class ModernPlanTests(unittest.TestCase):
                      control_log().splitlines()[1] + b'\n', control_log().splitlines()[0] + b'\n'):
             with self.subTest(data=data[:30]): self.assertFalse(modern.control_cases(data)['all_expected_passed'])
 
+    def test_control_parser_counts_prefixed_merged_and_malformed_extra_events_without_swallowing_line_tails(self):
+        good = control_log()
+        self.assertTrue(modern.control_cases(b'prefix ' + good.replace(b'\n', b'\n[time] '))['all_expected_passed'])
+        extra = ("Test Case '-[OtherTests testUnrelated]' failed (0.0 seconds).\n").encode()
+        for data in (good + b'[time] ' + extra, good.rstrip() + b' ' + extra,
+                     good + b'prefix ' + control_log(), good + b"Test Case '-[malformed]' failed.\n",
+                     good + b"Test Case '-[OtherTests testX]' unsupported.\n"):
+            with self.subTest(data=data[-80:]): self.assertFalse(modern.control_cases(data)['all_expected_passed'])
+
     def test_source_guard_precedes_authenticated_reads(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory).resolve(); api, fetch = Mock(), Mock()
@@ -206,16 +301,21 @@ class ModernPlanTests(unittest.TestCase):
         info = capture / 'TEST_ROOT' / modern.products.APP / 'PlugIns' / modern.products.TEST / 'Info.plist'
         value = plistlib.loads(info.read_bytes())
         value['CFBundleIdentifier'] = 'org.livara.ayugram.tests.native-security.projectionTests'
-        info.write_bytes(plistlib.dumps(value)); fixtures.ProjectionReplayTests.refresh(capture)
+        info.write_bytes(plistlib.dumps(value)); captured_resources(capture / 'TEST_ROOT' / modern.products.APP)
+        fixtures.ProjectionHostControlTests.refresh_capture(capture)
         shutil.copytree(capture, output / 'private-products')
         calls = []; created_ids = []; self.fixture_options = []; entitlements = entitlements or EXPECTED_ENTITLEMENTS
         installed, data_root = root / 'owned-device/installed.app', root / 'owned-device/data-container'
         data_root.mkdir(parents=True)
+        platform = root / 'pinned-sdk/iPhoneSimulator.platform'
+        for name in ('Developer/Library/Frameworks/XCTest.framework/XCTest', 'Developer/usr/lib/libXCTestSwiftSupport.dylib'):
+            path = platform / name; path.parent.mkdir(parents=True, exist_ok=True); path.write_bytes(b'Apple-SDK-fixture')
         def command(args, timeout=30, **options):
             calls.append((args, timeout))
             self.fixture_options.append((args, options))
             if args == ['xcodebuild', '-version']: return complete(b'Xcode 27.1\nBuild version 27A9275\n')
             if '--show-sdk-version' in args: return complete(b'27.1')
+            if '--show-sdk-platform-path' in args: return complete(str(platform).encode())
             if args[:3] == ['/usr/bin/codesign', '--display', '--verbose=4']:
                 identifier = modern.CONTROL_APP_ID if Path(args[-1]).suffix == '.app' else modern.CONTROL_TEST_ID
                 return complete(('Identifier=' + identifier + '\nSignature=adhoc\nTeamIdentifier=not set\n').encode())
@@ -319,7 +419,7 @@ class ModernPlanTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             result, calls = self.execute_fixture(Path(directory).resolve())
             self.assertTrue(result['passed']); self.assertEqual(result['control']['passed'], 1)
-            self.assertEqual(result['schema'], 2)
+            self.assertEqual(result['schema'], 3)
             self.assertEqual(result['tiny_control_entitlement_readback'], 'matchedActualCodeSignInput')
             self.assertEqual(result['projection']['started'], 41); self.assertEqual(result['projection']['passed'], 41)
             self.assertTrue(result['original_products_unchanged']); self.assertTrue(result['projection']['cleanup_completed'])
@@ -356,7 +456,8 @@ class ModernPlanTests(unittest.TestCase):
                 self.assertTrue(result['passed']); self.assertTrue(result['tiny_signing']['host']['verified'])
                 self.assertTrue(result['tiny_signing']['test']['verified'])
                 self.assertFalse(result['tiny_signing']['test']['generated_signed_entitlements_present'])
-                self.assertFalse(any('--sign' in args or 'sign_control' in args for args, _ in calls))
+                signed = [args for args, _ in calls if '--sign' in args]
+                self.assertEqual(len(signed), 1); self.assertIn('private-alternate', signed[0][-1]); self.assertNotIn('--deep', signed[0])
                 build = next(args for args, _ in calls if 'build-for-testing' in args)
                 self.assertIn('CODE_SIGN_IDENTITY=-', build); self.assertIn('CODE_SIGN_INJECT_BASE_ENTITLEMENTS=YES', build)
                 self.assertIn('DEVELOPMENT_TEAM=', build); self.assertNotIn('-allowProvisioningUpdates', build)
@@ -369,7 +470,7 @@ class ModernPlanTests(unittest.TestCase):
                 identifiers = [args[3] for args, _ in calls if args[:3] == ['xcrun', 'simctl', 'boot']]
                 self.assertEqual(len(set(identifiers)), 2)
                 observers = [(args, options) for args, options in self.fixture_options if 'bootstrap_diagnostic' in options]
-                self.assertEqual(len(observers), 1); self.assertIn('test-without-building', observers[0][0])
+                self.assertEqual(len(observers), 2); self.assertTrue(all('test-without-building' in args for args, _ in observers))
 
     def test_rejected_owned_identity_stops_before_any_test_and_cleans_up(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -586,6 +687,19 @@ class ModernPlanTests(unittest.TestCase):
             self.assertNotEqual(modern.control_marker(root, clear=True), {'state': 'cleared'})
             self.assertEqual(outside.read_bytes(), b'sceneVisible')
 
+    def test_live_executable_digest_rejects_symlink_fifo_hardlink_and_oversize_without_reading_unowned_data(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve(); good = root / 'executable'; good.write_bytes(binary(2))
+            self.assertEqual(modern.owned_executable_digest(good), modern.projection.digest(good))
+            linked = root / 'symlink'; linked.symlink_to(good)
+            fifo = root / 'fifo'; os.mkfifo(fifo)
+            oversized = root / 'oversized'
+            with oversized.open('wb') as stream: stream.truncate(32 * 1024**2 + 1)
+            for path in (linked, fifo, oversized, root / 'missing'):
+                self.assertIsNone(modern.owned_executable_digest(path))
+            hardlink = root / 'hardlink'; os.link(good, hardlink)
+            self.assertIsNone(modern.owned_executable_digest(hardlink))
+
     def test_post_exit_group_selection_is_only_same_uid_verified_group_counts_with_no_private_names(self):
         uid = os.getuid(); secret = 'private-process-canary'
         raw = ('124 1 123 ' + str(uid) + ' CoreSimulatorService\n125 1 123 ' + str(uid) + ' ' + secret + '\n').encode()
@@ -648,7 +762,7 @@ class ModernPlanTests(unittest.TestCase):
                     raise AssertionError(args)
                 alive = Mock(side_effect=[True, True, False]) if failure == 'exited' else lambda: True
                 with patch.object(modern.Path, 'home', return_value=root), patch.object(modern.bootstrap, 'command', side_effect=command):
-                    observed = modern.live_control_observation(123, 123, IDENTIFIER, modern.control_inventory(containers['app']), (), alive, 'owned-control')
+                    observed = modern.live_control_observation(123, 123, IDENTIFIER, modern.projection.digest(containers['app'] / modern.CONTROL_APP), (), alive, 'owned-control')
                 value = modern.public_live_observation(observed)
                 self.assertNotIn('private-sample-canary', json.dumps(value)); self.assertNotIn(str(root), json.dumps(value))
                 if failure == 'exited':

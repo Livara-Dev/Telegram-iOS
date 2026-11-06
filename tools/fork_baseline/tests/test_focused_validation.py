@@ -291,7 +291,7 @@ class FocusedWorkflowRoutingTests(unittest.TestCase):
                 self.assertTrue(self.condition('integration-tests', 'workflow_dispatch', 'projection', device))
                 for job in ('application-build', 'unsigned-device-build', 'native-api-probe', 'startup-artifact-replay'):
                     self.assertFalse(self.condition(job, 'workflow_dispatch', 'projection', device))
-        self.assertIn('options: [full, native-only, core-only, focused, projection, projection-only, custom-options-ui, custom-options-replay, probe, retained-clean, retained-modern, projection-plan-only, startup]', WORKFLOW.read_text())
+        self.assertIn('options: [full, native-only, core-only, focused, projection, projection-only, custom-options-ui, custom-options-replay, custom-options-xctest, probe, retained-clean, retained-modern, projection-plan-only, startup]', WORKFLOW.read_text())
         self.assertIn('projection) repair_options+=(--projection-tests)', WORKFLOW.read_text())
 
     def test_projection_only_dispatch_skips_every_other_build_or_probe(self):
@@ -535,7 +535,10 @@ class FocusedWorkflowRoutingTests(unittest.TestCase):
         self.assertEqual(source.count('run: python3 tools/fork_baseline/clean_user_service.py '), 1)
         self.assertIn('AYU_CLEAN_SESSION: exclusive-cached-artifacts', step)
         execute = source.split('      - name: Record the real retained native settings root without rebuilding it\n', 1)[1].split('      - name: ', 1)[0]
-        self.assertNotIn('        if:', execute)
+        condition = re.search(r'^        if: (.*?)$', execute, re.M).group(1)
+        self.assertTrue(self.expression(condition, 'workflow_dispatch', 'custom-options-replay', False))
+        self.assertTrue(self.expression(condition, 'workflow_dispatch', 'retained-clean', False))
+        self.assertFalse(self.expression(condition, 'workflow_dispatch', 'retained-modern', False))
         self.assertIn('custom_options_replay.py run', execute)
 
     def test_modern_native_control_uses_fresh_devices_without_forced_service_restart(self):
@@ -559,7 +562,7 @@ class FocusedWorkflowRoutingTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory).resolve(); evidence = root / 'build/fork-evidence'; source = evidence / 'custom-options-replay'
             source.mkdir(parents=True)
-            allowed = {'verification.json', 'result.json', 'root-light.png', 'root-light.mp4', 'title-check-positive.png'}
+            allowed = {'verification.json', 'result.json', 'root-light.png', 'root-light.mp4', 'title-check-positive.png', 'xctest.log', 'case-results.json', 'driver-compiler.log'}
             for name in allowed: (source / name).write_bytes(('allowed-' + name).encode())
             (evidence / 'clean-simulator-service.json').write_text('{"passed": true}')
             for name in ('CustomeOptionsHost-simulator.ipa', 'raw-ocr.txt', 'private-compiler.out'):
@@ -571,11 +574,54 @@ class FocusedWorkflowRoutingTests(unittest.TestCase):
             public = evidence / 'custom-options-replay-public'
             self.assertEqual({p.name for p in public.iterdir()}, allowed | {'SHA256SUMS', 'clean-simulator-service.json'})
             rows = (public / 'SHA256SUMS').read_text().splitlines()
-            self.assertEqual(len(rows), 6)
+            self.assertEqual(len(rows), 9)
             for row in rows:
                 digest, name = row.split('  ', 1)
                 self.assertEqual(hashlib.sha256((public / name).read_bytes()).hexdigest(), digest)
                 self.assertNotIn(b'PRIVATE_PUBLICATION_CANARY', (public / name).read_bytes())
+
+    def test_native_ui_driver_scope_runs_only_the_frozen_host_job(self):
+        for device in (False, True):
+            self.assertTrue(self.condition('custom-options-artifact-replay', 'workflow_dispatch', 'custom-options-xctest', device))
+            for job in ('native-api-probe', 'integration-tests', 'application-build', 'unsigned-device-build', 'custom-options-ui', 'startup-artifact-replay'):
+                self.assertFalse(self.condition(job, 'workflow_dispatch', 'custom-options-xctest', device), job)
+        self.assertFalse(self.condition('custom-options-artifact-replay', 'push', 'custom-options-xctest', False))
+        source = self.section('custom-options-artifact-replay')
+        step = source.split('      - name: Verify the retained native settings root through Apple UI testing\n', 1)[1].split('      - name: ', 1)[0]
+        condition = re.search(r'^        if: (.*?)$', step, re.M).group(1)
+        for scope in ('retained-modern', 'custom-options-xctest', 'custom-options-replay', 'retained-clean'):
+            self.assertEqual(self.expression(condition, 'workflow_dispatch', scope, False), scope in {'retained-modern', 'custom-options-xctest'})
+        self.assertIn('custom_options_xctest.py run --output build/fork-evidence/custom-options-replay', step)
+        self.assertNotIn('GH_TOKEN', step)
+        self.assertNotIn('TELEGRAM_API_', source)
+        group = re.search(r'^  group: \$\{\{ (.*?) \}\}$', WORKFLOW.read_text(), re.M).group(1)
+        self.assertEqual(self.expression(group, 'workflow_dispatch', 'custom-options-xctest', False), 'ayugram-ui-qualification')
+
+    def test_settings_publisher_rejects_oversize_and_symbolic_links_before_copy(self):
+        stage = self.section('custom-options-artifact-replay').split('      - name: Publish only closed settings replay observations and bounded visuals', 1)[1]
+        code = textwrap.dedent(stage.split("python3 - <<'PYTHON'\n", 1)[1].split('          PYTHON', 1)[0])
+        for kind in ('log', 'json', 'image', 'video', 'alias', 'parentAlias', 'directory', 'aggregate'):
+            with self.subTest(kind=kind), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory).resolve(); evidence = root / 'build/fork-evidence'; source = evidence / 'custom-options-replay'
+                source.mkdir(parents=True)
+                if kind == 'alias': (source / 'result.json').symlink_to(root / 'private.json')
+                elif kind == 'parentAlias':
+                    source.rmdir(); (root / 'private').mkdir(); source.symlink_to(root / 'private', target_is_directory=True)
+                elif kind == 'directory': (source / 'result.json').mkdir()
+                else:
+                    files = {'log': [('xctest.log', 2 * 1024**2 + 1)], 'json': [('result.json', 1024**2 + 1)],
+                             'image': [('root-light.png', 16 * 1024**2 + 1)], 'video': [('root-light.mp4', 32 * 1024**2 + 1)],
+                             'aggregate': [('root-light.png', 16 * 1024**2), ('root-light.mp4', 32 * 1024**2),
+                                           ('title-check-positive.png', 16 * 1024**2), ('result.json', 1)]}[kind]
+                    for name, size in files:
+                        with (source / name).open('wb') as output: output.truncate(size)
+                previous = Path.cwd()
+                try:
+                    os.chdir(root)
+                    with self.assertRaisesRegex(SystemExit, '^Invalid bounded settings evidence$'):
+                        exec(compile(code, '<checked-in-settings-publication>', 'exec'), {})
+                finally: os.chdir(previous)
+                self.assertEqual(list((evidence / 'custom-options-replay-public').iterdir()), [])
 
     def test_retained_startup_can_test_projection_without_enabling_any_compile_job(self):
         self.assertTrue(self.condition('startup-artifact-replay', 'workflow_dispatch', 'startup', False, retained=True))

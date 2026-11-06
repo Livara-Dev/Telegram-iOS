@@ -8,11 +8,12 @@ Preserve the successful `c55e19c4` device build82 and simulator build1. The
 rebuild job is excluded. It shares the fixed c55 Projection queue with
 `retained-clean`, and never cancels an active run. For a further native-only
 diagnostic repair, `projection-plan-only` preserves the settings result and
-executes only the modern native job. Do not advance
+executes only the modern native job. `custom-options-xctest` selects only the
+retained renderer's Apple UI test job and shares the existing UI queue. Do not advance
 `ci/verify-latest` for diagnostic tools or documentation alone.
 
 The modern native job verifies the fixed captured products and their source/hashes,
-then builds a tiny account-free Apple UIKit/XCTest control. This compiles
+then builds a tiny account-free Apple UIKit host and Swift XCTest control. This compiles
 diagnostic code only. Both modern artifact jobs use freshly created devices
 without a forced service restart. The separate `retained-clean` intervention
 can refresh only the registered current-user service on an exclusive hosted
@@ -21,27 +22,40 @@ for the tiny control's one hosted identity test. A separate manual-launch
 experiment is not a prerequisite for running real tests. After the control
 XCTest attempt and verified control-device cleanup, and while source, plan,
 signature and ownership checks remain valid, all 41 retained Projection cases
-are attempted on a separate fresh device with the verified generated plan and
-private resealed copy; captured application/test code stays unchanged. A failed
+are attempted on a separate fresh device using that Xcode-generated host and
+Swift-aware plan. The host is built with the asserted Projection identity from
+the start. A private clone replaces only its diagnostic test with the complete
+unchanged captured test bundle and copies the original presentation data and all
+19 localizations. Resealing follows the actual validated Xcode signing inputs;
+normalized host code, test bytes, resources and original products are checked.
+This is explicitly a different harness: even a passing result would not qualify
+the original Bazel host. No Telegram application or captured test is rebuilt. A failed
 diagnostic control XCTest outcome is retained while the independent Projection
 attempt can still run. Overall success requires both complete suites and cleanup; unknown
 plan formats or unverified cleanup cannot become skipped passes. The control
-is separate from AyuGram feature coverage. Diagnostic markers and samples
+is separate from AyuGram feature coverage. Both live observations use owned
+device metadata and executable identity without relying on additional live
+simctl requests; full bundle hashes are checked outside the observation budget.
+Diagnostic markers and samples
 cannot manufacture XCTest outcomes.
 
-The settings job verifies the retained account-free host against five unchanged
-source files, installs it on its own disposable iPhone 15 Pro / iOS 27.0 simulator,
-and requests recording asynchronously before one plain launch and screenshot.
-A validated launch-command timeout still permits diagnostic capture while
-retaining the failure and nonzero result; malformed command evidence cannot
-authorize that continuation. OCR and recording
-failures stay failures while preserving any actual screenshot for manual
-review. Neither this root observation nor the earlier eight controller and one
-UI test proves authenticated full-app Settings navigation.
+The modern settings job verifies the retained account-free host against five
+unchanged source files and installs it on its own disposable iPhone 15 Pro /
+iOS 27.0 simulator. It compiles only a standalone Apple UI test driver, with no
+application target or dependencies, and preserves Xcode's generated test runner.
+One new XCTest activates the unchanged host and requires the visible exact
+“Custome options” title, hittable settings table and archive control. An actual
+XCTest screenshot, recording, unchanged product hashes and verified simulator
+deletion are required for success. The earlier CLI launch diagnostic remains
+available under `custom-options-replay`; it is not a passing UI test. Neither
+the new synthetic root test nor the historical eight controller and one UI test
+proves authenticated full-app Settings navigation.
 
 Only bounded, explicitly selected diagnostics and visuals are uploaded. Modern
 native JSON is limited to 1 MiB per file, logs to 2 MiB and the combined selection
-to 8 MiB; symbolic links and nonregular files are rejected before copying. Uploads require
+to 8 MiB. Settings evidence has separate 1 MiB JSON, 2 MiB log, 16 MiB image,
+32 MiB recording and 64 MiB total limits. Symbolic links and nonregular files
+are rejected before copying. Uploads require
 a successful staging step even when the preceding native check failed. Raw test
 plans, project products, simulator IPAs, credentials and account data stay private.
 The diagnostic download token is absent from native child processes. A failed

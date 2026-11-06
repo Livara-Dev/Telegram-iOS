@@ -617,7 +617,10 @@ def native_command(arguments, timeout=30, bootstrap_diagnostic=None, post_exit_d
 
 def cases(data):
     started, outcomes, unknown, duplicates, invalid_order = set(), {}, False, False, False
-    pattern = re.compile(r"^Test Case '-\[(?:[A-Za-z0-9_]+\.)?([A-Za-z0-9_]+) (test[A-Za-z0-9_]+)\]' (started|passed|failed|skipped|crashed)(?:[ .(].*)?$", re.M)
+    # Xcode may prefix events or merge separate writes onto one line. Match
+    # each event without consuming its suffix, so no later failure can hide
+    # behind an earlier start/pass. Unknown XCTest identities still reject.
+    pattern = re.compile(r"Test Case '-\[(?:[A-Za-z0-9_]+\.)*([A-Za-z0-9_]+) ([A-Za-z0-9_]+)\]' (started|passed|failed|skipped|crashed)(?=$|\W|Test Case '-\[)")
     for match in pattern.finditer(data.decode('utf-8', errors='replace')):
         key = match[1] + '.' + match[2]; status = match[3]
         if key not in EXPECTED: unknown = True; continue

@@ -8,6 +8,7 @@ the historical application nor the captured 41-case test module is recompiled.
 """
 import argparse
 import copy
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -36,8 +37,8 @@ DEVICE_TYPE = projection.DEVICE_TYPE
 MAX_PLAN = 1024 * 1024
 CONTROL_APP = 'AyuProjectionControl'
 CONTROL_TEST = 'AyuProjectionControlTests'
-CONTROL_APP_ID = 'org.livara.ayugram.tests.modern-projection-control'
-CONTROL_TEST_ID = CONTROL_APP_ID + 'Tests'
+CONTROL_APP_ID = products.BUNDLE
+CONTROL_TEST_ID = tiny.TEST_BUNDLE
 CONTROL_CASE = CONTROL_TEST + '.testRunsInApplicationHost'
 MAX_PRIVATE = 65536
 GROUP_ROLES = ('CoreSimulatorService', 'SimulatorTrampoline', 'simctl', 'launchd_sim', 'xcodebuild', CONTROL_APP, 'other')
@@ -52,6 +53,7 @@ KERNEL_PATH = (
 )
 MANIFEST_SHA256 = '6c8b70b9f78dedb309f4b48ee69cc9ca5112b63712e9fad71cfac716bc6dc965'
 CAPTURE_SHA256 = 'fc9b625a66995db1f0219b49db657992e06c62491f54f62f8917be0778dbaaf8'
+CAPTURED_LANGUAGES = ('ar', 'be', 'ca', 'de', 'en', 'es', 'fa', 'fr', 'id', 'it', 'ko', 'ms', 'nl', 'pl', 'pt', 'ru', 'tr', 'uk', 'uz')
 
 
 class PlanError(ValueError):
@@ -218,10 +220,77 @@ def bind_plan(generated, plan_root, captured_app, destination):
     return path, metadata
 
 
+def bind_alternate_plan(generated, plan_root, alternate, destination):
+    """Preserve Xcode's host path model and replace only the tested product."""
+    version, original, control_app, control_test, kind = generated_products(generated, plan_root)
+    destination.mkdir(mode=0o700, parents=True, exist_ok=False)
+    host = destination / control_app.relative_to(plan_root)
+    host.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    _copy_bundle(alternate, host)
+    test = host / 'PlugIns' / products.TEST
+    info = plistlib.loads(private_bytes(test / 'Info.plist'))
+    if info.get('CFBundleExecutable') != 'ChatLocalTextFilterProjectionTests' or not isinstance(info.get('CFBundleIdentifier'), str):
+        raise PlanError('alternate_test_identity_mismatch')
+    def transformed(value):
+        if isinstance(value, str):
+            return value.replace(str(plan_root), str(destination)).replace(CONTROL_TEST_ID, info['CFBundleIdentifier']).replace(CONTROL_TEST, 'ChatLocalTextFilterProjectionTests')
+        if isinstance(value, list): return [transformed(item) for item in value]
+        if isinstance(value, dict): return {transformed(key): transformed(item) for key, item in value.items()}
+        return value
+    bound = transformed(copy.deepcopy(generated)); _, runner = target(bound)
+    runner['TestHostPath'] = str(host / CONTROL_APP) if kind == 'executable' else str(host)
+    runner['TestBundlePath'] = '__TESTHOST__/PlugIns/' + products.TEST
+    if 'TestHostBundleIdentifier' in runner: runner['TestHostBundleIdentifier'] = products.BUNDLE
+    paths = []
+    for value in original.get('DependentProductPaths', []):
+        old = resolved_path(value, plan_root, control_app)
+        if old == control_test: new = test
+        elif old == control_test / CONTROL_TEST: new = test / 'ChatLocalTextFilterProjectionTests'
+        else:
+            try: new = host / old.relative_to(control_app)
+            except ValueError: raise PlanError('unrecognized_alternate_dependent_product') from None
+        if not new.exists(): raise PlanError('alternate_dependent_product_missing')
+        paths.append(str(new))
+    if 'DependentProductPaths' in runner: runner['DependentProductPaths'] = paths
+    if (runner.get('ProductModuleName') != 'ChatLocalTextFilterProjectionTests'
+            or resolved_path(runner['TestBundlePath'], destination, host) != test
+            or projection.snapshot_tree(host) != projection.snapshot_tree(alternate)):
+        raise PlanError('alternate_bound_product_changed')
+    path = destination / 'alternate.xctestrun'; path.write_bytes(plistlib.dumps(bound)); path.chmod(0o600)
+    return path, host, {'harness': 'xcodeUIKitProjection', 'different_harness': True,
+        'original_bazel_host_executed': False, 'original_plan_executed': False, 'modern_plan_executed': False,
+        'apple_format_version': version, 'apple_host_path_kind': kind, 'captured_test_bytes_unchanged': True,
+        'host_executable_name_preserved': True, 'selection_filters_added': False}
+
+
+def swift_support_available(raw):
+    """Inspect only the two SDK libraries used by the unchanged Swift bundle."""
+    try:
+        if not isinstance(raw, bytes) or not 0 < len(raw) <= 4096: raise ValueError()
+        text = raw.decode('utf-8').strip()
+        if '\n' in text or '\0' in text: raise ValueError()
+        platform = Path(text)
+        if not platform.is_absolute() or platform.name != 'iPhoneSimulator.platform' or '..' in platform.parts:
+            raise ValueError()
+        platform = platform.resolve(strict=True)
+        paths = {'xctest_framework': platform / 'Developer/Library/Frameworks/XCTest.framework/XCTest',
+                 'swift_xctest_support': platform / 'Developer/usr/lib/libXCTestSwiftSupport.dylib'}
+        result = {}
+        for name, path in paths.items():
+            actual = path.resolve(strict=True)
+            result[name] = actual.is_relative_to(platform) and actual.is_file() and 0 < actual.stat().st_size <= products.MAX_FILE_BYTES
+        return {'source': 'pinnedXcodeSimulatorSDK', 'both_available': all(result.values()), **result}
+    except (OSError, ValueError, TypeError, UnicodeError, RuntimeError):
+        return {'source': 'pinnedXcodeSimulatorSDK', 'both_available': False, 'xctest_framework': False, 'swift_xctest_support': False}
+
+
 def control_cases(data):
     starts, outcomes, invalid = [], [], False
-    pattern = re.compile(r"^Test Case '-\[(?:[A-Za-z0-9_]+\.)?([A-Za-z0-9_]+) (test[A-Za-z0-9_]+)\]' (started|passed|failed|skipped|crashed)(?:[ .(].*)?$", re.M)
-    for match in pattern.finditer(data.decode('utf-8', errors='replace')):
+    text = data.decode('utf-8', errors='replace')
+    pattern = re.compile(r"Test Case '-\[(?:[A-Za-z0-9_]+\.)?([A-Za-z0-9_]+) (test[A-Za-z0-9_]+)\]' (started|passed|failed|skipped|crashed)(?=$|[\s.(])")
+    events = list(pattern.finditer(text))
+    if [match.start() for match in events] != [match.start() for match in re.finditer(r"Test Case '", text)]: invalid = True
+    for match in events:
         name = match[1] + '.' + match[2]
         if name != CONTROL_CASE: invalid = True
         if match[3] == 'started': starts.append(name)
@@ -285,7 +354,7 @@ def typed_equal(first, second):
     return first == second
 
 
-def actual_signing_inputs(raw, derived, app, bundle, report):
+def actual_signing_inputs(raw, derived, app, bundle, report, policies=None):
     """Use actual Xcode CodeSign arguments, never a guessed .xcent basename."""
     roles = {'host': (app, CONTROL_APP_ID), 'test': (bundle, CONTROL_TEST_ID)}
     matches = {role: [] for role in roles}
@@ -338,9 +407,12 @@ def actual_signing_inputs(raw, derived, app, bundle, report):
             raise PlanError('actual_codesign_identity_mismatch')
         if '--options' in values and values['--options'] not in {'runtime', '0x10000', '0x0'}:
             raise PlanError('unsupported_codesign_flags')
+        policy = {'options': values.get('--options'), 'generate_der': '--generate-entitlement-der' in seen,
+                  'timestamp_none': '--timestamp=none' in seen, 'identifier_explicit': '--identifier' in values}
         if '--entitlements' not in values:
             observation.update(verified=True, entitlement_input_kind='none', entitlement_name_kind='none')
             result[role] = None
+            if policies is not None: policies[role] = {**policy, 'entitlements': None}
             continue
         path = Path(values['--entitlements'])
         observation['entitlement_input_kind'] = 'explicitFile'
@@ -355,6 +427,7 @@ def actual_signing_inputs(raw, derived, app, bundle, report):
             if ancestor == derived: break
         else: raise PlanError('unsafe_actual_entitlement_input')
         result[role] = entitlement_document(private_bytes(path))
+        if policies is not None: policies[role] = {**policy, 'entitlements': result[role]}
         observation['verified'] = True
     return result
 
@@ -389,7 +462,8 @@ def compiler_log(raw, secrets):
 
 def verify_xcode_signing(derived, app, bundle, build_output, call, report):
     report['tiny_signing'] = {'mode': 'xcodeAdhocGeneratedEntitlements', 'host': {'verified': False}, 'test': {'verified': False}}
-    inputs = actual_signing_inputs(build_output, derived, app, bundle, report['tiny_signing'])
+    policies = {}
+    inputs = actual_signing_inputs(build_output, derived, app, bundle, report['tiny_signing'], policies)
     for role, product, expected_id in (('host', app, CONTROL_APP_ID), ('test', bundle, CONTROL_TEST_ID)):
         expected = inputs[role]
         state = report['tiny_signing'][role]
@@ -423,6 +497,97 @@ def verify_xcode_signing(derived, app, bundle, build_output, call, report):
             state['readback'] = 'verified'
         call('verify_' + role + '_signature', ['/usr/bin/codesign', '--verify', '--deep', '--strict', str(product)])
         state['verified'] = True
+    return policies['host']
+
+
+def presentation_resources(app):
+    names = ['PresentationStrings.data', *[language + '.lproj/Localizable.strings' for language in CAPTURED_LANGUAGES]]
+    actual = {path.parent.name for path in app.glob('*.lproj/Localizable.strings')}
+    if actual != {language + '.lproj' for language in CAPTURED_LANGUAGES}:
+        raise PlanError('captured_localizations_changed')
+    return {name: projection.digest(products.fixed_path(app, name)) for name in names}
+
+
+def prepare_alternate_host(control_app, control_test, captured_app, destination, policy, call, report):
+    """Clone the coherent Xcode-built UIKit host; never modify either source."""
+    if (not isinstance(policy, dict) or set(policy) != {'options', 'generate_der', 'timestamp_none', 'identifier_explicit', 'entitlements'}
+            or policy['options'] not in {None, 'runtime', '0x10000', '0x0'}
+            or any(type(policy[key]) is not bool for key in ('generate_der', 'timestamp_none', 'identifier_explicit'))
+            or policy['entitlements'] is not None and not isinstance(policy['entitlements'], dict)):
+        raise PlanError('alternate_signing_policy_unverified')
+    if policy['entitlements'] is not None: entitlement_document(plistlib.dumps(policy['entitlements']))
+    original_control = projection.snapshot_tree(control_app)
+    original_capture = projection.snapshot_tree(captured_app)
+    captured_test = captured_app / 'PlugIns' / products.TEST
+    expected_test = projection.snapshot_tree(captured_test)
+    resources = presentation_resources(captured_app)
+    info = plistlib.loads(private_bytes(control_app / 'Info.plist'))
+    if (info.get('CFBundleIdentifier') != products.BUNDLE or info.get('CFBundleExecutable') != CONTROL_APP
+            or info.get('AyuGramProjectionHostDiagnostics') is not True): raise PlanError('alternate_host_identity_not_built_coherently')
+    destination.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    _copy_bundle(control_app, destination)
+    tiny_test = destination / 'PlugIns' / (CONTROL_TEST + '.xctest')
+    try: relative = control_test.relative_to(control_app)
+    except ValueError: relative = None
+    if relative is not None and relative != Path('PlugIns') / (CONTROL_TEST + '.xctest'):
+        raise PlanError('unsupported_tiny_test_placement')
+    if tiny_test.exists():
+        if relative is None or tiny_test.is_symlink(): raise PlanError('unexpected_alternate_test_product')
+        shutil.rmtree(tiny_test)
+    plugins = destination / 'PlugIns'; plugins.mkdir(mode=0o700, exist_ok=True)
+    if list(plugins.iterdir()): raise PlanError('unexpected_alternate_plugin')
+    _copy_bundle(captured_test, plugins / products.TEST)
+    for name in resources:
+        target = destination / name
+        if target.exists() or target.is_symlink(): raise PlanError('alternate_resource_collision')
+        target.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+        source = products.fixed_path(captured_app, name); shutil.copy2(source, target)
+        if target.stat().st_nlink != 1 or (source.stat().st_dev, source.stat().st_ino) == (target.stat().st_dev, target.stat().st_ino):
+            raise PlanError('alternate_resource_hardlink')
+    before_sign = projection.snapshot_tree(destination)
+    original_code = projection.main_code_digest(control_app)
+    if projection.main_code_digest(destination) != original_code: raise PlanError('alternate_host_code_changed')
+    report.update(harness='xcodeUIKitProjection', different_harness=True, original_bazel_host_executed=False,
+        host_identity_built_from_start=True, captured_test_tree_unchanged=False, captured_resources_unchanged=False,
+        host_code_normalized_unchanged=False, strict_seal_verified=False, source_control_unchanged=False)
+    arguments = ['/usr/bin/codesign', '--force', '--sign', '-']
+    if policy['timestamp_none']: arguments.append('--timestamp=none')
+    if policy['identifier_explicit']: arguments += ['--identifier', products.BUNDLE]
+    if policy['options'] is not None: arguments += ['--options', policy['options']]
+    if policy['generate_der']: arguments.append('--generate-entitlement-der')
+    with tempfile.TemporaryDirectory(prefix='ayu-alternate-signing-') as directory:
+        private = Path(directory).resolve(); private.chmod(0o700)
+        if policy['entitlements'] is not None:
+            path = private / 'validated-xcode-entitlements.plist'
+            path.write_bytes(plistlib.dumps(policy['entitlements'])); path.chmod(0o600)
+            arguments += ['--entitlements', str(path)]
+        call('sign_alternate_host', [*arguments, str(destination)])
+        _, identity = call('verify_alternate_adhoc', ['/usr/bin/codesign', '--display', '--verbose=4', str(destination)])
+        lines = identity.decode('utf-8', errors='replace').splitlines()
+        if lines.count('Signature=adhoc') != 1 or lines.count('Identifier=' + products.BUNDLE) != 1 or lines.count('TeamIdentifier=not set') != 1:
+            raise PlanError('alternate_host_adhoc_unverified')
+        extracted = private / 'actual-entitlements.plist'
+        call('verify_alternate_entitlements', ['/usr/bin/codesign', '--display', '--entitlements', str(extracted), '--xml', str(destination)])
+        actual = None
+        if extracted.exists() or extracted.is_symlink():
+            value = private_bytes(extracted, allow_empty=policy['entitlements'] in (None, {}))
+            actual = entitlement_document(value) if value else None
+        if policy['entitlements'] in (None, {}):
+            if actual not in (None, {}): raise PlanError('alternate_host_entitlements_changed')
+        elif actual is None or not typed_equal(policy['entitlements'], actual): raise PlanError('alternate_host_entitlements_changed')
+    call('verify_alternate_signature', ['/usr/bin/codesign', '--verify', '--deep', '--strict', str(destination)])
+    after = projection.snapshot_tree(destination)
+    allowed = {CONTROL_APP, '_CodeSignature/CodeResources'}
+    if (set(after) != set(before_sign) or any(after[name] != before_sign[name] for name in after if name not in allowed)
+            or projection.main_code_digest(destination) != original_code): raise PlanError('alternate_signing_changed_code_or_resources')
+    if projection.snapshot_tree(plugins / products.TEST) != expected_test: raise PlanError('alternate_test_tree_changed')
+    if presentation_resources(destination) != resources: raise PlanError('alternate_strings_changed')
+    if projection.snapshot_tree(control_app) != original_control or projection.snapshot_tree(captured_app) != original_capture:
+        raise PlanError('alternate_source_products_changed')
+    report.update(captured_test_tree_unchanged=True, captured_resources_unchanged=True,
+        captured_localizations=19, captured_resource_files=20, host_code_normalized_unchanged=True,
+        strict_seal_verified=True, source_control_unchanged=True, actual_xcode_signing_policy_applied=True)
+    return destination
 
 
 def control_inventory(root):
@@ -560,6 +725,29 @@ def control_marker(container, clear=False):
         return {'state': 'unavailable'}
 
 
+def owned_executable_digest(path):
+    """Hash only the small owned host, never follow a link or read a FIFO."""
+    descriptor = None
+    try:
+        descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+        before = os.fstat(descriptor)
+        if (not stat.S_ISREG(before.st_mode) or before.st_uid != os.getuid() or before.st_nlink != 1
+                or not 32 <= before.st_size <= 32 * 1024**2): raise ValueError()
+        digest, total = hashlib.sha256(), 0
+        while chunk := os.read(descriptor, min(256 * 1024, before.st_size - total + 1)):
+            total += len(chunk)
+            if total > before.st_size: raise ValueError()
+            digest.update(chunk)
+        after = os.fstat(descriptor)
+        fields = ('st_dev', 'st_ino', 'st_size', 'st_mtime_ns', 'st_ctime_ns')
+        if total != before.st_size or any(getattr(before, key) != getattr(after, key) for key in fields): raise ValueError()
+        return digest.hexdigest()
+    except (OSError, ValueError, TypeError):
+        return None
+    finally:
+        if descriptor is not None: os.close(descriptor)
+
+
 def group_observation(pid, group, secrets):
     result = {'state': 'unavailable', 'group_verified': False, 'same_uid': None, 'counts': {role: 0 for role in GROUP_ROLES}}
     try:
@@ -593,7 +781,7 @@ def group_observation(pid, group, secrets):
 def live_control_observation(pid, group, identifier, expected, secrets, is_alive, device_name):
     """Inspect the exact owned control without relying on live simctl IPC."""
     report = {'diagnostic_only': True, 'state': 'unavailable', 'xcode_identity_verified': False,
-              'owned_container_verified': False, 'installed_bytes_match': False,
+              'owned_container_verified': False, 'installed_bytes_match': False, 'host_executable_bytes_match': False,
               'marker': {'state': 'unavailable', 'captured_while_child_alive': False},
               'host_process': {'state': 'notMeasured'}, 'sample': {'target': 'none', 'state': 'notAttempted'}}
     try:
@@ -609,11 +797,14 @@ def live_control_observation(pid, group, identifier, expected, secrets, is_alive
                 raise PlanError('live_control_device_identity_unavailable')
             containers = control_containers(identifier)
             report['owned_container_verified'] = True
-            report['installed_bytes_match'] = control_inventory(containers['app']) == expected
             marker = control_marker(containers['data'])
             if not bootstrap._alive(is_alive): return report
             report['marker'] = {**marker, 'captured_while_child_alive': True}
-            if report['installed_bytes_match']:
+            # The full captured test module is 163MB. Keep the live budget for
+            # lifecycle/sampling; complete tree hashes are checked outside it.
+            observed_digest = owned_executable_digest(containers['app'] / CONTROL_APP)
+            report['host_executable_bytes_match'] = observed_digest is not None and observed_digest == expected
+            if report['host_executable_bytes_match']:
                 status, raw = bootstrap._run(['/usr/bin/pgrep', '-x', '-u', str(os.getuid()), CONTROL_APP], secrets, 1, deadline)
                 report['host_process'] = {'state': 'unavailable'}
                 if bootstrap._completed(status) and re.fullmatch(rb'[0-9]{1,10}\n?', raw):
@@ -654,7 +845,7 @@ def public_live_observation(value):
         return item if type(item) is str and item in choices else fallback
     result = {'diagnostic_only': True, 'state': choice(value.get('state'),
         {'unavailable', 'observed', 'partial', 'notTriggered'}, 'unavailable')}
-    for key in ('xcode_identity_verified', 'owned_container_verified', 'installed_bytes_match'):
+    for key in ('xcode_identity_verified', 'owned_container_verified', 'installed_bytes_match', 'host_executable_bytes_match'):
         result[key] = value.get(key) is True
     marker = value.get('marker', {}); marker = marker if isinstance(marker, dict) else {}
     state = choice(marker.get('state'), {'absent', 'observed', 'unsafe', 'invalid', 'unavailable'}, 'unavailable')
@@ -730,12 +921,13 @@ def run(output=OUTPUT, root=None, command=projection.native_command, signing=sim
     if read_json(output / 'verification.json') != verification(original, verified):
         raise PlanError('modern_prepared_capture_mismatch')
     original_snapshot = projection.snapshot_tree(original)
-    report = {'schema': 2, 'source_commit': SOURCE, 'role': 'appleGeneratedXCTestPlanControl',
+    report = {'schema': 3, 'source_commit': SOURCE, 'role': 'alternateXcodeUIKitHost',
               'application_recompiled': False, 'projection_tests_recompiled': False,
               'tiny_control_compiled': False, 'tiny_control_signing_verified': False,
               'tiny_control_entitlement_readback': 'notAttempted',
               'original_products_unchanged': False,
               'release_qualified': False, 'physical_device_verified': False, 'passed': False,
+              'different_harness': True, 'original_bazel_host_executed': False, 'tiny_control_language': 'Swift',
               'control': {'attempted': False, 'expected': 1}, 'projection': {'attempted': False, 'expected': 41},
               'commands': {}, 'post_exit_group_observations': {}, 'phase': 'preflight'}
     secrets = tuple(value for key, value in os.environ.items() if value and re.search(r'TOKEN|SECRET|AUTH|PASSWORD|API_ID|API_HASH|SESSION|PRIVATE_KEY', key, re.I))
@@ -760,7 +952,7 @@ def run(output=OUTPUT, root=None, command=projection.native_command, signing=sim
             raise PlanError('modern_' + label + '_failed')
         return ({**status, 'bootstrap_diagnostic': public_live_observation(observation)} if observer is not None else status), data
     used_identifiers = set()
-    def suite(label, plan, expected):
+    def suite(label, plan, expected, observed_app):
         identifier = None; owned = {'attempted': True, 'expected': expected, 'cleanup_completed': False,
             'xctest_command_attempted': False, 'tests_started': False, 'started': 0, 'passed': 0}
         report[label] = owned
@@ -794,9 +986,9 @@ def run(output=OUTPUT, root=None, command=projection.native_command, signing=sim
                 if not verified: raise PlanError('modern_owned_simulator_identity_unverified')
             owned.update(owned_simulator_identity_verified=True, manual_prewarm_performed=False,
                          xcode_manages_install_and_launch=True, gui_assisted=False)
-            observer = None
-            if label == 'control':
-                observer = lambda pid, group, alive: live_control_observation(pid, group, identifier, control_expected, secrets, alive, name)
+            expected_executable = projection.digest(observed_app / CONTROL_APP)
+            owned['host_profile'] = 'xcodeUIKitControl' if label == 'control' else 'xcodeUIKitProjection'
+            observer = lambda pid, group, alive: live_control_observation(pid, group, identifier, expected_executable, secrets, alive, name)
             with tempfile.TemporaryDirectory(prefix='ayu-modern-xcresult-') as temporary:
                 started_at = time.time()
                 owned['xctest_command_attempted'] = True
@@ -813,21 +1005,14 @@ def run(output=OUTPUT, root=None, command=projection.native_command, signing=sim
                     owned['failure'] = 'tiny_hosted_control_not_passed' if label == 'control' else 'modern_projection_not_passed'
                 projection.write(output / (label + '-test.log'), simulator_probe.redact_probe_text(raw, secrets), text=True)
                 projection.write(output / (label + '-cases.json'), counts)
-                if label == 'projection' and not owned['passed_own_cases']:
-                    # Preserve the failure's lifecycle boundary before cleanup.
-                    # Any later standalone launch remains diagnostic, never an
-                    # XCTest outcome and never a retry of these 41 assertions.
-                    owned['post_failure_probe'] = {'state': 'unavailable', 'probe_only_not_test_result': True}
+                if not owned['passed_own_cases']:
+                    # The captured-host probe hardcodes a different executable.
+                    # This alternate harness uses only its exact owned metadata.
+                    owned['post_test_marker'] = {'state': 'unavailable', 'captured_after_xcode_exit': True}
                     try:
-                        with tempfile.TemporaryDirectory(prefix='ayu-modern-post-failure-') as private:
-                            private_root = Path(private).resolve()
-                            with projection.clean_environment():
-                                probe(private_root, secrets, started_at, owned_identifier=identifier, profile=projection.DEVICE_PROFILE)
-                            path = private_root / 'build/fork-evidence/projection-launch-probe.json'
-                            if not path.is_symlink() and path.is_file() and path.stat().st_size <= 256 * 1024:
-                                value = json.loads(products.read_small(path, 256 * 1024))
-                                if isinstance(value, dict) and value.get('probe_only_not_test_result') is True:
-                                    owned['post_failure_probe'] = value
+                        if owned_device_identity(identifier, name)['identity_verified'] is True:
+                            containers = control_containers(identifier)
+                            owned['post_test_marker'] = {**control_marker(containers['data']), 'captured_after_xcode_exit': True}
                     except Exception:
                         pass
         finally:
@@ -861,23 +1046,28 @@ def run(output=OUTPUT, root=None, command=projection.native_command, signing=sim
         generated = _read_plan(plans[0]); _, _, app, bundle, kind = generated_products(generated, plans[0].parent)
         report['apple_plan'] = {'host_path_kind': kind, 'format_version': target(generated)[0],
                                 'host_bundle_identifier_present': 'TestHostBundleIdentifier' in target(generated)[1]}
-        verify_xcode_signing(derived, app, bundle, raw, call, report)
+        policy = verify_xcode_signing(derived, app, bundle, raw, call, report)
         report['tiny_control_entitlement_readback'] = 'matchedActualCodeSignInput'
         report['tiny_control_signing_verified'] = True
-        control_expected = control_inventory(app)
+        control_source = projection.snapshot_tree(app)
         report['phase'] = 'testTinyControl'
-        control_passed = suite('control', plans[0], 1)
+        control_passed = suite('control', plans[0], 1, app)
         if report['control']['cleanup_completed'] is not True: raise PlanError('tiny_control_cleanup_unverified')
         if projection.snapshot_tree(original) != original_snapshot: raise PlanError('original_products_changed_before_projection')
+        if projection.snapshot_tree(app) != control_source: raise PlanError('source_control_host_changed')
+        _, platform = call('swift_sdk_platform', ['xcrun', '--sdk', 'iphonesimulator', '--show-sdk-platform-path'])
+        report['swift_xctest_dependencies'] = swift_support_available(platform)
+        if not report['swift_xctest_dependencies']['both_available']: raise PlanError('pinned_swift_xctest_support_unavailable')
         report['phase'] = 'bindModernPlan'
-        controlled = output / 'private-resealed'
-        report['signing_control'] = projection.prepare_control(original, controlled, 'resealed-host', {}, secrets, signing)
-        plan, metadata = bind_plan(generated, plans[0].parent, controlled / 'TEST_ROOT' / products.APP, output / 'private-modern')
+        report['alternate_host'] = {}
+        alternate = prepare_alternate_host(app, bundle, original / 'TEST_ROOT' / products.APP,
+            output / 'private-alternate' / (CONTROL_APP + '.app'), policy, call, report['alternate_host'])
+        plan, bound_host, metadata = bind_alternate_plan(generated, plans[0].parent, alternate, output / 'private-modern')
         report['configuration_change'] = metadata
         frozen = projection.snapshot_tree(output / 'private-modern')
         report['phase'] = 'testProjection'
         report['configuration_change']['modern_plan_executed'] = True
-        projection_passed = suite('projection', plan, 41)
+        projection_passed = suite('projection', plan, 41, bound_host)
         if projection.snapshot_tree(output / 'private-modern') != frozen:
             raise PlanError('modern_products_changed')
         if not control_passed: raise PlanError('tiny_hosted_control_not_passed')

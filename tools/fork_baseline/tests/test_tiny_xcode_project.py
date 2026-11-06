@@ -22,7 +22,7 @@ import tiny_xcode_project as tiny
 
 APP = 'AyuProjectionControl'
 TEST = 'AyuProjectionControlTests'
-APP_BUNDLE = 'org.livara.ayugram.tests.modern-projection-control'
+APP_BUNDLE = 'org.livara.ayugram.tests.native-security.projection'
 TEST_BUNDLE = 'org.livara.ayugram.tests.modern-projection-controlTests'
 ID = re.compile(r'[0-9A-Fa-f]{24}')
 TOKEN = re.compile(r'\s+|/\*.*?\*/|//[^\n]*|"(?:\\.|[^"\\])*"|[{}()=;,]|[^\s{}()=;,"/]+(?:/[^\s{}()=;,"/]*)*', re.S)
@@ -141,7 +141,7 @@ class TinyXcodeProjectTests(unittest.TestCase):
         self.assertEqual(result, {'project': self.root / (APP + '.xcodeproj'), 'scheme': APP,
             'app_name': APP, 'test_name': TEST, 'app_bundle': APP_BUNDLE, 'test_bundle': TEST_BUNDLE,
             'expected_case': TEST + '.testRunsInApplicationHost'})
-        expected = {APP + '/main.m', APP + '/Info.plist', TEST + '/' + TEST + '.m', TEST + '/Info.plist',
+        expected = {APP + '/main.m', APP + '/Info.plist', TEST + '/' + TEST + '.swift', TEST + '/Info.plist',
             APP + '.xcodeproj/project.pbxproj', APP + '.xcodeproj/xcshareddata/xcschemes/' + APP + '.xcscheme'}
         self.assertEqual({str(p.relative_to(self.root)) for p in self.root.rglob('*') if p.is_file()}, expected)
         for path in (self.root, *self.root.rglob('*')):
@@ -178,13 +178,15 @@ class TinyXcodeProjectTests(unittest.TestCase):
         self.assertEqual(test['productType'], 'com.apple.product-type.bundle.unit-test')
         self.assertEqual(objects[app['productReference']]['path'], APP + '.app')
         self.assertEqual(objects[test['productReference']]['path'], TEST + '.xctest')
-        for target, source_name in ((app, 'main.m'), (test, TEST + '.m')):
+        for target, source_name, file_type in ((app, 'main.m', 'sourcecode.c.objc'),
+                                              (test, TEST + '.swift', 'sourcecode.swift')):
             phases = [objects[identifier] for identifier in target['buildPhases']]
             sources = [phase for phase in phases if phase['isa'] == 'PBXSourcesBuildPhase']
             self.assertEqual(len(sources), 1)
             self.assertEqual(len(sources[0]['files']), 1)
             source = objects[objects[sources[0]['files'][0]]['fileRef']]
             self.assertEqual(source['path'], source_name)
+            self.assertEqual(source['lastKnownFileType'], file_type)
             self.assertEqual(target['buildRules'], [])
         self.assertEqual(app['dependencies'], [])
         self.assertEqual(len(test['dependencies']), 1)
@@ -213,6 +215,7 @@ class TinyXcodeProjectTests(unittest.TestCase):
             self.assertEqual(settings['GENERATE_INFOPLIST_FILE'], 'NO')
             self.assertTrue((self.root / settings['INFOPLIST_FILE']).is_file())
             if target['name'] == TEST:
+                self.assertEqual(settings['SWIFT_VERSION'], '5.0')
                 self.assertEqual(settings['BUNDLE_LOADER'], '$(TEST_HOST)')
                 self.assertEqual(settings['TEST_HOST'], '$(BUILT_PRODUCTS_DIR)/' + APP + '.app/' + APP)
                 self.assertEqual(settings['TEST_TARGET_NAME'], APP)
@@ -249,7 +252,7 @@ class TinyXcodeProjectTests(unittest.TestCase):
                 self.assertTrue(file.is_file(), value['path'])
                 resolved.add(str(file.relative_to(self.root)))
         walk(objects[document['rootObject']]['mainGroup'], self.root)
-        self.assertEqual(resolved, {APP + '/main.m', APP + '/Info.plist', TEST + '/' + TEST + '.m', TEST + '/Info.plist'})
+        self.assertEqual(resolved, {APP + '/main.m', APP + '/Info.plist', TEST + '/' + TEST + '.swift', TEST + '/Info.plist'})
         linked = {}
         for target in (value for value in objects.values() if value['isa'] == 'PBXNativeTarget'):
             phases = [objects[identifier] for identifier in target['buildPhases']]
@@ -261,6 +264,8 @@ class TinyXcodeProjectTests(unittest.TestCase):
         self.generate()
         app = plistlib.loads((self.root / APP / 'Info.plist').read_bytes())
         test = plistlib.loads((self.root / TEST / 'Info.plist').read_bytes())
+        self.assertIs(app['AyuGramProjectionHostDiagnostics'], True)
+        self.assertNotIn('AyuGramProjectionHostDiagnostics', test)
         for value, package in ((app, 'APPL'), (test, 'BNDL')):
             self.assertEqual(value['CFBundlePackageType'], package)
             self.assertEqual(value['CFBundleIdentifier'], '$(PRODUCT_BUNDLE_IDENTIFIER)')
@@ -279,20 +284,21 @@ class TinyXcodeProjectTests(unittest.TestCase):
         self.assertIn('UIApplicationMain(', source)
         self.assertIn('[self.window makeKeyAndVisible]', source)
 
-    def test_exactly_one_objective_c_test_checks_real_app_bundle_and_uiapplication(self):
+    def test_exactly_one_main_actor_swift_test_checks_real_app_bundle_and_uiapplication(self):
         self.generate()
-        source = (self.root / TEST / (TEST + '.m')).read_text()
-        self.assertEqual(re.findall(r'-\s*\(void\)\s*(test\w+)\s*\{', source), ['testRunsInApplicationHost'])
+        source = (self.root / TEST / (TEST + '.swift')).read_text()
+        self.assertEqual(re.findall(r'func\s+(test\w+)\s*\(\)\s*\{', source), ['testRunsInApplicationHost'])
         self.assertEqual(hashlib.sha256(source.encode()).hexdigest(),
-                         '2dfa08f8b3c3d87d4a2a23ac445760dccf075d7ecbe024dbccece611efbfb247')
-        self.assertIn('@interface ' + TEST + ' : XCTestCase', source)
-        self.assertIn('#import <XCTest/XCTest.h>', source)
-        self.assertIn('#import <UIKit/UIKit.h>', source)
-        self.assertRegex(source, r'XCTAssertEqualObjects\(\[NSBundle mainBundle\]\.bundleIdentifier,\s*@"' + re.escape(APP_BUNDLE) + r'"\)')
-        self.assertIn('XCTAssertNotNil([UIApplication sharedApplication])', source)
+                         '3cb946a1da6bb4a58fba4d6899c22481e2d9208c1358805d336068058e57de19')
+        self.assertIn('final class ' + TEST + ': XCTestCase', source)
+        self.assertIn('import XCTest', source)
+        self.assertIn('import UIKit', source)
+        self.assertRegex(source, r'@MainActor\s+func testRunsInApplicationHost\(\)')
+        self.assertRegex(source, r'XCTAssertEqual\(Bundle\.main\.bundleIdentifier,\s*"' + re.escape(APP_BUNDLE) + r'"\)')
+        self.assertIn('XCTAssertNotNil(UIApplication.shared)', source)
         self.assertNotIn('XCTSkip', source)
-        self.assertNotIn('XCTAssertTrue(YES)', source)
-        for name in (APP + '/main.m', TEST + '/' + TEST + '.m'):
+        self.assertNotIn('XCTAssertTrue(true)', source)
+        for name in (APP + '/main.m', TEST + '/' + TEST + '.swift'):
             text = (self.root / name).read_text()
             self.assertIn('SPDX-License-Identifier: GPL-2.0-or-later', text)
             self.assertIn('2026-11-06', text)
