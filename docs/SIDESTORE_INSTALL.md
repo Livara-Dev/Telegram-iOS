@@ -2,9 +2,45 @@
 
 The owner reported a black screen after an older IPA installed on iPhone 15 Pro
 running iOS 27.2. Later screenshots show separate SideStore signing errors; no
-physical-device success is established for the current candidate below.
+physical-device success is established for the new export below.
 
-The current SideStore candidate is the **main-app-only unsigned ARM64 device IPA**
+The newest downloadable device package is **unsigned and NOT RUNTIME QUALIFIED**:
+[run 42309772672](https://github.com/Livara-Dev/Telegram-iOS/actions/runs/42309772672),
+[artifact 13548156855](https://github.com/Livara-Dev/Telegram-iOS/actions/runs/42309772672/artifacts/13548156855),
+named `UNQUALIFIED-main-app-only-unsigned-device-5d241267-42279866706`.
+Extract `AyuGram-5d241267-build1001-main-app-only-UNQUALIFIED-unsigned.ipa`
+(75,166,504 bytes). Its IPA SHA-256 is:
+
+`dd96c7a1451c48b970fc9d58195434d17293ede6b498092e63251c8c442f8b84`
+
+It retains application source `5d241267735b3958c225681d173853568bab705d`, device
+build **1001** and bundle `org.livara.ayugram` from the original
+[42279866706 compilation](https://github.com/Livara-Dev/Telegram-iOS/actions/runs/42279866706).
+The export did not rebuild the app. Its 880 entries contain the main app and five
+frameworks: six unsigned ARM64 iPhoneOS images, all 19 bundled dependency edges
+resolved, with six extensions removed and no profiles or signatures. The frozen
+CI helper verified retained bytes/ZIP metadata against the original package;
+that source-to-output comparison was not repeated locally. Local output checks,
+18 top-level and 9 nested checksum references, and all three exact-source/GPLv2
+materials passed. The artifact ZIP has a different hash; verify the IPA itself.
+
+The original compile run's startup qualification failed. Reviewed artifact-only
+[recovery 42306472313](https://github.com/Livara-Dev/Telegram-iOS/actions/runs/42306472313)
+also timed out during installation, with zero app launches or captured media.
+SDK status/initialization/recheck returned zero; shutdown timed out, but exact
+owned-device deletion and absence were verified. This export does not establish
+startup, SideStore signing/installation, Telegram authentication or physical-device
+behavior. It still needs valid signing. Keep the same app/team identity and
+**do not uninstall the existing app to update it**.
+
+The derived [d020 Core candidate](fork/NATIVE-CORE-VERIFICATION-D020BFD7.md)
+contains an Account startup-ordering relocation that is **not included in this
+frozen 5d binary**. Its component tests do not qualify this app's startup. See the
+[source-separated checkpoint](fork/CURRENT-VERIFICATION-2026-11-06.md).
+
+## Historical c55 authorization-screen control
+
+The earlier c55 control is the **main-app-only unsigned ARM64 device IPA**
 from [run 42204637743](https://github.com/Livara-Dev/Telegram-iOS/actions/runs/42204637743),
 [artifact 13495848146](https://github.com/Livara-Dev/Telegram-iOS/actions/runs/42204637743/artifacts/13495848146).
 Extract `AyuGram-c55e19c4-main-app-only-unsigned-device.ipa`. Its IPA SHA-256 is:
@@ -18,18 +54,8 @@ metadata. All six remaining images are unsigned ARM64 iPhoneOS; five frameworks
 and all nineteen bundled dependency edges were verified. The artifact includes
 checksums and the three exact-source/GPLv2 materials. It needs valid signing.
 
-The package above remains the retained c55 candidate; it does not contain the
-newer secret/timed-retention changes from application source `5d241267`. Both 5d
-applications compiled in [run 42279866706](https://github.com/Livara-Dev/Telegram-iOS/actions/runs/42279866706).
-Later artifact-only [recovery 42306472313](https://github.com/Livara-Dev/Telegram-iOS/actions/runs/42306472313)
-again timed out during installation, before any app launch or captured media.
-Its SDK status, initialization and recheck commands returned zero; shutdown timed
-out, but exact owned-device deletion and absence were verified. Startup remains
-unverified; compilation and static package checks are not runtime verification.
-The derived [d020 Core candidate](fork/NATIVE-CORE-VERIFICATION-D020BFD7.md)
-contains an Account startup-ordering relocation absent from the frozen 5d binary;
-its component tests do not qualify 5d app startup. See the
-[source-separated checkpoint](fork/CURRENT-VERIFICATION-2026-11-06.md).
+This historical c55 control does not contain the newer 5d secret/timed-retention
+or media-handoff changes. Its startup observations below apply only to c55.
 
 The matching retained c55 main-app-only simulator application reached the actual
 AyuGram authorization screen twice on a fresh **iPhone 15 Pro / iOS 27.0** device.
@@ -118,7 +144,7 @@ Build 54's active Bazel-generated metadata does not contain
 by that generator. Stable `org.livara.ayugram` identity and private fallback are
 unaffected. A signing-tool rewrite of the bundle ID combined with access to the
 original App Group is not a supported or verified recovery path in this build.
-Current `c55e19c4` builds include the active metadata key with
+The historical `c55e19c4` builds include the active metadata key with
 `org.livara.ayugram`. This does not authorize a bundle/team identity change or
 prove recovery of a previous App Group. Keep the same identity when updating;
 do not use a rewrite to recover old data.
@@ -186,7 +212,7 @@ verified separately.
 
 1. Select the intended **device** artifact and its exact source/build above. A
    simulator package will not work on an iPhone even when its CPU is ARM64.
-2. Extract `AyuGram-c55e19c4-main-app-only-unsigned-device.ipa`. Verify its SHA-256 against
+2. Extract `AyuGram-5d241267-build1001-main-app-only-UNQUALIFIED-unsigned.ipa`. Verify its SHA-256 against
    `manifest.json` and `SHA256SUMS`. The artifact ZIP has a different hash.
 3. Import the IPA into SideStore using the same Apple account and app identity
    used for the existing installation. Do not delete the app to update it.

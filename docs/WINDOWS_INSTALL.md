@@ -1,6 +1,53 @@
 # Windows build download and iPhone installation
 
-The current SideStore candidate is the **main-app-only unsigned ARM64 device IPA**
+The newest downloadable device package is **unsigned and NOT RUNTIME QUALIFIED**:
+[run 42309772672](https://github.com/Livara-Dev/Telegram-iOS/actions/runs/42309772672),
+[artifact 13548156855](https://github.com/Livara-Dev/Telegram-iOS/actions/runs/42309772672/artifacts/13548156855),
+named `UNQUALIFIED-main-app-only-unsigned-device-5d241267-42279866706`.
+Extract `AyuGram-5d241267-build1001-main-app-only-UNQUALIFIED-unsigned.ipa`
+(75,166,504 bytes). Its IPA SHA-256 is:
+
+`dd96c7a1451c48b970fc9d58195434d17293ede6b498092e63251c8c442f8b84`
+
+It retains application source `5d241267735b3958c225681d173853568bab705d`, device
+build **1001** and bundle `org.livara.ayugram` from the original
+[42279866706 compilation](https://github.com/Livara-Dev/Telegram-iOS/actions/runs/42279866706).
+The export did not rebuild the app. Its 880 entries contain the main app and five
+frameworks: six unsigned ARM64 iPhoneOS images, all 19 bundled dependency edges
+resolved, with six extensions removed and no profiles or signatures. The frozen
+CI helper verified retained bytes/ZIP metadata against the original package;
+that source-to-output comparison was not repeated locally. Local output checks,
+18 top-level and 9 nested checksum references, and all three exact-source/GPLv2
+materials passed. The artifact ZIP has a different hash; verify the IPA itself.
+
+The original compile run's startup qualification failed. Reviewed artifact-only
+[recovery 42306472313](https://github.com/Livara-Dev/Telegram-iOS/actions/runs/42306472313)
+also timed out during installation, with zero app launches or captured media.
+SDK status/initialization/recheck returned zero; shutdown timed out, but exact
+owned-device deletion and absence were verified. This export does not establish
+startup, SideStore signing/installation, Telegram authentication or physical-device
+behavior. It still needs valid signing. Keep the same app/team identity and
+**do not uninstall the existing app to update it**.
+
+The derived [d020 Core candidate](fork/NATIVE-CORE-VERIFICATION-D020BFD7.md)
+contains an Account startup-ordering relocation that is **not included in this
+frozen 5d binary**. Its component tests do not qualify this app's startup. See the
+[source-separated checkpoint](fork/CURRENT-VERIFICATION-2026-11-06.md).
+
+From the extracted artifact folder, verify the new unqualified 5d IPA in Windows PowerShell:
+
+```powershell
+Get-FileHash -LiteralPath "AyuGram-5d241267-build1001-main-app-only-UNQUALIFIED-unsigned.ipa" -Algorithm SHA256
+```
+
+Compare the result with `dd96c7a1451c48b970fc9d58195434d17293ede6b498092e63251c8c442f8b84`.
+Import that IPA into your chosen signer using the existing app/team identity;
+do not delete the installed app to update it. Signing and iPhone runtime remain
+unverified for this export.
+
+## Historical c55 authorization-screen control
+
+The earlier c55 control is the **main-app-only unsigned ARM64 device IPA**
 from [run 42204637743](https://github.com/Livara-Dev/Telegram-iOS/actions/runs/42204637743),
 [artifact 13495848146](https://github.com/Livara-Dev/Telegram-iOS/actions/runs/42204637743/artifacts/13495848146).
 Extract `AyuGram-c55e19c4-main-app-only-unsigned-device.ipa`. Its IPA SHA-256 is:
@@ -14,18 +61,8 @@ metadata. All six remaining images are unsigned ARM64 iPhoneOS; five frameworks
 and all nineteen bundled dependency edges were verified. The artifact includes
 checksums and the three exact-source/GPLv2 materials. It needs valid signing.
 
-The package above remains the retained c55 candidate; it does not contain the
-newer secret/timed-retention changes from application source `5d241267`. Both 5d
-applications compiled in [run 42279866706](https://github.com/Livara-Dev/Telegram-iOS/actions/runs/42279866706).
-Later artifact-only [recovery 42306472313](https://github.com/Livara-Dev/Telegram-iOS/actions/runs/42306472313)
-again timed out during installation, before any app launch or captured media.
-Its SDK status, initialization and recheck commands returned zero; shutdown timed
-out, but exact owned-device deletion and absence were verified. Startup remains
-unverified; compilation and static package checks are not runtime verification.
-The derived [d020 Core candidate](fork/NATIVE-CORE-VERIFICATION-D020BFD7.md)
-contains an Account startup-ordering relocation absent from the frozen 5d binary;
-its component tests do not qualify 5d app startup. See the
-[source-separated checkpoint](fork/CURRENT-VERIFICATION-2026-11-06.md).
+This historical c55 control does not contain the newer 5d secret/timed-retention
+or media-handoff changes. Its startup observations below apply only to c55.
 
 The matching retained c55 main-app-only simulator application reached the actual
 AyuGram authorization screen twice on a fresh **iPhone 15 Pro / iOS 27.0** device.
@@ -57,7 +94,7 @@ until a valid signer succeeds. The original full build82 remains available in
 [artifact 13479087810](https://github.com/Livara-Dev/Telegram-iOS/actions/runs/42160468600/artifacts/13479087810)
 with IPA SHA-256 `addaaf68000d010b84cea0d9798b9a234f43bfabc62845cdbf18fc5f14c4605e`.
 
-Verify the current IPA in Windows PowerShell:
+Verify this historical c55 IPA in Windows PowerShell:
 
 ```powershell
 Get-FileHash .\AyuGram-c55e19c4-main-app-only-unsigned-device.ipa -Algorithm SHA256
@@ -131,6 +168,7 @@ embedding for the unsigned build only. No signing credentials are synthesized.
 | --- | --- | --- |
 | Native evidence | `archive-integration-<commit>` in full scope; `archive-integration-tests-<commit>` in native scopes | Test logs and checksums. Logs alone do not establish a successful app build. |
 | Simulator application compilation | `archive-integration-<commit>`; standalone diagnostic `fork-baseline-<commit>` | On compilation success, `fork-baseline-simulator/Telegram.ipa` and its manifest/checksum. Simulator only, not installable on an iPhone. |
+| Unqualified 5d device export | `UNQUALIFIED-main-app-only-unsigned-device-5d241267-42279866706`, run `42309772672` | Build 1001 from the original compiled device app; static checks only. Requires valid signing; no verified startup, installation or physical-device runtime. |
 | Verified startup variant | `startup-main-app-only-unsigned-device-<source>` | Root-level named IPA, manifest and checksums; six extensions removed. Simulator startup passed; device signing and physical verification remain required. |
 | Unsigned device compilation | `archive-unsigned-device-<commit>` | On success, `fork-baseline-unsigned-device/Telegram.ipa` and its manifest/checksum. It still requires independent signing before installation. |
 | Windows signing and physical installation | Produced locally by your chosen signing tool | A different, signed package. Installation, entitlements and runtime behavior must be verified separately on the iPhone. |
@@ -208,5 +246,7 @@ validation until the documented privacy/security gates pass.
 
 For personal signing, iOS 27.2 black-screen investigation and data-preserving
 updates, see [the SideStore guide](SIDESTORE_INSTALL.md). Full qualification
-builds use their workflow build number. The separate current simulator diagnostic
-used build1; the paired original device candidate retains build82 unchanged.
+builds use their workflow build number. The historical c55 simulator diagnostic
+used build 1 and its paired device control retains build 82. The new unqualified
+5d export retains device build 1001 from `42279866706`; their sources and startup
+records remain separate.
