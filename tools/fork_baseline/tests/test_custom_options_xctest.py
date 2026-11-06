@@ -9,6 +9,7 @@ import json
 import os
 from pathlib import Path
 import plistlib
+import shutil
 import struct
 import sys
 import tempfile
@@ -71,6 +72,7 @@ def universal(endian='>', wide=False):
 
 class Native(retained_fixture.Native):
     def __call__(self, args, timeout=30):
+        if args[:3] == ['xcrun', 'simctl', 'install']: raise AssertionError('Only the bound Apple UI runner may install this target')
         if args == ['xcrun', '--sdk', 'iphonesimulator', '--show-sdk-version']:
             self.calls.append((args, timeout)); return retained_fixture.complete(b'27.1')
         if self.kind == 'driverSignature' and args[0] == '/usr/bin/codesign' and hasattr(self, 'runner') and args[-1] == str(self.runner):
@@ -83,10 +85,16 @@ class Native(retained_fixture.Native):
             if self.kind == 'plan':
                 replay.target(self.generated)['IsUITestBundle'] = False
                 (root / 'generated.xctestrun').write_bytes(plistlib.dumps(self.generated))
-            return retained_fixture.complete(b'Build successful /Users/private PRIVATE-CANARY')
+            return retained_fixture.complete(b'Build successful /Users/private PRIVATE-CANARY -I' + str(root).encode() + b'/private-header')
         if args[:2] == ['xcodebuild', 'test-without-building']:
             self.calls.append((args, timeout)); self.assert_native_args(args, timeout)
             bound = replay.read_plan(Path(args[args.index('-xctestrun') + 1])); self.bound_app = Path(replay.target(bound)['UITargetAppPath'])
+            if self.installed.exists(): raise AssertionError('No target app may be preinstalled before the Apple UI test')
+            if str(self.bound_app) not in replay.target(bound)['DependentProductPaths']: raise AssertionError('Frozen app dependency missing')
+            self.app = self.bound_app
+            if self.kind != 'missingInstalled':
+                self.installed.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copytree(self.bound_app, self.installed)
             Path(args[args.index('-resultBundlePath') + 1]).mkdir()
             data = case_log('failed' if self.kind == 'caseFailed' else 'passed')
             if self.kind == 'missingCase': data = b''
@@ -116,6 +124,22 @@ class Native(retained_fixture.Native):
 
 class RetainedNativeUIDriverTests(unittest.TestCase):
     def prepared(self): return retained_fixture.RetainedSettingsReplayTests().prepared()
+
+    def test_owned_driver_log_redacts_attached_flags_temp_aliases_and_secrets_before_utf8_byte_cap(self):
+        private = Path('/private/var/folders/private-user/T/ayu-options-xctest-private')
+        home = Path('/Users/private-user')
+        raw = (b'swift -I/var/folders/private-user/T/ayu-options-xctest-private/derived/header '
+               b'-F/private/var/folders/private-user/T/ayu-options-xctest-private/framework '
+               b'-iquote/Users/private-user/source "-I/Users/private-user/path with spaces" '
+               b'PRIVATE-CANARY\n' + ('emoji \U0001f600 ' * 7000).encode('utf-8'))
+        original_length = len(raw)
+        selected = replay.redacted_driver_log(raw, ['PRIVATE-CANARY'], (private, home))
+        self.assertLessEqual(len(selected.encode('utf-8')), 16384)
+        self.assertEqual(len(raw), original_length)
+        for value in ('/var/folders/', '/private/var/', '/Users/private-user', 'PRIVATE-CANARY'):
+            self.assertNotIn(value, selected)
+        self.assertIn('<PRIVATE_ROOT>', selected); self.assertIn('<REDACTED_CREDENTIAL>', selected)
+        self.assertEqual(selected.encode('utf-8').decode('utf-8'), selected)
 
     def test_canonical_product_root_may_contain_ordinary_double_underscores(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -178,6 +202,17 @@ class RetainedNativeUIDriverTests(unittest.TestCase):
                 self.assertEqual(replay.generated_products(bound, root)[0], runner)
                 self.assertEqual(replay.read_plan(destination), bound)
 
+    def test_plan_adds_only_frozen_app_dependency_when_apple_omits_optional_dependency_list(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve(); plan, _, _ = generated(root)
+            replay.target(plan).pop('DependentProductPaths')
+            before = copy.deepcopy(plan)
+            app = root / 'Frozen.app'; app.mkdir(); (app / 'Info.plist').write_bytes(plistlib.dumps(retained_fixture.metadata()))
+            bound = replay.bind_plan(plan, root, app, root / 'retained.xctestrun')
+            self.assertEqual(replay.target(bound)['DependentProductPaths'], [str(app)])
+            for key, value in replay.target(before).items(): self.assertEqual(replay.target(bound)[key], value)
+            self.assertEqual(replay.target(bound)['UITargetAppPath'], str(app))
+
     def test_wrong_plan_identity_filter_application_product_or_outside_path_is_rejected(self):
         for kind in ('unit', 'module', 'hostID', 'filter', 'destination', 'outside', 'existingApp', 'deviceCode', 'symlink', 'multiple'):
             with self.subTest(kind=kind), tempfile.TemporaryDirectory() as directory:
@@ -235,6 +270,8 @@ class RetainedNativeUIDriverTests(unittest.TestCase):
                 patch.dict(os.environ, {'GH_TOKEN': 'PRIVATE-CANARY'}):
             native = Native(root); report = replay.execute(root=root, command=native, popen=native.popen)
             self.assertTrue(report['passed']); self.assertEqual(report['new_xctest_cases_executed'], 1)
+            self.assertEqual(report['installation_strategy'], 'appleXcodeUITestRunner')
+            self.assertFalse(report['installed_host_pre_execution_verified'])
             for key in ('installed_host_verified', 'post_installed_host_verified', 'source_host_unchanged', 'cleanup_passed', 'recording_available', 'driver_codesign_verified'):
                 self.assertTrue(report[key])
             for key in ('application_recompiled', 'renderer_recompiled', 'logged_in_settings_verified', 'physical_device_verified', 'release_qualified'):
@@ -243,13 +280,17 @@ class RetainedNativeUIDriverTests(unittest.TestCase):
             self.assertEqual(report['screenshot_origin'], 'xctestAttachment')
             self.assertEqual(len([a for a, _ in native.calls if a[:2] == ['xcodebuild', 'test-without-building']]), 1)
             self.assertFalse(any(a[:3] == ['xcrun', 'simctl', 'launch'] for a, _ in native.calls))
+            self.assertFalse(any(a[:3] == ['xcrun', 'simctl', 'install'] for a, _ in native.calls))
+            commands = [item['command'] for item in report['commands']]
+            self.assertLess(commands.index('nativeUITest'), commands.index('postInstalled_signature'))
+            self.assertLess(commands.index('postInstalled_signature'), commands.index('deleteOwnedSimulator'))
             self.assertEqual(json.loads((output / 'case-results.json').read_text())['passed'], 1)
             for name in ('result.json', 'xctest.log', 'case-results.json', 'driver-compiler.log'):
                 text = (output / name).read_text()
                 for private in ('PRIVATE-CANARY', '/Users/private', str(root), retained_fixture.IDENTIFIER): self.assertNotIn(private, text)
 
     def test_native_failures_mutations_and_missing_attachment_never_pass(self):
-        for kind in ('compile', 'plan', 'driverSignature', 'caseFailed', 'missingCase', 'timeout', 'export', 'sourceMutate', 'installedMutate', 'runnerMutate', 'cleanup', 'recordSpawn'):
+        for kind in ('compile', 'plan', 'driverSignature', 'caseFailed', 'missingCase', 'timeout', 'export', 'sourceMutate', 'installedMutate', 'installedSignature', 'missingInstalled', 'runnerMutate', 'cleanup', 'recordSpawn'):
             with self.subTest(kind=kind), self.prepared() as (root, output, _, _), patch.object(replay.platform, 'system', return_value='Darwin'):
                 native = Native(root, kind)
                 with self.assertRaises(ValueError): replay.execute(root=root, command=native, popen=native.popen)
@@ -260,6 +301,10 @@ class RetainedNativeUIDriverTests(unittest.TestCase):
                 else:
                     self.assertTrue(any(a[:3] == ['xcrun', 'simctl', 'delete'] for a, _ in native.calls))
                 if kind == 'export': self.assertEqual(result['screenshot_origin'], 'ownedSimulatorDiagnostic')
+                if kind in ('missingInstalled', 'installedMutate', 'installedSignature'):
+                    self.assertFalse(result['installed_host_verified']); self.assertFalse(result['post_installed_host_verified'])
+                self.assertFalse(result['installed_host_pre_execution_verified'])
+                self.assertFalse(any(a[:3] == ['xcrun', 'simctl', 'install'] for a, _ in native.calls))
                 self.assertNotIn('PRIVATE-CANARY', (output / 'result.json').read_text())
 
     def test_shutdown_timeout_does_not_fake_successful_shutdown_when_delete_and_absence_are_proven(self):

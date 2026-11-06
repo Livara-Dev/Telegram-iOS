@@ -39,6 +39,25 @@ class DriverError(ValueError):
     pass
 
 
+def redacted_driver_log(data, secrets, roots):
+    """Remove known private prefixes even when attached to compiler flags."""
+    text = data.decode('utf-8', errors='replace')
+    for value in sorted({item for item in secrets if isinstance(item, str) and item}, key=len, reverse=True):
+        text = text.replace(value, '<REDACTED_CREDENTIAL>')
+    prefixes = set()
+    for root in roots:
+        path = Path(root)
+        for candidate in (path, path.resolve(strict=False)):
+            if candidate.is_absolute() and str(candidate) != '/':
+                prefix = str(candidate); prefixes.add(prefix)
+                # Darwin commonly reports the /var spelling even when the
+                # private workspace was canonicalized to /private/var.
+                if prefix.startswith(('/private/var/', '/private/tmp/')): prefixes.add(prefix[len('/private'):])
+    for prefix in sorted(prefixes, key=len, reverse=True): text = text.replace(prefix, '<PRIVATE_ROOT>')
+    selected = retained.redact_probe_text(text.encode('utf-8'), [])
+    return selected.encode('utf-8')[:16384].decode('utf-8', errors='ignore')
+
+
 def read_plan(path):
     try: value = plistlib.loads(products.read_small(path, MAX_PLAN))
     except (ValueError, TypeError, ExpatError, OverflowError): raise DriverError('ui_plan_invalid') from None
@@ -167,11 +186,10 @@ def bind_plan(generated, root, app, destination):
         if key in item:
             if item[key] not in ('', retained.BUNDLE): raise DriverError('ui_generated_application_unexpected')
             item[key] = retained.BUNDLE
-    if 'DependentProductPaths' in item:
-        paths = item['DependentProductPaths']
-        if not isinstance(paths, list) or len(paths) > 32: raise DriverError('ui_product_path_invalid')
-        for value in paths: resolve_product(value, root, runner)
-        item['DependentProductPaths'] = paths + [str(app)]
+    paths = item.get('DependentProductPaths', [])
+    if not isinstance(paths, list) or len(paths) > 32: raise DriverError('ui_product_path_invalid')
+    for value in paths: resolve_product(value, root, runner)
+    item['DependentProductPaths'] = paths + [str(app)]
     destination = Path(destination)
     if destination.parent != root or destination.exists() or destination.is_symlink(): raise DriverError('ui_plan_destination_invalid')
     destination.write_bytes(plistlib.dumps(result)); destination.chmod(0o600)
@@ -284,6 +302,7 @@ def execute(output=OUTPUT, root=None, command=retained.ui_native_command, popen=
         'physical_device_verified': False, 'release_qualified': False, 'visual_review_required': True,
         'device_model': 'iPhone 15 Pro', 'runtime': '27.0', 'passed': False, 'phase': 'preflight', 'commands': [],
         'source_codesign_verified': False, 'installed_host_verified': False, 'post_installed_host_verified': False,
+        'installation_strategy': 'appleXcodeUITestRunner', 'installed_host_pre_execution_verified': False,
         'source_host_unchanged': False, 'driver_compiled': False, 'driver_codesign_verified': False,
         'root_title_automatically_verified': False, 'diagnostic_root_captured': False, 'recording_available': False,
         'recording_requested_before_launch': False, 'recording_readiness_observed_before_launch': False,
@@ -306,7 +325,7 @@ def execute(output=OUTPUT, root=None, command=retained.ui_native_command, popen=
         if require and not okay: raise DriverError('ui_native_command_failed')
         return okay, data
     def log(name, data):
-        text = retained.redact_probe_text(data, secrets)
+        text = redacted_driver_log(data, secrets, (root, output, private, Path.home(), Path(tempfile.gettempdir())))
         path = output / name; path.write_text(text); path.chmod(0o600)
     def attest(name, label):
         installed, proof = retained.owned_installed_bundle(identifier, name)
@@ -359,8 +378,9 @@ def execute(output=OUTPUT, root=None, command=retained.ui_native_command, popen=
             try:
                 call('requestOwnedBoot', ['xcrun', 'simctl', 'boot', identifier], 120)
                 call('waitForOwnedBoot', ['xcrun', 'simctl', 'bootstatus', identifier, '-b'], 240)
-                call('installFrozenHost', ['xcrun', 'simctl', 'install', identifier, str(app)], 120)
-                attest(name, 'installed'); report['installed_host_verified'] = True
+                # Apple owns installation of the exact signature-checked app
+                # bound by UITargetAppPath/DependentProductPaths. There is no
+                # independent pre-execution installed-app verification claim.
                 recorder = retained.Recording(identifier, output / 'root-light.mp4', popen, lambda _: None)
                 report['phase'] = 'requestRecording'; report['recording_requested_before_launch'] = recorder.start()
                 report['recording_readiness_observed_before_launch'] = recorder.ready
@@ -383,7 +403,8 @@ def execute(output=OUTPUT, root=None, command=retained.ui_native_command, popen=
                     if captured and (output / 'root-light.png').is_file() and not (output / 'root-light.png').is_symlink() and 0 < (output / 'root-light.png').stat().st_size <= MAX_PNG:
                         (output / 'root-light.png').chmod(0o600); report['diagnostic_root_captured'] = True
                         report['screenshot_origin'] = 'ownedSimulatorDiagnostic'
-                attest(name, 'postInstalled'); report['post_installed_host_verified'] = True
+                attest(name, 'postInstalled')
+                report['installed_host_verified'] = report['post_installed_host_verified'] = True
             finally:
                 phase = report['phase']
                 if recorder is not None:
@@ -402,7 +423,7 @@ def execute(output=OUTPUT, root=None, command=retained.ui_native_command, popen=
             if retained.digest(ipa) != retained.IPA_SHA256 or retained.host_snapshot(app) != original or projection.snapshot_tree(runner) != runner_snapshot:
                 raise DriverError('ui_products_changed')
             report['source_host_unchanged'] = True
-            if not all(report.get(key) is True for key in ('native_ui_case_passed', 'post_installed_host_verified', 'cleanup_passed', 'recording_available')) or report.get('screenshot_origin') != 'xctestAttachment':
+            if not all(report.get(key) is True for key in ('native_ui_case_passed', 'installed_host_verified', 'post_installed_host_verified', 'cleanup_passed', 'recording_available')) or report.get('screenshot_origin') != 'xctestAttachment':
                 raise DriverError('ui_native_observation_not_qualified')
             report['root_title_automatically_verified'] = True; report.update(passed=True, phase='complete')
     finally:

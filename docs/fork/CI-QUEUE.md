@@ -40,8 +40,11 @@ Diagnostic markers and samples
 cannot manufacture XCTest outcomes.
 
 The modern settings job verifies the retained account-free host against five
-unchanged source files and installs it on its own disposable iPhone 15 Pro /
-iOS 27.0 simulator. It compiles only a standalone Apple UI test driver, with no
+unchanged source files and gives Xcode its fixed `UITargetAppPath` and dependent
+product for installation on an owned disposable iPhone 15 Pro / iOS 27.0 simulator.
+There is no manual `simctl install` prerequisite or pre-execution installed-byte
+claim. Full installed bytes, Info and strict signature must be attested after
+XCTest and before qualification. It compiles only a standalone Apple UI test driver, with no
 application target or dependencies, and preserves Xcode's generated test runner.
 One new XCTest activates the unchanged host and requires the visible exact
 “Custome options” title, hittable settings table and archive control. An actual
