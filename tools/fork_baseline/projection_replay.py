@@ -13,24 +13,32 @@ from pathlib import Path
 import plistlib
 import re
 import selectors
+import shutil
 import signal
 import stat
+import struct
 import subprocess
 import tempfile
 import time
 import uuid
 import zipfile
+from xml.parsers.expat import ExpatError
 
 import replay_artifact as artifacts
 import test_product_capture as products
 import simulator_probe
 from custom_options_smoke import EXPORT_ENVIRONMENT_KEYS
 from launch_smoke import POST_EXIT_DRAIN_SECONDS
+from startup_replay import main_code_digest
 
 SOURCE = '17033b099458c258236b5a01411ab6efb45b37b6'
 RUN = 42134690056
 ARTIFACT = 13470438745
 OUTER_SHA256 = 'f11ce130a5d209355ccbe0a37731e27af0db9504fce65f1a8eff644edd5581fd'
+CURRENT_SOURCE = 'c55e19c4f5cbe0d730499035d0a0ef712f6903a9'
+CURRENT_RUN = 42160468600
+CURRENT_ARTIFACT = 13482555818
+CURRENT_OUTER_SHA256 = 'b1994fd195dc85097d8984c0eeb97508ccc60747f847de883636f137ce409f29'
 PINS = {'app': '13.1.2', 'xcode': '27.1', 'deploy_xcode': '27.1', 'macos': '27',
         'bazel': '9.2.0:dd466352a3e4d3581b8898740ee1ff208866ccbe25f8d367c5dcb950219587e6'}
 RUNTIME = 'com.apple.CoreSimulator.SimRuntime.iOS-27-0'
@@ -87,10 +95,20 @@ EXPECTED = frozenset(('ChatLocalTextFilterProjectionTests.testProjectionRunsInIs
  'ChatLocalArchiveRowRendererTests.testRendererUsesRealLightAndDarkThemeColorsAndAlwaysClearsBoth'))
 
 
-def origin(run, source, api=artifacts.gh_json):
+def pinned(run, source):
     run, source = artifacts.coordinates(run, source)
-    if (run, source) != (RUN, SOURCE):
-        raise artifacts.ReplayError('unsupported_projection_replay_source')
+    if (run, source) == (RUN, SOURCE):
+        return {'run': run, 'source': source, 'artifact': ARTIFACT, 'digest': OUTER_SHA256,
+                'name': 'archive-integration-tests-' + source, 'prefix': products.CAPTURE + '/'}
+    if (run, source) == (CURRENT_RUN, CURRENT_SOURCE):
+        return {'run': run, 'source': source, 'artifact': CURRENT_ARTIFACT, 'digest': CURRENT_OUTER_SHA256,
+                'name': 'archive-integration-' + source, 'prefix': 'fork-evidence/' + products.CAPTURE + '/'}
+    raise artifacts.ReplayError('unsupported_projection_replay_source')
+
+
+def origin(run, source, api=artifacts.gh_json):
+    specification = pinned(run, source)
+    run, source = specification['run'], specification['source']
     value = api(artifacts.BASE + '/actions/runs/' + str(run))
     if (not isinstance(value, dict) or value.get('id') != run or value.get('head_sha') != source or
             value.get('status') != 'completed' or not isinstance(value.get('path'), str) or
@@ -105,13 +123,13 @@ def origin(run, source, api=artifacts.gh_json):
     if (not isinstance(listing, dict) or type(listing.get('total_count')) is not int or
             not 0 <= listing['total_count'] <= 100 or not isinstance(listing.get('artifacts'), list)):
         raise artifacts.ReplayError('projection_artifact_metadata_invalid')
-    selected = [a for a in listing['artifacts'] if isinstance(a, dict) and a.get('name') == 'archive-integration-tests-' + source]
+    selected = [a for a in listing['artifacts'] if isinstance(a, dict) and a.get('name') == specification['name']]
     if len(selected) != 1:
         raise artifacts.ReplayError('projection_artifact_not_unique')
     artifact = selected[0]; provenance = artifact.get('workflow_run')
-    if (type(artifact.get('id')) is not int or artifact['id'] != ARTIFACT or artifact.get('expired') is not False or
+    if (type(artifact.get('id')) is not int or artifact['id'] != specification['artifact'] or artifact.get('expired') is not False or
             type(artifact.get('size_in_bytes')) is not int or not 0 < artifact['size_in_bytes'] <= artifacts.MAX_ZIP_BYTES or
-            artifact.get('digest') != 'sha256:' + OUTER_SHA256 or not isinstance(provenance, dict) or
+            artifact.get('digest') != 'sha256:' + specification['digest'] or not isinstance(provenance, dict) or
             provenance.get('id') != run or provenance.get('head_sha') != source or
             provenance.get('repository_id') != repo['id'] or provenance.get('head_repository_id') != repo['id']):
         raise artifacts.ReplayError('projection_artifact_provenance_mismatch')
@@ -123,13 +141,14 @@ def digest(path):
         return artifacts.digest_stream(stream)
 
 
-def validate_products(root):
+def validate_products(root, source=SOURCE):
+    if source not in {SOURCE, CURRENT_SOURCE}: raise artifacts.ReplayError('unsupported_projection_replay_source')
     root = Path(root)
     manifest = json.loads(products.read_small(products.fixed_path(root, 'manifest.json')))
     capture = json.loads(products.read_small(products.fixed_path(root, 'capture.json')))
     if (not isinstance(manifest, dict) or set(manifest) != {'schema_version', 'source_commit', 'test_target', 'toolchain',
             'application_recompiled_for_replay', 'diagnostic_products_not_test_pass', 'physical_device_verified', 'files'} or
-            manifest.get('schema_version') != 1 or manifest.get('source_commit') != SOURCE or
+            manifest.get('schema_version') != 1 or manifest.get('source_commit') != source or
             manifest.get('test_target') != products.LABEL or manifest.get('toolchain') != PINS or
             manifest.get('application_recompiled_for_replay') is not False or manifest.get('physical_device_verified') is not False or
             manifest.get('diagnostic_products_not_test_pass') is not True or not isinstance(manifest.get('files'), dict)):
@@ -190,14 +209,15 @@ def validate_products(root):
     return {'product_files_verified': len(hashes), 'product_bytes_verified': product_bytes, 'sanitized_plan_verified': True}
 
 
-def extract(archive_path, artifact, destination):
+def extract(archive_path, artifact, destination, source=SOURCE):
+    specification = pinned(CURRENT_RUN if source == CURRENT_SOURCE else RUN, source)
     archive_path, destination = Path(archive_path), Path(destination)
     if (archive_path.is_symlink() or not archive_path.is_file() or archive_path.stat().st_size != artifact['size_in_bytes'] or
-            archive_path.stat().st_size > artifacts.MAX_ZIP_BYTES or digest(archive_path) != OUTER_SHA256):
+            archive_path.stat().st_size > artifacts.MAX_ZIP_BYTES or digest(archive_path) != specification['digest']):
         raise artifacts.ReplayError('projection_outer_digest_mismatch')
     if destination.exists() or destination.is_symlink():
         raise artifacts.ReplayError('projection_destination_not_fresh')
-    prefix = products.CAPTURE + '/'
+    prefix = specification['prefix']
     with zipfile.ZipFile(archive_path) as zipped:
         inventory = zipped.infolist()
         if len(inventory) > artifacts.MAX_FILES:
@@ -224,15 +244,179 @@ def extract(archive_path, artifact, destination):
         destination.mkdir(mode=0o700)
         for entry, name in selected:
             target = destination / name; target.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
-            with zipped.open(entry) as source, target.open('xb') as output:
+            with zipped.open(entry) as source_stream, target.open('xb') as output:
                 count = 0
-                while chunk := source.read(1024 * 1024):
+                while chunk := source_stream.read(1024 * 1024):
                     count += len(chunk)
                     if count > entry.file_size: raise artifacts.ReplayError('projection_archive_size_mismatch')
                     output.write(chunk)
             if count != entry.file_size: raise artifacts.ReplayError('projection_archive_size_mismatch')
             target.chmod(0o600)
-    return validate_products(destination)
+    return validate_products(destination, source)
+
+
+def verify_current_checkout(root):
+    """Only tooling/docs may differ from the exact current captured source."""
+    artifacts.verify_checkout(root, CURRENT_SOURCE)
+    expected = set()
+    directory = 'submodules/TelegramUI/Components/Chat/ChatHistoryEntry/Tests/'
+    for filename in ('ChatLocalTextFilterProjectionTests.swift', 'ChatLocalArchiveProjectionTests.swift', 'ChatLocalArchiveRowRendererTests.swift'):
+        data = artifacts.git(root, 'show', CURRENT_SOURCE + ':' + directory + filename)
+        if not 0 < len(data) <= 1024**2: raise artifacts.ReplayError('projection_expected_source_invalid')
+        text = data.decode('utf-8')
+        classes = re.findall(r'^final class (\w+): XCTestCase', text, re.M)
+        methods = re.findall(r'^\s+func (test\w+)\(', text, re.M)
+        if len(classes) != 1 or len(methods) != len(set(methods)):
+            raise artifacts.ReplayError('projection_expected_source_invalid')
+        expected.update(classes[0] + '.' + method for method in methods)
+    if expected != EXPECTED: raise artifacts.ReplayError('projection_expected_cases_changed')
+
+
+def snapshot_tree(root):
+    root = Path(root)
+    if root.is_symlink() or not root.is_dir(): raise artifacts.ReplayError('projection_unsafe_control_tree')
+    result, total = {}, 0
+    for path in root.rglob('*'):
+        mode = path.lstat().st_mode
+        name = str(path.relative_to(root)); products.relative_name(name)
+        if stat.S_ISDIR(mode): result[name] = ('directory', stat.S_IMODE(mode), None)
+        elif stat.S_ISREG(mode):
+            size = path.stat().st_size; total += size
+            if not 0 <= size <= products.MAX_FILE_BYTES or total > products.MAX_TOTAL_BYTES:
+                raise artifacts.ReplayError('projection_control_limit')
+            result[name] = ('file', stat.S_IMODE(mode), digest(path))
+        else: raise artifacts.ReplayError('projection_unsafe_control_tree')
+        if len(result) > 2 * products.MAX_FILES: raise artifacts.ReplayError('projection_control_limit')
+    return result
+
+
+def _host_signature(app):
+    """Read only the fixed host's bounded embedded signing metadata."""
+    app = Path(app)
+    info = plistlib.loads(products.read_small(products.fixed_path(app, 'Info.plist')))
+    if not isinstance(info, dict) or info.get('CFBundleIdentifier') != products.BUNDLE or info.get('CFBundleExecutable') != 'ProjectionTestHost':
+        raise artifacts.ReplayError('projection_control_identity_mismatch')
+    code_digest = main_code_digest(app)
+    path = products.fixed_path(app, 'ProjectionTestHost')
+    with path.open('rb') as stream:
+        header = stream.read(32); count, length = struct.unpack_from('<II', header, 16)
+        if not 1 <= count <= 4096 or not count * 8 <= length <= 1024**2:
+            raise artifacts.ReplayError('projection_invalid_signature')
+        commands = stream.read(length); offset, selected = 0, None
+        for _ in range(count):
+            code, size = struct.unpack_from('<II', commands, offset)
+            if size < 8 or size % 8 or offset + size > len(commands): raise artifacts.ReplayError('projection_invalid_signature')
+            if code == 0x1D:
+                if selected is not None or size != 16: raise artifacts.ReplayError('projection_invalid_signature')
+                selected = struct.unpack_from('<II', commands, offset + 8)
+            offset += size
+        if offset != length or selected is None: raise artifacts.ReplayError('projection_invalid_signature')
+        start, size = selected
+        if not 12 <= size <= 1024**2 or start + size > path.stat().st_size:
+            raise artifacts.ReplayError('projection_invalid_signature')
+        stream.seek(start); signature = stream.read(size)
+    magic, size, count = struct.unpack_from('>III', signature)
+    if magic != 0xFADE0CC0 or not 12 + count * 8 <= size <= len(signature) or not 1 <= count <= 32:
+        raise artifacts.ReplayError('projection_invalid_signature')
+    blobs, ranges = {}, []
+    for index in range(count):
+        slot, offset = struct.unpack_from('>II', signature, 12 + index * 8)
+        if slot in blobs or not 12 + count * 8 <= offset <= size - 8:
+            raise artifacts.ReplayError('projection_invalid_signature')
+        _, length = struct.unpack_from('>II', signature, offset)
+        if length < 8 or offset + length > size or any(offset < end and begin < offset + length for begin, end in ranges):
+            raise artifacts.ReplayError('projection_invalid_signature')
+        blobs[slot] = signature[offset:offset + length]; ranges.append((offset, offset + length))
+    cd = blobs.get(0, b'')
+    if len(cd) < 44 or struct.unpack_from('>I', cd)[0] != 0xFADE0C02:
+        raise artifacts.ReplayError('projection_invalid_signature')
+    flags, hash_offset, identifier_offset, specials, code_slots, code_limit = struct.unpack_from('>6I', cd, 12)
+    hash_size, hash_type, _, page = struct.unpack_from('>4B', cd, 36)
+    if (hash_type != 2 or hash_size != 32 or not 1 <= page <= 20 or not 7 <= specials <= 32
+            or hash_offset - specials * hash_size < 44 or hash_offset + code_slots * hash_size > len(cd)
+            or not 44 <= identifier_offset < hash_offset - specials * hash_size or code_limit != start):
+        raise artifacts.ReplayError('projection_invalid_signature')
+    identifier = cd[identifier_offset:hash_offset - specials * hash_size].split(b'\0', 1)[0].decode('utf-8')
+    if identifier != products.BUNDLE: raise artifacts.ReplayError('projection_control_identity_mismatch')
+    if any(slot not in blobs for slot in (2, 5, 7)):
+        raise artifacts.ReplayError('projection_invalid_signature')
+    for slot, payload in ((1, products.read_small(products.fixed_path(app, 'Info.plist'))),
+                          (2, blobs[2]), (3, products.read_small(products.fixed_path(app, '_CodeSignature/CodeResources'))),
+                          (5, blobs[5]), (7, blobs[7])):
+        if hashlib.sha256(payload).digest() != cd[hash_offset - slot * 32:hash_offset - (slot - 1) * 32]:
+            raise artifacts.ReplayError('projection_signature_metadata_mismatch')
+    entitlements = plistlib.loads(blobs[5][8:])
+    if not isinstance(entitlements, dict): raise artifacts.ReplayError('projection_invalid_entitlements')
+    return {'code_digest': code_digest, 'identifier': identifier, 'flags': flags, 'requirements': blobs[2],
+            'entitlements': entitlements, 'entitlements_xml': blobs[5][8:], 'der_entitlements': blobs[7]}
+
+
+def host_signature(app):
+    try:
+        return _host_signature(app)
+    except artifacts.ReplayError:
+        raise
+    except (OSError, ValueError, TypeError, KeyError, RuntimeError, IndexError, OverflowError, struct.error, ExpatError):
+        raise artifacts.ReplayError('projection_invalid_signature') from None
+
+
+def prepare_control(original_root, destination, mode, diagnostics, secrets, command=simulator_probe.diagnostic_command):
+    """Create one independent original/re-sealed arm; never rewrite provenance."""
+    if mode not in {'original', 'resealed-host'}: raise artifacts.ReplayError('projection_invalid_host_control')
+    original_root, destination = Path(original_root), Path(destination)
+    if mode == 'resealed-host':
+        manifest = json.loads(products.read_small(products.fixed_path(original_root, 'manifest.json')))
+        if not isinstance(manifest, dict) or manifest.get('source_commit') != CURRENT_SOURCE:
+            raise artifacts.ReplayError('projection_reseal_requires_current_source')
+    if (destination.exists() or destination.is_symlink() or original_root.resolve() in destination.resolve().parents
+            or destination.resolve() in original_root.resolve().parents):
+        raise artifacts.ReplayError('projection_control_copy_not_fresh')
+    original = snapshot_tree(original_root)
+    products.sanitize_plan(original_root / 'TEST_ROOT')
+    shutil.copytree(original_root, destination, symlinks=True, copy_function=shutil.copyfile)
+    for name, (kind, permissions, _) in original.items():
+        path = destination / name
+        if path.is_symlink(): raise artifacts.ReplayError('projection_unsafe_control_tree')
+        path.chmod(permissions)
+        if kind == 'file' and (path.stat().st_dev, path.stat().st_ino) == ((original_root / name).stat().st_dev, (original_root / name).stat().st_ino):
+            raise artifacts.ReplayError('projection_control_hardlink')
+    if snapshot_tree(destination) != original: raise artifacts.ReplayError('projection_control_copy_changed')
+    report = {'mode': mode, 'source_products_unchanged': True, 'independent_private_copy': True,
+              'signing_modified_for_diagnostic': mode == 'resealed-host'}
+    if mode == 'original': return report
+    app = destination / 'TEST_ROOT' / products.APP
+    before = host_signature(app)
+    def run(name, arguments):
+        status, stdout = command(arguments, secrets, timeout=20)
+        diagnostics[name] = {**status, 'stdout': simulator_probe.redact_probe_text(stdout, secrets)}
+        return status
+    initial = run('source_seal', ['/usr/bin/codesign', '--verify', '--deep', '--strict', str(app)])
+    if initial['status'] != 'commandFailed' or initial['exit_code'] != 1:
+        raise artifacts.ReplayError('projection_source_seal_contrast_unavailable')
+    with tempfile.TemporaryDirectory(prefix='ayu-projection-entitlements-') as private:
+        entitlements = Path(private) / 'original.plist'
+        with entitlements.open('xb') as stream:
+            entitlements.chmod(0o600); stream.write(before['entitlements_xml'])
+        signed = run('reseal_host', ['/usr/bin/codesign', '--force', '--sign', '-', '--timestamp=none',
+            '--preserve-metadata=identifier,requirements,flags', '--entitlements', str(entitlements), str(app)])
+    if signed['status'] != 'completed' or signed['exit_code'] != 0:
+        raise artifacts.ReplayError('projection_host_reseal_failed')
+    after = host_signature(app)
+    for field in ('code_digest', 'identifier', 'flags', 'requirements', 'entitlements', 'der_entitlements'):
+        if after[field] != before[field]: raise artifacts.ReplayError('projection_host_reseal_changed_identity_or_code')
+    changed = snapshot_tree(destination)
+    allowed = {'TEST_ROOT/' + products.APP + '/ProjectionTestHost',
+               'TEST_ROOT/' + products.APP + '/_CodeSignature/CodeResources'}
+    if (set(changed) != set(original) or any(changed[name][:2] != original[name][:2] for name in original)
+            or {name for name in original if changed[name] != original[name]} != allowed):
+        raise artifacts.ReplayError('projection_host_reseal_changed_products')
+    verified = run('resealed_verify', ['/usr/bin/codesign', '--verify', '--deep', '--strict', str(app)])
+    if verified['status'] != 'completed' or verified['exit_code'] != 0:
+        raise artifacts.ReplayError('projection_resealed_host_not_verified')
+    if snapshot_tree(original_root) != original: raise artifacts.ReplayError('projection_original_products_changed')
+    report.update(host_code_unchanged=True, test_tree_unchanged=True, entitlements_preserved=True,
+                  requirements_preserved=True, identifier_and_flags_preserved=True, strict_seal_verified=True)
+    return report
 
 
 def child_environment():
@@ -378,7 +562,7 @@ def host_bootstrap_diagnostic(identifier, secrets):
     return {'command': status, 'selection': selected}
 
 
-def execute(products_root, output, root, command=native_command, probe=simulator_probe.capture):
+def execute(products_root, output, root, command=native_command, probe=simulator_probe.capture, attest_control=False):
     output, root = Path(output), Path(root); commands = {}; identifier = None
     report = {'commands': commands, 'passed': False, 'tests_started': False,
               'xctest_command_attempted': False, 'assertion_retries': 0, 'diagnostics': {}}
@@ -438,6 +622,33 @@ def execute(products_root, output, root, command=native_command, probe=simulator
         # Snapshot before the optional standalone host launch can add unrelated
         # later lifecycle events. Failure paths collect once in finally too.
         retain_host_log()
+        if attest_control:
+            installed = report['installed_control_attestation'] = {'state': 'unavailable'}
+            status, raw = call('installed_control', ['xcrun', 'simctl', 'get_app_container', identifier, products.BUNDLE, 'app'],
+                               timeout=10, required=False)
+            if status['status'] == 'completed':
+                # Successful lookup is observed evidence. Invalid/missing code
+                # or metadata cannot be relabeled as an unavailable command.
+                installed.update(state='mismatch', file_bytes_unchanged=False, synthetic_identity_verified=False)
+                try:
+                    if not 0 < len(raw) <= 4096 or b'\0' in raw: raise ValueError('Invalid container response')
+                    path = Path(raw.decode().strip())
+                    if not path.is_absolute() or path.suffix != '.app' or path.is_symlink() or not path.is_dir():
+                        raise ValueError('Invalid container response')
+                    info = plistlib.loads(products.read_small(products.fixed_path(path, 'Info.plist')))
+                    if not isinstance(info, dict) or info.get('CFBundleIdentifier') != products.BUNDLE or info.get('CFBundleExecutable') != 'ProjectionTestHost':
+                        raise ValueError('Unexpected installed identity')
+                    installed['synthetic_identity_verified'] = True
+                    actual = snapshot_tree(path)
+                    expected = snapshot_tree(Path(products_root) / 'TEST_ROOT' / products.APP)
+                    # Installation may normalize permissions. Attest actual
+                    # member identity and bytes, never data-container files.
+                    unchanged = {name: (value[0], value[2]) for name, value in actual.items()} == {name: (value[0], value[2]) for name, value in expected.items()}
+                    installed.update(state='matched' if unchanged else 'mismatch', file_bytes_unchanged=unchanged)
+                except (OSError, ValueError, TypeError, KeyError, RuntimeError, IndexError, OverflowError, ExpatError):
+                    pass  # Fixed mismatch fields only; never emit metadata/paths.
+                if installed['state'] != 'matched':
+                    report['passed'] = False; report['failure'] = 'projection_installed_control_mismatch'
         # Reuse only the synthetic-host probe, with credentials absent from every
         # nested native command; raw XCResult and simulator files stay private.
         with tempfile.TemporaryDirectory(prefix='ayu-projection-probe-') as private:
@@ -465,24 +676,57 @@ def write(path, value, text=False):
         file.write(value if text else json.dumps(value, indent=2, sort_keys=True) + '\n')
 
 
-def replay(run, source, output, root=None, api=artifacts.gh_json, fetch=artifacts.download, command=native_command, probe=simulator_probe.capture):
+def replay(run, source, output, root=None, api=artifacts.gh_json, fetch=artifacts.download, command=native_command, probe=simulator_probe.capture,
+           host_control='original', control_command=simulator_probe.diagnostic_command):
+    specification = pinned(run, source)
+    source = specification['source']
+    if host_control not in {'original', 'resealed-host'} or (host_control != 'original' and source != CURRENT_SOURCE):
+        raise artifacts.ReplayError('projection_invalid_host_control')
     root = Path(root or Path(__file__).resolve().parents[2]).resolve(strict=True)
     output = Path(output); output = output if output.is_absolute() else root / output
     if output != root / OUTPUT or any(x.is_symlink() for x in (output, *output.parents)) or output.exists():
         raise artifacts.ReplayError('projection_output_not_fresh_fixed_path')
+    if source == CURRENT_SOURCE: verify_current_checkout(root)
     artifact = origin(run, source, api)
     output.mkdir(mode=0o700, parents=True)
-    report = {'schema_version': 1, 'repository': artifacts.REPOSITORY, 'source_run': RUN, 'source_commit': SOURCE,
-              'artifact_id': ARTIFACT, 'artifact_sha256': OUTER_SHA256, 'diagnostic_replay_only': True,
+    report = {'schema_version': 1, 'repository': artifacts.REPOSITORY, 'source_run': specification['run'], 'source_commit': source,
+              'artifact_id': specification['artifact'], 'artifact_sha256': specification['digest'], 'diagnostic_replay_only': True,
               'application_recompiled_for_replay': False, 'new_checkout_qualified': False,
-              'full_application_built': False, 'physical_device_verified': False, 'passed': False}
+              'full_application_built': False, 'physical_device_verified': False, 'release_qualified': False,
+              'host_signing_control': host_control, 'passed': False}
     try:
         with tempfile.TemporaryDirectory(prefix='ayu-projection-replay-') as private:
-            archive = Path(private) / 'artifact.zip'; fetch(ARTIFACT, archive)
-            verified = extract(archive, artifact, Path(private) / 'products')
+            archive = Path(private) / 'artifact.zip'; fetch(specification['artifact'], archive)
+            original = Path(private) / 'products'
+            verified = extract(archive, artifact, original, source)
             report.update(verified)
-            report.update(execute(Path(private) / 'products', output, root, command, probe))
-    except (OSError, ValueError, TypeError, KeyError, zipfile.BadZipFile):
+            if source == CURRENT_SOURCE:
+                original_snapshot = snapshot_tree(original)
+                secrets = tuple(v for k, v in os.environ.items() if v and re.search(r'TOKEN|SECRET|PASSWORD|API_ID|API_HASH|AUTH|PRIVATE_KEY|SESSION', k, re.I))
+                diagnostics = report['host_control_diagnostics'] = {}
+                try:
+                    controlled = Path(private) / 'control'
+                    report['host_control_attestation'] = prepare_control(original, controlled, host_control, diagnostics, secrets, control_command)
+                    control_snapshot = snapshot_tree(controlled)
+                    report['expected_case_source_verified'] = True
+                    report.update(execute(controlled, output, root, command, probe, attest_control=True))
+                    control_unchanged = snapshot_tree(controlled) == control_snapshot
+                    report['control_products_unchanged_after_execution'] = control_unchanged
+                    if not control_unchanged:
+                        report['passed'] = False
+                        report['failure'] = 'projection_control_changed_during_execution'
+                finally:
+                    unchanged = snapshot_tree(original) == original_snapshot
+                    report['source_products_unchanged'] = unchanged
+                    if not unchanged:
+                        report['passed'] = False
+                        report['failure'] = 'projection_original_products_changed'
+            else:
+                report.update(execute(original, output, root, command, probe))
+    except artifacts.ReplayError as error:
+        report['passed'] = False; report['failure'] = str(error)
+    except (OSError, ValueError, TypeError, KeyError, RuntimeError, IndexError, struct.error, zipfile.BadZipFile, ExpatError):
+        report['passed'] = False
         report['failure'] = 'projection_artifact_verification_failed'
     write(output / 'result.json', report)
     hashes = {p.name: digest(p) for p in output.iterdir() if p.is_file()}
@@ -494,13 +738,15 @@ def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--run', required=True); parser.add_argument('--source', required=True)
     parser.add_argument('--output', type=Path, required=True)
+    parser.add_argument('--host-control', choices=['original', 'resealed-host'], default='original')
     args = parser.parse_args(argv)
-    try: report = replay(args.run, args.source, args.output)
+    try: report = replay(args.run, args.source, args.output, host_control=args.host_control)
     except artifacts.ReplayError as error:
         print(json.dumps({'passed': False, 'failure': str(error)})); return 1
     except (OSError, ValueError, TypeError, KeyError, RuntimeError):
         print(json.dumps({'passed': False, 'failure': 'projection_replay_preparation_failed'})); return 1
-    print(json.dumps({'passed': report['passed'], 'diagnostic_replay_only': True, 'source_commit': SOURCE}, sort_keys=True))
+    print(json.dumps({'passed': report['passed'], 'diagnostic_replay_only': True, 'source_commit': report['source_commit'],
+                      'host_signing_control': report['host_signing_control']}, sort_keys=True))
     return 0 if report['passed'] else 1
 
 
