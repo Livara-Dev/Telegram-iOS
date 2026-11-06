@@ -1,3 +1,4 @@
+# Refresh source snapshot for the build-102 refinement review.
 name: AyuGram exact-revision source snapshot
 
 on:
@@ -53,7 +54,8 @@ jobs:
               raise SystemExit('Exact source revision mismatch')
           archive = output / ('Telegram-iOS-' + revision + '.tar.gz')
           run('git', 'archive', '--format=tar.gz', '--prefix=Telegram-iOS/', '--output=' + str(archive), revision)
-          digest = hashlib.file_digest(archive.open('rb'), 'sha256').hexdigest()
+          with archive.open('rb') as source:
+              digest = hashlib.file_digest(source, 'sha256').hexdigest()
           (output / 'SHA256SUMS').write_text(digest + '  ' + archive.name + '\n')
           gitlinks = []
           tree = subprocess.check_output(['git', 'ls-tree', '-r', '-z', revision], cwd=checkout)
