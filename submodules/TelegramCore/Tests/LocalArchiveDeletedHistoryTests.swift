@@ -404,16 +404,44 @@ final class LocalArchiveDeletedHistoryIntegrationTests: XCTestCase {
         let owner = PeerId(namespace: Namespaces.Peer.CloudUser, id: ._internalFromInt64Value(1))
         let peer = PeerId(namespace: Namespaces.Peer.CloudUser, id: ._internalFromInt64Value(9811))
         let keys = Atomic<[Bool]>(value: [])
-        let attempted = self.expectation(description: "read-only existing-store probe")
+        let openRequests = Atomic<[Bool]>(value: [])
+        let attempted = ValuePromise<Bool>(false, ignoreRepeated: true)
+        let pendingProbes = DispatchGroup()
+        let handoffQueue = Atomic<DispatchQueue?>(value: nil)
         let archive = LocalArchiveCoordinator(postbox: fixture.postbox, accountPeerId: owner, accountId: 99, baseDirectory: directory,
             storageFactory: { directory, accountId, retention, createIfMissing, queue, completion in
+                _ = handoffQueue.swap(queue)
+                pendingProbes.enter()
+                _ = openRequests.modify { $0 + [createIfMissing] }
                 XCTAssertFalse(createIfMissing)
                 ArchiveStore.open(baseDirectory: directory, accountId: accountId, keyProvider: DeletedHistoryIntegrationKeys(requests: keys),
                     createIfMissing: createIfMissing, retention: retention, callbackQueue: queue) { result in
-                    completion(result.map { $0 as LocalArchiveStorage }); attempted.fulfill()
+                    if case .failure(.missingArchive) = result {} else {
+                        XCTFail("A read-only probe of an absent archive must report missingArchive")
+                    }
+                    completion(result.map { $0 as LocalArchiveStorage })
+                    attempted.set(true)
+                    pendingProbes.leave()
                 }
             }, protectedData: .single(true))
-        defer { archive.dispose(); _ = try? self.localArchiveValue(archive.status |> filter { $0 == .unavailable }) }
+        var stopped = false
+        func stop() throws {
+            guard !stopped else { return }
+            archive.dispose()
+            // This is the coordinator's own serial callback queue, supplied by
+            // openStorage. An acknowledgement queued after dispose cannot run
+            // before its stopped flag is set; a cached status is not a barrier.
+            let queue = try XCTUnwrap(handoffQueue.with { $0 })
+            let stopAcknowledged = self.expectation(description: "archive coordinator stopped")
+            queue.async { stopAcknowledged.fulfill() }
+            self.wait(for: [stopAcknowledged], timeout: 15)
+            XCTAssertEqual(try self.localArchiveValue(archive.status), .unavailable)
+            let drained = self.expectation(description: "all read-only existing-store probes finished")
+            pendingProbes.notify(queue: .main) { drained.fulfill() }
+            self.wait(for: [drained], timeout: 15)
+            stopped = true
+        }
+        defer { try? stop() }
         var loader: LocalArchiveDeletedHistoryLoader!
         self.onMain {
             loader = LocalArchiveDeletedHistoryLoader(archive: archive, presentation: LocalArchivePresentationContext(postbox: fixture.postbox),
@@ -422,7 +450,13 @@ final class LocalArchiveDeletedHistoryIntegrationTests: XCTestCase {
             loader.setActive(true)
         }
         defer { self.onMain { loader.dispose(); loader = nil } }
-        self.wait(for: [attempted], timeout: 15)
+        // Protected-data, settings and operation-log wakeups may each probe the
+        // missing store. Wait once, then stop and drain every probe before
+        // checking that none obtained key or database creation authority.
+        XCTAssertTrue(try self.localArchiveValue(attempted.get() |> filter { $0 }))
+        try stop()
+        XCTAssertFalse(openRequests.with { $0 }.isEmpty)
+        XCTAssertTrue(openRequests.with { $0 }.allSatisfy { !$0 })
         XCTAssertTrue(keys.with { $0 }.isEmpty)
         XCTAssertFalse(FileManager.default.fileExists(atPath: directory.path))
         XCTAssertFalse(try self.localArchiveValue(archive.settings).enabled)
