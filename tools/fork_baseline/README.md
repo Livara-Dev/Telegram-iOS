@@ -33,6 +33,20 @@ is not substituted for a successful test result. The unsigned device mode builds
 build artifact, not an installable independently signed release. Device mode does not
 run simulator tests, and its manifest records `not_run`.
 
+The Actions `native-only` scope runs all eight integration suites and the
+account-free production options renderer in the same workflow, on separate
+macOS runners. Neither job builds the complete messaging application. The
+standalone `custom-options-ui` scope remains available for renderer diagnostics.
+The run-level concurrency policy preserves an active qualification and keeps
+only its latest pending successor. Submit one consolidated source revision;
+do not dispatch a second identical scope while it is active or queued.
+
+After qualification passes, advancing `ci/verify-latest` starts the full
+application/device workflow automatically. The simulator application job first
+runs all eight suites and then reuses that invocation's private Bazel outputs
+for the app build. Compiled outputs and generated API configuration are never
+exported into the shared dependency cache.
+
 Artifacts go to `build/fork-baseline-<mode>/`: `Telegram.ipa`, `SHA256SUMS`, and
 `manifest.json`. Existing destination directories are rejected to prevent stale
 artifacts being mistaken for a new build. The manifest records the commit, pins,

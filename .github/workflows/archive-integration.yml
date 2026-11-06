@@ -881,7 +881,9 @@ jobs:
           include-hidden-files: false
 
   custom-options-ui:
-    if: github.event_name == 'workflow_dispatch' && inputs.validation_scope == 'custom-options-ui'
+    # One native qualification also checks the account-free production renderer
+    # on a separate runner. Keep the standalone scope for focused UI diagnostics.
+    if: github.event_name == 'workflow_dispatch' && (inputs.validation_scope == 'custom-options-ui' || inputs.validation_scope == 'native-only')
     runs-on: xcode-27
     timeout-minutes: 120
     defaults:

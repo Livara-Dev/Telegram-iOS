@@ -340,10 +340,11 @@ class FocusedWorkflowRoutingTests(unittest.TestCase):
                              ('workflow_dispatch', 'startup'), ('workflow_dispatch', '')]:
             self.assertFalse(self.condition('custom-options-ui', event, scope, True))
 
-    def test_native_only_runs_all_fixed_native_suites_without_any_app_or_ui_job(self):
+    def test_native_only_qualifies_all_fixed_suites_and_renderer_without_full_app(self):
         for device in (False, True):
             self.assertTrue(self.condition('integration-tests', 'workflow_dispatch', 'native-only', device))
-            for job in ('application-build', 'unsigned-device-build', 'native-api-probe', 'startup-artifact-replay', 'custom-options-ui'):
+            self.assertTrue(self.condition('custom-options-ui', 'workflow_dispatch', 'native-only', device))
+            for job in ('application-build', 'unsigned-device-build', 'native-api-probe', 'startup-artifact-replay'):
                 self.assertFalse(self.condition(job, 'workflow_dispatch', 'native-only', device))
         section = self.section('integration-tests')
         self.assertIn('repair_options=(--integration-tests --tests-only)', section)
