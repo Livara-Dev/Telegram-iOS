@@ -1,3 +1,6 @@
+# Modified for AyuGram iOS.
+# Modification dates recorded in Git history: 2026-11-04.
+# See this file's history for the corresponding changes.
 load("@build_bazel_rules_swift//swift:swift.bzl", "swift_library")
 load("@build_bazel_rules_apple//apple:ios.bzl", "ios_unit_test")
 load("@build_bazel_rules_apple//apple/testing/default_runner:ios_test_runner.bzl", "ios_test_runner")

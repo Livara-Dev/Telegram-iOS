@@ -1,3 +1,7 @@
+/* Modified for AyuGram iOS.
+ * Modification dates recorded in Git history: 2026-11-05.
+ * See this file's history for the corresponding changes.
+ */
 /* Localized versions of Info.plist keys */
 "CFBundleDisplayName" = "AyuGram";
 "NSContactsUsageDescription" = "Telegram will continuously upload your contacts to its heavily encrypted cloud servers to let you connect with your friends across all your devices.";
