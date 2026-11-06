@@ -18,8 +18,10 @@ DEVICE_NAME = 'BAZEL_TEST_iPhone 17_27.0'
 REPLAY_PROFILE = 'replay-iphone15pro'
 REPLAY_DEVICE_NAME = 'AYU_REPLAY_iPhone 15 Pro_27.0'
 REPLAY_DEVICE_TYPE = 'com.apple.CoreSimulator.SimDeviceType.iPhone-15-Pro'
+IDENTITY_ROW_COUNT_LIMIT = 128
 MARKER = 'Library/Caches/AyuGramNativeTestHost/projection-lifecycle.json'
 STAGES = {'didFinish', 'sceneVisible'}
+MARKER_STATES = {'observed', 'absent', 'unsafe', 'invalid', 'unavailable'}
 BOOTSTRAP_PROCESSES = {'testmanagerd', 'runningboardd', 'xctest', 'launchd_sim'}
 BOOTSTRAP_IDENTITIES = (BUNDLE, 'ProjectionTestHost', 'ChatLocalTextFilterProjectionTests')
 BOOTSTRAP_PREDICATE = (
@@ -194,7 +196,10 @@ def capture(root, secrets, started_at=None, *, owned_identifier=None, profile=No
                     re.fullmatch(r'[0-9a-fA-F]{8}(?:-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}', owned_identifier))
     if replay:
         report.update(profile=REPLAY_PROFILE, device_type=REPLAY_DEVICE_TYPE,
-                      runtime=RUNTIME, device_identity={'state': 'unknown'})
+                      runtime=RUNTIME, device_identity={'state': 'unknown', 'owned_uuid_rows': None,
+                          'owned_uuid_rows_capped': None, 'name_matches': None, 'device_type_matches': None,
+                          'runtime_matches': None, 'booted': None},
+                      marker_availability={'before_standalone_launch': None, 'after_standalone_launch': None})
     try:
         if (root / 'build').is_symlink() or destination.is_symlink():
             return
@@ -220,13 +225,14 @@ def capture(root, secrets, started_at=None, *, owned_identifier=None, profile=No
             except (OSError, subprocess.SubprocessError):
                 report['commands'][name] = {'state': 'unavailable'}
                 return None, ''
-        inventory, data = diagnostic_command(['xcrun', 'simctl', 'list', 'devices',
-            REPLAY_DEVICE_NAME if replay else 'available', '--json'], secrets, timeout=10)
+        inventory, data = diagnostic_command(['xcrun', 'simctl', 'list', 'devices', 'available', '--json'], secrets, timeout=10)
         # Keep the bounded/redacted failure metadata even when CoreSimulator
         # inventory cannot complete. No raw device inventory is published.
         report['commands']['devices'] = inventory
         if inventory['status'] == 'completed' and inventory['exit_code'] == 0:
             try:
+                if replay and (not isinstance(data, bytes) or len(data) > COMMAND_OUTPUT_LIMIT):
+                    raise ValueError('Invalid device inventory size')
                 payload = json.loads(data)
                 devices = payload.get('devices') if isinstance(payload, dict) else None
                 if replay:
@@ -240,11 +246,19 @@ def capture(root, secrets, started_at=None, *, owned_identifier=None, profile=No
                                 raise ValueError('Invalid device row')
                             if device['udid'].casefold() == owned_identifier.casefold():
                                 owned_rows.append((runtime, device))
-                    candidates = [device for runtime, device in owned_rows
-                                  if len(owned_rows) == 1 and runtime == RUNTIME and
-                                  device.get('name') == REPLAY_DEVICE_NAME and
-                                  device.get('deviceTypeIdentifier') == REPLAY_DEVICE_TYPE and
-                                  device.get('state') == 'Booted']
+                    identity = report['device_identity']
+                    # A row count describes this bounded snapshot. Missing or
+                    # ambiguous rows cannot establish the device's identity.
+                    identity.update(owned_uuid_rows=min(len(owned_rows), IDENTITY_ROW_COUNT_LIMIT),
+                                    owned_uuid_rows_capped=len(owned_rows) > IDENTITY_ROW_COUNT_LIMIT)
+                    candidates = []
+                    if len(owned_rows) == 1:
+                        runtime, device = owned_rows[0]
+                        identity.update(name_matches=device.get('name') == REPLAY_DEVICE_NAME,
+                                        device_type_matches=device.get('deviceTypeIdentifier') == REPLAY_DEVICE_TYPE,
+                                        runtime_matches=runtime == RUNTIME, booted=device.get('state') == 'Booted')
+                        if all(identity[field] for field in ('name_matches', 'device_type_matches', 'runtime_matches', 'booted')):
+                            candidates = [device]
                 else:
                     values = devices.get(RUNTIME, []) if isinstance(devices, dict) else None
                     if not isinstance(values, list): raise ValueError('Invalid device inventory')
@@ -258,7 +272,7 @@ def capture(root, secrets, started_at=None, *, owned_identifier=None, profile=No
                     and re.fullmatch(r'[0-9a-fA-F]{8}(?:-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}', candidates[0]['udid'])):
                 identifier = owned_identifier if replay else candidates[0]['udid']
                 if replay:
-                    report['device_identity'] = {'state': 'verified'}
+                    report['device_identity']['state'] = 'verified'
                 # Installation/path validation can fail during XCTest bootstrap.
                 # Read selected logs for the verified owned device first so
                 # those failures do not suppress the most useful evidence.
@@ -283,6 +297,10 @@ def capture(root, secrets, started_at=None, *, owned_identifier=None, profile=No
                     # Capture XCTest's host state before a standalone launch can
                     # create/overwrite its marker and obscure the distinction.
                     report['marker_before_standalone_launch'] = read_marker(data_path)
+                    if replay:
+                        marker_state = report['marker_before_standalone_launch'].get('state')
+                        if marker_state in MARKER_STATES:
+                            report['marker_availability']['before_standalone_launch'] = marker_state
                     signature, _ = diagnostic_command(['/usr/bin/codesign', '--verify', '--strict', '--verbose=2', container], secrets, timeout=10)
                     diagnostics['installed_signature'] = signature
                     report['commands']['installed_signature'] = {'exit_code': signature['exit_code']}
@@ -295,6 +313,8 @@ def capture(root, secrets, started_at=None, *, owned_identifier=None, profile=No
                         time.sleep(0.1)
                         marker = read_marker(data_path)
                     report['marker_after_standalone_launch'] = marker
+                    if replay and marker.get('state') in MARKER_STATES:
+                        report['marker_availability']['after_standalone_launch'] = marker['state']
         write_report()
     except (OSError, ValueError, TypeError, KeyError):
         # Diagnostic collection never replaces the original compiler/test failure.

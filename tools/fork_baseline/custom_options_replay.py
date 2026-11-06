@@ -9,6 +9,7 @@ observation. No account, Postbox, network client or physical device is exercised
 import argparse
 import hashlib
 import json
+import math
 import os
 from pathlib import Path, PurePosixPath
 import platform
@@ -63,16 +64,26 @@ import CoreText
 import ImageIO
 import Vision
 enum CheckError: Error { case invalid }
-func titleVisible(_ image: CGImage) throws -> Bool {
+func normalized(_ text: String) -> String {
+    text.lowercased().filter { $0.isLetter || $0.isNumber }
+}
+func recognize(_ image: CGImage) throws -> [VNRecognizedTextObservation] {
     let request = VNRecognizeTextRequest()
     request.recognitionLevel = .accurate
-    request.usesLanguageCorrection = false
+    // Apple's customWords contract requires language correction to be enabled.
+    // Both acceptance and the negative controls still require the exact title.
+    request.usesLanguageCorrection = true
     request.recognitionLanguages = ["en-US"]
+    // Guide the model toward the actual spelling; acceptance remains exact.
+    request.customWords = ["Custome"]
     try VNImageRequestHandler(cgImage: image, options: [:]).perform([request])
-    return (request.results ?? []).contains { observation in
+    return request.results ?? []
+}
+func titleVisible(_ image: CGImage) throws -> Bool {
+    return try recognize(image).contains { observation in
         guard observation.boundingBox.midY > 0.80,
               let text = observation.topCandidates(1).first?.string else { return false }
-        return text.lowercased().filter { $0.isLetter || $0.isNumber } == "customeoptions"
+        return normalized(text) == "customeoptions"
     }
 }
 func synthetic(_ text: String) throws -> CGImage {
@@ -89,17 +100,61 @@ func synthetic(_ text: String) throws -> CGImage {
     guard let image = context.makeImage() else { throw CheckError.invalid }
     return image
 }
+func writeSynthetic(_ image: CGImage, path: String) throws {
+    let url = URL(fileURLWithPath: path)
+    guard url.lastPathComponent == "title-check-positive.png",
+          !FileManager.default.fileExists(atPath: path),
+          let destination = CGImageDestinationCreateWithURL(url as CFURL, "public.png" as CFString, 1, nil) else { throw CheckError.invalid }
+    CGImageDestinationAddImage(destination, image, nil)
+    guard CGImageDestinationFinalize(destination) else { throw CheckError.invalid }
+}
+func syntheticControl(_ text: String, positive: Bool, imagePath: String?) -> [String: Any] {
+    var result: [String: Any] = ["state": "imageUnavailable", "expected_title_seen": false,
+        "expected_title_in_navigation_region": false, "known_variant_seen": false,
+        "recognized_observations": 0, "known_title_regions": [[String: Any]](), "passed": false]
+    do {
+        let image = try synthetic(text)
+        if let imagePath { try writeSynthetic(image, path: imagePath) }
+        result["state"] = "visionUnavailable"
+        let observations = try recognize(image)
+        guard observations.count <= 128 else { throw CheckError.invalid }
+        var expected = false, navigation = false, variant = false
+        var regions: [[String: Any]] = []
+        for observation in observations {
+            guard let text = observation.topCandidates(1).first?.string else { continue }
+            let word = normalized(text)
+            let kind: String
+            switch word {
+            case "customeoptions": kind = "expected"; expected = true; navigation = navigation || observation.boundingBox.midY > 0.80
+            case "customoptions": kind = "variant"; variant = true
+            case "anotherscreen": kind = "negative"
+            default: continue // Never serialize arbitrary model-recognized text.
+            }
+            guard regions.count < 16 else { throw CheckError.invalid }
+            let rect = observation.boundingBox
+            regions.append(["kind": kind, "rect": [rect.minX, rect.minY, rect.width, rect.height].map { Double($0) }])
+        }
+        result = ["state": "completed", "expected_title_seen": expected,
+            "expected_title_in_navigation_region": navigation, "known_variant_seen": variant,
+            "recognized_observations": observations.count, "known_title_regions": regions,
+            "passed": positive ? navigation : !expected]
+    } catch { /* Only the fixed state and zero/false fields survive model errors. */ }
+    return result
+}
 do {
     var result: [String: Any]
-    if CommandLine.arguments.count == 2 && CommandLine.arguments[1] == "--self-test" {
-        let correct = try titleVisible(synthetic("Custome options"))
-        let wrong = try titleVisible(synthetic("Another screen"))
-        let blank = try titleVisible(synthetic(""))
-        guard correct && !wrong && !blank else { throw CheckError.invalid }
-        result = ["self_test_passed": true, "cases": 3]
+    var succeeded = true
+    if CommandLine.arguments.count == 3 && CommandLine.arguments[1] == "--self-test" {
+        let correct = syntheticControl("Custome options", positive: true, imagePath: CommandLine.arguments[2])
+        let wrong = syntheticControl("Another screen", positive: false, imagePath: nil)
+        let blank = syntheticControl("", positive: false, imagePath: nil)
+        succeeded = [correct, wrong, blank].allSatisfy { $0["passed"] as? Bool == true }
+        result = ["self_test_passed": succeeded, "cases": 3,
+            "controls": ["positive": correct, "wrong": wrong, "blank": blank]]
     } else {
-        guard CommandLine.arguments.count == 2 else { throw CheckError.invalid }
-        let url = URL(fileURLWithPath: CommandLine.arguments[1])
+        let metadataOnly = CommandLine.arguments.count == 3 && CommandLine.arguments[1] == "--metadata"
+        guard CommandLine.arguments.count == 2 || metadataOnly else { throw CheckError.invalid }
+        let url = URL(fileURLWithPath: CommandLine.arguments[metadataOnly ? 2 : 1])
         let values = try url.resourceValues(forKeys: [.isRegularFileKey, .fileSizeKey, .isSymbolicLinkKey])
         guard values.isRegularFile == true, values.isSymbolicLink != true,
               let bytes = values.fileSize, bytes > 0, bytes <= 16 * 1024 * 1024,
@@ -110,17 +165,67 @@ do {
               let height = properties[kCGImagePropertyPixelHeight] as? Int,
               width > 0, width <= 2048, height > 0, height <= 4096,
               let image = CGImageSourceCreateImageAtIndex(source, 0, nil) else { throw CheckError.invalid }
-        result = ["root_title_visible": try titleVisible(image), "width": width, "height": height]
+        result = ["width": width, "height": height]
+        if !metadataOnly { result["root_title_visible"] = try titleVisible(image) }
     }
     let data = try JSONSerialization.data(withJSONObject: result, options: [.sortedKeys])
     guard let text = String(data: data, encoding: .utf8) else { throw CheckError.invalid }
     print(text)
+    if !succeeded { exit(1) }
 } catch { print("{\"verified\":false}"); exit(1) }
 '''
 
 
 class ReplayError(ValueError):
     pass
+
+
+def self_control_report(data):
+    """Only fixed synthetic-case booleans/known regions may authorize observation."""
+    if not isinstance(data, bytes) or not 0 < len(data) <= 16384:
+        raise ReplayError('settings_checker_invalid')
+    def unique(items):
+        value = {}
+        for key, item in items:
+            if key in value: raise ReplayError('settings_checker_invalid')
+            value[key] = item
+        return value
+    try: value = json.loads(data, object_pairs_hook=unique)
+    except (ValueError, UnicodeError): raise ReplayError('settings_checker_invalid') from None
+    if (not isinstance(value, dict) or set(value) != {'self_test_passed', 'cases', 'controls'} or
+            type(value.get('self_test_passed')) is not bool or type(value.get('cases')) is not int or value['cases'] != 3 or
+            not isinstance(value.get('controls'), dict) or set(value['controls']) != {'positive', 'wrong', 'blank'}):
+        raise ReplayError('settings_checker_invalid')
+    fields = {'state', 'expected_title_seen', 'expected_title_in_navigation_region', 'known_variant_seen',
+              'recognized_observations', 'known_title_regions', 'passed'}
+    for name, control in value['controls'].items():
+        if (not isinstance(control, dict) or set(control) != fields or
+                not isinstance(control.get('state'), str) or control['state'] not in {'completed', 'imageUnavailable', 'visionUnavailable'} or
+                any(type(control.get(k)) is not bool for k in ('expected_title_seen', 'expected_title_in_navigation_region', 'known_variant_seen', 'passed')) or
+                type(control.get('recognized_observations')) is not int or not 0 <= control['recognized_observations'] <= 128 or
+                not isinstance(control.get('known_title_regions'), list) or len(control['known_title_regions']) > 16):
+            raise ReplayError('settings_checker_invalid')
+        expected = navigation = variant = False
+        for region in control['known_title_regions']:
+            if (not isinstance(region, dict) or set(region) != {'kind', 'rect'} or
+                    not isinstance(region.get('kind'), str) or region['kind'] not in {'expected', 'variant', 'negative'} or
+                    not isinstance(region.get('rect'), list) or len(region['rect']) != 4 or
+                    any(type(n) not in (int, float) or not math.isfinite(n) or not 0 <= n <= 1 for n in region['rect'])):
+                raise ReplayError('settings_checker_invalid')
+            x, y, width, height = region['rect']
+            if width <= 0 or height <= 0 or x + width > 1.000001 or y + height > 1.000001:
+                raise ReplayError('settings_checker_invalid')
+            if region['kind'] == 'expected': expected = True; navigation = navigation or y + height / 2 > .80
+            if region['kind'] == 'variant': variant = True
+        completed = control['state'] == 'completed'
+        if (control['expected_title_seen'] != expected or control['expected_title_in_navigation_region'] != navigation or
+                control['known_variant_seen'] != variant or control['recognized_observations'] < len(control['known_title_regions']) or
+                control['passed'] != (completed and (navigation if name == 'positive' else not expected)) or
+                (not completed and (control['recognized_observations'] or control['known_title_regions']))):
+            raise ReplayError('settings_checker_invalid')
+    if value['self_test_passed'] != all(c['passed'] for c in value['controls'].values()):
+        raise ReplayError('settings_checker_invalid')
+    return value
 
 
 def digest(path):
@@ -321,7 +426,7 @@ def execute(output=OUTPUT, root=None, command=native_command, pause=time.sleep, 
     if platform.system() != 'Darwin': raise ReplayError('macos_required')
     ipa = output / 'CustomeOptionsHost-simulator.ipa'
     if ipa.is_symlink() or not ipa.is_file() or digest(ipa) != IPA_SHA256: raise ReplayError('settings_host_digest_mismatch')
-    if any((output / name).exists() or (output / name).is_symlink() for name in ('result.json', 'root-light.png', 'root-light.mp4')):
+    if any((output / name).exists() or (output / name).is_symlink() for name in ('result.json', 'root-light.png', 'root-light.mp4', 'title-check-positive.png')):
         raise ReplayError('settings_replay_already_exists')
     inspect_ipa(ipa, 'simulator', BUNDLE)
     report = {'schema': 1, 'diagnostic_role': ROLE, 'source_commit': SOURCE, 'current_application_source_commit': CURRENT_SOURCE,
@@ -329,9 +434,10 @@ def execute(output=OUTPUT, root=None, command=native_command, pause=time.sleep, 
               'new_xctest_cases_executed': 0, 'historical_controller_cases_passed': 8, 'historical_interaction_cases_passed': 1,
               'application_recompiled': False, 'renderer_recompiled': False, 'logged_in_settings_verified': False,
               'physical_device_verified': False, 'release_qualified': False, 'visual_review_required': True,
-              'commands': [], 'cleanup_passed': False, 'source_codesign_verified': False, 'installed_host_verified': False}
+              'commands': [], 'cleanup_passed': False, 'source_codesign_verified': False, 'installed_host_verified': False,
+              'root_title_automatically_verified': False, 'diagnostic_root_captured': False}
     identifier, recorder = None, None
-    def call(label, args, timeout=30):
+    def call(label, args, timeout=30, self_test=False):
         report['phase'] = label
         status, data = command(args, timeout=timeout)
         if (not isinstance(status, dict) or set(status) != {'status', 'exit_code', 'timeout', 'output_limit', 'captured_bytes'} or
@@ -342,6 +448,16 @@ def execute(output=OUTPUT, root=None, command=native_command, pause=time.sleep, 
                 not (status.get('exit_code') is None or type(status['exit_code']) is int)):
             raise ReplayError('settings_command_evidence_invalid')
         report['commands'].append({'command': label, **status})
+        if self_test:
+            if (label != 'testTitleChecker' or args != [str(checker), '--self-test', str(output / 'title-check-positive.png')] or
+                    status['timeout'] or status['output_limit'] or
+                    (status['status'], status['exit_code']) not in {('completed', 0), ('commandFailed', 1)}):
+                raise ReplayError('settings_native_command_failed')
+            selected = self_control_report(data)
+            if selected['self_test_passed'] != (status['status'] == 'completed' and status['exit_code'] == 0):
+                raise ReplayError('settings_checker_invalid')
+            report['title_checker_self_test'] = selected
+            return data
         if status['status'] != 'completed' or status['exit_code'] != 0 or status['timeout'] or status['output_limit']:
             raise ReplayError('settings_native_command_failed')
         return data
@@ -358,8 +474,17 @@ def execute(output=OUTPUT, root=None, command=native_command, pause=time.sleep, 
             call('compileTitleChecker', ['xcrun', 'swiftc', '-O', '-warnings-as-errors', '-framework', 'Vision', '-framework', 'CoreText',
                 '-framework', 'ImageIO', str(source), '-o', str(checker)], timeout=120)
             if checker.is_symlink() or not checker.is_file() or not 0 < checker.stat().st_size <= 20 * 1024**2: raise ReplayError('settings_checker_invalid')
-            if json.loads(call('testTitleChecker', [str(checker), '--self-test'])) != {'self_test_passed': True, 'cases': 3}: raise ReplayError('settings_checker_invalid')
-            report['title_checker_self_test_cases_passed'] = 3
+            call('testTitleChecker', [str(checker), '--self-test', str(output / 'title-check-positive.png')], self_test=True)
+            controls_passed = report['title_checker_self_test']['self_test_passed']
+            report['title_checker_self_test_cases_passed'] = sum(c['passed'] for c in report['title_checker_self_test']['controls'].values())
+            positive = output / 'title-check-positive.png'
+            if report['title_checker_self_test']['controls']['positive']['state'] == 'imageUnavailable':
+                positive.unlink(missing_ok=True)
+                report['synthetic_positive_image_recorded'] = False
+            else:
+                if positive.is_symlink() or not positive.is_file() or not 0 < positive.stat().st_size <= 1024**2:
+                    raise ReplayError('settings_synthetic_image_invalid')
+                positive.chmod(0o600); report['synthetic_positive_image_recorded'] = True
             runtime = json.loads(call('verifyRuntime', ['xcrun', 'simctl', 'list', 'runtimes', '--json']))
             types = json.loads(call('verifyDeviceType', ['xcrun', 'simctl', 'list', '--json', 'devicetypes', 'iPhone 15 Pro']))
             if (not isinstance(runtime, dict) or not isinstance(types, dict) or
@@ -412,13 +537,21 @@ def execute(output=OUTPUT, root=None, command=native_command, pause=time.sleep, 
                     call('captureRoot', ['xcrun', 'simctl', 'io', identifier, 'screenshot', str(screenshot)])
                     if screenshot.is_symlink() or not screenshot.is_file() or not 0 < screenshot.stat().st_size <= 16 * 1024**2: raise ReplayError('settings_screenshot_invalid')
                     screenshot.chmod(0o600)
-                    observed = json.loads(call('recognizeRoot', [str(checker), str(screenshot)]))
-                    if (not isinstance(observed, dict) or set(observed) != {'root_title_visible', 'width', 'height'} or
-                            observed.get('root_title_visible') is not True or
+                    if controls_passed:
+                        observed = json.loads(call('recognizeRoot', [str(checker), str(screenshot)]))
+                    else:
+                        # Preserve real UI evidence for manual review, while a
+                        # failed checker remains unable to qualify the run.
+                        observed = json.loads(call('inspectDiagnosticRoot', [str(checker), '--metadata', str(screenshot)]))
+                    fields = {'width', 'height'} | ({'root_title_visible'} if controls_passed else set())
+                    if (not isinstance(observed, dict) or set(observed) != fields or
+                            (controls_passed and observed.get('root_title_visible') is not True) or
                             type(observed.get('width')) is not int or not 1000 <= observed['width'] <= 1500 or
                             type(observed.get('height')) is not int or not 2000 <= observed['height'] <= 3000):
                         raise ReplayError('settings_visible_root_not_verified')
                     report['root_observation'] = observed
+                    report['root_title_automatically_verified'] = controls_passed
+                    report['diagnostic_root_captured'] = True
                     recorder.send_signal(signal.SIGINT)
                     code = recorder.wait(timeout=30)
                     try: os.killpg(recorder.pid, signal.SIGKILL)
@@ -444,13 +577,16 @@ def execute(output=OUTPUT, root=None, command=native_command, pause=time.sleep, 
                 report['phase'] = 'cleanupOwnedSimulator'
                 raise ReplayError('settings_cleanup_not_verified')
             if digest(ipa) != IPA_SHA256 or host_snapshot(app) != snapshot: raise ReplayError('settings_source_host_changed')
+            if not controls_passed:
+                report['phase'] = 'selfTestFailedDiagnosticOnly'
+                raise ReplayError('settings_self_test_failed_diagnostic_only')
             report.update(passed=True, phase='complete')
     except (OSError, ValueError, RuntimeError, TypeError, KeyError, subprocess.SubprocessError):
         report['passed'] = False
         raise
     finally:
         if not report['passed']:
-            for name, limit in (('root-light.png', 16 * 1024**2), ('root-light.mp4', 32 * 1024**2)):
+            for name, limit in (('root-light.png', 16 * 1024**2), ('root-light.mp4', 32 * 1024**2), ('title-check-positive.png', 1024**2)):
                 path = output / name
                 if path.is_symlink() or path.is_file() and path.stat().st_size > limit:
                     path.unlink()

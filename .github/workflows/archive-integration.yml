@@ -687,7 +687,7 @@ jobs:
           REPLAY_RUN: ${{ (inputs.validation_scope == 'retained-clean' || (inputs.validation_scope == 'startup' && inputs.retained_projection_tests)) && '42160468600' || inputs.replay_run }}
           REPLAY_SOURCE: ${{ inputs.validation_scope == 'retained-clean' && 'c55e19c4f5cbe0d730499035d0a0ef712f6903a9' || inputs.replay_source }}
           PROJECTION_HOST_CONTROL: ${{ inputs.validation_scope == 'retained-clean' && 'resealed-host' || inputs.projection_host_control || 'original' }}
-          PROJECTION_BOOTSTRAP_SAMPLE: ${{ inputs.validation_scope != 'retained-clean' && inputs.projection_bootstrap_sample && 'true' || 'false' }}
+          PROJECTION_BOOTSTRAP_SAMPLE: ${{ (inputs.validation_scope == 'retained-clean' || inputs.projection_bootstrap_sample) && 'true' || 'false' }}
         run: |
           set -euo pipefail
           umask 077
@@ -1101,7 +1101,6 @@ jobs:
           python3 -m unittest discover -s tools/fork_baseline/tests -p test_clean_user_service.py -v
 
       - name: Refresh only the registered current-user simulator service on an exclusive hosted runner
-        if: inputs.validation_scope == 'retained-clean'
         env:
           RUNNER_ENVIRONMENT: ${{ runner.environment }}
           AYU_CLEAN_RUNNER_ENVIRONMENT: ${{ runner.environment }}
@@ -1127,7 +1126,7 @@ jobs:
           public = root / 'custom-options-replay-public'
           public.mkdir(parents=True, mode=0o700)
           names = ['clean-simulator-service.json']
-          for name in ('verification.json', 'result.json', 'root-light.png', 'root-light.mp4'):
+          for name in ('verification.json', 'result.json', 'root-light.png', 'root-light.mp4', 'title-check-positive.png'):
               names.append('custom-options-replay/' + name)
           rows = []
           for name in names:

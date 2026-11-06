@@ -397,12 +397,20 @@ class ReplaySimulatorProbeTests(unittest.TestCase):
             self.assertNotIn(private, text)
         return json.loads(text)
 
-    def assert_replay_metadata(self, report, verified=False, profile=PROFILE):
+    def assert_replay_metadata(self, report, verified=False, profile=PROFILE, count=None, predicates=None, availability=None):
         self.assertTrue(report['probe_only_not_test_result'])
         self.assertEqual(report['profile'], profile)
         self.assertEqual(report['device_type'], self.TYPE)
         self.assertEqual(report['runtime'], simulator_probe.RUNTIME)
-        self.assertEqual(report['device_identity'], {'state': 'verified' if verified else 'unknown'})
+        identity = {'state': 'verified' if verified else 'unknown',
+                    'owned_uuid_rows': None if count is None else min(count, 128),
+                    'owned_uuid_rows_capped': None if count is None else count > 128,
+                    **dict.fromkeys(('name_matches', 'device_type_matches', 'runtime_matches', 'booted'))}
+        if predicates is not None:
+            identity.update(predicates)
+        self.assertEqual(report['device_identity'], identity)
+        self.assertEqual(report['marker_availability'], availability or
+                         {'before_standalone_launch': None, 'after_standalone_launch': None})
 
     def test_replay_probes_exact_owned_device_after_unique_full_identity_proof(self):
         self.assertEqual(simulator_probe.REPLAY_PROFILE, self.PROFILE)
@@ -411,19 +419,25 @@ class ReplaySimulatorProbeTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             app = root / 'Synthetic.app'; app.mkdir()
-            data = root / 'Data'; data.mkdir()
+            actual_parent = root / 'Actual'; actual_parent.mkdir()
+            data = actual_parent / 'Data'; data.mkdir()
+            alias_parent = root / 'OSAlias'; alias_parent.symlink_to(actual_parent, target_is_directory=True)
+            returned_data = alias_parent / 'Data'
             marker = data / simulator_probe.MARKER
             marker.parent.mkdir(parents=True)
-            marker.write_text('{"stage":"sceneVisible"}')
+            marker.write_text('{"stage":"didFinish"}')
             payload = {'devices': {simulator_probe.RUNTIME: [
-                self.owned_row(udid=self.OTHER), self.owned_row(udid=self.OWNED.lower())],
+                self.owned_row(udid=self.OTHER, name=simulator_probe.DEVICE_NAME,
+                               deviceTypeIdentifier='com.apple.CoreSimulator.SimDeviceType.iPhone-17',
+                               private_inventory_field='replay-private-sentinel'),
+                self.owned_row(udid=self.OWNED.lower())],
                 'com.apple.CoreSimulator.SimRuntime.iOS-26-5': [
                     {'name': 'Personal private device', 'state': 'Booted', 'udid': '99999999-8888-7777-6666-555555555555'}]}}
             order = []
             def diagnostic(arguments, secrets, timeout=20):
                 for value in ('replay-private-sentinel', self.OWNED, self.OWNED.lower()):
                     self.assertIn(value, secrets)
-                if arguments == ['xcrun', 'simctl', 'list', 'devices', self.NAME, '--json']:
+                if arguments == ['xcrun', 'simctl', 'list', 'devices', 'available', '--json']:
                     self.assertEqual(timeout, 10)
                     order.append('inventory')
                     return self.completed(json.dumps(payload).encode())
@@ -444,9 +458,10 @@ class ReplaySimulatorProbeTests(unittest.TestCase):
                     return SimpleNamespace(returncode=0, stdout=str(app).encode())
                 if arguments == ['xcrun', 'simctl', 'get_app_container', self.OWNED, simulator_probe.BUNDLE, 'data']:
                     order.append('data')
-                    return SimpleNamespace(returncode=0, stdout=str(data).encode())
+                    return SimpleNamespace(returncode=0, stdout=str(returned_data).encode())
                 self.assertEqual(arguments, ['xcrun', 'simctl', 'launch', '--terminate-running-process', self.OWNED, simulator_probe.BUNDLE])
                 order.append('launch')
+                marker.write_text('{"stage":"sceneVisible"}')
                 return SimpleNamespace(returncode=0, stdout=b'private pid=999')
             with patch.object(simulator_probe, 'diagnostic_command', side_effect=diagnostic) as commands, \
                     patch.object(simulator_probe.subprocess, 'run', side_effect=run) as launches, \
@@ -458,8 +473,11 @@ class ReplaySimulatorProbeTests(unittest.TestCase):
             self.assertEqual(launches.call_count, 3)
             self.assertEqual(order, ['inventory', 'logs', 'app', 'data', 'signature', 'launch'])
             report = self.read_report(root)
-            self.assert_replay_metadata(report, verified=True)
+            self.assert_replay_metadata(report, verified=True, count=1,
+                predicates=dict.fromkeys(('name_matches', 'device_type_matches', 'runtime_matches', 'booted'), True),
+                availability={'before_standalone_launch': 'observed', 'after_standalone_launch': 'observed'})
             self.assertEqual(report['commands']['standalone_host_launch'], {'exit_code': 0})
+            self.assertEqual(report['marker_before_standalone_launch'], {'state': 'observed', 'stage': 'didFinish'})
             self.assertEqual(report['marker_after_standalone_launch'], {'state': 'observed', 'stage': 'sceneVisible'})
             self.assertNotIn('Personal private device', json.dumps(report))
             self.assertNotIn('private pid', json.dumps(report))
@@ -495,29 +513,37 @@ class ReplaySimulatorProbeTests(unittest.TestCase):
         owned = self.owned_row()
         runtime = simulator_probe.RUNTIME
         wrong_runtime = 'com.apple.CoreSimulator.SimRuntime.iOS-26-5'
+        all_match = dict.fromkeys(('name_matches', 'device_type_matches', 'runtime_matches', 'booted'), True)
         payloads = [
-            None, [], 'replay-private-sentinel', {}, {'devices': None}, {'devices': []}, {'devices': {}},
-            {'devices': {runtime: None}}, {'devices': {runtime: {}}}, {'devices': {runtime: [None]}},
-            {'devices': {runtime: ['replay-private-sentinel']}}, {'devices': {runtime: []}},
-            {'devices': {runtime: [self.owned_row(udid=self.OTHER)]}},
-            {'devices': {runtime: [self.owned_row(name=simulator_probe.DEVICE_NAME)]}},
-            {'devices': {runtime: [self.owned_row(deviceTypeIdentifier='com.apple.CoreSimulator.SimDeviceType.iPhone-17')]}},
-            {'devices': {runtime: [{key: value for key, value in owned.items() if key != 'deviceTypeIdentifier'}]}},
-            {'devices': {runtime: [self.owned_row(state='Shutdown')]}},
-            {'devices': {wrong_runtime: [owned]}},
-            {'devices': {runtime: [owned, owned]}},
-            {'devices': {runtime: [owned, self.owned_row(udid=self.OWNED.lower())]}},
-            {'devices': {runtime: [owned], wrong_runtime: [owned]}},
-            {'devices': {runtime: [owned], wrong_runtime: [self.owned_row(udid=self.OWNED.lower())]}},
-            {'devices': {runtime: [owned], wrong_runtime: None}},
-            {'devices': {runtime: [owned], wrong_runtime: [None]}},
-            {'devices': {runtime: [owned], wrong_runtime: [{'name': 'replay-private-sentinel'}]}},
+            (None, None, None), ([], None, None), ('replay-private-sentinel', None, None),
+            ({}, None, None), ({'devices': None}, None, None), ({'devices': []}, None, None),
+            ({'devices': {}}, 0, None),
+            ({'devices': {runtime: None}}, None, None), ({'devices': {runtime: {}}}, None, None),
+            ({'devices': {runtime: [None]}}, None, None),
+            ({'devices': {runtime: ['replay-private-sentinel']}}, None, None),
+            ({'devices': {runtime: []}}, 0, None),
+            ({'devices': {runtime: [self.owned_row(udid=self.OTHER)]}}, 0, None),
+            ({'devices': {runtime: [self.owned_row(name=simulator_probe.DEVICE_NAME)]}},
+             1, {**all_match, 'name_matches': False}),
+            ({'devices': {runtime: [self.owned_row(deviceTypeIdentifier='com.apple.CoreSimulator.SimDeviceType.iPhone-17')]}},
+             1, {**all_match, 'device_type_matches': False}),
+            ({'devices': {runtime: [{key: value for key, value in owned.items() if key != 'deviceTypeIdentifier'}]}},
+             1, {**all_match, 'device_type_matches': False}),
+            ({'devices': {runtime: [self.owned_row(state='Shutdown')]}}, 1, {**all_match, 'booted': False}),
+            ({'devices': {wrong_runtime: [owned]}}, 1, {**all_match, 'runtime_matches': False}),
+            ({'devices': {runtime: [owned, owned]}}, 2, None),
+            ({'devices': {runtime: [owned, self.owned_row(udid=self.OWNED.lower())]}}, 2, None),
+            ({'devices': {runtime: [owned], wrong_runtime: [owned]}}, 2, None),
+            ({'devices': {runtime: [owned], wrong_runtime: [self.owned_row(udid=self.OWNED.lower())]}}, 2, None),
+            ({'devices': {runtime: [owned], wrong_runtime: None}}, None, None),
+            ({'devices': {runtime: [owned], wrong_runtime: [None]}}, None, None),
+            ({'devices': {runtime: [owned], wrong_runtime: [{'name': 'replay-private-sentinel'}]}}, None, None),
         ]
-        for payload in payloads:
+        for payload, count, predicates in payloads:
             with self.subTest(payload=payload), tempfile.TemporaryDirectory() as directory:
                 root = Path(directory)
                 def inventory(arguments, secrets, timeout=20):
-                    self.assertEqual(arguments, ['xcrun', 'simctl', 'list', 'devices', self.NAME, '--json'])
+                    self.assertEqual(arguments, ['xcrun', 'simctl', 'list', 'devices', 'available', '--json'])
                     self.assertEqual(timeout, 10)
                     return self.completed(json.dumps(payload).encode())
                 with patch.object(simulator_probe, 'diagnostic_command', side_effect=inventory) as diagnostic, \
@@ -526,16 +552,16 @@ class ReplaySimulatorProbeTests(unittest.TestCase):
                     simulator_probe.capture(root, ['replay-private-sentinel'], owned_identifier=self.OWNED, profile=self.PROFILE)
                 run.assert_not_called(); self.assertEqual(diagnostic.call_count, 1)
                 report = self.read_report(root)
-                self.assert_replay_metadata(report)
+                self.assert_replay_metadata(report, count=count, predicates=predicates)
                 self.assertEqual(set(report['commands']), {'devices'})
                 self.assertNotIn('diagnostics', report)
 
-    def test_failed_replay_inventory_never_falls_back_to_available_or_default_device(self):
+    def test_failed_replay_inventory_never_uses_payload_or_retries_on_default_device(self):
         for status in ('timedOut', 'commandFailed', 'unavailable', 'outputLimit'):
             with self.subTest(status=status), tempfile.TemporaryDirectory() as directory:
                 root = Path(directory)
                 def inventory(arguments, secrets, timeout=20):
-                    self.assertEqual(arguments, ['xcrun', 'simctl', 'list', 'devices', self.NAME, '--json'])
+                    self.assertEqual(arguments, ['xcrun', 'simctl', 'list', 'devices', 'available', '--json'])
                     self.assertEqual(timeout, 10)
                     metadata, data = self.completed(json.dumps({'devices': {simulator_probe.RUNTIME: [self.owned_row()]}}).encode())
                     metadata.update(status=status, exit_code=1 if status == 'commandFailed' else None,
@@ -566,5 +592,111 @@ class ReplaySimulatorProbeTests(unittest.TestCase):
             run.assert_not_called(); self.assertEqual(diagnostic.call_count, 1)
             crashes.assert_called_once_with(1234.5)
             report = self.read_report(root)
-            for key in ('profile', 'device_type', 'runtime', 'device_identity'):
+            for key in ('profile', 'device_type', 'runtime', 'device_identity', 'marker_availability'):
                 self.assertNotIn(key, report)
+
+    def test_replay_duplicate_uuid_count_is_capped_without_claiming_row_predicates(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            rows = [self.owned_row(udid=self.OWNED if index % 2 else self.OWNED.lower()) for index in range(129)]
+            data = json.dumps({'devices': {simulator_probe.RUNTIME: rows}}).encode()
+            self.assertLess(len(data), 65536)
+            def inventory(arguments, secrets, timeout=20):
+                self.assertEqual(arguments, ['xcrun', 'simctl', 'list', 'devices', 'available', '--json'])
+                self.assertEqual(timeout, 10)
+                return self.completed(data)
+            with patch.object(simulator_probe, 'diagnostic_command', side_effect=inventory) as diagnostic, \
+                    patch.object(simulator_probe.subprocess, 'run') as run, \
+                    patch.object(simulator_probe, 'capture_crashes', return_value={'state': 'available', 'reports': []}):
+                simulator_probe.capture(root, [], owned_identifier=self.OWNED, profile=self.PROFILE)
+            run.assert_not_called(); self.assertEqual(diagnostic.call_count, 1)
+            report = self.read_report(root)
+            self.assert_replay_metadata(report, count=129)
+            self.assertEqual(set(report['commands']), {'devices'})
+
+    def test_replay_malformed_or_oversized_raw_inventory_keeps_all_identity_observations_unknown(self):
+        valid = json.dumps({'devices': {simulator_probe.RUNTIME: [self.owned_row()]}}).encode()
+        oversized = valid + b' ' * (65537 - len(valid))
+        for data in (b'{"devices":', b'\xffreplay-private-sentinel', oversized):
+            with self.subTest(size=len(data)), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                def inventory(arguments, secrets, timeout=20):
+                    self.assertEqual(arguments, ['xcrun', 'simctl', 'list', 'devices', 'available', '--json'])
+                    self.assertEqual(timeout, 10)
+                    return self.completed(data)
+                with patch.object(simulator_probe, 'diagnostic_command', side_effect=inventory) as diagnostic, \
+                        patch.object(simulator_probe.subprocess, 'run') as run, \
+                        patch.object(simulator_probe, 'capture_crashes', return_value={'state': 'available', 'reports': []}):
+                    simulator_probe.capture(root, [], owned_identifier=self.OWNED, profile=self.PROFILE)
+                run.assert_not_called(); self.assertEqual(diagnostic.call_count, 1)
+                report = self.read_report(root)
+                self.assert_replay_metadata(report)
+                self.assertEqual(set(report['commands']), {'devices'})
+
+    def test_replay_direct_app_root_link_prevents_marker_reads_and_leaves_availability_unattempted(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            app = root / 'Synthetic.app'; app.mkdir()
+            linked = root / 'Linked.app'; linked.symlink_to(app, target_is_directory=True)
+            order = []
+            def diagnostic(arguments, secrets, timeout=20):
+                if arguments == ['xcrun', 'simctl', 'list', 'devices', 'available', '--json']:
+                    self.assertEqual(timeout, 10)
+                    order.append('inventory')
+                    return self.completed(json.dumps({'devices': {simulator_probe.RUNTIME: [self.owned_row()]}}).encode())
+                self.assertEqual(arguments, ['xcrun', 'simctl', 'spawn', self.OWNED, 'log', 'show', '--style', 'json',
+                    '--last', '15m', '--info', '--debug', '--predicate', simulator_probe.BOOTSTRAP_PREDICATE])
+                order.append('logs')
+                return self.completed()
+            def container(arguments, **kwargs):
+                self.assertEqual(arguments, ['xcrun', 'simctl', 'get_app_container', self.OWNED, simulator_probe.BUNDLE, 'app'])
+                order.append('container')
+                return SimpleNamespace(returncode=0, stdout=str(linked).encode())
+            with patch.object(simulator_probe, 'diagnostic_command', side_effect=diagnostic) as commands, \
+                    patch.object(simulator_probe.subprocess, 'run', side_effect=container) as run, \
+                    patch.object(simulator_probe, 'read_marker', wraps=simulator_probe.read_marker) as marker, \
+                    patch.object(simulator_probe, 'capture_crashes', return_value={'state': 'available', 'reports': []}):
+                simulator_probe.capture(root, [], owned_identifier=self.OWNED, profile=self.PROFILE)
+            marker.assert_not_called(); self.assertEqual(run.call_count, 1); self.assertEqual(commands.call_count, 2)
+            self.assertEqual(order, ['inventory', 'logs', 'container'])
+            report = self.read_report(root)
+            self.assert_replay_metadata(report, verified=True, count=1,
+                predicates=dict.fromkeys(('name_matches', 'device_type_matches', 'runtime_matches', 'booted'), True))
+            self.assertNotIn('marker_before_standalone_launch', report)
+            self.assertNotIn('marker_after_standalone_launch', report)
+            self.assertNotIn('standalone_host_launch', report['commands'])
+
+    def test_replay_marker_availability_tracks_actual_absent_then_invalid_reads(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            app = root / 'Synthetic.app'; app.mkdir()
+            data = root / 'Data'; data.mkdir()
+            marker = data / simulator_probe.MARKER
+            marker.parent.mkdir(parents=True)
+            def diagnostic(arguments, secrets, timeout=20):
+                if arguments == ['xcrun', 'simctl', 'list', 'devices', 'available', '--json']:
+                    self.assertEqual(timeout, 10)
+                    return self.completed(json.dumps({'devices': {simulator_probe.RUNTIME: [self.owned_row()]}}).encode())
+                if arguments[0] == '/usr/bin/codesign':
+                    self.assertEqual(arguments[-1], str(app))
+                else:
+                    self.assertEqual(arguments[:4], ['xcrun', 'simctl', 'spawn', self.OWNED])
+                return self.completed()
+            def run(arguments, **kwargs):
+                if arguments == ['xcrun', 'simctl', 'get_app_container', self.OWNED, simulator_probe.BUNDLE, 'app']:
+                    return SimpleNamespace(returncode=0, stdout=str(app).encode())
+                if arguments == ['xcrun', 'simctl', 'get_app_container', self.OWNED, simulator_probe.BUNDLE, 'data']:
+                    return SimpleNamespace(returncode=0, stdout=str(data).encode())
+                self.assertEqual(arguments, ['xcrun', 'simctl', 'launch', '--terminate-running-process', self.OWNED, simulator_probe.BUNDLE])
+                marker.write_text('{"stage":"replay-private-sentinel"}')
+                return SimpleNamespace(returncode=1, stdout=b'')
+            with patch.object(simulator_probe, 'diagnostic_command', side_effect=diagnostic), \
+                    patch.object(simulator_probe.subprocess, 'run', side_effect=run), \
+                    patch.object(simulator_probe, 'capture_crashes', return_value={'state': 'available', 'reports': []}):
+                simulator_probe.capture(root, [], owned_identifier=self.OWNED, profile=self.PROFILE)
+            report = self.read_report(root)
+            self.assert_replay_metadata(report, verified=True, count=1,
+                predicates=dict.fromkeys(('name_matches', 'device_type_matches', 'runtime_matches', 'booted'), True),
+                availability={'before_standalone_launch': 'absent', 'after_standalone_launch': 'invalid'})
+            self.assertEqual(report['marker_before_standalone_launch'], {'state': 'absent'})
+            self.assertEqual(report['marker_after_standalone_launch'], {'state': 'invalid'})

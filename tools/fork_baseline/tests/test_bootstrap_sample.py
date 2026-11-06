@@ -64,7 +64,8 @@ class BootstrapSampleTests(unittest.TestCase):
         self.assertLessEqual(len(text.encode()), 16 * 1024)
 
     def run_capture(self, ps=None, sample=SAMPLE, sample_state='completed',
-                    sample_file='regular', container_state='completed', alive=lambda: True):
+                    sample_file='regular', container_state='completed', alive=lambda: True,
+                    data_state='completed', marker=b'{"stage":"didFinish"}'):
         calls, sample_paths = [], []
 
         def command(arguments, secrets, timeout=20):
@@ -73,6 +74,10 @@ class BootstrapSampleTests(unittest.TestCase):
             if arguments == PS:
                 data = processes() if ps is None else ps
                 return status(data), data
+            if arguments == ['xcrun', 'simctl', 'get_app_container', IDENTIFIER, BUNDLE, 'data']:
+                self.assertEqual(timeout, 3)
+                data = str(data_root).encode()
+                return status(data, data_state), data
             if arguments == ['xcrun', 'simctl', 'get_app_container', IDENTIFIER, BUNDLE, 'app']:
                 self.assertEqual(timeout, 3)
                 data = b'/private/bootstrap-fixture/ProjectionTestHost.app\n'
@@ -108,8 +113,13 @@ class BootstrapSampleTests(unittest.TestCase):
             # A plausible stdout trace must never substitute for the private file.
             return status(SAMPLE, sample_state), SAMPLE
 
-        with patch.object(bootstrap.os, 'getuid', return_value=UID), patch.object(bootstrap, 'command', side_effect=command):
-            result = bootstrap.capture(PID, PID, IDENTIFIER, [SECRET], alive)
+        with tempfile.TemporaryDirectory() as fixture:
+            data_root = Path(fixture).resolve()
+            if marker is not None:
+                path = data_root / bootstrap.simulator_probe.MARKER
+                path.parent.mkdir(parents=True); path.write_bytes(marker)
+            with patch.object(bootstrap.os, 'getuid', return_value=UID), patch.object(bootstrap, 'command', side_effect=command):
+                result = bootstrap.capture(PID, PID, IDENTIFIER, [SECRET], alive)
         for path in sample_paths:
             self.assertFalse(path.exists(), 'private raw sample was not removed')
             self.assertFalse(path.parent.exists(), 'private sample workspace was not removed')
@@ -118,16 +128,98 @@ class BootstrapSampleTests(unittest.TestCase):
     def test_live_owned_command_is_verified_before_container_lookup_and_private_sampling(self):
         result, calls = self.run_capture()
         self.assertTrue(result['diagnostic_only'])
-        self.assertEqual([call[1] for call in calls], [3, 3, 10])
+        self.assertEqual([call[1] for call in calls], [3, 3, 3, 10])
         self.assertEqual(calls[0][0], PS)
-        self.assertEqual(calls[1][0], ['xcrun', 'simctl', 'get_app_container', IDENTIFIER, BUNDLE, 'app'])
+        self.assertEqual(calls[1][0], ['xcrun', 'simctl', 'get_app_container', IDENTIFIER, BUNDLE, 'data'])
+        self.assertEqual(calls[2][0], ['xcrun', 'simctl', 'get_app_container', IDENTIFIER, BUNDLE, 'app'])
         self.assertTrue(result['process_snapshot']['owned_xcodebuild_verified'])
+        self.assertTrue(result['host_data_container']['path_validated'])
+        self.assertEqual(result['marker_during_xctest'], {'state': 'observed', 'stage': 'didFinish', 'captured_while_child_alive': True})
         self.assertEqual(result['installed_host']['state'], 'available')
         self.assertEqual(result['sample']['state'], 'observed')
         selected = result['sample']['selection']
         self.assertEqual(selected['state'], 'parsed')
         self.assertLessEqual(set(selected['wait_categories']), CATEGORIES)
         self.assertTrue(all(selected['wait_categories'].get(name, 0) > 0 for name in CATEGORIES))
+        self.assert_private(result)
+
+    def test_live_marker_distinguishes_lifecycle_stages_absence_and_invalid_content(self):
+        fixtures = [(b'{"stage":"didFinish"}', {'state': 'observed', 'stage': 'didFinish'}),
+                    (b'{"stage":"sceneVisible"}', {'state': 'observed', 'stage': 'sceneVisible'}),
+                    (None, {'state': 'absent'}),
+                    (b'{"stage":"private-bootstrap-fixture-secret"}', {'state': 'invalid'}),
+                    (b'{"stage":"sceneVisible","private":"private-bootstrap-fixture-secret"}', {'state': 'invalid'}),
+                    (b'{"stage":"sceneVisible"}' + b' ' * 128, {'state': 'invalid'})]
+        for marker, expected in fixtures:
+            with self.subTest(marker=marker):
+                result, calls = self.run_capture(marker=marker)
+                self.assertEqual(result['marker_during_xctest'], {**expected, 'captured_while_child_alive': True})
+                self.assertTrue(result['host_data_container']['path_validated'])
+                self.assertEqual(calls[1][0][-1], 'data')
+                self.assert_private(result)
+
+    def test_data_lookup_failure_never_reads_marker_or_substitutes_sample_output(self):
+        for state in ('timedOut', 'outputLimit', 'commandFailed', 'unavailable'):
+            with self.subTest(state=state), patch.object(bootstrap.simulator_probe, 'read_marker') as marker:
+                result, calls = self.run_capture(data_state=state)
+            marker.assert_not_called()
+            self.assertEqual(result['host_data_container']['state'], 'unavailable')
+            self.assertFalse(result['host_data_container']['path_validated'])
+            self.assertEqual(result['marker_during_xctest'], {'state': 'unavailable', 'captured_while_child_alive': False})
+            self.assertEqual(len(calls), 4)
+            self.assert_private(result)
+
+    def test_child_exit_while_marker_is_read_discards_stage_and_stops_later_commands(self):
+        alive = [True]
+        original = bootstrap.simulator_probe.read_marker
+        def marker(path):
+            value = original(path)
+            alive[0] = False
+            return value
+        with patch.object(bootstrap.simulator_probe, 'read_marker', side_effect=marker):
+            result, calls = self.run_capture(marker=b'{"stage":"sceneVisible"}', alive=lambda: alive[0])
+        self.assertEqual(result['state'], 'childExited'); self.assertEqual(len(calls), 2)
+        self.assertEqual(result['marker_during_xctest'], {'state': 'unavailable', 'captured_while_child_alive': False})
+        self.assertEqual(result['installed_host']['state'], 'notAttempted')
+        self.assertEqual(result['sample']['state'], 'notAttempted')
+        self.assert_private(result)
+
+    def test_marker_precedes_app_lookup_and_sampling_under_the_same_absolute_budget(self):
+        events, deadlines = [], []
+        original_run, original_marker = bootstrap._run, bootstrap._marker
+        def run(arguments, secrets, timeout, deadline):
+            deadlines.append(deadline)
+            events.append('ps' if arguments == PS else arguments[-1] if 'get_app_container' in arguments else 'sample')
+            return original_run(arguments, secrets, timeout, deadline)
+        def marker(path):
+            events.append('marker')
+            return original_marker(path)
+        with patch.object(bootstrap, '_run', side_effect=run), patch.object(bootstrap, '_marker', side_effect=marker):
+            result, _ = self.run_capture()
+        self.assertEqual(events, ['ps', 'data', 'marker', 'app', 'sample'])
+        self.assertEqual(len(set(deadlines)), 1); self.assertEqual(bootstrap.OVERALL_SECONDS, 18)
+        self.assertTrue(result['marker_during_xctest']['captured_while_child_alive'])
+
+    def test_simctl_data_root_accepts_os_ancestor_alias_but_rejects_root_links_or_prose(self):
+        with tempfile.TemporaryDirectory() as fixture:
+            base = Path(fixture).resolve(); actual = base / 'actual'; actual.mkdir()
+            data = actual / 'Data'; data.mkdir()
+            marker = data / bootstrap.simulator_probe.MARKER
+            marker.parent.mkdir(parents=True); marker.write_text('{"stage":"sceneVisible"}')
+            alias = base / 'os-alias'; alias.symlink_to(actual, target_is_directory=True)
+            path = bootstrap._data_path(str(alias / 'Data').encode())
+            self.assertIsNotNone(path)
+            self.assertEqual(bootstrap._marker(path), {'state': 'observed', 'stage': 'sceneVisible'})
+            link = base / 'root-link'; link.symlink_to(data, target_is_directory=True)
+            for raw in (str(link).encode(), b'relative/private-bootstrap-fixture-secret', b'\0private',
+                        str(data).encode() + b'\nprivate-bootstrap-fixture-secret', b'\xff', b'/' + b'x' * 4096):
+                self.assertIsNone(bootstrap._data_path(raw))
+
+    def test_unexpected_marker_fields_are_dropped_without_exposing_private_content(self):
+        with patch.object(bootstrap.simulator_probe, 'read_marker', return_value={
+                'state': 'observed', 'stage': 'sceneVisible', 'private': SECRET}):
+            result, _ = self.run_capture()
+        self.assertEqual(result['marker_during_xctest'], {'state': 'unavailable', 'captured_while_child_alive': True})
         self.assert_private(result)
 
     def test_only_known_child_is_queried_and_other_roles_remain_explicitly_unmeasured(self):
@@ -228,13 +320,16 @@ class BootstrapSampleTests(unittest.TestCase):
                 self.assert_private(result)
 
     def test_remaining_deadline_clips_container_budget_and_prevents_a_late_sampler(self):
-        calls = []
+        calls, now = [], [0]
         def command(arguments, secrets, timeout=20):
             calls.append((arguments, timeout))
-            if arguments == PS: return status(processes()), processes()
-            self.assertEqual(arguments, ['xcrun', 'simctl', 'get_app_container', IDENTIFIER, BUNDLE, 'app'])
+            if arguments == PS:
+                now[0] = 14
+                return status(processes()), processes()
+            self.assertEqual(arguments, ['xcrun', 'simctl', 'get_app_container', IDENTIFIER, BUNDLE, 'data'])
+            now[0] = 17
             return status(), b''
-        with patch.object(bootstrap.os, 'getuid', return_value=UID), patch.object(bootstrap.time, 'monotonic', side_effect=[0, 0, 14, 17]), patch.object(bootstrap, 'command', side_effect=command):
+        with patch.object(bootstrap.os, 'getuid', return_value=UID), patch.object(bootstrap.time, 'monotonic', side_effect=lambda: now[0]), patch.object(bootstrap, 'command', side_effect=command):
             result = bootstrap.capture(PID, PID, IDENTIFIER, [SECRET], lambda: True)
         self.assertEqual([timeout for _, timeout in calls], [3, 2])
         self.assertEqual(result['sample']['state'], 'unavailable')
@@ -250,7 +345,7 @@ class BootstrapSampleTests(unittest.TestCase):
 
     def test_container_lookup_failure_is_not_a_reason_to_skip_owned_child_sample(self):
         result, calls = self.run_capture(container_state='timedOut')
-        self.assertEqual(len(calls), 3)
+        self.assertEqual(len(calls), 4)
         self.assertEqual(result['installed_host']['state'], 'unavailable')
         self.assertEqual(result['sample']['state'], 'observed')
         self.assert_private(result)

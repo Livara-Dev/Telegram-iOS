@@ -180,11 +180,41 @@ def _sample_file(path, uid):
             os.close(descriptor)
 
 
+def _data_path(data):
+    """Trust only this simctl-returned synthetic data root, never its prose."""
+    try:
+        if not isinstance(data, bytes) or not 0 < len(data) <= 4096 or b'\0' in data:
+            return None
+        lines = data.decode('utf-8').splitlines()
+        if len(lines) != 1:
+            return None
+        path = Path(lines[0].strip())
+        if not path.is_absolute() or path.is_symlink() or not path.is_dir():
+            return None
+        return path
+    except (OSError, ValueError, TypeError, UnicodeError):
+        return None
+
+
+def _marker(path):
+    value = simulator_probe.read_marker(path)
+    if not isinstance(value, dict):
+        return {'state': 'unavailable'}
+    state = value.get('state')
+    if state == 'observed' and set(value) == {'state', 'stage'} and value.get('stage') in {'didFinish', 'sceneVisible'}:
+        return {'state': 'observed', 'stage': value['stage']}
+    if set(value) == {'state'} and state in {'absent', 'unsafe', 'invalid', 'unavailable'}:
+        return {'state': state}
+    return {'state': 'unavailable'}
+
+
 def capture(pid, pgid, identifier, secrets, is_alive):
     """Observe one owned Xcode child without changing command/test outcomes."""
     report = {'diagnostic_only': True, 'state': 'unavailable',
               'process_snapshot': {'state': 'notAttempted', 'owned_xcodebuild_verified': False, 'roles': _empty_roles()},
-              'installed_host': {'state': 'notAttempted'}, 'sample': {'state': 'notAttempted'}}
+              'installed_host': {'state': 'notAttempted'}, 'host_data_container': {'state': 'notAttempted'},
+              'marker_during_xctest': {'state': 'notAttempted', 'captured_while_child_alive': False},
+              'sample': {'state': 'notAttempted'}}
     try:
         if (type(pid) is not int or not 0 < pid < 2**31 or type(pgid) is not int or pgid != pid
                 or not isinstance(identifier, str)
@@ -204,6 +234,22 @@ def capture(pid, pgid, identifier, secrets, is_alive):
             return report
         if not _require_alive(report, is_alive):
             return report
+        # The marker is more useful than a stack if the application has never
+        # entered its lifecycle. Query only this invocation's owned simulator
+        # and fixed synthetic identity; the normal Telegram data is untouched.
+        status, raw = _run(['xcrun', 'simctl', 'get_app_container', identifier, BUNDLE, 'data'], secrets, 3, deadline)
+        data_path = _data_path(raw) if _completed(status) else None
+        report['host_data_container'] = {'state': 'available' if data_path is not None else 'unavailable',
+                                        'path_validated': data_path is not None, 'command': status}
+        report['marker_during_xctest'] = {'state': 'unavailable', 'captured_while_child_alive': False}
+        if not _require_alive(report, is_alive):
+            return report
+        if data_path is not None and time.monotonic() < deadline - 2:
+            marker = _marker(data_path)
+            # Do not call a post-exit marker an observation during XCTest.
+            if not _require_alive(report, is_alive):
+                return report
+            report['marker_during_xctest'] = {**marker, 'captured_while_child_alive': True}
         status, _ = _run(['xcrun', 'simctl', 'get_app_container', identifier, BUNDLE, 'app'], secrets, 3, deadline)
         report['installed_host'] = {'state': 'available' if _completed(status) else 'unavailable',
                                     'command': status, 'path_verified': False}
@@ -226,7 +272,8 @@ def capture(pid, pgid, identifier, secrets, is_alive):
                     selection = parse_sample(data, secrets)
             report['sample'] = {'state': 'observed' if selection['state'] == 'parsed' else 'unavailable',
                                 'command': status, 'selection': selection}
-        report['state'] = 'observed' if report['sample']['state'] == 'observed' else 'partial'
+        report['state'] = ('observed' if report['sample']['state'] == 'observed'
+                           or report['marker_during_xctest']['captured_while_child_alive'] else 'partial')
         return report
     except Exception:
         report['state'] = 'unavailable'

@@ -79,6 +79,27 @@ def complete(data=b''):
     return {'status': 'completed', 'exit_code': 0, 'timeout': False, 'output_limit': False, 'captured_bytes': len(data)}, data
 
 
+def self_controls(kind=None):
+    def observation(regions):
+        expected = any(x['kind'] == 'expected' for x in regions)
+        return {'state': 'completed', 'expected_title_seen': expected,
+            'expected_title_in_navigation_region': any(x['kind'] == 'expected' and x['rect'][1] + x['rect'][3] / 2 > .8 for x in regions),
+            'known_variant_seen': any(x['kind'] == 'variant' for x in regions),
+            'recognized_observations': len(regions), 'known_title_regions': regions, 'passed': False}
+    expected = {'kind': 'expected', 'rect': [.2, .86, .35, .06]}
+    controls = {'positive': observation([expected]),
+        'wrong': observation([{'kind': 'negative', 'rect': [.2, .86, .35, .06]}]), 'blank': observation([])}
+    if kind == 'selfSpelling': controls['positive'] = observation([{'kind': 'variant', 'rect': [.2, .86, .35, .06]}])
+    if kind == 'selfOrientation': controls['positive'] = observation([{'kind': 'expected', 'rect': [.2, .05, .35, .06]}])
+    if kind == 'selfWrong': controls['wrong'] = observation([expected])
+    if kind == 'selfBlank': controls['blank'] = observation([expected])
+    if kind == 'selfVision': controls['positive'].update(state='visionUnavailable', expected_title_seen=False,
+        expected_title_in_navigation_region=False, recognized_observations=0, known_title_regions=[])
+    for name, control in controls.items():
+        control['passed'] = control['state'] == 'completed' and (control['expected_title_in_navigation_region'] if name == 'positive' else not control['expected_title_seen'])
+    return {'self_test_passed': all(x['passed'] for x in controls.values()), 'cases': 3, 'controls': controls}
+
+
 class Native:
     def __init__(self, root, kind=None):
         self.root = root; self.kind = kind; self.calls = []; self.device_name = None; self.app = None
@@ -89,7 +110,20 @@ class Native:
             if self.kind == 'signature': return {'status': 'commandFailed', 'exit_code': 1, 'timeout': False, 'output_limit': False, 'captured_bytes': 0}, b''
         elif args[:2] == ['xcodebuild', '-version']: return complete(b'Xcode 27.1\nBuild version 27A9275\n')
         elif args[:2] == ['xcrun', 'swiftc']: Path(args[-1]).write_bytes(b'synthetic helper')
-        elif args[-1] == '--self-test': return complete(b'{"self_test_passed":true,"cases":3}')
+        elif len(args) == 3 and args[1] == '--self-test':
+            Path(args[2]).write_bytes(b'synthetic known-word PNG, never a real screenshot')
+            controls = self_controls(self.kind)
+            if self.kind == 'selfMalformed': controls['raw_ocr'] = 'PRIVATE-CANARY'
+            if self.kind == 'selfCrashed': return {'status': 'commandFailed', 'exit_code': 1, 'timeout': False, 'output_limit': False, 'captured_bytes': 18}, b'{"verified":false}'
+            if self.kind == 'largePositive':
+                with Path(args[2]).open('ab') as file: file.truncate(1024**2 + 1)
+            data = json.dumps(controls).encode()
+            if not controls['self_test_passed'] or self.kind in ('selfMalformed', 'selfMismatch', 'selfTimeout'):
+                if self.kind == 'selfMismatch': data = json.dumps(self_controls('selfSpelling')).encode()
+                if self.kind == 'selfTimeout': return {'status': 'timedOut', 'exit_code': None, 'timeout': True, 'output_limit': False, 'captured_bytes': len(data)}, data
+                if self.kind == 'selfMismatch': return complete(data)
+                return {'status': 'commandFailed', 'exit_code': 1, 'timeout': False, 'output_limit': False, 'captured_bytes': len(data)}, data
+            return complete(data)
         elif args[:4] == ['xcrun', 'simctl', 'list', 'runtimes']:
             return complete(json.dumps({'runtimes': [{'identifier': replay.RUNTIME, 'isAvailable': True}]}).encode())
         elif args[:4] == ['xcrun', 'simctl', 'list', '--json']:
@@ -113,6 +147,8 @@ class Native:
             if self.kind == 'extraSymlink': (self.installed / 'UnexpectedLink').symlink_to(self.app / 'CustomeOptionsHost')
         elif args[:3] == ['xcrun', 'simctl', 'get_app_container']: return complete(str(self.installed).encode())
         elif args[:3] == ['xcrun', 'simctl', 'io'] and args[4] == 'screenshot': Path(args[-1]).write_bytes(b'synthetic PNG checked by mocked native Vision')
+        elif len(args) == 3 and args[0].endswith('visible-root-check') and args[1] == '--metadata':
+            return complete(b'{"width":1179,"height":2556}')
         elif len(args) == 2 and args[0].endswith('visible-root-check'):
             if self.kind == 'mutate': (self.root / replay.OUTPUT / 'CustomeOptionsHost-simulator.ipa').write_bytes(b'changed')
             return complete(json.dumps({'root_title_visible': self.kind != 'title', 'width': 1179, 'height': 2556}).encode())
@@ -159,6 +195,25 @@ class RetainedSettingsReplayTests(unittest.TestCase):
             self.assertFalse(proof['release_qualified']); self.assertFalse(proof['logged_in_settings_verified'])
             self.assertEqual(set(proof), replay.PROOF_FIELDS)
             self.assertEqual(sorted(p.name for p in output.iterdir()), ['CustomeOptionsHost-simulator.ipa', 'verification.json'])
+
+    def test_self_control_schema_accepts_only_fixed_known_regions_and_consistent_booleans(self):
+        for kind in (None, 'selfSpelling', 'selfOrientation', 'selfWrong', 'selfBlank', 'selfVision'):
+            with self.subTest(kind=kind):
+                value = self_controls(kind); parsed = replay.self_control_report(json.dumps(value).encode())
+                self.assertEqual(parsed, value); self.assertEqual(parsed['self_test_passed'], kind is None)
+        changes = [lambda v: v.update(raw_ocr='PRIVATE-CANARY'),
+            lambda v: v.update(self_test_passed=False), lambda v: v.update(cases=True),
+            lambda v: v['controls']['positive'].update(expected_title_in_navigation_region=False),
+            lambda v: v['controls']['positive']['known_title_regions'][0].update(kind='PRIVATE-CANARY'),
+            lambda v: v['controls']['positive']['known_title_regions'][0].update(rect=[.2, float('nan'), .3, .1]),
+            lambda v: v['controls']['positive']['known_title_regions'][0].update(rect=[.2, .9, .3, .2]),
+            lambda v: v['controls']['positive'].update(recognized_observations=0),
+            lambda v: v['controls']['positive'].update(state='visionUnavailable')]
+        for index, change in enumerate(changes):
+            with self.subTest(index=index):
+                value = self_controls(); change(value)
+                with self.assertRaises(replay.ReplayError): replay.self_control_report(json.dumps(value).encode())
+        with self.assertRaises(replay.ReplayError): replay.self_control_report(b'{"cases":3,"cases":3}')
 
     def test_current_guard_and_renderer_identity_precede_download(self):
         for kind in ('checkout', 'renderer', 'host'):
@@ -232,6 +287,8 @@ class RetainedSettingsReplayTests(unittest.TestCase):
             self.assertTrue(result['passed']); self.assertTrue(result['source_codesign_verified'])
             self.assertTrue(result['installed_host_verified']); self.assertTrue(result['cleanup_passed'])
             self.assertTrue(result['root_observation']['root_title_visible'])
+            self.assertTrue(result['root_title_automatically_verified'])
+            self.assertTrue(result['title_checker_self_test']['self_test_passed'])
             self.assertEqual(result['new_xctest_cases_executed'], 0)
             for key in ('application_recompiled', 'renderer_recompiled', 'logged_in_settings_verified', 'physical_device_verified', 'release_qualified'):
                 self.assertFalse(result[key])
@@ -242,6 +299,51 @@ class RetainedSettingsReplayTests(unittest.TestCase):
             self.assertEqual([a[2] for a in commands[-2:]], ['shutdown', 'delete'])
             text = (output / 'result.json').read_text()
             for private in ('PRIVATE-CANARY', str(root), IDENTIFIER): self.assertNotIn(private, text)
+
+    def test_failed_validated_self_controls_record_real_root_diagnostics_but_never_pass(self):
+        for kind in ('selfSpelling', 'selfOrientation', 'selfWrong', 'selfBlank', 'selfVision'):
+            with self.subTest(kind=kind), self.prepared() as (root, output, _, _), patch.object(replay.platform, 'system', return_value='Darwin'):
+                native = Native(root, kind)
+                with self.assertRaisesRegex(replay.ReplayError, '^settings_self_test_failed_diagnostic_only$'):
+                    replay.execute(root=root, command=native, popen=native.popen, pause=lambda _: None)
+                result = json.loads((output / 'result.json').read_text())
+                self.assertFalse(result['passed']); self.assertFalse(result['title_checker_self_test']['self_test_passed'])
+                self.assertFalse(result['root_title_automatically_verified'])
+                self.assertTrue(result['diagnostic_root_captured']); self.assertTrue(result['installed_host_verified'])
+                self.assertTrue(result['cleanup_passed']); self.assertEqual(result['recording_return_code'], 0)
+                self.assertEqual(result['phase'], 'selfTestFailedDiagnosticOnly')
+                self.assertNotIn('root_title_visible', result['root_observation'])
+                self.assertEqual(result['root_observation'], {'width': 1179, 'height': 2556})
+                self.assertEqual(result['new_xctest_cases_executed'], 0)
+                for name in ('root-light.png', 'root-light.mp4', 'title-check-positive.png'): self.assertTrue((output / name).is_file())
+                self.assertFalse(any(len(a) == 2 and a[0].endswith('visible-root-check') for a, _ in native.calls))
+                self.assertEqual([a[2] for a, _ in native.calls[-2:]], ['shutdown', 'delete'])
+
+    def test_self_control_invalid_payload_crash_timeout_or_status_mismatch_never_creates_simulator(self):
+        for kind in ('selfMalformed', 'selfCrashed', 'selfMismatch', 'selfTimeout', 'largePositive'):
+            with self.subTest(kind=kind), self.prepared() as (root, output, _, _), patch.object(replay.platform, 'system', return_value='Darwin'):
+                native = Native(root, kind)
+                with self.assertRaises(replay.ReplayError): replay.execute(root=root, command=native, popen=native.popen, pause=lambda _: None)
+                self.assertFalse(any(a[:3] == ['xcrun', 'simctl', 'create'] for a, _ in native.calls))
+                result = json.loads((output / 'result.json').read_text()); self.assertFalse(result['passed'])
+                self.assertFalse(result['root_title_automatically_verified'])
+                self.assertNotIn('PRIVATE-CANARY', (output / 'result.json').read_text())
+                if kind == 'largePositive': self.assertFalse((output / 'title-check-positive.png').exists())
+
+    def test_cli_returns_failure_after_validated_diagnostic_recording_and_cleanup(self):
+        with self.prepared() as (root, output, _, _), patch.object(replay.platform, 'system', return_value='Darwin'):
+            native = Native(root, 'selfSpelling'); capture = io.StringIO(); execute = replay.execute
+            def invoke(destination):
+                return execute(destination, root=root, command=native, popen=native.popen, pause=lambda _: None)
+            with patch.object(replay, 'execute', side_effect=invoke), contextlib.redirect_stdout(capture):
+                code = replay.main(['run', '--output', str(output)])
+            self.assertEqual(code, 1)
+            result = json.loads((output / 'result.json').read_text())
+            self.assertFalse(result['passed']); self.assertFalse(result['root_title_automatically_verified'])
+            self.assertTrue(result['diagnostic_root_captured']); self.assertTrue(result['cleanup_passed'])
+            self.assertEqual(result['recording_return_code'], 0)
+            self.assertTrue((output / 'root-light.png').exists()); self.assertTrue((output / 'root-light.mp4').exists())
+            self.assertEqual(json.loads(capture.getvalue()), {'diagnostic_role': replay.ROLE, 'passed': False, 'error': 'settings_replay_rejected'})
 
     def test_signature_failure_prevents_owned_simulator_creation(self):
         with self.prepared() as (root, output, _, _), patch.object(replay.platform, 'system', return_value='Darwin'):

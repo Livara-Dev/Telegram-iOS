@@ -402,7 +402,7 @@ class FocusedWorkflowRoutingTests(unittest.TestCase):
         source = self.section('native-api-probe')
         replay = source.split('      - name: Replay verified synthetic Projection products', 1)[1]
         expected = {'REPLAY_RUN': '42160468600', 'REPLAY_SOURCE': 'c55e19c4f5cbe0d730499035d0a0ef712f6903a9',
-                    'PROJECTION_HOST_CONTROL': 'resealed-host', 'PROJECTION_BOOTSTRAP_SAMPLE': 'false'}
+                    'PROJECTION_HOST_CONTROL': 'resealed-host', 'PROJECTION_BOOTSTRAP_SAMPLE': 'true'}
         for name, value in expected.items():
             expression = re.search(r'^          ' + name + r': \$\{\{ (.*?) \}\}$', replay, re.M).group(1)
             self.assertEqual(self.expression(expression, 'workflow_dispatch', 'retained-clean', False,
@@ -421,7 +421,7 @@ class FocusedWorkflowRoutingTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory).resolve(); evidence = root / 'build/fork-evidence'; source = evidence / 'custom-options-replay'
             source.mkdir(parents=True)
-            allowed = {'verification.json', 'result.json', 'root-light.png', 'root-light.mp4'}
+            allowed = {'verification.json', 'result.json', 'root-light.png', 'root-light.mp4', 'title-check-positive.png'}
             for name in allowed: (source / name).write_bytes(('allowed-' + name).encode())
             (evidence / 'clean-simulator-service.json').write_text('{"passed": true}')
             for name in ('CustomeOptionsHost-simulator.ipa', 'raw-ocr.txt', 'private-compiler.out'):
@@ -433,7 +433,7 @@ class FocusedWorkflowRoutingTests(unittest.TestCase):
             public = evidence / 'custom-options-replay-public'
             self.assertEqual({p.name for p in public.iterdir()}, allowed | {'SHA256SUMS', 'clean-simulator-service.json'})
             rows = (public / 'SHA256SUMS').read_text().splitlines()
-            self.assertEqual(len(rows), 5)
+            self.assertEqual(len(rows), 6)
             for row in rows:
                 digest, name = row.split('  ', 1)
                 self.assertEqual(hashlib.sha256((public / name).read_bytes()).hexdigest(), digest)
