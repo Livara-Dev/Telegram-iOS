@@ -2,11 +2,11 @@
 # Created for the AyuGram iOS fork on 2026-11-06.
 """Private, bounded observations of one still-running synthetic XCTest command.
 
-Only the caller's known Xcode PID may be sampled. Other approved process roles
-contribute relationship booleans, never identities, arguments, or stack data.
+Only the caller's known Xcode PID is queried or sampled. Other process roles are
+explicitly unmeasured, never inferred absent from an unavailable observation.
 """
 import os
-from pathlib import Path, PurePosixPath
+from pathlib import Path
 import re
 import stat
 import sys
@@ -18,12 +18,8 @@ import simulator_probe
 command = simulator_probe.diagnostic_command
 BUNDLE = simulator_probe.BUNDLE
 MAX_BYTES = 65536
-MAX_PS_ROWS = 4096
-MAX_SELECTED_ROWS = 64
 OVERALL_SECONDS = 18
 ROLES = ('xcodebuild', 'ProjectionTestHost', 'testmanagerd', 'CoreSimulatorService')
-XCODE_PATHS = frozenset({'/usr/bin/xcodebuild',
-    '/Applications/Xcode_27.1.app/Contents/Developer/usr/bin/xcodebuild'})
 STATUSES = frozenset({'completed', 'commandFailed', 'timedOut', 'outputLimit', 'unavailable'})
 WAIT_SYMBOLS = {
     ('mach_msg_trap', 'libsystem_kernel.dylib'): 'mach_message_wait',
@@ -95,60 +91,32 @@ def _completed(status):
 
 
 def _empty_roles():
-    return {role: {'observed': False, 'shared_owned_group': False, 'parent_is_owned_child': False}
+    return {role: {'state': 'notMeasured', 'observed': None, 'shared_owned_group': None, 'parent_is_owned_child': None}
             for role in ROLES}
 
 
-def _role(path):
-    if path in XCODE_PATHS:
-        return 'xcodebuild'
-    name = PurePosixPath(path).name
-    if name == 'com.apple.CoreSimulator.CoreSimulatorService':
-        return 'CoreSimulatorService'
-    if name in {'ProjectionTestHost', 'testmanagerd', 'CoreSimulatorService'}:
-        return name
-    return None
-
-
 def _process_snapshot(data, pid, pgid, uid):
+    # Darwin's comm field reads KERN_PROCARGS2 even when only argv[0] is
+    # displayed. ucomm uses the kernel name; a sole -p selector avoids global
+    # process enumeration. Accept exactly this known child, never another row.
     result = {'state': 'invalidPayload', 'owned_xcodebuild_verified': False, 'roles': _empty_roles()}
     try:
         if not isinstance(data, bytes) or not 0 < len(data) <= MAX_BYTES:
             return result
         lines = data.decode('utf-8').splitlines()
-        if not 1 <= len(lines) <= MAX_PS_ROWS:
+        if len(lines) != 1:
             return result
-        selected, child, seen = [], [], set()
-        for line in lines:
-            if not line.strip():
-                continue
-            fields = line.split(None, 4)
-            if len(fields) != 5 or any(re.fullmatch(r'[0-9]{1,10}', item) is None for item in fields[:4]):
-                return result
-            current, parent, group, owner = map(int, fields[:4])
-            if (current > 2**31 - 1 or parent > 2**31 - 1 or group > 2**31 - 1
-                    or owner > 2**32 - 2 or current in seen):
-                return result
-            seen.add(current)
-            if owner != uid:
-                continue
-            role = _role(fields[4].strip())
-            if current == pid:
-                child.append((group, role))
-            if role == 'xcodebuild' and current != pid:
-                continue
-            if role is not None:
-                selected.append((role, parent, group))
-                if len(selected) > MAX_SELECTED_ROWS:
-                    return result
-        if child != [(pgid, 'xcodebuild')]:
+        fields = lines[0].split()
+        if len(fields) != 5 or any(re.fullmatch(r'[0-9]{1,10}', item) is None for item in fields[:4]):
+            return result
+        current, parent, group, owner = map(int, fields[:4])
+        if (not 0 < current < 2**31 or parent >= 2**31 or not 0 < group < 2**31
+                or owner > 2**32 - 2):
+            return result
+        if current != pid or group != pgid or owner != uid or fields[4] != 'xcodebuild':
             result['state'] = 'ownershipUnverified'
             return result
-        roles = result['roles']
-        for role, parent, group in selected:
-            roles[role]['observed'] = True
-            roles[role]['shared_owned_group'] |= group == pgid
-            roles[role]['parent_is_owned_child'] |= parent == pid
+        result['roles']['xcodebuild'].update(state='observed', observed=True, shared_owned_group=True)
         result.update(state='observed', owned_xcodebuild_verified=True)
         return result
     except (UnicodeError, ValueError, TypeError, OverflowError):
@@ -227,7 +195,7 @@ def capture(pid, pgid, identifier, secrets, is_alive):
         uid, deadline = os.getuid(), time.monotonic() + OVERALL_SECONDS
         if not _require_alive(report, is_alive):
             return report
-        status, data = _run(['/bin/ps', '-A', '-o', 'pid=,ppid=,pgid=,uid=,comm='], secrets, 3, deadline)
+        status, data = _run(['/bin/ps', '-p', str(pid), '-o', 'pid=,ppid=,pgid=,uid=,ucomm='], secrets, 3, deadline)
         report['process_snapshot'] = snapshot = _process_snapshot(data, pid, pgid, uid) if _completed(status) else {
             'state': 'unavailable', 'owned_xcodebuild_verified': False, 'roles': _empty_roles()}
         snapshot['command'] = status

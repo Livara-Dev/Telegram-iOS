@@ -21,7 +21,7 @@ IDENTIFIER = '11111111-2222-3333-4444-555555555555'
 BUNDLE = 'org.livara.ayugram.tests.native-security.projection'
 SECRET = 'private-bootstrap-fixture-secret'
 XCODEBUILD = '/Applications/Xcode_27.1.app/Contents/Developer/usr/bin/xcodebuild'
-PS = ['/bin/ps', '-A', '-o', 'pid=,ppid=,pgid=,uid=,comm=']
+PS = ['/bin/ps', '-p', str(PID), '-o', 'pid=,ppid=,pgid=,uid=,ucomm=']
 CATEGORIES = {'mach_message_wait', 'xpc_sync_wait', 'dispatch_wait', 'ulock_wait'}
 SAMPLE = b'''Analysis of sampling xcodebuild (pid 43120) every 10 milliseconds
 Process: xcodebuild [43120]
@@ -50,19 +50,16 @@ def status(data=b'', state='completed'):
             'private_detail': '/private/bootstrap-fixture/' + SECRET}
 
 
-def processes(owned=XCODEBUILD, owned_uid=UID, owned_group=PID):
-    return ('%d 40000 %d %d %s\n' % (PID, owned_group, owned_uid, owned) +
-            '%d %d %d %d /private/bootstrap-fixture/ProjectionTestHost\n' % (PID + 1, PID, PID, UID) +
-            '%d 1 99991 %d /usr/libexec/testmanagerd\n' % (PID + 2, UID) +
-            '%d 1 %d %d /Library/Developer/PrivateFrameworks/CoreSimulator.framework/Resources/com.apple.CoreSimulator.CoreSimulatorService\n' % (PID + 3, PID, UID) +
-            '%d 1 %d %d /private/%s/unrelated\n' % (PID + 4, PID, UID, SECRET)).encode()
+def processes(owned='xcodebuild', owned_uid=UID, owned_group=PID, owned_pid=PID):
+    return ('%d 40000 %d %d %s\n' % (owned_pid, owned_group, owned_uid, owned)).encode()
 
 
 class BootstrapSampleTests(unittest.TestCase):
     def assert_private(self, value):
         text = json.dumps(value, sort_keys=True)
         for forbidden in (SECRET, IDENTIFIER, str(PID), '/private/', XCODEBUILD,
-                          'mach_msg2_trap', 'private_detail', 'stderr"'):
+                          'mach_msg2_trap', 'private_detail', 'stderr"',
+                          'private-argument-canary', 'unrelated-private-canary'):
             self.assertNotIn(forbidden, text)
         self.assertLessEqual(len(text.encode()), 16 * 1024)
 
@@ -133,19 +130,17 @@ class BootstrapSampleTests(unittest.TestCase):
         self.assertTrue(all(selected['wait_categories'].get(name, 0) > 0 for name in CATEGORIES))
         self.assert_private(result)
 
-    def test_role_relations_use_own_uid_and_exact_basename_without_publishing_process_identifiers(self):
-        result, _ = self.run_capture()
+    def test_only_known_child_is_queried_and_other_roles_remain_explicitly_unmeasured(self):
+        result, calls = self.run_capture()
         roles = result['process_snapshot']['roles']
         self.assertEqual(set(roles), {'xcodebuild', 'ProjectionTestHost', 'testmanagerd', 'CoreSimulatorService'})
-        self.assertEqual(roles['ProjectionTestHost'], {'observed': True, 'shared_owned_group': True, 'parent_is_owned_child': True})
-        self.assertEqual(roles['testmanagerd'], {'observed': True, 'shared_owned_group': False, 'parent_is_owned_child': False})
-        self.assertEqual(roles['CoreSimulatorService'], {'observed': True, 'shared_owned_group': True, 'parent_is_owned_child': False})
-        ps = ('%d 1 %d %d /usr/bin/xcodebuild\n' % (PID, PID, UID) +
-              '%d %d %d %d /usr/libexec/testmanagerd\n' % (PID + 2, PID, PID, UID + 1) +
-              '%d %d %d %d /private/ProjectionTestHost-not-the-role\n' % (PID + 3, PID, PID, UID)).encode()
-        result, _ = self.run_capture(ps=ps)
-        self.assertFalse(result['process_snapshot']['roles']['testmanagerd']['observed'])
-        self.assertFalse(result['process_snapshot']['roles']['ProjectionTestHost']['observed'])
+        for role in ('ProjectionTestHost', 'testmanagerd', 'CoreSimulatorService'):
+            self.assertEqual(roles[role], {'state': 'notMeasured', 'observed': None,
+                                         'shared_owned_group': None, 'parent_is_owned_child': None})
+        self.assertEqual(roles['xcodebuild'], {'state': 'observed', 'observed': True,
+                        'shared_owned_group': True, 'parent_is_owned_child': None})
+        self.assertEqual(calls[0][0], ['/bin/ps', '-p', str(PID), '-o', 'pid=,ppid=,pgid=,uid=,ucomm='])
+        self.assertFalse(any('-A' in arguments or '-e' in arguments for arguments, _ in calls))
         self.assert_private(result)
 
     def test_pid_group_identifier_and_boolean_inputs_fail_closed_before_any_command(self):
@@ -176,16 +171,22 @@ class BootstrapSampleTests(unittest.TestCase):
             self.assertEqual(result['sample']['state'], 'notAttempted')
             self.assert_private(result)
 
-    def test_wrong_uid_group_executable_or_duplicate_owned_rows_never_authorizes_sampling(self):
+    def test_wrong_pid_uid_group_kernel_name_or_extra_rows_never_authorizes_sampling(self):
         inventories = [b'', processes(owned_uid=UID + 1), processes(owned_group=PID + 1),
-                       processes(owned='/private/bootstrap-fixture/xcodebuild'), processes(owned='xcodebuild'),
-                       processes() + ('%d 1 %d %d /usr/bin/xcodebuild\n' % (PID, PID, UID)).encode(),
+                       processes(owned_pid=PID + 1), processes(owned='not-xcodebuild'),
+                       processes(owned='/usr/bin/xcodebuild'), processes(owned=XCODEBUILD),
+                       processes(owned='xcodebuild private-argument-canary'),
+                       processes() + processes(), processes() + b'\n',
+                       processes() + ('%d 1 %d %d testmanagerd\n' % (PID + 1, PID, UID)).encode(),
                        b'private invalid process inventory\n']
         for ps in inventories:
             with self.subTest(ps=ps):
                 result, calls = self.run_capture(ps=ps)
                 self.assertEqual(len(calls), 1)
                 self.assertFalse(result['process_snapshot']['owned_xcodebuild_verified'])
+                for role in result['process_snapshot']['roles'].values():
+                    self.assertEqual(role['state'], 'notMeasured'); self.assertIsNone(role['observed'])
+                    self.assertIsNone(role['shared_owned_group']); self.assertIsNone(role['parent_is_owned_child'])
                 self.assertEqual(result['sample']['state'], 'notAttempted')
                 self.assert_private(result)
 
@@ -208,19 +209,19 @@ class BootstrapSampleTests(unittest.TestCase):
                 result = bootstrap.capture(PID, PID, IDENTIFIER, [SECRET], lambda: True)
                 self.assertEqual(command.call_count, 1)
                 self.assertFalse(result['process_snapshot']['owned_xcodebuild_verified'])
+                self.assertTrue(all(role['observed'] is None for role in result['process_snapshot']['roles'].values()))
                 self.assertEqual(result['sample']['state'], 'notAttempted')
                 self.assert_private(result)
 
-    def test_inventory_byte_row_and_selected_role_caps_fail_closed_before_further_commands(self):
-        crowded = ('%d 1 %d %d /usr/bin/xcodebuild\n' % (PID, PID, UID) +
-                   ''.join('%d 1 %d %d /usr/libexec/testmanagerd\n' % (PID + i, PID, UID) for i in range(1, 66))).encode()
-        fixtures = [(processes() + b'x' * 65537, None), (processes(), ('MAX_PS_ROWS', 2)), (crowded, None)]
-        for ps, limit in fixtures:
-            with self.subTest(limit=limit, size=len(ps)):
-                if limit:
-                    with patch.object(bootstrap, limit[0], limit[1]): result, calls = self.run_capture(ps=ps)
-                else:
-                    result, calls = self.run_capture(ps=ps)
+    def test_owned_process_byte_numeric_and_exact_row_bounds_fail_closed_before_further_commands(self):
+        crowded = processes() + b'1 1 1 0 unrelated-private-canary\n' * 100
+        fixtures = [processes() + b'x' * 65537, crowded, processes(owned_pid=2**31),
+                    processes(owned_group=2**31), processes(owned_uid=2**32),
+                    processes().replace(b'40000', str(2**31).encode()),
+                    processes().replace(b'40000', b'-1'), processes().replace(b'40000', b'00000000000')]
+        for ps in fixtures:
+            with self.subTest(size=len(ps)):
+                result, calls = self.run_capture(ps=ps)
                 self.assertEqual(len(calls), 1)
                 self.assertFalse(result['process_snapshot']['owned_xcodebuild_verified'])
                 self.assertEqual(result['sample']['state'], 'notAttempted')
