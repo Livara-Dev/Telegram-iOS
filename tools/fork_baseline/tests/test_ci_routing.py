@@ -1,8 +1,12 @@
 """Prevent feature commits from multiplying expensive hosted Apple builds."""
 import ast
+import os
 from pathlib import Path
 import re
+import tempfile
+import textwrap
 import unittest
+from unittest.mock import patch
 
 WORKFLOWS = Path(__file__).resolve().parents[3] / ".github/workflows"
 
@@ -148,3 +152,31 @@ class CIRoutingTests(unittest.TestCase):
         self.assertIn("paired_device_run(os.environ['REPLAY_RUN'], os.environ['REPLAY_SOURCE'])", fetch)
         self.assertIn("'--mode', 'unsigned-device', '--run', str(device_run)", fetch)
         self.assertGreater(startup.index("Fetch the matching device package"), startup.index("Replay the selected startup control"))
+
+    def test_retained_probe_fetches_the_source_object_but_keeps_the_driver_checkout(self):
+        step = self.step(self.job("native-api-probe"), "Check out the exact probe revision without submodules")
+        script = textwrap.dedent(step.split("python3 - <<'PYTHON'\n", 1)[1].split("\n          PYTHON", 1)[0])
+        driver, source = 'a' * 40, 'c' * 40
+        for run_id, captured_source, expected in (('', '', [driver]), ('42160468600', source, [driver, source]),
+                                                ('42160468600', driver, [driver])):
+            with self.subTest(run=run_id, source=captured_source), tempfile.TemporaryDirectory() as directory:
+                environment = {'GITHUB_WORKSPACE': directory, 'GITHUB_SHA': driver,
+                    'GITHUB_REPOSITORY': 'Livara-Dev/Telegram-iOS', 'CHECKOUT_TOKEN': 'public-fixture',
+                    'REPLAY_RUN': run_id, 'REPLAY_SOURCE': captured_source}
+                with patch.dict(os.environ, environment, clear=True), patch('subprocess.run') as command:
+                    exec(compile(script, '<checkout-fixture>', 'exec'), {})
+                calls = [call.args[0] for call in command.call_args_list]
+                self.assertIn(['git', 'fetch', '--no-tags', '--depth', '1', 'origin', *expected], calls)
+                self.assertIn(['git', 'checkout', '--detach', driver], calls)
+                fetch = next(call for call in command.call_args_list if call.args[0][1] == 'fetch')
+                self.assertNotIn('CHECKOUT_TOKEN', fetch.kwargs['env'])
+        for run_id, captured_source in (('', source), ('0', source), ('42160468600', '../invalid'),
+                                        (str(2**63), source)):
+            with self.subTest(invalid_run=run_id), tempfile.TemporaryDirectory() as directory:
+                environment = {'GITHUB_WORKSPACE': directory, 'GITHUB_SHA': driver,
+                    'GITHUB_REPOSITORY': 'Livara-Dev/Telegram-iOS', 'CHECKOUT_TOKEN': 'public-fixture',
+                    'REPLAY_RUN': run_id, 'REPLAY_SOURCE': captured_source}
+                with patch.dict(os.environ, environment, clear=True), patch('subprocess.run') as command:
+                    with self.assertRaises(SystemExit):
+                        exec(compile(script, '<checkout-fixture>', 'exec'), {})
+                command.assert_not_called()

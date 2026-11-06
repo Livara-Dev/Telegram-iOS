@@ -106,7 +106,9 @@ class ProjectionReplayTests(unittest.TestCase):
             payloads['ChatLocalArchiveRowRendererTests.swift'] += b'\n    func testUnexpected() {}\n'
             with self.assertRaisesRegex(ValueError, 'projection_expected_cases_changed'): replay.verify_current_checkout(Path('.'))
         with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
+            # Match replay's canonical root before constructing its fixed
+            # output path (Darwin may expose /var as /private/var).
+            root = Path(directory).resolve()
             with patch.object(replay, 'verify_current_checkout', side_effect=replay.artifacts.ReplayError('application_source_changed')) as guard, patch.object(replay, 'origin') as origin:
                 with self.assertRaisesRegex(ValueError, 'application_source_changed'):
                     replay.replay(replay.CURRENT_RUN, replay.CURRENT_SOURCE, root / replay.OUTPUT, root=root)

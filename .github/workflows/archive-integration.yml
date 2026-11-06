@@ -593,6 +593,8 @@ jobs:
         working-directory: ${{ github.workspace }}
         env:
           CHECKOUT_TOKEN: ${{ github.token }}
+          REPLAY_RUN: ${{ inputs.replay_run }}
+          REPLAY_SOURCE: ${{ inputs.replay_source }}
         run: |
           set -euo pipefail
           python3 - <<'PYTHON'
@@ -603,6 +605,17 @@ jobs:
           repo = os.environ['GITHUB_REPOSITORY']
           if not re.fullmatch(r'[0-9a-f]{40}', sha) or not re.fullmatch(r'[\w.-]+/[\w.-]+', repo):
               raise SystemExit('Invalid checkout coordinates')
+          requested_run = os.environ['REPLAY_RUN']
+          requested_source = os.environ['REPLAY_SOURCE']
+          fetch_args = ['git', 'fetch', '--no-tags', '--depth', '1', 'origin', sha]
+          if requested_run:
+              if (not re.fullmatch(r'[1-9][0-9]{0,18}', requested_run) or int(requested_run) > 2**63 - 1
+                      or not re.fullmatch(r'[0-9a-f]{40}', requested_source)):
+                  raise SystemExit('Invalid retained probe coordinates')
+              if requested_source != sha:
+                  fetch_args.append(requested_source)
+          elif requested_source:
+              raise SystemExit('Incomplete retained probe coordinates')
           def run(args, env=None):
               subprocess.run(args, cwd=destination, env=env, check=True)
           run(['git', 'init', '-q'])
@@ -611,7 +624,7 @@ jobs:
           token = auth_env.pop('CHECKOUT_TOKEN')
           auth_env.update(GIT_CONFIG_COUNT='1', GIT_CONFIG_KEY_0='http.https://github.com/.extraheader',
                           GIT_CONFIG_VALUE_0='AUTHORIZATION: basic ' + base64.b64encode(('x-access-token:' + token).encode()).decode())
-          run(['git', 'fetch', '--no-tags', '--depth', '1', 'origin', sha], auth_env)
+          run(fetch_args, auth_env)
           run(['git', 'checkout', '--detach', sha])
           (destination / 'build/fork-evidence').mkdir(parents=True)
           PYTHON
