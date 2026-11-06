@@ -49,6 +49,7 @@ class CIRoutingTests(unittest.TestCase):
         self.assertIn("concurrency:\n  group: ${{", source)
         self.assertIn("format('ayugram-startup-replay-{0}', inputs.replay_source)", source)
         self.assertIn("inputs.validation_scope == 'custom-options-ui' && 'ayugram-ui-qualification'", source)
+        self.assertIn("inputs.validation_scope == 'core-only' && 'ayugram-core-qualification'", source)
         self.assertIn("|| 'ayugram-qualification' }}\n  cancel-in-progress: false\n", source)
         self.assertEqual(len(re.findall(r"^\s*concurrency:", source, re.M)), 1)
         self.assertNotIn("cancel-in-progress: true", source)
@@ -76,7 +77,7 @@ class CIRoutingTests(unittest.TestCase):
     def test_full_and_targeted_dispatch_do_not_duplicate_simulator_compilation(self):
         excluded = {"full", "", "probe", "startup", "custom-options-ui"}
         for event in ("push", "workflow_dispatch"):
-            for scope in (*sorted(excluded), "native-only", "focused", "projection", "projection-only", "invalid"):
+            for scope in (*sorted(excluded), "native-only", "core-only", "focused", "projection", "projection-only", "invalid"):
                 with self.subTest(event=event, scope=scope):
                     self.assertEqual(self.allows("integration-tests", event, scope), event == "workflow_dispatch" and scope not in excluded)
                     self.assertEqual(self.allows("application-build", event, scope), event == "push" or scope in {"full", ""})

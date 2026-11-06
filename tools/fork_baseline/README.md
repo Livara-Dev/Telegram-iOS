@@ -45,6 +45,13 @@ renderer job can be investigated without stopping healthy native suites.
 Use that scope only for a distinct diagnostic or repair; do not duplicate an
 already-running renderer check. Its queue also preserves the active job.
 
+`core-only` runs only the fixed `//submodules/TelegramCore:TelegramCoreTests`
+bundle for account/archive/filter integration repairs. It builds neither the
+complete application nor a device package and does not replace the full
+eight-suite release gate. Its separate queue preserves an active full build,
+so a verified Core failure can be repaired and tested while an older device
+job finishes. Submit only one source revision for each distinct repair.
+
 For the zero-case Projection startup failure in run `42134690056`, the existing
 `probe` scope accepts `replay_run=42134690056` and
 `replay_source=17033b099458c258236b5a01411ab6efb45b37b6`. This selects a bounded
