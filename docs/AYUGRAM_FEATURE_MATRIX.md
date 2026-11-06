@@ -133,6 +133,25 @@ binary. No proprietary exteraGram components are copied.
   confirmation, and cosmetic changes/reset. Coarse recorded navigation steps
   do not establish smooth device performance; the dark cosmetics accent text
   needs a dedicated contrast review. Actual Apple export must pass in a rerun.
+- The native job in [42134690056](https://github.com/Livara-Dev/Telegram-iOS/actions/runs/42134690056)
+  at 17033b09 finished with **862 completed passing cases, one failed case and
+  one further case aborted before an outcome**. Passcode 16, Postbox 201,
+  archive 114, encrypted playback 18 and TextFormat 270 all passed. Archive
+  breakdown: 79 Store, 24 Transfer and 11 Keychain cases. Core passed 188 cases,
+  including all 41 coordinator cases and the real Postbox edit/delete → saved
+  rows/encrypted payload → cache cleanup → reopen fixture. Its next absent-store
+  fixture overfulfilled one XCTest expectation when independent startup wakes
+  each probed the missing archive. SettingsUI compiled and passed 55 cases;
+  the one failure incorrectly expected a diacritic-folded `a` query to match
+  nothing. Follow-up changes correct those test contracts without changing
+  production code, preserve every read-only/key-creation assertion, and add two
+  Unicode boundary cases. They still require native execution.
+  Projection executed zero cases after bootstrap stalls; no actual launch cause
+  was retained because the device inventory timed out before downstream probes.
+  Sanitized compiled test products were retained for a bounded fresh-host replay
+  without another compile. Only 26 of that revision's 124 new methods completed
+  successfully; the other 98, including later Core classes, remain unqualified.
+  The artifact's outer SHA-256 and all 96 inner references were verified.
 
 ## Core features and native integration
 
@@ -151,8 +170,8 @@ follow-up extends that candidate. None is certified by the older 62546557 IPA.
 | Reconnect/history-fetch replacements, validation removals and media-reference refreshes | Precise Postbox replacement observer, ordinary cloud-load wrappers, cached channel minimum-ID handling and original-request namespace guards; all 28 additional cases passed at b492 in 42114628197 | Current later source needs qualification. Same-second repeated content uses persisted UUIDs and SQLite sequence ordering. One pending-outbox budget scan per upsert batch; no measured latency. Validation removal includes upstream RPC-error fallback and is not proof of remote sender deletion |
 | Legacy group, broadcast and supergroup edit/delete replay | New actual replay fixtures and acknowledged channel-edit coverage | Native execution pending; no live two-client server claim |
 | Deleted/Edited label preferences and current live-version preview | Account-local editor and archive timeline/gallery bindings; later saved-edit marker candidate described below | New native tests pending. The older IPA does not contain the inline marker candidate |
-| Encrypted import/export | Native picker, strict owner/environment binding, authenticated envelope, live-row reconstruction and transactional merge; all 22 library transfer cases passed at b492 | Five Core integration fixtures failed during backup creation; facade/UI qualification remains open. Capture must be explicitly paused, with warned capture gap. No AyuSync/network transport |
-| Ordinary GIF, PDF and typed encrypted media playback | All 18 encrypted-playback cases passed at b492, including real Ogg/Opus PCM, video frames and the PDF fixture; bounded in-memory GIF/PDF UI source | Native SettingsUI tests never executed because of the separate PDF button compiler error. UI compilation/recordings and later-source qualification remain pending; no physical-device claim |
+| Encrypted import/export | Native picker, strict owner/environment binding, authenticated envelope, live-row reconstruction and transactional merge; all 24 library transfer cases passed at 17033 | Later Core transfer fixtures were not reached after an unrelated test abort; facade/UI qualification remains open. Capture must be explicitly paused, with warned capture gap. No AyuSync/network transport |
+| Ordinary GIF, PDF and typed encrypted media playback | All 18 encrypted-playback cases passed at 17033, including real Ogg/Opus PCM, video frames and the PDF fixture; SettingsUI compiled and its eight media-preview cases passed | Complete-app gallery recordings and physical-device playback remain unverified; generated native fixtures do not prove live incoming-media capture |
 | Ordinary read/presence controls, story-opening warning, read after confirmed send | Account-scoped production hooks, bounded acknowledged-send intent, central story gate | New native tests pending; server behavior and other-client interactions unverified, mandatory expiry receipts preserved |
 | Text, bounded-expression, media-type and cached blocked-author filters | Background projection, temporary reveal and native rule editor | New native tests pending; unknown metadata/albums/rich/secret/timed content stays visible |
 | Explicit local sender hiding and inverse rules | [Account-local sender management and proven non-match predicates](fork/LOCAL-MESSAGE-FILTERS.md), source commit `b39cf89f`; fifteen Core and three projection cases authored | Native execution and real chat/editor recordings pending. Unknown/empty/oversized/work-limited text stays visible to inverse text rules; independent sender/media predicates may apply. No server block request or notification/preview filtering |
@@ -160,7 +179,7 @@ follow-up extends that candidate. None is certified by the older 62546557 IPA.
 | Local palette, motion preference and explicit bundled-icon permission | Real account preferences; actual renderer controls exercised in the 8+1 passing UI cases | Account persistence tests/native OS icon operation pending; no server Premium entitlement bypass |
 | Local folder colors and tags | [Account-local native tab/list projection and editor](fork/LOCAL-FOLDER-APPEARANCE.md), source commit `694d8b1e`; sixteen real Postbox/projection/request-invariance cases authored | Native execution, full application compilation and recordings pending. Canonical folder requests/order/Premium limits stay unchanged. Removed IDs are pruned; stale editors reject changed canonical filters; byte-identical replacement without an observed removal is indistinguishable |
 | Inline saved-edit history in text/caption bubbles | [Read-only visible-cell marker and date action](AYUGRAM_INLINE_HISTORY.md), source commit `2b9f003d`; twenty-five new native cases authored and three transfer cases extended | Native execution and conversation recordings pending. Archive mutation notifications invalidate committed deletions/pruning without manufacturing a Telegram message. Media-only/album status nodes remain pending; no physical-device or scrolling benchmark claim |
-| Inline deleted-message cards | [Distinct local row, encrypted window query and revocable production renderer](fork/LOCAL-DELETED-ROWS-VERIFICATION.md), source commit `dafe9004`; forty-three native cases authored. Current SQL executed successfully against vendored plain SQLite, including 4,096 author exclusions and interruption recovery | Native execution/full application placement/recordings pending. At most forty excerpts in the loaded ordinary-chat window; no forum/thread/filter-enabled inline projection, shared date header or media thumbnail. Existing local timeline/gallery remains the media destination. Canonical reads, pagination, selection and server actions exclude this row type |
+| Inline deleted-message cards | [Distinct local row, encrypted window query and revocable production renderer](fork/LOCAL-DELETED-ROWS-VERIFICATION.md), source commit `dafe9004`; forty-three native cases authored. Store cases and the actual Postbox edit/delete/cache-cleanup/reopen integration fixture passed at 17033; later Core cases were blocked by the next test's expectation abort. Current SQL also executed against vendored plain SQLite, including 4,096 author exclusions and interruption recovery | Remaining native cases, full application placement and recordings pending. At most forty excerpts in the loaded ordinary-chat window; no forum/thread/filter-enabled inline projection, shared date header or media thumbnail. Existing local timeline/gallery remains the media destination. Canonical reads, pagination, selection and server actions exclude this row type |
 | Malformed archive/filter identity handling | [Safe persisted-peer boundary](fork/PEER-ID-BOUNDARIES.md), source commit `f3a12c6f`; ten new native cases authored | Native execution pending. Unknown imported identities remain browsable locally without native peer/message lookups. Invalid outbox entries stay unacknowledged instead of being silently discarded; incompatible preferences remain read-only |
 | Timed, self-destructing and view-once retention | Separate native capability information; explicit exclusions remain enforced | Post-expiry retention unsupported under reviewed API terms. No misleading preservation switch; new exclusion tests pending |
 
