@@ -165,6 +165,10 @@ public final class LocalArchiveCoordinator {
     private let historyRevisionValue = ValuePromise<Int64>(0, ignoreRepeated: true)
     private var currentHistoryRevision: Int64 = 0
     private var storage: LocalArchiveStorage?
+    // Clearing the visible reference does not close SQLite synchronously. Keep
+    // replacement opens behind both the old open callback and its close ack.
+    private var pendingStorageOpens = 0
+    private var pendingStorageCloses = 0
     private var stopped = false
     // True permits a fresh Keychain probe, not an assertion that the device is unlocked.
     private var mayAccessProtectedData = false
@@ -355,16 +359,18 @@ public final class LocalArchiveCoordinator {
                                                                   maxPayloadBytes: settings.maxPayloadBytes)
                             // Creating a destination is permitted only for this
                             // explicit import after password/owner/integrity checks.
-                            self.storageFactory(self.baseDirectory, self.accountId, retention, true, self.queue.queue) { [weak self] opened in
-                                self?.queue.justDispatch { [weak self] in
-                                    guard let self, self.isCurrent(epoch), !cancellation.isCancelled else {
-                                        if case let .success(storage) = opened { storage.close(completion: {}) }
-                                        complete(.failed(.cancelled)); return
-                                    }
-                                    switch opened {
-                                    case let .success(storage): apply(storage)
-                                    case .failure: complete(.failed(.unavailable))
-                                    }
+                            self.openStorage(retention: retention, createIfMissing: true) { [weak self] opened in
+                                guard let self else {
+                                    if case let .success(storage) = opened { storage.close(completion: {}) }
+                                    complete(.failed(.cancelled)); return
+                                }
+                                guard self.isCurrent(epoch), !cancellation.isCancelled else {
+                                    if case let .success(storage) = opened { self.closeStorage(storage) }
+                                    complete(.failed(.cancelled)); return
+                                }
+                                switch opened {
+                                case let .success(storage): apply(storage)
+                                case .failure: complete(.failed(.unavailable))
                                 }
                             }
                         }
@@ -383,7 +389,8 @@ public final class LocalArchiveCoordinator {
             let cancellation = ArchiveTransferCancellation()
             self.queue.justDispatch { [weak self] in
                 guard let self, !self.stopped, self.mayAccessProtectedData, self.readAccessCount > 0,
-                      !self.working, self.activeTransfer == nil else {
+                      !self.working, self.activeTransfer == nil,
+                      self.pendingStorageOpens == 0, self.pendingStorageCloses == 0 else {
                     subscriber.putNext(.failed(.unavailable)); subscriber.putCompletion(); return
                 }
                 self.working = true
@@ -696,11 +703,12 @@ public final class LocalArchiveCoordinator {
         self.transactionDisposable.set(nil)
         let storage = self.storage
         self.storage = nil
-        storage?.close(completion: {})
+        if let storage { self.closeStorage(storage) }
     }
 
     private func drainIfNeeded() {
-        guard !self.stopped, self.mayAccessProtectedData, !self.working, !self.retryScheduled, self.needsDrain else { return }
+        guard !self.stopped, self.mayAccessProtectedData, !self.working, !self.retryScheduled, self.needsDrain,
+              self.pendingStorageOpens == 0, self.pendingStorageCloses == 0 else { return }
         self.needsDrain = false
         self.working = true
         let epoch = self.epoch
@@ -761,6 +769,39 @@ public final class LocalArchiveCoordinator {
         })
     }
 
+    /// All callers run on the account queue. A lock can invalidate an open
+    /// before its callback arrives; a replacement must wait for that result
+    /// and, when successful, for the stale store's close acknowledgement.
+    private func openStorage(retention: ArchiveRetentionPolicy, createIfMissing: Bool,
+                             completion: @escaping (Result<LocalArchiveStorage, ArchiveError>) -> Void) {
+        assert(self.queue.isCurrent())
+        self.pendingStorageOpens += 1
+        self.storageFactory(self.baseDirectory, self.accountId, retention, createIfMissing, self.queue.queue) { [weak self] result in
+            guard let self else { completion(result); return }
+            self.queue.justDispatch { [weak self] in
+                guard let self else { completion(result); return }
+                self.pendingStorageOpens -= 1
+                completion(result)
+                self.drainIfNeeded()
+            }
+        }
+    }
+
+    private func closeStorage(_ storage: LocalArchiveStorage) {
+        assert(self.queue.isCurrent())
+        self.pendingStorageCloses += 1
+        storage.close { [weak self] in
+            self?.queue.justDispatch { [weak self] in
+                guard let self else { return }
+                self.pendingStorageCloses -= 1
+                // The old epoch is deliberately irrelevant to bookkeeping.
+                // Current lock/disposal/settings guards decide whether a newer
+                // authorized wakeup can proceed after this resource is closed.
+                self.drainIfNeeded()
+            }
+        }
+    }
+
     private func openIfNeeded(settings: LocalArchiveSettings, epoch: Int64,
                               completion: @escaping (LocalArchiveStorage) -> Void) {
         let retention = ArchiveRetentionPolicy(maxAgeSeconds: settings.maxAgeSeconds, maxPayloadBytes: settings.maxPayloadBytes)
@@ -783,26 +824,24 @@ public final class LocalArchiveCoordinator {
             return
         }
         self.statusValue.set(.opening)
-        self.storageFactory(self.baseDirectory, self.accountId, retention, settings.enabled || settings.pendingPurge, self.queue.queue) { [weak self] result in
+        self.openStorage(retention: retention, createIfMissing: settings.enabled || settings.pendingPurge) { [weak self] result in
             guard let self else {
                 if case let .success(storage) = result { storage.close(completion: {}) }
                 return
             }
-            self.queue.justDispatch { [weak self] in
-                guard let self, self.isCurrent(epoch) else {
-                    if case let .success(storage) = result { storage.close(completion: {}) }
-                    return
-                }
-                switch result {
-                case let .success(storage):
-                    self.storage = storage
-                    self.observeStorage(storage, epoch: epoch) { applyRetention(storage) }
-                case .failure(.missingArchive):
-                    self.statusValue.set(.disabled)
-                    self.finished(epoch: epoch)
-                case .failure:
-                    self.failed(.unavailable, epoch: epoch)
-                }
+            guard self.isCurrent(epoch) else {
+                if case let .success(storage) = result { self.closeStorage(storage) }
+                return
+            }
+            switch result {
+            case let .success(storage):
+                self.storage = storage
+                self.observeStorage(storage, epoch: epoch) { applyRetention(storage) }
+            case .failure(.missingArchive):
+                self.statusValue.set(.disabled)
+                self.finished(epoch: epoch)
+            case .failure:
+                self.failed(.unavailable, epoch: epoch)
             }
         }
     }

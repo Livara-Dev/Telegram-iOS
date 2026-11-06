@@ -32,6 +32,27 @@ private final class LocalArchiveReadKeyProbe: ArchiveKeyProvider {
     }
 }
 
+/// Delay one real open/close operation so lifecycle ordering is deterministic,
+/// rather than relying on SQLite winning a lock/unlock scheduling race.
+private final class LocalArchiveOperationGate {
+    let intercepted = ValuePromise<Bool>(false, ignoreRepeated: true)
+    private let didIntercept = Atomic<Bool>(value: false)
+    private let pending = Atomic<(() -> Void)?>(value: nil)
+
+    func perform(_ operation: @escaping () -> Void) {
+        if !self.didIntercept.swap(true) {
+            let _ = self.pending.swap(operation)
+            self.intercepted.set(true)
+        } else {
+            operation()
+        }
+    }
+
+    func release() {
+        self.pending.swap(nil)?()
+    }
+}
+
 /// Keeps all SQLCipher behavior real. Only the delivery of one write result is
 /// intercepted to reproduce the archive-commit / Postbox-acknowledgement crash window.
 private final class LocalArchiveInterceptingStorage: LocalArchiveStorage {
@@ -41,12 +62,15 @@ private final class LocalArchiveInterceptingStorage: LocalArchiveStorage {
     let mediaWritten = ValuePromise<Bool>(false, ignoreRepeated: true)
     private let behavior: WriteBehavior
     private let didWrite: ((Result<ArchiveWriteResult, ArchiveError>) -> Void)?
+    private let closeGate: LocalArchiveOperationGate?
 
     init(store: ArchiveStore, behavior: WriteBehavior,
-         didWrite: ((Result<ArchiveWriteResult, ArchiveError>) -> Void)?) {
+         didWrite: ((Result<ArchiveWriteResult, ArchiveError>) -> Void)?,
+         closeGate: LocalArchiveOperationGate? = nil) {
         self.store = store
         self.behavior = behavior
         self.didWrite = didWrite
+        self.closeGate = closeGate
     }
 
     func recordFromOutbox(_ capture: ArchiveCapture, index: Int64, generation: Int64,
@@ -104,10 +128,13 @@ private final class LocalArchiveInterceptingStorage: LocalArchiveStorage {
         self.store.setRetention(policy, completion: completion)
     }
     func close(completion: @escaping () -> Void) {
-        self.store.close {
-            self.closed.set(true)
-            completion()
+        let close = {
+            self.store.close {
+                self.closed.set(true)
+                completion()
+            }
         }
+        if let closeGate = self.closeGate { closeGate.perform(close) } else { close() }
     }
     func deletedMessages(peerId: Int64?, beforeSequence: Int64?, limit: Int,
                          completion: @escaping (Result<[ArchivedRecord], ArchiveError>) -> Void) {
@@ -133,6 +160,7 @@ final class LocalArchiveCoordinatorTests: XCTestCase {
         var coordinator: LocalArchiveCoordinator?
         let storage = Atomic<LocalArchiveInterceptingStorage?>(value: nil)
         let creationMode = ValuePromise<Bool?>(nil, ignoreRepeated: true)
+        let factoryOpenCount = Atomic<Int>(value: 0)
     }
 
     private let accountPeerId = PeerId(namespace: Namespaces.Peer.CloudUser, id: PeerId.Id._internalFromInt64Value(1))
@@ -168,23 +196,29 @@ final class LocalArchiveCoordinatorTests: XCTestCase {
                        clock: @escaping () -> Int64 = { 1000 },
                        behavior: LocalArchiveInterceptingStorage.WriteBehavior = .normal,
                        protectedData: Signal<Bool, NoError>? = .single(true),
+                       openGate: LocalArchiveOperationGate? = nil,
+                       closeGate: LocalArchiveOperationGate? = nil,
                        didWrite: ((Result<ArchiveWriteResult, ArchiveError>) -> Void)? = nil) -> Running {
         let instance = Running()
         instance.coordinator = LocalArchiveCoordinator(postbox: postbox ?? self.fixture.postbox, accountPeerId: self.accountPeerId,
             accountId: accountId, baseDirectory: self.archiveDirectory,
             storageFactory: { directory, accountId, retention, createIfMissing, callbackQueue, completion in
+                let _ = instance.factoryOpenCount.modify { $0 + 1 }
                 instance.creationMode.set(createIfMissing)
                 ArchiveStore.open(baseDirectory: directory, accountId: accountId,
                     keyProvider: LocalArchiveIntegrationKey(), createIfMissing: createIfMissing, retention: retention,
                     callbackQueue: callbackQueue, clock: clock) { result in
-                    switch result {
-                    case let .success(store):
-                        let intercepted = LocalArchiveInterceptingStorage(store: store, behavior: behavior, didWrite: didWrite)
-                        let _ = instance.storage.swap(intercepted)
-                        completion(.success(intercepted))
-                    case let .failure(error):
-                        completion(.failure(error))
+                    let deliver = {
+                        switch result {
+                        case let .success(store):
+                            let intercepted = LocalArchiveInterceptingStorage(store: store, behavior: behavior, didWrite: didWrite, closeGate: closeGate)
+                            let _ = instance.storage.swap(intercepted)
+                            completion(.success(intercepted))
+                        case let .failure(error):
+                            completion(.failure(error))
+                        }
                     }
+                    if let openGate { openGate.perform { callbackQueue.async { deliver() } } } else { deliver() }
                 }
             }, protectedData: protectedData)
         self.running.append(instance)
@@ -961,6 +995,67 @@ final class LocalArchiveCoordinatorTests: XCTestCase {
         try self.awaitStatus(.ready, in: recovered)
         let retained = try self.localArchiveValue(try XCTUnwrap(recovered.coordinator).deletedMessages())
         XCTAssertEqual(retained.records.map { $0.messageId }, [89])
+        XCTAssertTrue(try self.pending().isEmpty)
+    }
+
+    func testImmediateUnlockWaitsForPreviousStoreCloseBeforeReopeningAndDeleting() throws {
+        _ = try self.queueDeletion(88, text: "discard this saved version")
+        _ = try self.queueDeletion(89, text: "keep this saved version")
+        let closeGate = LocalArchiveOperationGate()
+        defer { closeGate.release() }
+        let protectedData = ValuePromise<Bool>(true, ignoreRepeated: true)
+        let instance = self.start(protectedData: protectedData.get(), closeGate: closeGate)
+        try self.awaitStatus(.ready, in: instance)
+        let coordinator = try XCTUnwrap(instance.coordinator)
+        let page = try self.localArchiveValue(coordinator.deletedMessages())
+        let record = try XCTUnwrap(page.records.first(where: { $0.messageId == 88 }))
+        protectedData.set(false)
+        try self.awaitStatus(.locked, in: instance)
+        let _ = try self.localArchiveValue(closeGate.intercepted.get() |> filter { $0 })
+        protectedData.set(true)
+        // Two account-queue reads fence the unlock wake and its nested drain.
+        // The real old database is deliberately still open at this point.
+        for _ in 0..<2 {
+            XCTAssertTrue(try self.localArchiveValue(coordinator.deletedMessages()).unavailable)
+        }
+        XCTAssertEqual(instance.factoryOpenCount.with { $0 }, 1)
+        closeGate.release()
+        try self.awaitStatus(.ready, in: instance)
+        XCTAssertEqual(instance.factoryOpenCount.with { $0 }, 2)
+        XCTAssertTrue(try self.localArchiveValue(coordinator.deleteSnapshot(eventKey: record.eventKey)))
+        try self.stop(instance)
+        let recovered = self.start()
+        try self.awaitStatus(.ready, in: recovered)
+        XCTAssertEqual(try self.localArchiveValue(try XCTUnwrap(recovered.coordinator).deletedMessages()).records.map { $0.messageId }, [89])
+    }
+
+    func testUnlockDuringPendingOpenWaitsForStaleResultAndItsCloseAcknowledgement() throws {
+        _ = try self.queueDeletion(90, text: "retained after a cancelled open")
+        let openGate = LocalArchiveOperationGate(), closeGate = LocalArchiveOperationGate()
+        defer { openGate.release(); closeGate.release() }
+        let protectedData = ValuePromise<Bool>(true, ignoreRepeated: true)
+        let instance = self.start(protectedData: protectedData.get(), openGate: openGate, closeGate: closeGate)
+        let coordinator = try XCTUnwrap(instance.coordinator)
+        let _ = try self.localArchiveValue(openGate.intercepted.get() |> filter { $0 })
+        protectedData.set(false)
+        try self.awaitStatus(.locked, in: instance)
+        protectedData.set(true)
+        for _ in 0..<2 {
+            XCTAssertTrue(try self.localArchiveValue(coordinator.deletedMessages()).unavailable)
+        }
+        XCTAssertEqual(instance.factoryOpenCount.with { $0 }, 1)
+        openGate.release()
+        let _ = try self.localArchiveValue(closeGate.intercepted.get() |> filter { $0 })
+        for _ in 0..<2 {
+            XCTAssertTrue(try self.localArchiveValue(coordinator.deletedMessages()).unavailable)
+        }
+        XCTAssertEqual(instance.factoryOpenCount.with { $0 }, 1)
+        closeGate.release()
+        try self.awaitStatus(.ready, in: instance)
+        XCTAssertEqual(instance.factoryOpenCount.with { $0 }, 2)
+        let page = try self.localArchiveValue(coordinator.deletedMessages())
+        XCTAssertFalse(page.unavailable)
+        XCTAssertEqual(page.records.map { $0.messageId }, [90])
         XCTAssertTrue(try self.pending().isEmpty)
     }
 
