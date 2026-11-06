@@ -1,11 +1,12 @@
 # AyuGram native iOS feature matrix
 
-Audit date: **2026-11-06**. Baseline statuses below refer to application source
-`62546557807ee5d8ff468ea3d7d46ce1a090c8cf` and audited integration source
-`73b52244d4fc7e82cb82970ed9657a499d3cda2c`, before the current dashboard/feature
-implementation batch. A setting or compiled library is not marked fully working
-without real application behavior and relevant test evidence. New source authored
-in the current worktree needs a separate qualified build and UI recordings.
+Audit date: **2026-11-06**. The current compiled candidate uses application source
+`c55e19c4f5cbe0d730499035d0a0ef712f6903a9`. Historical baseline entries refer to
+`62546557`, `73b52244` and other explicitly named revisions; they do not verify
+later feature changes. The checkpoints below distinguish implementation, native
+tests, full application compilation and actual startup. No feature is marked
+fully working without relevant real-application evidence. Simulator behavior does
+not establish physical-iPhone installation, device performance or feature parity.
 
 The [dated reference audit](fork/REFERENCE-AUDIT-2026-11-05.md) verifies the requested
 **November 4, 2026 Android build 20261104**, based on exteraGram 13.1.1. Its changelog
@@ -17,7 +18,7 @@ binary. No proprietary exteraGram components are copied.
 
 ## Current verification evidence
 
-- Application source `62546557` produced the full unsigned ARM64 device build in
+- Historical application source `62546557` produced the full unsigned ARM64 device build in
   [42031063759](https://github.com/Livara-Dev/Telegram-iOS/actions/runs/42031063759).
   Seven native suites executed **1,134 passing cases**; its original Projection
   host ran zero cases. That full run failed, so it is not an all-green release.
@@ -37,7 +38,7 @@ binary. No proprietary exteraGram components are copied.
   a private selection explicitly seeded for the test. The app created private
   account metadata and retained the same directory across restart. This is not
   automatic-fallback, Telegram-login, message-preservation or physical-device proof.
-  The new [main-app-only unsigned device artifact 13438212892](https://github.com/Livara-Dev/Telegram-iOS/actions/runs/42075783146/artifacts/13438212892)
+  That historical [main-app-only unsigned device artifact 13438212892](https://github.com/Livara-Dev/Telegram-iOS/actions/runs/42075783146/artifacts/13438212892)
   omits six extensions and preserves all 880 retained members from the original
   device package. It requires independent signing and device testing.
 - The user's later report says the current IPA launches but remains visually
@@ -205,7 +206,8 @@ binary. No proprietary exteraGram components are copied.
   of its 41 cases started or a result bundle was created; a post-failure device
   inventory also timed out. This does not establish a signing root cause. The
   outer native artifact digest and all 96 inner references were verified.
-  Full simulator compilation and launch smoke were blocked by that host gate.
+  Full simulator compilation and launch smoke were blocked in that original
+  full job. The later simulator-only build below does not change its failed result.
 - The same source produced **unsigned device build 82**:
   [artifact 13479087810](https://github.com/Livara-Dev/Telegram-iOS/actions/runs/42160468600/artifacts/13479087810),
   IPA SHA-256
@@ -214,14 +216,36 @@ binary. No proprietary exteraGram components are copied.
   edges, eleven checksum references and three source/license materials were
   independently verified. Stable bundle metadata is present. This establishes
   device compilation, not installation or successful application startup.
-- A single simulator-only diagnostic,
+- The simulator-only diagnostic,
   [42174474046](https://github.com/Livara-Dev/Telegram-iOS/actions/runs/42174474046),
-  builds the unchanged `c55e19c4` application using the existing baseline workflow
-  and TextFormat target; device compilation is explicitly disabled. It is not
-  full native qualification. Any later startup/device pairing must authenticate
-  both actual origins and retain their distinct run IDs. A separate synthetic
-  host signing control must preserve all code, resources and 41 assertions and
-  cannot turn the failed original qualification into a passing result.
+  successfully compiled the full unchanged `c55e19c4` application and passed all
+  **270 TextFormat cases**, with device compilation disabled. Its simulator-only
+  [artifact 13490005243](https://github.com/Livara-Dev/Telegram-iOS/actions/runs/42174474046/artifacts/13490005243)
+  is build **1**, with IPA SHA-256
+  `df7a313e263440d92f2ab503e7ee1c1afb328774f6d631b3d052169f2f2e8e10`.
+  This repeats a suite already counted in the 1,473 native passes; it does not
+  execute Projection's 41 cases or supply full native qualification. Any later
+  startup/device pairing must retain this simulator origin and the distinct
+  device-build-82 origin at the same source. Current c55 authorization startup
+  and physical-device behavior remain unverified.
+- The live synthetic-host diagnostic
+  [42181777928](https://github.com/Livara-Dev/Telegram-iOS/actions/runs/42181777928)
+  verified the owned Xcode PID during its bounded observation. The 3-second app
+  container query and 10-second sample command both timed out with zero returned
+  bytes. No container evidence or wait stack was obtained; other process roles
+  were explicitly unmeasured. XCTest reached its unchanged 300-second limit with
+  **zero of 41 cases started**, without assertion retries. No raw process sample
+  or process-argument/environment dumps were published; private paths were redacted.
+  These results do not establish host absence, a deadlock or a startup root cause,
+  and do not turn the failed original qualification into a passing result.
+- Current-source [startup replay 42191212317](https://github.com/Livara-Dev/Telegram-iOS/actions/runs/42191212317)
+  passed preflight, exact-origin hashes, source signatures and main-app-only
+  code/resource preservation, then `simctl install` exceeded its unchanged
+  **120-second** bound. No application launched; no screenshot, recording or
+  derived device variant was produced. All five diagnostic checksum references
+  were verified. This is an installation blocker, not evidence of an application,
+  authentication or Keychain failure. A fixed historical-versus-current control
+  remains an optional diagnostic, not a replacement for the current startup gate.
 
 ## Core features and native integration
 

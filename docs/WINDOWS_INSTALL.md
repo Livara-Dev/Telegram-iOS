@@ -1,6 +1,38 @@
 # Windows build download and iPhone installation
 
-The newest SideStore candidate is the **main-app-only unsigned ARM64 device IPA**
+The current compiled **unsigned ARM64 device candidate** is build **82**, source
+`c55e19c4f5cbe0d730499035d0a0ef712f6903a9`, from
+[run 42160468600](https://github.com/Livara-Dev/Telegram-iOS/actions/runs/42160468600).
+Download [artifact 13479087810](https://github.com/Livara-Dev/Telegram-iOS/actions/runs/42160468600/artifacts/13479087810)
+and extract `fork-baseline-unsigned-device/Telegram.ipa`. Its IPA SHA-256 is:
+
+`addaaf68000d010b84cea0d9798b9a234f43bfabc62845cdbf18fc5f14c4605e`
+
+All twelve unsigned ARM64 iPhoneOS images, five frameworks and 113 bundled
+load-command dependencies were checked. The matching source compiled as a full
+simulator app in [42174474046](https://github.com/Livara-Dev/Telegram-iOS/actions/runs/42174474046),
+build **1**; that separate run repeated all 270 TextFormat cases successfully.
+The original qualification passed **1,473 actual native cases** across seven
+suites, including all sixteen Passcode and eighteen encrypted-playback cases.
+Projection started zero of its 41 cases, so full qualification remains failed.
+The repeated TextFormat suite is not additional unique coverage.
+
+[Current startup replay 42191212317](https://github.com/Livara-Dev/Telegram-iOS/actions/runs/42191212317)
+passed source/signature/resource checks but timed out in `simctl install` after
+120 seconds, before any application launch. No current-source startup pass,
+main-app-only device package or physical-device repair is established by that
+run. This original full candidate includes six extensions and still requires
+valid signing before installation. Artifact ZIP and IPA checksums differ.
+
+Verify the current full candidate with Windows PowerShell:
+
+```powershell
+Get-FileHash .\Telegram.ipa -Algorithm SHA256
+```
+
+## Historical build 54
+
+The older SideStore candidate is the **main-app-only unsigned ARM64 device IPA**
 from [run 42075783146](https://github.com/Livara-Dev/Telegram-iOS/actions/runs/42075783146).
 Download [artifact 13438212892](https://github.com/Livara-Dev/Telegram-iOS/actions/runs/42075783146/artifacts/13438212892)
 and extract `AyuGram-62546557-main-app-only-unsigned-device.ipa`.
@@ -12,7 +44,7 @@ Verify it with Windows PowerShell:
 Get-FileHash .\AyuGram-62546557-main-app-only-unsigned-device.ipa -Algorithm SHA256
 ```
 
-The startup/Keychain/video repairs are included, and the matching simulator
+That historical source includes startup/Keychain/video repairs, and its matching simulator
 variant passed two authorization-screen launches with private storage retained.
 Six extensions are omitted; app/framework bytes are preserved. This IPA is
 unsigned, requires independent signing, and has not been physically verified on
@@ -39,9 +71,11 @@ replays displayed the actual authorization screen with the simulator extensions
 removed. The new startup repair has not been physically verified on the owner's
 iPhone. The older `9a040579` installation was reported to remain black at launch;
 it is not the current recommended candidate. See [SideStore startup evidence and
-update precautions](SIDESTORE_INSTALL.md) for the current main-app-only control
+update precautions](SIDESTORE_INSTALL.md) for that historical main-app-only control
 and any separately published extension-free package. This is not a qualified
 release or a claim of feature parity.
+
+## Current build and signing workflow
 
 Use **Archive application integration (hosted macOS)** on the single
 `ci/verify-latest` verification branch. Feature/PR commits no longer start three
@@ -51,17 +85,19 @@ latest pending successor. Existing submitted jobs keep their original settings.
 See [queue policy and observed capacity failure](fork/CI-QUEUE.md).
 
 The integration and unsigned-device jobs use the same commit and may execute
-alongside each other. `application-build` now runs independently to test startup even
-when an unrelated suite fails; all same-commit suites remain release gates.
-The device build has no simulator dependency; its output still needs same-commit
+alongside each other. Full qualification runs native gates and simulator
+compilation in one private build job; a native gate failure can prevent app
+compilation. The device job is independent. The separate simulator diagnostic
+`42174474046` compiled the same `c55e19c4` source without rebuilding device82;
+it does not replace Projection's remaining gate or change the original failed
 qualification. Manual standalone workflows are diagnostics, not automatic
 second builds. A temporary, hash-verified unsigned rules overlay omits profile
 embedding for the unsigned build only. No signing credentials are synthesized.
 
 | Result | Downloadable artifact | What it establishes |
 | --- | --- | --- |
-| iOS integration tests | `archive-integration-tests-<commit>` | Test logs and checksums, not an app package. Available before full application compilation finishes. |
-| Simulator application compilation | `archive-integration-<commit>` | On success, `fork-baseline-simulator/Telegram.ipa` and its manifest/checksum. This package is for the simulator and cannot run on a physical iPhone. |
+| Native evidence | `archive-integration-<commit>` in full scope; `archive-integration-tests-<commit>` in native scopes | Test logs and checksums. Logs alone do not establish a successful app build. |
+| Simulator application compilation | `archive-integration-<commit>`; standalone diagnostic `fork-baseline-<commit>` | On compilation success, `fork-baseline-simulator/Telegram.ipa` and its manifest/checksum. Simulator only, not installable on an iPhone. |
 | Verified startup variant | `startup-main-app-only-unsigned-device-<source>` | Root-level named IPA, manifest and checksums; six extensions removed. Simulator startup passed; device signing and physical verification remain required. |
 | Unsigned device compilation | `archive-unsigned-device-<commit>` | On success, `fork-baseline-unsigned-device/Telegram.ipa` and its manifest/checksum. It still requires independent signing before installation. |
 | Windows signing and physical installation | Produced locally by your chosen signing tool | A different, signed package. Installation, entitlements and runtime behavior must be verified separately on the iPhone. |
@@ -73,9 +109,9 @@ publishes library test evidence only. Earlier **Fork baseline (hosted macOS)**
 runs retain their `fork-baseline-<commit>` artifact name and their original job
 layout. A successful run of one branch does not validate another branch.
 
-The numbered build-output paths below describe the original full package. For
-the new extension-free candidate, use its root-level filename and checksum
-listed at the start of this document, then follow the same local signing steps.
+The numbered build-output paths below describe a full device package. For an
+explicitly identified extension-free artifact, use its named root-level IPA and
+matching checksum, then follow the same local signing steps.
 
 1. Open the authorized fork `Livara-Dev/Telegram-iOS`. In Settings →
    Secrets and variables → Actions, set repository secrets `TELEGRAM_API_ID` and
@@ -103,9 +139,10 @@ listed at the start of this document, then follow the same local signing steps.
 4. Compare the IPA to its SHA-256 checksum in Windows PowerShell:
    `Get-FileHash .\Telegram.ipa -Algorithm SHA256`, from the extracted
    `fork-baseline-unsigned-device` directory. Compare with its `SHA256SUMS` and
-   manifest. Before publication, the workflow checks the bundle ID, declared SDK
-   and ARM64 Mach-O platform of the main executable. This is not signature or
-   runtime verification. Select the **device** output; a simulator IPA cannot run on an iPhone,
+   manifest. Before publication, the workflow checks bundle metadata and every
+   embedded unsigned ARM64 iPhoneOS image, rejects signatures/profiles and
+   resolves bundled load-command dependencies. System-library availability,
+   dynamic loading, valid signing and runtime behavior remain separate checks. Select the **device** output; a simulator IPA cannot run on an iPhone,
    even if both report arm64. Build logs have their own `SHA256SUMS` under
    `fork-evidence`.
 5. For local signing, obtain Sideloadly only from https://sideloadly.io/ and follow
@@ -137,5 +174,6 @@ advanced filtering remain unfinished. Do not use sensitive accounts for
 validation until the documented privacy/security gates pass.
 
 For personal signing, iOS 27.2 black-screen investigation and data-preserving
-updates, see [the SideStore guide](SIDESTORE_INSTALL.md). New qualification IPAs
-use the workflow run number for `CFBundleVersion` instead of always using `1`.
+updates, see [the SideStore guide](SIDESTORE_INSTALL.md). Full qualification
+builds use their workflow build number. The separate current simulator diagnostic
+used build1; the paired original device candidate retains build82 unchanged.

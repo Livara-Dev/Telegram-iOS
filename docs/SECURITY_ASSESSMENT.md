@@ -1,6 +1,6 @@
 # Preliminary security assessment
 
-Date: 2026-11-04. This is a source-based threat assessment and a list of acceptance requirements, **not a finding that the app is secure**. The reviewed snapshots are Telegram-iOS `279f89e4d4f63f17227bf877dc3d8990f22ecd58` and AyuGram4A `7013145676d36d82ee13c02a89f72097b7490dcd`. The companion architecture and license audits contain source references. No successful full iOS application build, signed-device test, penetration test, cryptographic review or network privacy verification is established by this document.
+Initial assessment date: 2026-11-04. This source-based threat assessment is **not a finding that the app is secure**. The initial reviewed snapshots were Telegram-iOS `279f89e4d4f63f17227bf877dc3d8990f22ecd58` and AyuGram4A `7013145676d36d82ee13c02a89f72097b7490dcd`. Later checkpoints below record native tests and successful full device and simulator compilation at `c55e19c4`. These results do not establish signed physical-device behavior, a penetration test, a cryptographic review or runtime network-privacy verification. The companion architecture and license audits contain source references.
 
 
 ## Startup and storage review, 2026-11-05
@@ -57,7 +57,7 @@ was changed to obtain the startup pass or IPA.
 A separate source review found ninety modified upstream text files lacking
 dated fork-change notices. The notice-only patch is preserved in
 [`76d671b1`](https://github.com/Livara-Dev/Telegram-iOS/commit/76d671b10010a073bd8b6514d533ad5cf3a4c093)
-and adopted in integration source `20199728` for the next required repair build.
+and adopted in integration source `20199728` before the later `c55e19c4` builds.
 Dates come from each file's Git author-date history; removing the inserted
 comments restores every preceding byte. Existing attribution, SwiftPM/XML
 directives, build statements and plist values are preserved. This addresses the
@@ -94,25 +94,47 @@ missing result-bundle metadata is a consequence, not an established root cause.
 The post-failure simulator inventory timed out. The same SDK build-version warning
 also appears in passing hosted suites and does not establish causation.
 
-The existing simulator-only baseline workflow is building that exact application
-source in run `42174474046`, with device compilation disabled. It cannot claim a
-passing full native suite. A later startup check may pair its verified simulator
-artifact only with the already verified `c55e19c4` device build 82 from run
-`42160468600`; reports must retain both origins and actual build numbers. The
-test-host signing diagnostic uses only synthetic captured products, must preserve
-all executable code and XCTest content, and cannot sign a production device app
-or relabel the original failed qualification. No physical startup is verified.
+The simulator-only baseline workflow successfully compiled the full unchanged
+`c55e19c4` application in
+[42174474046](https://github.com/Livara-Dev/Telegram-iOS/actions/runs/42174474046)
+and passed all 270 TextFormat cases, with device compilation disabled. This is a
+repeat of one of the seven suites above, not additional unique native coverage
+or a passing full qualification. A later startup check may pair that verified
+simulator build **1** only with the already verified same-source device build
+**82** from run `42160468600`; reports must retain both actual origins and build
+numbers. The separate success does not change the original failed qualification.
+The test-host signing diagnostic uses only synthetic captured products, preserves
+all executable code and XCTest content, and cannot sign a production device app.
+Current c55 authorization startup and physical-device behavior remain unverified.
 
 The actual re-sealed control `42176767770` passed strict verification while
 preserving code, signing identity metadata and all XCTest content; it still
 started zero of 41 cases. Post-command simulator queries timed out, but those
-observations occurred after cleanup and do not prove an earlier deadlock. The
-next opt-in diagnostic is restricted to the known synthetic capture and live
-Xcode child. It observes once before timeout, with private file/command budgets
-and fixed public status/wait-category fields. It never publishes raw process
-samples, arguments, environments or paths, changes the test deadline, or turns
-missing tests into a pass. Actual sampling behavior still requires native
-verification.
+observations occurred after cleanup and do not prove an earlier deadlock.
+
+The later live diagnostic
+[42181777928](https://github.com/Livara-Dev/Telegram-iOS/actions/runs/42181777928)
+verified the owned Xcode PID during its one bounded observation. Its 3-second
+app-container query and 10-second sample command both timed out with zero
+returned bytes. No container evidence or wait stack was obtained; the other
+process roles remained explicitly unmeasured. The unchanged 300-second XCTest
+invocation started zero of 41 cases, with no assertion retries. The verified
+artifact contained no raw process samples or process-argument/environment dumps;
+private paths were redacted.
+This verifies the ownership gate and bounded timeout handling, not successful
+sampling, host absence, deadlock or a startup root cause. Missing tests remain
+unexecuted; the diagnostic does not qualify the application or repair the failed
+original run.
+Current-source [startup replay 42191212317](https://github.com/Livara-Dev/Telegram-iOS/actions/runs/42191212317)
+passed its corrected preflight and strict source/signature/resource checks, then
+hit the unchanged 120-second `simctl install` deadline. No application process,
+private selection, Keychain probe or authentication initialization ran; no
+screenshots, recording or derived device variant exists. The five diagnostic
+checksum references were verified. Static comparison with the older launching
+package found no explanatory platform, signature or missing-resource defect.
+This does not establish the installer's cause or repair the owner's black screen.
+A historical control must retain its own source/proof and cannot satisfy current
+application startup or device-publication gates.
 
 ## Additional source review at `f295948a`
 
@@ -233,7 +255,7 @@ Use an archive-specific export schema rather than uploading a live database plus
 
 ## Hosted macOS build and Windows installation
 
-GitHub-hosted macOS can be a build target only when its installed Xcode/SDK versions satisfy the pinned repository. This source pins Xcode 27.1 and macOS 27; hosted run 41792257376 verified both on the `xcode-27` image. Full compilation and device behavior remain unverified. Windows/Sideloadly can be an installation path, not an Xcode compilation substitute.
+GitHub-hosted macOS can be a build target only when its installed Xcode/SDK versions satisfy the pinned repository. This source pins Xcode 27.1 and macOS 27; hosted run 41792257376 verified both on the `xcode-27` image. Successful full device and simulator compilation at `c55e19c4` is recorded above; installed physical-device behavior remains unverified. Windows/Sideloadly can be an installation path, not an Xcode compilation substitute.
 
 Keep unsigned build/testing and optional signing as distinct CI jobs/artifacts with explicit status. Secrets belong in the selected repository/environment, with protected signing access and no untrusted pull-request code allowed to consume them. The build must not download arbitrary “latest” signing tools or binary patches. Record source revision, dependency pins, toolchain versions and IPA hash; provide matching GPL corresponding source without secrets. Clean ephemeral signing keychains and generated configuration and restrict artifact retention/access. Telegram API identifiers embedded in a mobile binary are extractable; hiding them from logs does not make them a client authentication secret.
 
@@ -241,7 +263,7 @@ A Sideloadly re-sign changes the artifact; record its identity/hash separately w
 
 ## Evidence required to close this assessment
 
-The present evidence is source inspection and the official API/license pages captured by the license audit. Future releases need passing, named test results tied to a revision; a successful full build; device tests of the installed signing variant; reviewed dependency/source/license manifests; and runtime disclosure/retention checks using synthetic accounts and canary content. Report failed, skipped and unavailable checks separately. Until then every feature and control above remains unverified.
+The initial source review established these acceptance requirements. Later checkpoints now supply named native tests and full builds; remaining release requirements include device tests of the installed signing variant, complete dependency/source/license review and runtime disclosure/retention checks using synthetic accounts and canary content. Report failed, unexecuted, skipped and unavailable checks separately. Passing native tests does not establish every feature or control in the running application, a signed physical-device build or complete feature parity.
 
 
 ## Experimental application integration: verification pending

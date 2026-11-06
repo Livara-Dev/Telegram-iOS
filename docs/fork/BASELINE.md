@@ -1,5 +1,13 @@
 # Baseline execution record and runbook
 
+The execution timeline below is historical: each entry records what was known
+at its named checkpoint. Current application source `c55e19c4` has unsigned
+device build 82, a separately compiled full simulator application and 1,473
+passing native cases across seven suites. The remaining 41-case Projection host
+started no tests, so full qualification is still failed. See the
+[current feature matrix](../AYUGRAM_FEATURE_MATRIX.md) and
+[installation guide](../SIDESTORE_INSTALL.md) for current artifact/startup status.
+
 ## GitHub continuation
 
 The user authorized the actual fork `Livara-Dev/Telegram-iOS`. Both prepared
@@ -23,7 +31,8 @@ diagnostic artifacts. It then failed a portable test that compared a canonical
 Bazel path against an unresolved `/var` alias; macOS resolves that alias through
 `/private/var`. The test now expects the canonical path and exercises a directory
 symlink explicitly. No application compile ran in that job. Superseded branch
-runs are now canceled when a new fix is pushed, avoiding redundant cold builds.
+runs were canceled under that earlier policy. The current [queue policy](CI-QUEUE.md)
+preserves active jobs and retains the latest pending qualification.
 
 [Run 41792257376](https://github.com/Livara-Dev/Telegram-iOS/actions/runs/41792257376)
 passed all 95 portable checks, API Secrets validation, pinned toolchain verification
