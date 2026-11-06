@@ -1,8 +1,11 @@
 name: Unsigned device delivery (qualified source)
 
-# Review and publish this draft on a tooling branch before dispatch. This adds
-# no automatic trigger and does not alter the existing qualification workflows.
+# A push starts delivery only when this branch's explicit request file changes.
+# Publish workflow changes first; add the request in a separate reviewed commit.
 on:
+  push:
+    branches: [ci/qualified-device-delivery]
+    paths: [ci/unsigned-device-request.json]
   workflow_dispatch:
     inputs:
       qualification_run:
@@ -20,7 +23,7 @@ permissions:
   actions: read
 
 concurrency:
-  group: ayugram-device-delivery-${{ inputs.expected_source }}
+  group: ayugram-device-delivery-${{ inputs.expected_source || '5d241267735b3958c225681d173853568bab705d' }}
   cancel-in-progress: false
 
 env:
@@ -29,7 +32,7 @@ env:
 
 jobs:
   qualification:
-    if: github.repository == 'Livara-Dev/Telegram-iOS' && github.event_name == 'workflow_dispatch'
+    if: github.repository == 'Livara-Dev/Telegram-iOS' && (github.event_name == 'workflow_dispatch' || (github.event_name == 'push' && github.ref == 'refs/heads/ci/qualified-device-delivery'))
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     outputs:
@@ -47,12 +50,22 @@ jobs:
       - name: Test delivery guards before reading qualification artifacts
         run: python3 -m unittest discover -s delivery-tooling/tools/fork_baseline/device_delivery_tests -v
 
+      - name: Resolve the explicit delivery request
+        id: delivery_request
+        env:
+          MANUAL_QUALIFICATION_RUN: ${{ inputs.qualification_run }}
+          MANUAL_EXPECTED_SOURCE: ${{ inputs.expected_source }}
+        run: |
+          set -euo pipefail
+          python3 delivery-tooling/tools/fork_baseline/device_delivery.py request \
+            --request-file delivery-tooling/ci/unsigned-device-request.json
+
       - name: Verify completed native qualification and derive application source
         id: native_gate
         env:
           GH_TOKEN: ${{ github.token }}
-          QUALIFICATION_RUN: ${{ inputs.qualification_run }}
-          EXPECTED_SOURCE: ${{ inputs.expected_source }}
+          QUALIFICATION_RUN: ${{ steps.delivery_request.outputs.qualification_run }}
+          EXPECTED_SOURCE: ${{ steps.delivery_request.outputs.expected_source }}
         run: |
           set -euo pipefail
           umask 077

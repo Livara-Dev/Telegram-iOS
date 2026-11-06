@@ -23,6 +23,7 @@ ADDED_PREFIXES = (
     "submodules/TelegramUI/Components/Chat/ChatMessageLocalFilterBubbleContentNode/",
 )
 ADDED_FILES = {
+    'ci/unsigned-device-request.json',
     '.github/workflows/unsigned-device-delivery.yml',
     '.github/workflows/ayu-extended-retention.yml',
     'submodules/TelegramUI/Components/Chat/ChatHistoryEntry/Sources/ChatLocalArchiveProjection.swift',

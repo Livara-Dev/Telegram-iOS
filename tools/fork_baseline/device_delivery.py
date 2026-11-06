@@ -34,6 +34,8 @@ MAX_ARCHIVE = 64 * 1024**2
 MAX_FILE = 2 * 1024**2
 MAX_LOG = 16 * 1024**2
 DELIVERY_WORKFLOW = '.github/workflows/unsigned-device-delivery.yml'
+DELIVERY_BRANCH = 'ci/qualified-device-delivery'
+PUSH_QUALIFICATION_RUN = 42272821047
 BUILD_MODES = {
     'unsigned-device': ('unsigned-device-build', 'Compile unsigned device package', 'device'),
     'simulator': ('application-build', 'Build the full simulator app and run TextFormat regression tests', 'simulator'),
@@ -68,6 +70,23 @@ def document(data):
         return json.loads(data, object_pairs_hook=pairs)
     except (ValueError, UnicodeError):
         raise Blocked('invalid_json') from None
+
+
+def resolve_request(event, ref, request_file, manual_run='', manual_source=''):
+    """A push requires the sole fixed-source request on the delivery branch."""
+    if event == 'workflow_dispatch':
+        require(isinstance(manual_run, str) and re.fullmatch(r'[1-9][0-9]{0,18}', manual_run)
+                and int(manual_run) < 2**63 and manual_source == SOURCE, 'invalid_manual_delivery_request')
+        return int(manual_run), manual_source
+    require(event == 'push' and ref == 'refs/heads/' + DELIVERY_BRANCH, 'unsupported_delivery_trigger')
+    require(not request_file.is_symlink() and request_file.is_file()
+            and 0 < request_file.stat().st_size <= 1024, 'delivery_request_file_missing_or_unsafe')
+    value = document(request_file.read_bytes())
+    require(isinstance(value, dict) and set(value) == {'schema', 'qualification_run', 'source_commit'}
+            and type(value.get('schema')) is int and value['schema'] == 1
+            and type(value.get('qualification_run')) is int and value['qualification_run'] == PUSH_QUALIFICATION_RUN
+            and value.get('source_commit') == SOURCE, 'invalid_push_delivery_request')
+    return value['qualification_run'], value['source_commit']
 
 
 def api(endpoint):
@@ -334,7 +353,10 @@ def current_artifacts(mode, run, jobs, listing, source):
             and run.get('repository', {}).get('full_name') == REPOSITORY
             and run.get('head_repository', {}).get('full_name') == REPOSITORY
             and run.get('path', '').split('@', 1)[0] == DELIVERY_WORKFLOW
-            and run.get('event') == 'workflow_dispatch', 'delivery_run_origin_mismatch')
+            and (run.get('event') == 'workflow_dispatch'
+                 or (run.get('event') == 'push' and run.get('head_branch') == DELIVERY_BRANCH
+                     and os.environ.get('GITHUB_REF') == 'refs/heads/' + DELIVERY_BRANCH)),
+            'delivery_run_origin_mismatch')
     require(jobs.get('total_count') == len(jobs.get('jobs', [])) <= 100, 'delivery_job_list_incomplete')
     selected = [job for job in jobs['jobs'] if job.get('name') == BUILD_MODES[mode][0]]
     require(len(selected) == 1, 'delivery_build_job_missing')
@@ -481,11 +503,13 @@ def package(root, qualification_dir, device_root, simulator_root, destination, b
                     source_device_workflow_commit=origins['unsigned-device']['workflow_commit'],
                     source_simulator_workflow_commit=origins['simulator']['workflow_commit'],
                     workflow_dispatch_commit=os.environ['GITHUB_SHA'],
+                    delivery_event=run['event'], delivery_branch=run.get('head_branch'),
                     application_source_commit=source, startup_control='explicitFreshPinnedSelection',
                     automatic_storage_fallback_verified=False, telegram_authentication_verified=False)
     (destination / 'manifest.json').write_text(json.dumps(manifest, indent=2) + '\n')
     provenance = {'schema': 1, 'source_commit': source, 'workflow_commit': os.environ['GITHUB_WORKFLOW_SHA'],
                   'workflow_dispatch_commit': os.environ['GITHUB_SHA'], 'workflow': DELIVERY_WORKFLOW,
+                  'delivery_event': run['event'], 'delivery_branch': run.get('head_branch'),
                   'qualification': qualification, 'build_origins': origins,
                   'existing_package_guard_used': 'tools/fork_baseline/device_variant.py:package',
                   'legacy_origin_serializer_supports_this_workflow': False,
@@ -511,6 +535,8 @@ def package(root, qualification_dir, device_root, simulator_root, destination, b
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     sub = parser.add_subparsers(dest='command', required=True)
+    request_parser = sub.add_parser('request')
+    request_parser.add_argument('--request-file', required=True, type=Path)
     gate_parser = sub.add_parser('gate')
     gate_parser.add_argument('--run', required=True, type=int)
     gate_parser.add_argument('--expected-source', required=True)
@@ -531,7 +557,14 @@ def main():
     pack.add_argument('--build-number', required=True, type=int)
     args = parser.parse_args()
     try:
-        if args.command == 'gate':
+        if args.command == 'request':
+            run_id, source = resolve_request(os.environ.get('GITHUB_EVENT_NAME'), os.environ.get('GITHUB_REF'),
+                                             args.request_file, os.environ.get('MANUAL_QUALIFICATION_RUN', ''),
+                                             os.environ.get('MANUAL_EXPECTED_SOURCE', ''))
+            with Path(os.environ['GITHUB_OUTPUT']).open('a') as stream:
+                stream.write('qualification_run=' + str(run_id) + '\nexpected_source=' + source + '\n')
+            print('Explicit delivery request validated; qualification remains required before any build.')
+        elif args.command == 'gate':
             gate(args.run, args.expected_source, args.inventory, args.output)
         elif args.command == 'verify-build':
             verify_build(args.mode, args.source_root.resolve(), args.qualification.resolve(), args.output.resolve(), args.build_number)

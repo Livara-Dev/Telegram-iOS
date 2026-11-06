@@ -178,6 +178,75 @@ class MetadataTests(unittest.TestCase):
     def test_json_duplicate_keys_rejected(self):
         with self.assertRaises(delivery.Blocked): delivery.document('{"source_commit":"a","source_commit":"b"}')
 
+    def test_current_artifacts_accepts_push_only_on_the_exact_delivery_branch(self):
+        tooling = 'e' * 40
+        run, _, _ = metadata()
+        run.update(head_sha=tooling, path=delivery.DELIVERY_WORKFLOW, event='push',
+                   head_branch=delivery.DELIVERY_BRANCH, run_attempt=2)
+        job = {'id': 19, 'name': 'unsigned-device-build', 'head_sha': tooling, 'run_id': RUN,
+               'status': 'completed', 'conclusion': 'success', 'steps': [
+                   {'name': delivery.BUILD_MODES['unsigned-device'][1], 'status': 'completed', 'conclusion': 'success'}]}
+        listing = {'total_count': 1, 'artifacts': [{'id': 30, 'name': 'device-delivery-device-' + delivery.SOURCE,
+                   'expired': False, 'size_in_bytes': 200, 'digest': 'sha256:' + 'a' * 64,
+                   'workflow_run': {'id': RUN, 'head_sha': tooling, 'repository_id': 16, 'head_repository_id': 16}}]}
+        with patch.dict(os.environ, GITHUB_RUN_ID=str(RUN), GITHUB_RUN_ATTEMPT='2', GITHUB_SHA=tooling,
+                        GITHUB_REF='refs/heads/' + delivery.DELIVERY_BRANCH):
+            self.assertEqual(delivery.current_artifacts('unsigned-device', run, {'total_count': 1, 'jobs': [job]},
+                                                       listing, delivery.SOURCE)[0]['id'], 30)
+            for event, branch in (('push', 'master'), ('push', 'ci/verify-latest'), ('pull_request', delivery.DELIVERY_BRANCH)):
+                bad = {**run, 'event': event, 'head_branch': branch}
+                with self.subTest(event=event, branch=branch), self.assertRaises(delivery.Blocked):
+                    delivery.current_artifacts('unsigned-device', bad, {'total_count': 1, 'jobs': [job]}, listing, delivery.SOURCE)
+            with patch.dict(os.environ, GITHUB_REF='refs/heads/master'), self.assertRaises(delivery.Blocked):
+                delivery.current_artifacts('unsigned-device', run, {'total_count': 1, 'jobs': [job]}, listing, delivery.SOURCE)
+
+
+class ExplicitRequestTests(unittest.TestCase):
+    def request(self, value, event='push', ref='refs/heads/' + delivery.DELIVERY_BRANCH):
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / 'request.json'
+            path.write_text(value if isinstance(value, str) else json.dumps(value))
+            return delivery.resolve_request(event, ref, path)
+
+    def valid_request(self):
+        return {'schema': 1, 'qualification_run': RUN, 'source_commit': delivery.SOURCE}
+
+    def test_exact_push_request_resolves_without_manual_inputs(self):
+        self.assertEqual(self.request(self.valid_request()), (RUN, delivery.SOURCE))
+
+    def test_wrong_branch_event_run_source_schema_and_extra_fields_are_rejected(self):
+        for field, value in (('schema', True), ('schema', 2), ('qualification_run', str(RUN)),
+                             ('qualification_run', RUN + 1), ('source_commit', 'c' * 40), ('extra', 'unexpected')):
+            request = {**self.valid_request(), field: value}
+            with self.subTest(field=field, value=value), self.assertRaises(delivery.Blocked): self.request(request)
+        for event, ref in (('push', 'refs/heads/master'), ('push', 'refs/heads/ci/verify-latest'),
+                           ('push', 'refs/tags/ci/qualified-device-delivery'), ('pull_request', 'refs/heads/' + delivery.DELIVERY_BRANCH)):
+            with self.subTest(event=event, ref=ref), self.assertRaises(delivery.Blocked):
+                self.request(self.valid_request(), event, ref)
+        with self.assertRaises(delivery.Blocked): self.request('{}')
+        with self.assertRaises(delivery.Blocked): self.request('x' * 1025)
+        with self.assertRaises(delivery.Blocked):
+            self.request('{"schema":1,"schema":1,"qualification_run":42272821047,"source_commit":"' + delivery.SOURCE + '"}')
+
+    def test_missing_and_symlink_request_files_are_rejected(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / 'request.json'
+            with self.assertRaises(delivery.Blocked):
+                delivery.resolve_request('push', 'refs/heads/' + delivery.DELIVERY_BRANCH, path)
+            target = Path(temporary) / 'target.json'; target.write_text(json.dumps(self.valid_request()))
+            path.symlink_to(target)
+            with self.assertRaises(delivery.Blocked):
+                delivery.resolve_request('push', 'refs/heads/' + delivery.DELIVERY_BRANCH, path)
+
+    def test_manual_inputs_still_work_without_a_request_file(self):
+        missing = Path('/nonexistent-delivery-request.json')
+        self.assertEqual(delivery.resolve_request('workflow_dispatch', 'refs/heads/other-tooling', missing,
+                                                 str(RUN), delivery.SOURCE), (RUN, delivery.SOURCE))
+        for run, source in (('', delivery.SOURCE), ('0', delivery.SOURCE), (str(RUN), 'c' * 40),
+                             ('1; echo bad', delivery.SOURCE), (str(2**63), delivery.SOURCE)):
+            with self.subTest(run=run, source=source), self.assertRaises(delivery.Blocked):
+                delivery.resolve_request('workflow_dispatch', 'refs/heads/other-tooling', missing, run, source)
+
 
 if __name__ == '__main__':
     unittest.main()
