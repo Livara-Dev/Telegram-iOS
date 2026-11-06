@@ -13,8 +13,33 @@ DEVICE_TYPE = 'com.apple.CoreSimulator.SimDeviceType.iPhone-15-Pro'
 RUNTIME = 'com.apple.CoreSimulator.SimRuntime.iOS-27-0'
 
 
+METADATA_FAILURE_CODES = frozenset({
+    'invalid_owned_container_capability',
+    'invalid_owned_container_request',
+    'owned_application_identity_mismatch',
+    'owned_container_capability_changed',
+    'owned_container_inventory_changed',
+    'owned_container_inventory_limit',
+    'owned_container_metadata_changed',
+    'owned_container_not_unique',
+    'owned_device_identity_changed',
+    'owned_device_identity_unverified',
+    'private_file_changed',
+    'private_file_unavailable',
+    'unexpectedMetadataFailure',
+    'unidentified_owned_container_metadata',
+    'unsafe_owned_container',
+    'unsafe_owned_container_metadata',
+    'unsafe_private_file',
+    'unsupported_owned_container_layout',
+})
+
+
 class PlanError(RuntimeError):
-    pass
+    def __init__(self, reason):
+        self.code = reason if type(reason) is str and reason in METADATA_FAILURE_CODES else 'unexpectedMetadataFailure'
+        # Do not retain an unknown/path-bearing reason in exception args.
+        super().__init__('Owned metadata validation failed')
 
 
 def private_bytes(path, maximum=MAX_PRIVATE, allow_empty=False):
@@ -160,3 +185,118 @@ def owned_device_absence(identifier, name, *, home=None):
         return {**proof, 'state': 'verified', 'reason': None, 'absence_verified': True}
     except (OSError, ValueError, TypeError, RuntimeError, PlanError):
         return proof
+
+
+class ContainerCapability:
+    """Private metadata-bound path; never serialize this object or its fields."""
+    __slots__ = ('path', 'role', 'bundle_id', 'executable', 'identifier', 'name', 'token')
+
+    def __init__(self, path, role, bundle_id, executable, identifier, name, token):
+        self.path, self.role, self.bundle_id, self.executable = path, role, bundle_id, executable
+        self.identifier, self.name, self.token = identifier, name, token
+
+
+def _container_directory(path):
+    value = path.lstat()
+    if not stat.S_ISDIR(value.st_mode) or value.st_uid != os.getuid():
+        raise PlanError('unsafe_owned_container')
+    return (value.st_dev, value.st_ino, value.st_uid, value.st_mode)
+
+
+def _container_file(path, maximum):
+    import hashlib
+    before = path.lstat()
+    if not stat.S_ISREG(before.st_mode) or before.st_uid != os.getuid() or before.st_nlink != 1:
+        raise PlanError('unsafe_owned_container_metadata')
+    raw = private_bytes(path, maximum)
+    after = path.lstat()
+    fields = ('st_dev', 'st_ino', 'st_uid', 'st_mode', 'st_nlink', 'st_size', 'st_mtime_ns', 'st_ctime_ns')
+    token = tuple(getattr(before, field) for field in fields)
+    if token != tuple(getattr(after, field) for field in fields):
+        raise PlanError('owned_container_metadata_changed')
+    try:
+        value = plistlib.loads(raw)
+    except Exception:
+        raise PlanError('unidentified_owned_container_metadata') from None
+    return value, (token, hashlib.sha256(raw).hexdigest())
+
+
+def owned_container_capability(identifier, name, role, bundle_id, executable):
+    """Adapt the existing reviewed container_observations algorithm to one exact app.
+
+    Inspect only MCM metadata and app Info.plist, never account/data contents.
+    Missing, unknown or multiple candidates cannot grant a write capability.
+    """
+    if (role not in {'data', 'app'} or not isinstance(bundle_id, str)
+            or re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9_.-]{0,254}', bundle_id) is None
+            or not isinstance(executable, str)
+            or re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9_.-]{0,127}', executable) is None):
+        raise PlanError('invalid_owned_container_request')
+    identity = owned_device_identity(identifier, name)
+    if identity.get('identity_verified') is not True:
+        raise PlanError('owned_device_identity_unverified')
+    deadline = time.monotonic() + 2
+    def budget():
+        if time.monotonic() > deadline: raise PlanError('owned_container_inventory_limit')
+    home = Path.home().resolve(strict=True)
+    root = home
+    fixed = ('Library', 'Developer', 'CoreSimulator', 'Devices', identifier, 'data',
+        'Containers', 'Data' if role == 'data' else 'Bundle', 'Application')
+    _container_directory(home)
+    for part in fixed:
+        budget(); root = root / part; _container_directory(root)
+    root_before = root.lstat()
+    root_stamp = (root_before.st_dev, root_before.st_ino, root_before.st_mtime_ns, root_before.st_ctime_ns)
+    with os.scandir(root) as entries:
+        candidates = []
+        for entry in entries:
+            budget()
+            if len(candidates) >= 256: raise PlanError('owned_container_inventory_limit')
+            if re.fullmatch(r'[0-9A-Fa-f]{8}(?:-[0-9A-Fa-f]{4}){3}-[0-9A-Fa-f]{12}', entry.name) is None:
+                raise PlanError('unsupported_owned_container_layout')
+            candidates.append(root / entry.name)
+    matches, observed = [], []
+    for candidate in candidates:
+        budget(); directory_token = _container_directory(candidate)
+        metadata = candidate / '.com.apple.mobile_container_manager.metadata.plist'
+        value, metadata_token = _container_file(metadata, 16384)
+        if (not isinstance(value, dict) or type(value.get('MCMMetadataIdentifier')) is not str
+                or re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9_.-]{0,254}', value['MCMMetadataIdentifier']) is None):
+            raise PlanError('unidentified_owned_container_metadata')
+        observed.append((candidate, directory_token, metadata, metadata_token))
+        if value['MCMMetadataIdentifier'] != bundle_id: continue
+        selected = candidate if role == 'data' else candidate / (executable + '.app')
+        selected_token = _container_directory(selected)
+        app_token = None
+        if role == 'app':
+            info, app_token = _container_file(selected / 'Info.plist', MAX_PRIVATE)
+            if (not isinstance(info, dict) or info.get('CFBundleIdentifier') != bundle_id
+                    or info.get('CFBundleExecutable') != executable):
+                raise PlanError('owned_application_identity_mismatch')
+        token = (directory_token, selected_token, metadata_token, app_token)
+        matches.append(ContainerCapability(selected, role, bundle_id, executable, identifier, name, token))
+    budget()
+    if len(matches) != 1: raise PlanError('owned_container_not_unique')
+    for candidate, directory_token, metadata, metadata_token in observed:
+        budget()
+        if _container_directory(candidate) != directory_token or _container_file(metadata, 16384)[1] != metadata_token:
+            raise PlanError('owned_container_metadata_changed')
+    final = root.lstat()
+    if (_container_directory(root)[:2] != root_stamp[:2]
+            or root_stamp != (final.st_dev, final.st_ino, final.st_mtime_ns, final.st_ctime_ns)):
+        raise PlanError('owned_container_inventory_changed')
+    budget()
+    if owned_device_identity(identifier, name).get('identity_verified') is not True:
+        raise PlanError('owned_device_identity_changed')
+    budget()
+    return matches[0]
+
+
+def revalidate_container_capability(value, identifier, name, role, bundle_id, executable):
+    if (type(value) is not ContainerCapability or value.identifier != identifier or value.name != name
+            or value.role != role or value.bundle_id != bundle_id or value.executable != executable):
+        raise PlanError('invalid_owned_container_capability')
+    fresh = owned_container_capability(identifier, name, role, bundle_id, executable)
+    if fresh.path != value.path or fresh.token != value.token:
+        raise PlanError('owned_container_capability_changed')
+    return True

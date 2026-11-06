@@ -2,6 +2,7 @@
 # Setup-only control-flow fixtures, 2026-11-06. No Apple tools/network/auth.
 import contextlib
 import io
+import importlib.util
 import json
 from pathlib import Path
 import plistlib
@@ -17,10 +18,13 @@ import ci_gate as c
 class SetupOnlyTests(unittest.TestCase):
     PRIVATE = 'SYNTHETIC_PRIVATE_PATH_AND_MESSAGE_MUST_NOT_ESCAPE'
 
-    def run_setup(self, fail_phase=None, error_type=ValueError, cleanup_error=False):
+    def run_setup(self, fail_phase=None, error_type=ValueError, cleanup_error=False, post_seed_error=False, metadata_reason=None):
         original_result = d.closed_result
         captured = {}
         commands = []
+        self.seed_binding_events = []
+        metadata_spec = importlib.util.spec_from_file_location('setup_error_metadata_fixture', d.BASE / 'private_helpers/owned_simulator_metadata.py')
+        metadata_module = importlib.util.module_from_spec(metadata_spec); metadata_spec.loader.exec_module(metadata_module)
 
         def result(**kwargs):
             value = original_result(**kwargs)
@@ -29,6 +33,7 @@ class SetupOnlyTests(unittest.TestCase):
 
         def boundary():
             if captured['report']['phase'] == fail_phase:
+                if metadata_reason is not None: raise metadata_module.PlanError(metadata_reason)
                 raise error_type(self.PRIVATE)
 
         def snapshot(_):
@@ -49,13 +54,20 @@ class SetupOnlyTests(unittest.TestCase):
 
         def seed(*args):
             boundary()
+            self.seed_binding_events.append('seed')
+
+        def revalidate(*args):
+            boundary()
+            if post_seed_error and 'seed' in self.seed_binding_events:
+                raise ValueError(self.PRIVATE)
+            self.seed_binding_events.append('verify:' + args[3])
 
         def container(path, simulator, kind):
             boundary()
             return Path(path)
 
         class Simulator:
-            def __init__(self, command, metadata_helper=None): pass
+            def __init__(self, command, metadata_helper=None): self.name = 'SYNTHETIC_OWNED'
             def create(self):
                 boundary()
                 return '12345678-1234-4234-8234-123456789012'
@@ -88,7 +100,10 @@ class SetupOnlyTests(unittest.TestCase):
         helpers = {'preserved_app': SimpleNamespace(extract_app=extract,
             main_app_only=lambda *args, **kwargs: {'main_code_unchanged': True, 'other_entitlements_preserved': True},
             main_code_digest=lambda *args: 'SYNTHETIC_CODE_DIGEST'),
-            'storage_evidence': object(), 'tiny_ui_test_project': object(), 'owned_simulator_metadata': object()}
+            'storage_evidence': object(), 'tiny_ui_test_project': object(),
+            'owned_simulator_metadata': SimpleNamespace(PlanError=metadata_module.PlanError,
+                owned_container_capability=lambda *args: (boundary(), SimpleNamespace(path=Path('/SYNTHETIC_OWNER_BOUND_CONTAINER')))[1],
+                revalidate_container_capability=revalidate)}
         with tempfile.TemporaryDirectory() as temp, contextlib.ExitStack() as stack:
             replacements = {'closed_result': result, 'PrivateCommands': Commands, 'OwnedSimulator': Simulator,
                 'load_helpers': lambda pins: helpers, 'validate_source': lambda *args: Path(temp),
@@ -119,6 +134,7 @@ class SetupOnlyTests(unittest.TestCase):
         for key in ['passed', 'native_xctest_passed', 'authentication_completed', 'physical_device_verified']:
             self.assertFalse(value[key])
         self.assertEqual(value['stages'], [])
+        self.assertEqual(self.seed_binding_events, ['verify:data', 'verify:app', 'seed', 'verify:data', 'verify:app'])
 
     def test_closed_phase_identifies_each_setup_failure_without_private_exception(self):
         phases = ['planBind', 'runtimeInventory', 'simulatorCreate', 'boot', 'install',
@@ -132,6 +148,23 @@ class SetupOnlyTests(unittest.TestCase):
                 self.assertFalse(value['setup_completed'])
                 self.assertTrue(value['cleanup_passed'])
                 self.assertFalse(value['passed'])
+
+    def test_postseed_binding_failure_cannot_mark_seed_or_setup_as_verified(self):
+        value = self.run_setup(post_seed_error=True)
+        self.assertEqual(self.seed_binding_events, ['verify:data', 'verify:app', 'seed'])
+        self.assertEqual(value['phase'], 'privateSeed')
+        self.assertFalse(value['private_selection_seeded'])
+        self.assertFalse(value['setup_completed'])
+        self.assertFalse(value['authentication_completed'])
+        self.assertTrue(value['cleanup_passed'])
+
+    def test_known_pinned_helper_error_is_reported_only_as_closed_metadata_reason(self):
+        value = self.run_setup(fail_phase='dataContainer', metadata_reason='owned_container_not_unique')
+        self.assertEqual(value['metadata_failure'], 'owned_container_not_unique')
+        self.assertEqual(value['exception_kind'], 'otherException')
+        self.assertEqual(value['phase'], 'dataContainer')
+        self.assertFalse(value['private_selection_seeded'])
+        self.assertFalse(value['authentication_completed'])
 
     def test_container_os_failure_retains_only_builtin_kind(self):
         value = self.run_setup(fail_phase='dataContainer', error_type=FileNotFoundError)

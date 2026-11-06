@@ -27,7 +27,7 @@ import time
 import uuid
 
 EXECUTION_REVIEWED = True
-REVIEW_PINS_SHA256 = 'ae1ec79721eb70786b9e07abb9fd372587cec3d1d2f7a7456078b49f7f00c125'
+REVIEW_PINS_SHA256 = '022a4646eba38eda15347879ccb8ae3be74c52361e2428aed0f297d835e8eedd'
 REVIEWED_STARTUP_RUN = 42204637743  # Root reviewed exact source/startup proof; auth result pending.
 STARTUP_CONTROL_RUN = 42204637743
 REVIEWED_EXECUTION_SCOPE = 'setupOnly'  # One pre-auth diagnostic; no UI authentication invocation.
@@ -67,6 +67,26 @@ PHASES = frozenset({'notStarted', 'toolchain', 'artifactExtraction', 'sourceSign
 BUILTIN_EXCEPTION_KINDS = frozenset({'ValueError', 'TypeError', 'KeyError', 'IndexError',
     'AttributeError', 'OverflowError', 'RuntimeError', 'OSError', 'FileNotFoundError',
     'PermissionError', 'NotADirectoryError', 'IsADirectoryError', 'TimeoutError', 'otherException'})
+METADATA_FAILURE_CODES = frozenset({
+    'invalid_owned_container_capability',
+    'invalid_owned_container_request',
+    'owned_application_identity_mismatch',
+    'owned_container_capability_changed',
+    'owned_container_inventory_changed',
+    'owned_container_inventory_limit',
+    'owned_container_metadata_changed',
+    'owned_container_not_unique',
+    'owned_device_identity_changed',
+    'owned_device_identity_unverified',
+    'private_file_changed',
+    'private_file_unavailable',
+    'unexpectedMetadataFailure',
+    'unidentified_owned_container_metadata',
+    'unsafe_owned_container',
+    'unsafe_owned_container_metadata',
+    'unsafe_private_file',
+    'unsupported_owned_container_layout',
+})
 BASE = Path(__file__).resolve().parent
 
 
@@ -562,12 +582,21 @@ def builtin_exception_kind(error):
     return kinds.get(type(error), 'otherException')
 
 
+def metadata_failure_code(error, helper):
+    # Only the exact reviewed helper class can acknowledge a metadata failure.
+    # Never format exceptions or inspect unknown args/messages/paths.
+    if type(error) is not getattr(helper, 'PlanError', None):
+        return None
+    reason = getattr(error, 'code', None)
+    return reason if type(reason) is str and reason in METADATA_FAILURE_CODES else None
+
+
 def closed_result(setup_only=False):
     require(type(setup_only) is bool)
     scope = 'setupOnly' if setup_only else 'authOnly'
     return {'schema': 1, 'role': 'officialPublicTestDCPreAuthSetupOnly' if setup_only else 'officialPublicTestDCAuthenticationOnly',
         'execution_scope': scope, 'setup_completed': False, 'phase': 'notStarted',
-        'exception_kind': None, 'cleanup_failure': None, 'cleanup_exception_kind': None, 'source_commit': SOURCE,
+        'exception_kind': None, 'metadata_failure': None, 'cleanup_failure': None, 'cleanup_exception_kind': None, 'source_commit': SOURCE,
         'source_run': SOURCE_RUN, 'artifact_id': ARTIFACT, 'ipa_sha256': IPA_SHA256,
         'startup_review_run': REVIEWED_STARTUP_RUN, 'application_recompiled': False,
         'physical_device_verified': False, 'restart_persistence_verified': False,
@@ -654,15 +683,22 @@ def execute(ipa, artifact_evidence, source_root, gate, output, setup_only=False)
                 simulator.verify()
                 report['phase'] = 'install'
                 command(['xcrun', 'simctl', 'install', identifier, str(app)], timeout=120)
+                metadata_helper = helpers['owned_simulator_metadata']
                 report['phase'] = 'dataContainer'
-                data_path = owned_container(command(['xcrun', 'simctl', 'get_app_container', identifier, BUNDLE, 'data'])[1].decode().strip(), simulator, 'data')
+                data_capability = metadata_helper.owned_container_capability(identifier, simulator.name, 'data', BUNDLE, 'Telegram')
+                data_path = owned_container(data_capability.path, simulator, 'data')
                 report['phase'] = 'appContainer'
-                installed = owned_container(command(['xcrun', 'simctl', 'get_app_container', identifier, BUNDLE, 'app'])[1].decode().strip(), simulator, 'app')
+                app_capability = metadata_helper.owned_container_capability(identifier, simulator.name, 'app', BUNDLE, 'Telegram')
+                installed = owned_container(app_capability.path, simulator, 'app')
                 report['phase'] = 'installedIntegrity'
                 require(snapshot_tree(installed) == app_snapshot, 'sourceIntegrity')
                 command(['/usr/bin/codesign', '--verify', '--deep', '--strict', str(installed)])
                 report['phase'] = 'privateSeed'
+                for capability, role in ((data_capability, 'data'), (app_capability, 'app')):
+                    metadata_helper.revalidate_container_capability(capability, identifier, simulator.name, role, BUNDLE, 'Telegram')
                 seed_fresh_private(data_path, helpers['storage_evidence'])
+                for capability, role in ((data_capability, 'data'), (app_capability, 'app')):
+                    metadata_helper.revalidate_container_capability(capability, identifier, simulator.name, role, BUNDLE, 'Telegram')
                 report['private_selection_seeded'] = True
                 report['phase'] = 'contacts'
                 command(['xcrun', 'simctl', 'privacy', identifier, 'revoke', 'contacts', BUNDLE])
@@ -693,6 +729,7 @@ def execute(ipa, artifact_evidence, source_root, gate, output, setup_only=False)
             except Exception as error:
                 report['failure'] = 'internal'
                 report['exception_kind'] = builtin_exception_kind(error)
+                report['metadata_failure'] = metadata_failure_code(error, helpers['owned_simulator_metadata'])
             finally:
                 try:
                     report['cleanup_passed'] = simulator.cleanup()

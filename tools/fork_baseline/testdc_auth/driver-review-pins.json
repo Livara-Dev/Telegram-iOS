@@ -14,13 +14,13 @@
     "submodules/TelegramUI/Sources/SharedAccountContext.swift": "34520403d5ca71856e016b6d7b174c49cddd5a3e65b98641090fb33d5072051d"
   },
   "ci_sources": {
-    ".github/workflows/testdc-auth-smoke.yml": "cdd869bad4168c5bdf812f845c36563d933bc7ef30fa86c2b93d477fee74898d",
-    "tools/fork_baseline/testdc_auth/ci_gate.py": "fd9f3797021ff427b821cb5d40ed80636b58b96b4e8f6380b6efea8e6b9a6b60"
+    ".github/workflows/testdc-auth-smoke.yml": "54e29fe981948b15fe5eabbe941b179774da2939e380f9145bfd9db2af7d5f37",
+    "tools/fork_baseline/testdc_auth/ci_gate.py": "2fdbe0267bf1fbfd0026328ffc43fc104047a0ea1c6f06a6a030994dc9014156"
   },
   "private_files": {
     "OfficialTestDCAuthenticationSmoke.swift": "847c320fc997bddea009721aafe536d431d25480e1dd43434db7a8e867ad878c",
     "private_helpers/ipa_inspect.py": "f47b5f067772111a9f8d8535b405bad7db594e05f5605bc0a7f8b7f1c380bc1f",
-    "private_helpers/owned_simulator_metadata.py": "178ecb497c44712aaa7be5aeda53c2e242de67dce17a1f7dd62b161971b45be8",
+    "private_helpers/owned_simulator_metadata.py": "4c1e7b13540c54d70dbfa106705b700c8c239a89215e5c4fb5c7866a33043c3a",
     "private_helpers/preserved_app.py": "3fbf6d736fdc433a3c662b48c0e95c8886d3c61e672159fa9a9825d67e1162f7",
     "private_helpers/storage_evidence.py": "2bf08455ecb623576e33ac1786a60447776962e3155775fa446dc4d4e28c6e73",
     "private_helpers/tiny_ui_test_project.py": "4d3c8e85ea874c9fc13ded3241b52fd93444e53837be5009d4337543cfd2ddb9"
