@@ -250,6 +250,8 @@ were verified. Hosted installation/cleanup therefore remains a verification
 blocker. The underlying cause and the physical black-screen repair are unresolved;
 this is not proof of a global deadlock or a current application defect.
 
+Artifact-only source-5d recovery [42306472313](https://github.com/Livara-Dev/Telegram-iOS/actions/runs/42306472313) verified SDK status/initialization/recheck exits 0/0/0, then reproduced the unchanged installation timeout before any launch. The observer returned no accepted process, wait-family, container or host-pressure measurements; default `notAttempted` fields do not establish absence or locate a stall. Shutdown timed out, while exact owned-device deletion and UUID absence were verified. Root and independent reviewers verified artifact `13546133462`, outer SHA-256 `ca16bac9c27fdfdc639517144f5a0157dc659c11ef6eca8c6daefadbb688659a`, and all nine inner references. No images/video exist, so visual verification is unavailable. This is neither an app crash nor proof of a particular simulator-service, package, signing or authentication defect. The diagnostic currently lacks a retained worker stage and a classified SDK tool rejection reason; those tooling gaps require correction before the next observation.
+
 The [machine-readable evidence](fork/evidence/qualification-c55e19c4.json)
 keeps successful compilation/native cases separate from failed or unexecuted
 startup checks. No signature, source, cleanup or publication guard was relaxed.

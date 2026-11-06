@@ -18,7 +18,20 @@ metadata. All six remaining images are unsigned ARM64 iPhoneOS; five frameworks
 and all nineteen bundled dependency edges were verified. The artifact includes
 checksums and the three exact-source/GPLv2 materials. It needs valid signing.
 
-The matching retained main-app-only simulator application reached the actual
+The package above remains the retained c55 candidate; it does not contain the
+newer secret/timed-retention changes from application source `5d241267`. Both 5d
+applications compiled in [run 42279866706](https://github.com/Livara-Dev/Telegram-iOS/actions/runs/42279866706).
+Later artifact-only [recovery 42306472313](https://github.com/Livara-Dev/Telegram-iOS/actions/runs/42306472313)
+again timed out during installation, before any app launch or captured media.
+Its SDK status, initialization and recheck commands returned zero; shutdown timed
+out, but exact owned-device deletion and absence were verified. Startup remains
+unverified; compilation and static package checks are not runtime verification.
+The derived [d020 Core candidate](fork/NATIVE-CORE-VERIFICATION-D020BFD7.md)
+contains an Account startup-ordering relocation absent from the frozen 5d binary;
+its component tests do not qualify 5d app startup. See the
+[source-separated checkpoint](fork/CURRENT-VERIFICATION-2026-11-06.md).
+
+The matching retained c55 main-app-only simulator application reached the actual
 AyuGram authorization screen twice on a fresh **iPhone 15 Pro / iOS 27.0** device.
 Both screenshots and the complete 390-frame variable-rate recording were
 visually reviewed. The app created its private account-store directory and kept
@@ -29,12 +42,18 @@ black-screen repair. No Telegram login codes or existing account session materia
 were used during replay. The app retains its registered API configuration.
 
 The device and simulator retain separate origins: device82 from `42160468600`,
-simulator1 from `42174474046`, at the same source. Native verification has 1,473
-passing cases across seven suites; Projection still started zero of 41 cases in
-`42204637743`. The original full qualification remains failed. The
-[feature evidence](fork/evidence/feature-verification-c55e19c4.json) records the
-fixture coverage and remaining gates; a current service diagnostic is not a
-claim of successful Projection execution or a fully qualified release.
+simulator1 from `42174474046`, at the same source. Earlier c55 native verification
+passed 1,473 cases across seven suites. Projection started zero of 41 cases in
+historical `42204637743`; that attempt and the original full qualification remain
+failed. Later [run 42281520123](https://github.com/Livara-Dev/Telegram-iOS/actions/runs/42281520123)
+passed all 41 retained c55 Projection payload cases plus one discovery wrapper;
+a separate control passed one case. The retained application and Projection
+payload were not recompiled. This different experimental discovery harness did
+not execute the original Bazel host or qualify a release, physical device or the
+newer 5d application. The [current verification checkpoint](fork/CURRENT-VERIFICATION-2026-11-06.md)
+separates these results; the [historical feature evidence](fork/evidence/feature-verification-c55e19c4.json)
+preserves the earlier fixtures and failure records. Counts from separate runs
+and sources are not a combined unique release total.
 
 Sign the candidate using the same app/team identity as the existing installation;
 **do not uninstall the app to update it**. An unsigned package is not installable
