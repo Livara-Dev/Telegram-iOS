@@ -152,10 +152,12 @@ class ContainerCapabilityTests(unittest.TestCase):
             fixture(Path(temp).resolve()); clock = [0]; original = m.owned_device_identity; calls = [0]
             def identity(*args, **kwargs):
                 value = original(*args, **kwargs); calls[0] += 1
-                if calls[0] == 2: clock[0] = 3
+                if calls[0] == 2: clock[0] = m.CONTAINER_SCAN_BUDGET_SECONDS + 0.001
                 return value
             with patch.object(m.time, 'monotonic', side_effect=lambda: clock[0]), \
-                    patch.object(m, 'owned_device_identity', side_effect=identity), self.assertRaises(m.PlanError): acquire()
+                    patch.object(m, 'owned_device_identity', side_effect=identity), self.assertRaises(m.PlanError) as caught:
+                acquire()
+            self.assertEqual(caught.exception.code, 'owned_container_inventory_deadline')
 
     def test_inventory_cap_and_non_uuid_candidate_cannot_grant_capability(self):
         for kind in ['limit', 'invalid']:
@@ -163,8 +165,11 @@ class ContainerCapabilityTests(unittest.TestCase):
                 _, data, _ = fixture(Path(temp).resolve())
                 if kind == 'invalid': (data.parent / 'unknown-layout').mkdir()
                 else:
-                    for i in range(256): (data.parent / ('00000000-0000-4000-8000-' + ('%012d' % i))).mkdir()
-                with self.assertRaises(m.PlanError): acquire()
+                    for i in range(m.MAX_CONTAINER_CANDIDATES): (data.parent / ('00000000-0000-4000-8000-' + ('%012d' % i))).mkdir()
+                with self.assertRaises(m.PlanError) as caught: acquire()
+                self.assertEqual(caught.exception.code, 'owned_container_inventory_count_limit' if kind == 'limit' else 'unsupported_owned_container_layout')
+        self.assertEqual(m.MAX_CONTAINER_CANDIDATES, 512)
+        self.assertEqual(m.CONTAINER_SCAN_BUDGET_SECONDS, 18)
 
 
 class ClosedMetadataFailureTests(unittest.TestCase):

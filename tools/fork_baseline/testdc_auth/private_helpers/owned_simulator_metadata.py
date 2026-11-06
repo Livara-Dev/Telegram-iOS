@@ -11,6 +11,8 @@ import time
 MAX_PRIVATE = 65536
 DEVICE_TYPE = 'com.apple.CoreSimulator.SimDeviceType.iPhone-15-Pro'
 RUNTIME = 'com.apple.CoreSimulator.SimRuntime.iOS-27-0'
+MAX_CONTAINER_CANDIDATES = 512
+CONTAINER_SCAN_BUDGET_SECONDS = 18
 
 
 METADATA_FAILURE_CODES = frozenset({
@@ -19,7 +21,8 @@ METADATA_FAILURE_CODES = frozenset({
     'owned_application_identity_mismatch',
     'owned_container_capability_changed',
     'owned_container_inventory_changed',
-    'owned_container_inventory_limit',
+    'owned_container_inventory_count_limit',
+    'owned_container_inventory_deadline',
     'owned_container_metadata_changed',
     'owned_container_not_unique',
     'owned_device_identity_changed',
@@ -235,9 +238,9 @@ def owned_container_capability(identifier, name, role, bundle_id, executable):
     identity = owned_device_identity(identifier, name)
     if identity.get('identity_verified') is not True:
         raise PlanError('owned_device_identity_unverified')
-    deadline = time.monotonic() + 2
+    deadline = time.monotonic() + CONTAINER_SCAN_BUDGET_SECONDS
     def budget():
-        if time.monotonic() > deadline: raise PlanError('owned_container_inventory_limit')
+        if time.monotonic() > deadline: raise PlanError('owned_container_inventory_deadline')
     home = Path.home().resolve(strict=True)
     root = home
     fixed = ('Library', 'Developer', 'CoreSimulator', 'Devices', identifier, 'data',
@@ -251,7 +254,7 @@ def owned_container_capability(identifier, name, role, bundle_id, executable):
         candidates = []
         for entry in entries:
             budget()
-            if len(candidates) >= 256: raise PlanError('owned_container_inventory_limit')
+            if len(candidates) >= MAX_CONTAINER_CANDIDATES: raise PlanError('owned_container_inventory_count_limit')
             if re.fullmatch(r'[0-9A-Fa-f]{8}(?:-[0-9A-Fa-f]{4}){3}-[0-9A-Fa-f]{12}', entry.name) is None:
                 raise PlanError('unsupported_owned_container_layout')
             candidates.append(root / entry.name)

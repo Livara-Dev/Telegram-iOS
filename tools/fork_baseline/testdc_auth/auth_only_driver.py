@@ -27,7 +27,7 @@ import time
 import uuid
 
 EXECUTION_REVIEWED = True
-REVIEW_PINS_SHA256 = '022a4646eba38eda15347879ccb8ae3be74c52361e2428aed0f297d835e8eedd'
+REVIEW_PINS_SHA256 = '91dc9c9c54cb287ed628a22b99495ea2f688660b4390cbab557e2b990fcf9b16'
 REVIEWED_STARTUP_RUN = 42204637743  # Root reviewed exact source/startup proof; auth result pending.
 STARTUP_CONTROL_RUN = 42204637743
 REVIEWED_EXECUTION_SCOPE = 'setupOnly'  # One pre-auth diagnostic; no UI authentication invocation.
@@ -73,7 +73,8 @@ METADATA_FAILURE_CODES = frozenset({
     'owned_application_identity_mismatch',
     'owned_container_capability_changed',
     'owned_container_inventory_changed',
-    'owned_container_inventory_limit',
+    'owned_container_inventory_count_limit',
+    'owned_container_inventory_deadline',
     'owned_container_metadata_changed',
     'owned_container_not_unique',
     'owned_device_identity_changed',
