@@ -283,13 +283,99 @@ private final class DiscoveredProjection {
     }
 }
 
+// BEGIN PORTABLE DISCOVERY GATE
+// This Foundation-only gate is exercised verbatim by the native preflight.
+private final class DiscoveryPreparationGate<Value> {
+    enum Decision { case owner, joining, reentrant, ready(Value), failed }
+    private let lock = NSLock()
+    private let now: () -> TimeInterval
+    private var building = false
+    private var completion: DispatchGroup?
+    private var deadline: TimeInterval = 0
+    private var value: Value?
+    private var failure: DiscoveryFailure?
+    private var consumed = false
+
+    init(now: @escaping () -> TimeInterval = { ProcessInfo.processInfo.systemUptime }) { self.now = now }
+
+    func begin(onMainThread: Bool) -> Decision {
+        lock.lock(); defer { lock.unlock() }
+        if failure != nil { return .failed }
+        if let result = value { return .ready(result) }
+        if building { return onMainThread ? .reentrant : .joining }
+        let started = now()
+        guard started.isFinite, started >= 0 else { failure = .discoveryState; return .failed }
+        let group = DispatchGroup(); group.enter()
+        completion = group; deadline = started + 20; building = true
+        return .owner
+    }
+
+    var expiresAt: TimeInterval {
+        lock.lock(); defer { lock.unlock() }; return deadline
+    }
+
+    var isPending: Bool {
+        lock.lock(); defer { lock.unlock() }; return building && failure == nil && value == nil
+    }
+
+    private func retireLocked() {
+        if building { building = false; completion?.leave() }
+    }
+
+    func fail(_ reason: DiscoveryFailure) {
+        lock.lock(); defer { lock.unlock() }
+        if failure == nil { failure = reason }
+        value = nil; retireLocked()
+    }
+
+    @discardableResult
+    func complete(_ result: Result<Value, DiscoveryFailure>) -> Bool {
+        lock.lock(); defer { lock.unlock() }
+        guard building, failure == nil, value == nil else { return false }
+        let observed = now()
+        guard observed.isFinite, observed >= deadline - 20, observed <= deadline else {
+            failure = .discoveryThreadTimeout; retireLocked(); return false
+        }
+        switch result {
+        case .success(let prepared): value = prepared
+        case .failure(let reason): failure = reason
+        }
+        retireLocked(); return true
+    }
+
+    private func resultLocked() -> Result<Value, DiscoveryFailure> {
+        if let reason = failure { return .failure(reason) }
+        if let result = value { return .success(result) }
+        return .failure(.discoveryState)
+    }
+
+    func result() -> Result<Value, DiscoveryFailure> {
+        lock.lock(); defer { lock.unlock() }; return resultLocked()
+    }
+
+    func waitForResult() -> Result<Value, DiscoveryFailure> {
+        lock.lock()
+        if !building { let result = resultLocked(); lock.unlock(); return result }
+        let group = completion; let remaining = deadline - now()
+        lock.unlock()
+        guard remaining.isFinite, remaining > 0, remaining <= 20, let group = group else {
+            fail(.discoveryThreadTimeout); return result()
+        }
+        if group.wait(timeout: .now() + remaining) != .success { fail(.discoveryThreadTimeout) }
+        return result()
+    }
+
+    func takeOnce() throws -> Value {
+        lock.lock(); defer { lock.unlock() }
+        if let reason = failure { throw reason }
+        guard !building, let prepared = value, !consumed else { throw DiscoveryFailure.discoveryState }
+        consumed = true; return prepared
+    }
+}
+// END PORTABLE DISCOVERY GATE
+
 private enum DiscoveryFactory {
-    // No lock is held while dispatching, waiting for UIKit, or loading code.
-    private static let lock = NSLock()
-    private static var building = false
-    private static var prepared: DiscoveredProjection?
-    private static var failure: DiscoveryFailure?
-    private static var verificationTaken = false
+    private static let preparation = DiscoveryPreparationGate<DiscoveredProjection>()
 
     static func hostIdentity() -> Bool {
         #if targetEnvironment(simulator) && arch(arm64)
@@ -460,74 +546,80 @@ private enum DiscoveryFactory {
         }
     }
 
-    static func request(_ verification: XCTestSuite) -> XCTestSuite {
-        // This can be invoked more than once by discovery. Reuse exactly one
-        // immutable prepared hierarchy; no second load or manual execution.
-        guard hostIdentity() else {
-            lock.lock(); failure = .hostIdentity; lock.unlock(); return verification
+    static func validVerification(_ verification: XCTestSuite) -> Bool {
+        var nodes = 0
+        var leaves = 0
+        func validate(_ test: XCTest, depth: Int) -> Bool {
+            nodes += 1
+            guard depth <= 16, nodes <= 32 else { return false }
+            if let nested = test as? XCTestSuite {
+                return nested.tests.allSatisfy { validate($0, depth: depth + 1) }
+            }
+            guard let testCase = test as? XCTestCase, DiscoveryProjection.wrapperIdentity(testCase) else { return false }
+            leaves += 1; return true
         }
-        lock.lock()
-        if let value = prepared { lock.unlock(); return value.composite }
-        if failure != nil { lock.unlock(); return verification }
-        if building { failure = .discoveryConcurrent; building = false; lock.unlock(); return verification }
-        building = true; lock.unlock()
-        let deadline = ProcessInfo.processInfo.systemUptime + 20
-        // Discovery on the application thread must not block UIApplicationMain
-        // while waiting for a marker which that same thread needs to write.
-        if Thread.isMainThread && !hostSceneVisible() {
-            lock.lock(); failure = .hostSceneUnproven; building = false; lock.unlock()
+        return validate(verification, depth: 0) && leaves == 1 && verification.testCaseCount == 1
+    }
+
+    static func request(_ verification: XCTestSuite) -> XCTestSuite {
+        // Every caller must provide the same exact thin-wrapper identity.
+        // Main-thread reentry is framework introspection, never a second load.
+        guard hostIdentity() else { preparation.fail(.hostIdentity); return verification }
+        guard validVerification(verification) else { preparation.fail(.suiteIdentity); return verification }
+        switch preparation.begin(onMainThread: Thread.isMainThread) {
+        case .ready(let value): return value.composite
+        case .failed: return verification
+        case .reentrant: return verification
+        case .joining:
+            if case .success(let value) = preparation.waitForResult() { return value.composite }
             return verification
+        case .owner: break
+        }
+        let deadline = preparation.expiresAt
+        // Never block the app thread waiting for its own scene marker.
+        if Thread.isMainThread && !hostSceneVisible() {
+            preparation.fail(.hostSceneUnproven); return verification
         }
         if !Thread.isMainThread {
             let markerDeadline = min(deadline, ProcessInfo.processInfo.systemUptime + 5)
             while !hostSceneVisible() {
                 if ProcessInfo.processInfo.systemUptime >= markerDeadline {
-                    lock.lock(); failure = .hostSceneUnproven; building = false; lock.unlock()
-                    return verification
+                    preparation.fail(.hostSceneUnproven); return verification
                 }
                 Thread.sleep(forTimeInterval: 0.05)
             }
         }
-        let done = DispatchSemaphore(value: 0)
         let work: @MainActor () -> Void = {
-            lock.lock(); let allowed = building && failure == nil; lock.unlock()
-            guard allowed else { done.signal(); return }
-            let result: Result<DiscoveredProjection, Error>
-            do { result = .success(try build(verification)) }
-            catch { result = .failure(error) }
-            lock.lock()
-            if building && failure == nil {
-                switch result {
-                case .success(let value):
-                    XCTestObservationCenter.shared.addTestObserver(value.observer)
-                    prepared = value
-                case .failure(let error):
-                    failure = (error as? DiscoveryFailure) ?? .payloadMetadata
-                }
-                building = false
+            // A timed-out background owner may have retired before this runs.
+            guard preparation.isPending else { return }
+            guard ProcessInfo.processInfo.systemUptime <= deadline else {
+                preparation.fail(.discoveryThreadTimeout); return
             }
-            lock.unlock(); done.signal()
+            do {
+                let value = try build(verification)
+                XCTestObservationCenter.shared.addTestObserver(value.observer)
+                if !preparation.complete(.success(value)) {
+                    XCTestObservationCenter.shared.removeTestObserver(value.observer)
+                }
+            } catch {
+                preparation.complete(.failure((error as? DiscoveryFailure) ?? .payloadMetadata))
+            }
         }
         if Thread.isMainThread {
             MainActor.assumeIsolated { work() }
         } else {
             DispatchQueue.main.async { work() }
-            let remaining = max(0, deadline - ProcessInfo.processInfo.systemUptime)
-            if done.wait(timeout: .now() + remaining) != .success {
-                lock.lock(); failure = .discoveryThreadTimeout; building = false; lock.unlock()
-            }
+            if case .success(let value) = preparation.waitForResult() { return value.composite }
+            return verification
         }
-        lock.lock(); defer { lock.unlock() }
-        return failure == nil ? prepared?.composite ?? verification : verification
+        if case .success(let value) = preparation.result() { return value.composite }
+        return verification
     }
 
     static func takeVerification() throws -> DiscoveredProjection {
-        lock.lock(); defer { lock.unlock() }
-        if let reason = failure { throw reason }
-        guard let value = prepared, !building, !verificationTaken else { throw DiscoveryFailure.discoveryState }
-        verificationTaken = true
-        return value
+        return try preparation.takeOnce()
     }
+
 }
 
 final class AyuDiscoveryProjectionLoaderTests: XCTestCase {

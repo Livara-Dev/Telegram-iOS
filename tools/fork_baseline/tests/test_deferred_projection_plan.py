@@ -12,6 +12,7 @@ import plistlib
 import re
 import shlex
 import shutil
+import subprocess
 import sys
 import tempfile
 import traceback
@@ -1075,6 +1076,115 @@ class DiscoveryProfileTests(unittest.TestCase):
         self.assertEqual(expected, parser.EXPECTED)
         old = (Path(__file__).resolve().parents[1] / parser.WRAPPER_SOURCE).read_bytes()
         self.assertEqual(hashlib.sha256(old).hexdigest(), parser.WRAPPER_SHA256)
+
+    def test_repeated_discovery_joins_single_owner_without_poisoning_or_waiting_on_main(self):
+        source = (Path(__file__).resolve().parents[1] / parser.DISCOVERY_SOURCE).read_text()
+        request = source[source.index('static func request('):source.index('static func takeVerification(')]
+        self.assertIn('guard validVerification(verification)', request)
+        self.assertIn('case .reentrant: return verification', request)
+        self.assertLess(request.index('case .reentrant: return verification'), request.index('preparation.waitForResult()'))
+        self.assertNotIn('failure = .discoveryConcurrent', request)
+        self.assertLess(request.index('guard preparation.isPending'), request.index('try build(verification)'))
+        self.assertIn('if !preparation.complete(.success(value))', request)
+        self.assertIn('removeTestObserver(value.observer)', request)
+        self.assertIn('return try preparation.takeOnce()', source)
+        gate = source.split('// BEGIN PORTABLE DISCOVERY GATE\n', 1)[1].split('// END PORTABLE DISCOVERY GATE', 1)[0]
+        self.assertIn('deadline = started + 20', gate)
+        self.assertIn('return onMainThread ? .reentrant : .joining', gate)
+        self.assertIn('if building { building = false; completion?.leave() }', gate)
+
+    def test_native_foundation_gate_owns_reentry_join_error_timeout_and_late_publication(self):
+        compiler = shutil.which('swiftc')
+        if compiler is None: self.skipTest('Swift compiler unavailable; this exact gate runs in macOS preflight')
+        source = (Path(__file__).resolve().parents[1] / parser.DISCOVERY_SOURCE).read_text()
+        gate = source.split('// BEGIN PORTABLE DISCOVERY GATE\n', 1)[1].split('// END PORTABLE DISCOVERY GATE', 1)[0]
+        failure = source[source.index('private enum DiscoveryFailure:'):source.index('private enum DiscoveryPhase:')]
+        harness = r'''
+private final class ClockBox: @unchecked Sendable {
+    private let lock = NSLock(); private var value: TimeInterval
+    init(_ value: TimeInterval) { self.value = value }
+    func read() -> TimeInterval { lock.lock(); defer { lock.unlock() }; return value }
+    func set(_ value: TimeInterval) { lock.lock(); self.value = value; lock.unlock() }
+}
+private final class GateBox: @unchecked Sendable {
+    let gate: DiscoveryPreparationGate<Int>
+    init(_ gate: DiscoveryPreparationGate<Int>) { self.gate = gate }
+}
+private final class Results: @unchecked Sendable {
+    private let lock = NSLock(); private var values: [String] = []
+    func append(_ value: Result<Int, DiscoveryFailure>) {
+        lock.lock(); defer { lock.unlock() }
+        switch value { case .success(let number): values.append(String(number)); case .failure(let reason): values.append(reason.rawValue) }
+    }
+    func snapshot() -> [String] { lock.lock(); defer { lock.unlock() }; return values.sorted() }
+}
+@main private struct PreparationGateContract {
+    static func check(_ condition: @autoclosure () -> Bool) { if !condition() { fatalError("preparation gate contract failed") } }
+    static func expectFailure(_ result: Result<Int, DiscoveryFailure>, _ reason: DiscoveryFailure) {
+        switch result { case .success: check(false); case .failure(let actual): check(actual == reason) }
+    }
+    static func main() throws {
+        let clock = ClockBox(100); let gate = DiscoveryPreparationGate<Int>(now: { clock.read() })
+        if case .owner = gate.begin(onMainThread: true) {} else { check(false) }
+        check(gate.expiresAt == 120)
+        if case .reentrant = gate.begin(onMainThread: true) {} else { check(false) }
+        if case .joining = gate.begin(onMainThread: false) {} else { check(false) }
+        check(gate.isPending); check(gate.expiresAt == 120)
+        check(gate.complete(.success(42))); check(!gate.complete(.success(99)))
+        let taken = try gate.takeOnce(); check(taken == 42)
+        do { _ = try gate.takeOnce(); check(false) } catch let error as DiscoveryFailure { check(error == .discoveryState) }
+        if case .ready(let value) = gate.begin(onMainThread: true) { check(value == 42) } else { check(false) }
+
+        let expiredClock = ClockBox(100); let expired = DiscoveryPreparationGate<Int>(now: { expiredClock.read() })
+        _ = expired.begin(onMainThread: false); expiredClock.set(121)
+        expectFailure(expired.waitForResult(), .discoveryThreadTimeout)
+        check(!expired.isPending); check(!expired.complete(.success(42)))
+        expectFailure(expired.waitForResult(), .discoveryThreadTimeout)
+
+        let lateClock = ClockBox(100); let late = DiscoveryPreparationGate<Int>(now: { lateClock.read() })
+        _ = late.begin(onMainThread: true); lateClock.set(121)
+        check(!late.complete(.success(42))); expectFailure(late.result(), .discoveryThreadTimeout)
+        let failed = DiscoveryPreparationGate<Int>(now: { 100 })
+        _ = failed.begin(onMainThread: true); failed.fail(.suiteIdentity)
+        check(!failed.complete(.success(42))); expectFailure(failed.waitForResult(), .suiteIdentity)
+
+        for shouldFail in [false, true] {
+            let shared = GateBox(DiscoveryPreparationGate<Int>(now: { 100 }))
+            _ = shared.gate.begin(onMainThread: true)
+            let entered = DispatchSemaphore(value: 0); let finished = DispatchGroup(); let results = Results()
+            for _ in 0..<2 {
+                finished.enter()
+                DispatchQueue.global().async {
+                    if case .joining = shared.gate.begin(onMainThread: false) {} else { fatalError("owner duplicated") }
+                    entered.signal(); results.append(shared.gate.waitForResult()); finished.leave()
+                }
+            }
+            check(entered.wait(timeout: .now() + 2) == .success)
+            check(entered.wait(timeout: .now() + 2) == .success)
+            if shouldFail { shared.gate.fail(.suiteIdentity) } else { check(shared.gate.complete(.success(42))) }
+            check(finished.wait(timeout: .now() + 2) == .success)
+            check(results.snapshot() == (shouldFail ? ["suiteIdentity", "suiteIdentity"] : ["42", "42"]))
+        }
+        for number in [TimeInterval.nan, TimeInterval.infinity, -1] {
+            let invalid = DiscoveryPreparationGate<Int>(now: { number })
+            if case .failed = invalid.begin(onMainThread: true) {} else { check(false) }
+            check(!invalid.isPending); check(!invalid.complete(.success(42)))
+        }
+        print("preparation gate contracts passed")
+    }
+}
+'''
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve(); path = root / 'GateContract.swift'; executable = root / 'gate-contract'
+            path.write_text('import Foundation\n' + failure + gate + harness)
+            environment = {key: value for key, value in os.environ.items() if key in {'PATH', 'DEVELOPER_DIR', 'LANG', 'LC_ALL'}}
+            environment.update(HOME=str(root), TMPDIR=str(root))
+            compiled = subprocess.run([compiler, '-swift-version', '5', '-warnings-as-errors', '-parse-as-library', str(path), '-o', str(executable)],
+                capture_output=True, timeout=30, env=environment)
+            self.assertEqual(compiled.returncode, 0, parser.modern.compiler_log(compiled.stdout + compiled.stderr, (str(root),)))
+            actual = subprocess.run([str(executable)], capture_output=True, timeout=10, env=environment)
+            self.assertEqual(actual.returncode, 0, parser.modern.compiler_log(actual.stdout + actual.stderr, (str(root),)))
+            self.assertEqual(actual.stdout, b'preparation gate contracts passed\n')
 
     def test_cli_selects_exact_discovery_profile_for_prepare_and_run_without_new_public_paths(self):
         for command in ('prepare', 'run'):

@@ -444,8 +444,19 @@ restarted with zero tests and exited 65. Closed native metadata contains 42 know
 identities with 41 successes and one failure; its structural parser also rejected
 an array shape. The public wrapper pass line is therefore not a verified Apple
 wrapper pass. Both cleanup and installed/source integrity gates passed. A separate
-standard-discovery profile is under review; no parser relaxation or ignored exit
-status can turn this failed nested-execution run into successful qualification.
+standard-discovery profile avoids manual suite execution; no parser relaxation or
+ignored exit status can turn this failed nested run into successful qualification.
+
+[Standard-discovery run 42276436155](https://github.com/Livara-Dev/Telegram-iOS/actions/runs/42276436155)
+compiled the new wrapper and passed the hosted control, installed/source integrity
+and both cleanup gates. The wrapper failed with `discoveryConcurrent` before any
+of the 41 payload cases started. Strict Apple metadata parsed successfully and
+confirmed one failed wrapper and 41 missing cases. This isolates a harness guard
+failure, not a feature assertion or simulator-cleanup failure. The follow-up
+permits bounded framework reentry and shares one preparation among background
+callers. Native preflight compiles and exercises that exact Foundation gate;
+the complete 41 payload / 42 native-case and zero-exit gates remain mandatory.
+The follow-up is not natively qualified until its own run passes.
 
 | Candidate change | Current evidence | Remaining qualification or boundary |
 | --- | --- | --- |

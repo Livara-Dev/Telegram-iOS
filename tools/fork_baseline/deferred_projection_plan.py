@@ -65,7 +65,7 @@ class DeferredError(ValueError):
 DISCOVERY_PROFILE = 'experimentalDiscoveryPayloadSuite'
 DISCOVERY_WRAPPER = 'AyuDiscoveryProjectionLoaderTests.testVerifiesRetainedProjectionSuiteWasRunByFramework'
 DISCOVERY_SOURCE = 'discovery_projection_tests.swift'
-DISCOVERY_SHA256 = 'b78a499cd605187466fef4d42f60b67680c470d798eb39e3f47d1b1b8f1746e6'
+DISCOVERY_SHA256 = '40219d6543752af3644761ffa88af37170d8311c6dde454f3f509da7d082c424'
 
 
 def profile_configuration(execution_profile='deferred'):
