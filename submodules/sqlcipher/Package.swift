@@ -1,4 +1,7 @@
 // swift-tools-version:5.5
+// Modified for AyuGram iOS.
+// Modification dates recorded in Git history: 2026-11-06.
+// See this file's history for the corresponding changes.
 // The swift-tools-version declares the minimum version of Swift required to build this package.
 
 import PackageDescription

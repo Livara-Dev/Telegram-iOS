@@ -1,3 +1,6 @@
+# Modified for AyuGram iOS.
+# Modification dates recorded in Git history: 2026-11-04.
+# See this file's history for the corresponding changes.
 """Tests for PostboxImportCheck.
 
 Run: python3 -m unittest discover -s build-system/Make/tests -v

@@ -1,3 +1,6 @@
+# Modified for AyuGram iOS.
+# Modification dates recorded in Git history: 2026-11-04, 2026-11-05.
+# See this file's history for the corresponding changes.
 load(":framework_exported_symbols.bzl", "framework_exported_symbols")
 load("@rules_cc//cc:objc_library.bzl", "objc_library")
 
