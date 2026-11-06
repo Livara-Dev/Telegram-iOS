@@ -352,7 +352,7 @@ def execute(products_root, output, root, command=native_command, probe=simulator
             started_at = time.time()
             status, data = call('xctest', ['xcodebuild', 'test-without-building', '-xctestrun', str(Path(products_root) / 'TEST_ROOT/test.xctestrun'),
                 '-destination', 'id=' + identifier, '-destination-timeout', '30', '-derivedDataPath', str(Path(private) / 'derived'),
-                '-resultBundlePath', str(result), '-parallel-testing-enabled', 'NO', '-test-iterations', '1', '-collect-test-diagnostics=never'], timeout=300, required=False)
+                '-resultBundlePath', str(result), '-parallel-testing-enabled', 'NO', '-collect-test-diagnostics=never'], timeout=300, required=False)
             outcome = cases(data); report['case_counts'] = {k: v for k, v in outcome.items() if k != 'cases'}
             write(output / 'case-results.json', outcome)
             text = simulator_probe.redact_probe_text(data, secrets)

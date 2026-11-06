@@ -205,6 +205,12 @@ class ProjectionReplayTests(unittest.TestCase):
             result = replay.execute(root, root, root, run, lambda *args: None)
             self.assertFalse(result['passed']); self.assertTrue(result['owned_device_cleanup_completed'])
             self.assertEqual(sum('test-without-building' in a for a in calls), 1)
+            invocation = next(args for args in calls if 'test-without-building' in args)
+            # Xcode 27 rejects -test-iterations 1; no repetition option means
+            # its normal single execution, without assertion retries.
+            for flag in ('-test-iterations', '-retry-tests-on-failure', '-run-tests-until-failure'):
+                self.assertNotIn(flag, invocation)
+            self.assertEqual(invocation[invocation.index('-parallel-testing-enabled') + 1], 'NO')
             self.assertTrue(any('shutdown' in a for a in calls)); self.assertTrue(any('delete' in a for a in calls))
             self.assertFalse((root / 'test.xcresult').exists())
             self.assertEqual(json.loads((root / 'case-results.json').read_text())['passed'], 0)
