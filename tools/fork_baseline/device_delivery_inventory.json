@@ -1,0 +1,124 @@
+{
+  "application_source_commit": "5d241267735b3958c225681d173853568bab705d",
+  "baseline_commit": "c2ddd3d5652801fdc8fa11d514f144e5e1116836",
+  "source_inventory_only": true,
+  "native_execution_verified": false,
+  "new_case_count": 28,
+  "new_cases": [
+    {
+      "case": "ArchiveStoreTests.testOwnedMediaAcquisitionRejectsMissingSymlinkNonregularOversizeAndMismatch",
+      "file": "submodules/LocalMessageArchive/Tests/LocalMessageArchiveTests/ArchiveStoreTests.swift"
+    },
+    {
+      "case": "ArchiveStoreTests.testOwnedMediaCancellationBetweenChunksAndMetadataMutationAreRejected",
+      "file": "submodules/LocalMessageArchive/Tests/LocalMessageArchiveTests/ArchiveStoreTests.swift"
+    },
+    {
+      "case": "ArchiveStoreTests.testOwnedMediaCloseCallbackRunsOnceAfterFinalCloseButNotOnAcquisitionFailure",
+      "file": "submodules/LocalMessageArchive/Tests/LocalMessageArchiveTests/ArchiveStoreTests.swift"
+    },
+    {
+      "case": "ArchiveStoreTests.testOwnedMediaDescriptorFlagsInvalidationAndLastOwnerLifetime",
+      "file": "submodules/LocalMessageArchive/Tests/LocalMessageArchiveTests/ArchiveStoreTests.swift"
+    },
+    {
+      "case": "ArchiveStoreTests.testOwnedMediaDescriptorSurvivesUnlinkBeforeQueuedReadAndReopen",
+      "file": "submodules/LocalMessageArchive/Tests/LocalMessageArchiveTests/ArchiveStoreTests.swift"
+    },
+    {
+      "case": "ArchiveStoreTests.testOwnedMediaDetectsSameSizeModificationDuringStream",
+      "file": "submodules/LocalMessageArchive/Tests/LocalMessageArchiveTests/ArchiveStoreTests.swift"
+    },
+    {
+      "case": "ArchiveStoreTests.testOwnedMediaEqualSizePathReplacementUsesOriginalBytesAndRetryOffsets",
+      "file": "submodules/LocalMessageArchive/Tests/LocalMessageArchiveTests/ArchiveStoreTests.swift"
+    },
+    {
+      "case": "ArchiveStoreTests.testOwnedMediaInvalidatedWhileQueuedDoesNotWriteAttachmentOrUsage",
+      "file": "submodules/LocalMessageArchive/Tests/LocalMessageArchiveTests/ArchiveStoreTests.swift"
+    },
+    {
+      "case": "ArchiveStoreTests.testOwnedMediaQuotaStaleGenerationAndClosedStoreKeepExistingData",
+      "file": "submodules/LocalMessageArchive/Tests/LocalMessageArchiveTests/ArchiveStoreTests.swift"
+    },
+    {
+      "case": "ArchiveStoreTests.testURLMediaCompatibilityStillOpensOnWorkerAfterItsClockCheck",
+      "file": "submodules/LocalMessageArchive/Tests/LocalMessageArchiveTests/ArchiveStoreTests.swift"
+    },
+    {
+      "case": "LocalArchiveCoordinatorTests.testOrdinaryCloudOwnedSourceSurvivesForcedCacheRemovalAndSameSizeReplacementBeforeWorkerCopy",
+      "file": "submodules/TelegramCore/Tests/LocalArchiveCoordinatorTests.swift"
+    },
+    {
+      "case": "LocalArchiveCoordinatorTests.testPeerExclusionAfterMetadataCommitDoesNotImportMediaOrStallReceiptReplay",
+      "file": "submodules/TelegramCore/Tests/LocalArchiveCoordinatorTests.swift"
+    },
+    {
+      "case": "LocalArchiveHistoryRemovalTests.testOptedSecretAuthorRemovalsDoNotDeferCanonicalMediaCleanup",
+      "file": "submodules/TelegramCore/Tests/LocalArchiveHistoryRemovalTests.swift"
+    },
+    {
+      "case": "LocalArchiveTimedMediaExclusionTests.testDisablingAndReenablingSecretRetentionDoesNotReviveRevokedEvent",
+      "file": "submodules/TelegramCore/Tests/LocalArchiveTimedMediaExclusionTests.swift"
+    },
+    {
+      "case": "LocalArchiveTimedMediaExclusionTests.testExplicitDeleteMediaFalseKeepsItsExistingCacheSemantics",
+      "file": "submodules/TelegramCore/Tests/LocalArchiveTimedMediaExclusionTests.swift"
+    },
+    {
+      "case": "LocalArchiveTimedMediaExclusionTests.testLiveSecretMediaOwnerPreservesBytesWhileCanonicalCleanupPrecedesArchiveWrite",
+      "file": "submodules/TelegramCore/Tests/LocalArchiveTimedMediaExclusionTests.swift"
+    },
+    {
+      "case": "LocalArchiveTimedMediaExclusionTests.testPinnedSecretSourceExpiresWithoutReopeningReplacedCachePath",
+      "file": "submodules/TelegramCore/Tests/LocalArchiveTimedMediaExclusionTests.swift"
+    },
+    {
+      "case": "LocalArchiveTimedMediaExclusionTests.testSecretCacheCleanupDoesNotWaitForAvailableArchiveStorage",
+      "file": "submodules/TelegramCore/Tests/LocalArchiveTimedMediaExclusionTests.swift"
+    },
+    {
+      "case": "LocalArchiveTimedMediaExclusionTests.testSecretCacheCleanupDoesNotWaitForSuccessfulMetadataArchive",
+      "file": "submodules/TelegramCore/Tests/LocalArchiveTimedMediaExclusionTests.swift"
+    },
+    {
+      "case": "LocalArchiveTimedMediaExclusionTests.testSecretCacheCleanupSurvivesArchiveQuotaRejection",
+      "file": "submodules/TelegramCore/Tests/LocalArchiveTimedMediaExclusionTests.swift"
+    },
+    {
+      "case": "LocalArchiveTimedMediaExclusionTests.testSecretCacheCleanupSurvivesDisabledArchiveBeforeDrain",
+      "file": "submodules/TelegramCore/Tests/LocalArchiveTimedMediaExclusionTests.swift"
+    },
+    {
+      "case": "LocalArchiveTimedMediaExclusionTests.testSecretCacheCleanupSurvivesExclusionBeforeArchiveDrain",
+      "file": "submodules/TelegramCore/Tests/LocalArchiveTimedMediaExclusionTests.swift"
+    },
+    {
+      "case": "LocalArchiveTimedMediaExclusionTests.testSecretCacheCleanupSurvivesPendingArchivePurge",
+      "file": "submodules/TelegramCore/Tests/LocalArchiveTimedMediaExclusionTests.swift"
+    },
+    {
+      "case": "LocalArchiveTimedMediaExclusionTests.testSecretCleanupDoesNotTouchSameResourceInAnotherAccountOrUnrelatedLiveMedia",
+      "file": "submodules/TelegramCore/Tests/LocalArchiveTimedMediaExclusionTests.swift"
+    },
+    {
+      "case": "LocalArchiveTimedMediaExclusionTests.testSecretCleanupRemainsActiveWhenExtendedRetentionIsOff",
+      "file": "submodules/TelegramCore/Tests/LocalArchiveTimedMediaExclusionTests.swift"
+    },
+    {
+      "case": "LocalArchiveTimedMediaExclusionTests.testSecretDeletionWithoutPinnedOwnerDoesNotReopenURLWhileCleanupIsQueued",
+      "file": "submodules/TelegramCore/Tests/LocalArchiveTimedMediaExclusionTests.swift"
+    },
+    {
+      "case": "LocalArchiveTimedMediaExclusionTests.testSecretDescriptorLeasesStayWithTheirAccountForIdenticalResourceKeys",
+      "file": "submodules/TelegramCore/Tests/LocalArchiveTimedMediaExclusionTests.swift"
+    },
+    {
+      "case": "LocalArchiveTimedMediaExclusionTests.testSecretMetadataArchiveSurvivesCleanupAndReopenWithoutClaimingMissingMedia",
+      "file": "submodules/TelegramCore/Tests/LocalArchiveTimedMediaExclusionTests.swift"
+    }
+  ],
+  "removed_case_ids": [
+    "LocalArchiveTimedMediaExclusionTests.testActualEncryptedSecretArchiveSurvivesCacheCleanupAndReopen"
+  ]
+}

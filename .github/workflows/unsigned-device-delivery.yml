@@ -1,0 +1,469 @@
+name: Unsigned device delivery (qualified source)
+
+# Review and publish this draft on a tooling branch before dispatch. This adds
+# no automatic trigger and does not alter the existing qualification workflows.
+on:
+  workflow_dispatch:
+    inputs:
+      qualification_run:
+        description: Completed successful exact-source archive-core qualification run ID
+        required: true
+        type: string
+      expected_source:
+        description: Full application SHA; must match the successful native qualification
+        required: true
+        type: string
+        default: 5d241267735b3958c225681d173853568bab705d
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: ayugram-device-delivery-${{ inputs.expected_source }}
+  cancel-in-progress: false
+
+env:
+  # Record the reviewed workflow/tooling origin separately from application HEAD.
+  GITHUB_WORKFLOW_SHA: ${{ github.workflow_sha }}
+
+jobs:
+  qualification:
+    if: github.repository == 'Livara-Dev/Telegram-iOS' && github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    outputs:
+      source_sha: ${{ steps.native_gate.outputs.source_sha }}
+      build_number: ${{ steps.build_identity.outputs.build_number }}
+    steps:
+      - name: Check out the reviewed delivery tooling revision
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          ref: ${{ github.workflow_sha }}
+          path: delivery-tooling
+          persist-credentials: false
+          fetch-depth: 1
+
+      - name: Test delivery guards before reading qualification artifacts
+        run: python3 -m unittest discover -s delivery-tooling/tools/fork_baseline/device_delivery_tests -v
+
+      - name: Verify completed native qualification and derive application source
+        id: native_gate
+        env:
+          GH_TOKEN: ${{ github.token }}
+          QUALIFICATION_RUN: ${{ inputs.qualification_run }}
+          EXPECTED_SOURCE: ${{ inputs.expected_source }}
+        run: |
+          set -euo pipefail
+          umask 077
+          python3 delivery-tooling/tools/fork_baseline/device_delivery.py gate \
+            --run "$QUALIFICATION_RUN" --expected-source "$EXPECTED_SOURCE" \
+            --inventory delivery-tooling/tools/fork_baseline/device_delivery_inventory.json \
+            --output qualification
+
+      - name: Set a consistent new candidate build number
+        id: build_identity
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import os, pathlib, re
+          value = os.environ['GITHUB_RUN_NUMBER']
+          if re.fullmatch(r'[1-9][0-9]{0,17}', value) is None:
+              raise SystemExit('Invalid workflow run number')
+          build = 1000 + int(value)
+          if build > 2**63 - 1:
+              raise SystemExit('Build number exceeds the supported range')
+          with pathlib.Path(os.environ['GITHUB_OUTPUT']).open('a') as target:
+              target.write('build_number=' + str(build) + '\n')
+          PY
+
+      - name: Publish verified native qualification evidence for this delivery
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: device-delivery-qualification-${{ steps.native_gate.outputs.source_sha }}
+          path: qualification/
+          if-no-files-found: error
+          retention-days: 7
+          include-hidden-files: false
+
+  unsigned-device-build:
+    needs: qualification
+    runs-on: xcode-27
+    timeout-minutes: 360
+    env:
+      APP_SOURCE_SHA: ${{ needs.qualification.outputs.source_sha }}
+      DELIVERY_BUILD_NUMBER: ${{ needs.qualification.outputs.build_number }}
+    defaults:
+      run:
+        shell: bash
+        working-directory: fork-source
+    steps:
+      - name: Check out the reviewed delivery tooling revision
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          ref: ${{ github.workflow_sha }}
+          path: delivery-tooling
+          persist-credentials: false
+          fetch-depth: 1
+
+      - name: Check out the unchanged qualified application revision
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          ref: ${{ needs.qualification.outputs.source_sha }}
+          path: fork-source
+          persist-credentials: false
+          fetch-depth: 1
+
+      - name: Download verified native qualification evidence
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          name: device-delivery-qualification-${{ needs.qualification.outputs.source_sha }}
+          path: qualification
+
+      - name: Initialize pinned public submodules and source guard baseline
+        run: |
+          set -euo pipefail
+          umask 077
+          python3 - <<'PY'
+          import os, pathlib, re, subprocess
+          source = os.environ['APP_SOURCE_SHA']
+          if re.fullmatch(r'[0-9a-f]{40}', source) is None:
+              raise SystemExit('Invalid qualified source')
+          if subprocess.check_output(['git', 'rev-parse', 'HEAD'], text=True).strip() != source:
+              raise SystemExit('Application checkout does not match qualification')
+          for command in (
+              ['git', 'fetch', '--no-tags', '--depth=1', 'origin', '279f89e4d4f63f17227bf877dc3d8990f22ecd58'],
+              ['git', 'submodule', 'init'],
+              ['git', 'config', 'submodule.submodules/rlottie/rlottie.url', 'https://github.com/TelegramMessenger/rlottie.git'],
+              ['git', 'config', 'submodule.submodules/TgVoipWebrtc/tgcalls.url', 'https://github.com/TelegramMessenger/tgcalls.git'],
+              ['git', 'submodule', 'update', '--init', '--recursive', '--depth', '1', '--jobs', '8'],
+          ):
+              subprocess.run(command, check=True)
+          pathlib.Path('build/fork-evidence').mkdir(parents=True, exist_ok=True)
+          PY
+
+      - name: Verify source guard and telemetry policy
+        run: |
+          set -euo pipefail
+          { python3 tools/fork_audit/check.py &&
+            python3 tools/fork_audit/telemetry.py; } 2>&1 | tee build/fork-evidence/source-guards.log
+
+      - name: Select pinned Apple toolchain and prepare verified build tools
+        run: |
+          set -euo pipefail
+          sudo xcode-select -s /Applications/Xcode_27.1.app/Contents/Developer
+          python3 tools/fork_baseline/prepare_host.py 2>&1 | tee build/fork-evidence/host.log
+
+      # One device build on this fresh runner. No simulator setup, certificate,
+      # keychain import, provisioning profile, third-party upload or cache.
+      - name: Compile unsigned device package
+        id: compile
+        env:
+          TELEGRAM_API_ID: ${{ secrets.TELEGRAM_API_ID }}
+          TELEGRAM_API_HASH: ${{ secrets.TELEGRAM_API_HASH }}
+          IOS_BUNDLE_ID: org.livara.ayugram
+        run: |
+          set -euo pipefail
+          umask 077
+          python3 tools/fork_baseline/baseline.py unsigned-device \
+            --build-number "$DELIVERY_BUILD_NUMBER" 2>&1 | tee build/fork-evidence/unsigned-device.log
+
+      - name: Verify active fork branding in the unsigned device IPA
+        run: |
+          set -euo pipefail
+          python3 tools/fork_baseline/branding.py \
+            --ipa build/fork-baseline-unsigned-device/Telegram.ipa \
+            --bundle org.livara.ayugram --output build/fork-evidence/branding.json
+
+      - name: Record exact application and workflow build origins
+        env:
+          COMPILE_STEP_OUTCOME: ${{ steps.compile.outcome }}
+        run: |
+          set -euo pipefail
+          python3 ../delivery-tooling/tools/fork_baseline/device_delivery.py verify-build \
+            --mode unsigned-device --source-root . --qualification ../qualification \
+            --output build/fork-evidence/build-verification.json \
+            --build-number "$DELIVERY_BUILD_NUMBER"
+
+      - name: Bound retained device diagnostic logs
+        if: always()
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          limit = 8 * 1024**2
+          for name in ('source-guards.log', 'host.log', 'unsigned-device.log'):
+              file = Path('build/fork-evidence') / name
+              if file.is_symlink():
+                  raise SystemExit('Unsafe diagnostic file')
+              if file.is_file() and file.stat().st_size > limit:
+                  with file.open('rb') as stream:
+                      stream.seek(-limit, 2)
+                      tail = stream.read(limit)
+                  file.write_bytes(b'[earlier diagnostic bytes omitted; final 8 MiB retained]\n' + tail)
+          PY
+
+      - name: Publish internal device build and bounded evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: device-delivery-device-${{ needs.qualification.outputs.source_sha }}
+          path: |
+            fork-source/build/fork-baseline-unsigned-device/Telegram.ipa
+            fork-source/build/fork-baseline-unsigned-device/manifest.json
+            fork-source/build/fork-baseline-unsigned-device/SHA256SUMS
+            fork-source/build/fork-baseline-unsigned-device/COPYING
+            fork-source/build/fork-baseline-unsigned-device/LICENSE-NOTICE.md
+            fork-source/build/fork-baseline-unsigned-device/CORRESPONDING-SOURCE.md
+            fork-source/build/fork-evidence/build-verification.json
+            fork-source/build/fork-evidence/source-guards.log
+            fork-source/build/fork-evidence/host.log
+            fork-source/build/fork-evidence/host.json
+            fork-source/build/fork-evidence/unsigned-device.log
+            fork-source/build/fork-evidence/unsigned-rules.json
+            fork-source/build/fork-evidence/branding.json
+          if-no-files-found: warn
+          retention-days: 7
+          include-hidden-files: false
+
+  application-build:
+    needs: qualification
+    runs-on: xcode-27
+    timeout-minutes: 360
+    env:
+      APP_SOURCE_SHA: ${{ needs.qualification.outputs.source_sha }}
+      DELIVERY_BUILD_NUMBER: ${{ needs.qualification.outputs.build_number }}
+    defaults:
+      run:
+        shell: bash
+        working-directory: fork-source
+    steps:
+      - name: Check out the reviewed delivery tooling revision
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          ref: ${{ github.workflow_sha }}
+          path: delivery-tooling
+          persist-credentials: false
+          fetch-depth: 1
+
+      - name: Check out the unchanged qualified application revision
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          ref: ${{ needs.qualification.outputs.source_sha }}
+          path: fork-source
+          persist-credentials: false
+          fetch-depth: 1
+
+      - name: Download verified native qualification evidence
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          name: device-delivery-qualification-${{ needs.qualification.outputs.source_sha }}
+          path: qualification
+
+      - name: Initialize pinned public submodules and source guard baseline
+        run: |
+          set -euo pipefail
+          umask 077
+          python3 - <<'PY'
+          import os, pathlib, re, subprocess
+          source = os.environ['APP_SOURCE_SHA']
+          if re.fullmatch(r'[0-9a-f]{40}', source) is None:
+              raise SystemExit('Invalid qualified source')
+          if subprocess.check_output(['git', 'rev-parse', 'HEAD'], text=True).strip() != source:
+              raise SystemExit('Application checkout does not match qualification')
+          for command in (
+              ['git', 'fetch', '--no-tags', '--depth=1', 'origin', '279f89e4d4f63f17227bf877dc3d8990f22ecd58'],
+              ['git', 'submodule', 'init'],
+              ['git', 'config', 'submodule.submodules/rlottie/rlottie.url', 'https://github.com/TelegramMessenger/rlottie.git'],
+              ['git', 'config', 'submodule.submodules/TgVoipWebrtc/tgcalls.url', 'https://github.com/TelegramMessenger/tgcalls.git'],
+              ['git', 'submodule', 'update', '--init', '--recursive', '--depth', '1', '--jobs', '8'],
+          ):
+              subprocess.run(command, check=True)
+          pathlib.Path('build/fork-evidence').mkdir(parents=True, exist_ok=True)
+          PY
+
+      - name: Verify source guard and telemetry policy
+        run: |
+          set -euo pipefail
+          { python3 tools/fork_audit/check.py &&
+            python3 tools/fork_audit/telemetry.py; } 2>&1 | tee build/fork-evidence/source-guards.log
+
+      - name: Select pinned Apple toolchain and prepare verified build tools
+        run: |
+          set -euo pipefail
+          sudo xcode-select -s /Applications/Xcode_27.1.app/Contents/Developer
+          python3 tools/fork_baseline/prepare_host.py 2>&1 | tee build/fork-evidence/host.log
+
+      - name: Prepare the pinned simulator runtime
+        run: |
+          set -euo pipefail
+          python3 tools/fork_baseline/prepare_host.py --simulator 2>&1 | tee build/fork-evidence/runtime.log
+
+      # With no --integration-tests flag, this existing wrapper builds once and
+      # then runs its mandatory TextFormat test target. The qualified archive
+      # and TelegramCore suites are not repeated here.
+      - name: Build the full simulator app and run TextFormat regression tests
+        id: compile
+        env:
+          TELEGRAM_API_ID: ${{ secrets.TELEGRAM_API_ID }}
+          TELEGRAM_API_HASH: ${{ secrets.TELEGRAM_API_HASH }}
+          IOS_BUNDLE_ID: org.livara.ayugram
+        run: |
+          set -euo pipefail
+          umask 077
+          python3 tools/fork_baseline/baseline.py simulator \
+            --build-number "$DELIVERY_BUILD_NUMBER" 2>&1 | tee build/fork-evidence/simulator.log
+
+      - name: Verify source-matched main-app startup
+        run: |
+          set -euo pipefail
+          umask 077
+          python3 tools/fork_baseline/startup_replay.py \
+            --ipa build/fork-baseline-simulator/Telegram.ipa \
+            --output build/fork-evidence/startup-main-app-only \
+            --startup-variant main-app-only --private-control-only \
+            2>&1 | tee build/fork-evidence/startup.log
+
+      - name: Verify active fork branding in the simulator IPA
+        run: |
+          set -euo pipefail
+          python3 tools/fork_baseline/branding.py \
+            --ipa build/fork-baseline-simulator/Telegram.ipa \
+            --bundle org.livara.ayugram --output build/fork-evidence/branding.json
+
+      - name: Record exact application and workflow build origins
+        env:
+          COMPILE_STEP_OUTCOME: ${{ steps.compile.outcome }}
+        run: |
+          set -euo pipefail
+          python3 ../delivery-tooling/tools/fork_baseline/device_delivery.py verify-build \
+            --mode simulator --source-root . --qualification ../qualification \
+            --output build/fork-evidence/build-verification.json \
+            --build-number "$DELIVERY_BUILD_NUMBER"
+
+      - name: Bound retained simulator diagnostic logs
+        if: always()
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          limit = 8 * 1024**2
+          for name in ('source-guards.log', 'host.log', 'runtime.log', 'simulator.log', 'startup.log'):
+              file = Path('build/fork-evidence') / name
+              if file.is_symlink():
+                  raise SystemExit('Unsafe diagnostic file')
+              if file.is_file() and file.stat().st_size > limit:
+                  with file.open('rb') as stream:
+                      stream.seek(-limit, 2)
+                      tail = stream.read(limit)
+                  file.write_bytes(b'[earlier diagnostic bytes omitted; final 8 MiB retained]\n' + tail)
+          PY
+
+      - name: Publish internal simulator build and bounded startup evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: device-delivery-simulator-${{ needs.qualification.outputs.source_sha }}
+          path: |
+            fork-source/build/fork-baseline-simulator/Telegram.ipa
+            fork-source/build/fork-baseline-simulator/manifest.json
+            fork-source/build/fork-baseline-simulator/SHA256SUMS
+            fork-source/build/fork-baseline-simulator/COPYING
+            fork-source/build/fork-baseline-simulator/LICENSE-NOTICE.md
+            fork-source/build/fork-baseline-simulator/CORRESPONDING-SOURCE.md
+            fork-source/build/fork-evidence/build-verification.json
+            fork-source/build/fork-evidence/source-guards.log
+            fork-source/build/fork-evidence/host.log
+            fork-source/build/fork-evidence/host.json
+            fork-source/build/fork-evidence/runtime.log
+            fork-source/build/fork-evidence/simulator.log
+            fork-source/build/fork-evidence/startup.log
+            fork-source/build/fork-evidence/branding.json
+            fork-source/build/fork-evidence/textformat/collection.json
+            fork-source/build/fork-evidence/textformat/test.xml
+            fork-source/build/fork-evidence/textformat/test.log
+            fork-source/build/fork-evidence/startup-main-app-only/replay.json
+            fork-source/build/fork-evidence/startup-main-app-only/main-app-only/launch-smoke/result.json
+            fork-source/build/fork-evidence/startup-main-app-only/main-app-only/launch-smoke/checker-compiler.log
+            fork-source/build/fork-evidence/startup-main-app-only/main-app-only/launch-smoke/recording.log
+            fork-source/build/fork-evidence/startup-main-app-only/main-app-only/launch-smoke/launch-1.png
+            fork-source/build/fork-evidence/startup-main-app-only/main-app-only/launch-smoke/launch-2.png
+            fork-source/build/fork-evidence/startup-main-app-only/main-app-only/launch-smoke/launch.mp4
+          if-no-files-found: warn
+          retention-days: 7
+          include-hidden-files: false
+
+  package:
+    needs: [qualification, unsigned-device-build, application-build]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    env:
+      DELIVERY_BUILD_NUMBER: ${{ needs.qualification.outputs.build_number }}
+    steps:
+      - name: Check out the reviewed delivery tooling revision
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          ref: ${{ github.workflow_sha }}
+          path: delivery-tooling
+          persist-credentials: false
+          fetch-depth: 1
+
+      - name: Check out exact application source for static packaging helpers
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          ref: ${{ needs.qualification.outputs.source_sha }}
+          path: fork-source
+          persist-credentials: false
+          fetch-depth: 1
+
+      - name: Download verified native qualification evidence
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          name: device-delivery-qualification-${{ needs.qualification.outputs.source_sha }}
+          path: qualification
+
+      # The helper verifies both completed jobs through GitHub's read-only API,
+      # checks exact workflow/app origins and artifact digests, and downloads
+      # each intermediate artifact once. It then calls device_variant.package;
+      # no startup guard is bypassed and no application code is recompiled.
+      - name: Verify completed build origins and package the startup-tested variant
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          umask 077
+          python3 delivery-tooling/tools/fork_baseline/device_delivery.py package \
+            --source-root fork-source --qualification qualification \
+            --device-root device-build --simulator-root simulator-build \
+            --output delivery --build-number "$DELIVERY_BUILD_NUMBER"
+
+      - name: Publish unsigned main-app-only device IPA and source metadata
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: qualified-main-app-only-unsigned-device-${{ needs.qualification.outputs.source_sha }}
+          path: |
+            delivery/AyuGram-*-main-app-only-unsigned-device.ipa
+            delivery/manifest.json
+            delivery/delivery-provenance.json
+            delivery/SHA256SUMS
+            delivery/COPYING
+            delivery/LICENSE-NOTICE.md
+            delivery/CORRESPONDING-SOURCE.md
+            delivery/evidence/qualification/
+            delivery/evidence/startup/
+            delivery/evidence/unsigned-device/
+            delivery/evidence/simulator/
+          if-no-files-found: error
+          retention-days: 14
+          include-hidden-files: false
+
+      - name: Record the scope of this candidate
+        env:
+          APP_SOURCE_SHA: ${{ needs.qualification.outputs.source_sha }}
+        run: |
+          python3 - <<'PY'
+          import os, pathlib
+          with pathlib.Path(os.environ['GITHUB_STEP_SUMMARY']).open('a') as target:
+              target.write('Unsigned main-app-only ARM64 candidate built from `' + os.environ['APP_SOURCE_SHA'] + '`.\n\n')
+              target.write('Exact-source archive-core suites, mandatory TextFormat, and same-source explicitly seeded fresh private-storage simulator startup passed. ')
+              target.write('This is an unsigned IPA. SideStore or another legitimate signer still needs an authorized Apple account. ')
+              target.write('Physical-device installation, login, automatic storage fallback, and Apple HTTP 403 resolution remain unverified.\n')
+          PY
