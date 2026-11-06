@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: GPL-2.0-or-later
-# Created 2026-11-06. Selected Apple SDK setup only; never builds an application.
+# Created 2026-11-06. Selected Apple SDK setup; schema 2 closed inspection reasons.
 """Initialize selected Xcode components and publish closed readiness facts."""
 import argparse
 import hashlib
@@ -21,6 +21,8 @@ SIMCTL = Path(DEVELOPER + '/usr/bin/simctl')
 VERSION = 'Xcode 27.1\nBuild version 27A9275'
 STAGES = {'notStarted', 'verifyHost', 'verifyVersion', 'checkBefore', 'initialize', 'checkAfter', 'inspectTool', 'complete'}
 FAILURES = {'host', 'version', 'commandTimedOut', 'commandUnavailable', 'commandFailed', 'outputLimit', 'notReady', 'toolIdentity', 'internal'}
+TOOL_REJECTION_REASONS = frozenset({'lookupMismatch', 'pathMismatch', 'type', 'owner', 'mode',
+                                  'links', 'size', 'unstable', 'read', 'format', 'commandUnavailable'})
 
 
 class Rejected(ValueError):
@@ -35,14 +37,14 @@ def require(value, code='internal'):
 
 
 def blank_tool():
-    return {'state': 'unavailable', 'xcrun_lookup_is_usr_bin': False,
+    return {'state': 'unavailable', 'rejection_reason': None, 'xcrun_lookup_is_usr_bin': False,
             'selected_simctl_path_verified': False, 'root_owned_nonwritable': False,
             'stable_bytes_verified': False, 'file_kind': 'unavailable',
             'wrapper_mentions_first_launch': False}
 
 
 def blank():
-    return {'schema': 1, 'role': 'selectedAppleSDKInitialization', 'source': SOURCE,
+    return {'schema': 2, 'role': 'selectedAppleSDKInitialization', 'source': SOURCE,
             'application_recompiled': False, 'physical_device_verified': False,
             'stage': 'notStarted', 'failure': None, 'success': False,
             'host_verified': False, 'version_verified': False,
@@ -71,8 +73,13 @@ def validate_report(value):
     for name in ('tool_before', 'tool_after'):
         tool = value[name]; schema = blank_tool()
         require(type(tool) is dict and set(tool) == set(schema))
-        require(tool['state'] in {'unavailable', 'observed', 'rejected'})
-        require(tool['file_kind'] in {'unavailable', 'machO', 'shellWrapper'})
+        require(type(tool['state']) is str and tool['state'] in {'unavailable', 'observed', 'rejected'})
+        require(type(tool['file_kind']) is str and tool['file_kind'] in {'unavailable', 'machO', 'shellWrapper'})
+        reason = tool['rejection_reason']
+        if tool['state'] == 'rejected':
+            require(type(reason) is str and reason in TOOL_REJECTION_REASONS)
+        else:
+            require(reason is None)
         for key, item in schema.items():
             if type(item) is bool: require(type(tool[key]) is bool)
         if tool['state'] == 'observed':
@@ -138,34 +145,57 @@ def file_identity(value):
 
 def inspect_tool(runner, directory, label):
     result = blank_tool()
+    reason = 'lookupMismatch'
     try:
         launcher = shutil.which('xcrun')
         result['xcrun_lookup_is_usr_bin'] = launcher is not None and Path(launcher).resolve(strict=True) == Path('/usr/bin/xcrun')
+        # Preserve the existing advisory lookup flag and absolute runner path.
+        # Reasons label the first rejected guard, never paths or exception text.
+        reason = 'commandUnavailable'
         code, raw = runner(['/usr/bin/xcrun', '--find', 'simctl'], 15, directory, label)
-        require(code == 0 and 0 < len(raw) <= 4096)
+        require(code == 0)
+        reason = 'size'
+        require(0 < len(raw) <= 4096)
+        reason = 'pathMismatch'
         require(raw.decode('utf-8').strip() == str(SIMCTL))
+        reason = 'read'
         before = SIMCTL.lstat()
-        require(stat.S_ISREG(before.st_mode) and before.st_uid == 0 and not before.st_mode & 0o022
-                and before.st_nlink == 1 and 0 < before.st_size <= 32 * 1024**2)
+        reason = 'type'; require(stat.S_ISREG(before.st_mode))
+        reason = 'owner'; require(before.st_uid == 0)
+        reason = 'mode'; require(not before.st_mode & 0o022)
+        reason = 'links'; require(before.st_nlink == 1)
+        reason = 'size'; require(0 < before.st_size <= 32 * 1024**2)
+        reason = 'read'
         descriptor = os.open(SIMCTL, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
         try:
-            require(file_identity(os.fstat(descriptor)) == file_identity(before))
+            opened = os.fstat(descriptor)
+            reason = 'unstable'; require(file_identity(opened) == file_identity(before))
             data = bytearray(); fingerprint = hashlib.sha256()
             while len(data) < before.st_size:
+                reason = 'read'
                 chunk = os.read(descriptor, min(1024**2, before.st_size - len(data)))
                 require(chunk); data.extend(chunk); fingerprint.update(chunk)
-            require(file_identity(os.fstat(descriptor)) == file_identity(before)
-                    and file_identity(SIMCTL.lstat()) == file_identity(before))
+            reason = 'read'
+            after, current = os.fstat(descriptor), SIMCTL.lstat()
+            reason = 'unstable'
+            require(file_identity(after) == file_identity(before)
+                    and file_identity(current) == file_identity(before))
+            reason = 'format'
             require(len(fingerprint.digest()) == 32)  # Private fingerprint only.
-        finally: os.close(descriptor)
+        finally:
+            try: os.close(descriptor)
+            except OSError:
+                reason = 'read'
+                raise
         result.update(selected_simctl_path_verified=True, root_owned_nonwritable=True, stable_bytes_verified=True)
+        reason = 'format'
         if data[:4] in (b'\xcf\xfa\xed\xfe', b'\xfe\xed\xfa\xcf', b'\xca\xfe\xba\xbe', b'\xbe\xba\xfe\xca', b'\xca\xfe\xba\xbf'):
             result.update(state='observed', file_kind='machO')
         elif len(data) <= 65536 and bytes(data).splitlines()[0] in (b'#!/bin/bash', b'#!/bin/sh'):
             result.update(state='observed', file_kind='shellWrapper', wrapper_mentions_first_launch=b'-runFirstLaunch' in data)
-        else: result['state'] = 'rejected'
-    except (OSError, ValueError, UnicodeError):
-        result['state'] = 'rejected'
+        else: require(False)
+    except (OSError, ValueError, TypeError, UnicodeError, IndexError):
+        result.update(state='rejected', rejection_reason=reason)
     return result
 
 

@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: GPL-2.0-or-later
 # Created for the AyuGram iOS fork on 2026-11-06.
 import copy
+import io
 import json
 import os
 from pathlib import Path
@@ -18,6 +19,12 @@ import installer_observation as m
 
 ID = '12345678-1234-1234-1234-123456789ABC'
 NAME = 'AYU_SMOKE_' + 'a' * 32
+
+
+def frames(*stages):
+    output=io.BytesIO();writer=m.FrameWriter(output.write);value=m.blank()
+    for stage in stages:writer.emit(value,stage,complete=stage=='complete')
+    return output.getvalue()
 
 
 def sample(pid=123, command='simctl'):
@@ -131,7 +138,7 @@ class ObservationTests(unittest.TestCase):
 
     def test_worker_group_is_retired_before_any_leader_poll_or_wait(self):
         read_in,write_in=os.pipe();read_out,write_out=os.pipe()
-        os.write(write_out,b'{"closed":"payload"}\n');os.close(write_out)
+        os.write(write_out,frames('sourceAppMetadata','complete'));os.close(write_out)
         process=mock.Mock(pid=123,stdin=os.fdopen(write_in,'wb',buffering=0),stdout=os.fdopen(read_out,'rb',buffering=0))
         process.poll.side_effect=AssertionError('Leader must remain unreaped')
         events=[]
@@ -140,7 +147,9 @@ class ObservationTests(unittest.TestCase):
             with mock.patch.object(m.subprocess,'Popen',return_value=process) as spawn,\
                  mock.patch.object(m.os,'killpg',side_effect=lambda pid,sig:events.append(('kill',pid,sig))):
                 state,data=m.worker_command(b'{"private":"request"}',.5)
-            self.assertEqual(state,'payloadReceived');self.assertEqual(data,b'{"closed":"payload"}\n')
+            self.assertEqual(state,'payloadReceived');value=m.strict_json(data)
+            self.assertEqual(value['worker_status'],'completeFrame');self.assertEqual(value['worker_frames_received'],2)
+            self.assertTrue(value['own_group_signal_sent']);self.assertTrue(value['direct_worker_reaped'])
             self.assertEqual(events,[('kill',123,m.signal.SIGKILL),'wait'])
             process.poll.assert_not_called();self.assertTrue(spawn.call_args.kwargs['start_new_session'])
         finally:os.close(read_in)
@@ -156,7 +165,8 @@ class ObservationTests(unittest.TestCase):
             with mock.patch.object(m.subprocess,'Popen',return_value=process),\
                  mock.patch.object(m.os,'killpg',side_effect=lambda pid,sig:events.append('kill')):
                 state,data=m.worker_command(b'{}',.01)
-            self.assertEqual((state,data),('timedOut',b''));self.assertEqual(events,['kill','wait'])
+            self.assertEqual(state,'timedOut');self.assertEqual(events,['kill','wait'])
+            self.assertEqual(m.strict_json(data)['worker_status'],'timedOut')
             process.poll.assert_not_called()
         finally:os.close(read_in);os.close(write_out)
 
@@ -167,7 +177,8 @@ class ObservationTests(unittest.TestCase):
         process.wait.side_effect=m.subprocess.TimeoutExpired('private',.25)
         try:
             with mock.patch.object(m.subprocess,'Popen',return_value=process),mock.patch.object(m.os,'killpg'):
-                self.assertEqual(m.worker_command(b'{}',.5),('retirementUnverified',b''))
+                state,data=m.worker_command(b'{}',.5)
+                self.assertEqual(state,'retirementUnverified');self.assertFalse(m.strict_json(data)['direct_worker_reaped'])
         finally:os.close(read_in)
 
     def test_request_pipe_is_nonblocking_and_handles_partial_delivery(self):
@@ -204,11 +215,52 @@ class ObservationTests(unittest.TestCase):
             try:
                 with mock.patch.object(m,'SCRIPT',str(script)):
                     state,data=m.worker_command(b'{}',2)
-                self.assertEqual((state,data),('timedOut',b''))
+                self.assertEqual(state,'timedOut');self.assertEqual(m.strict_json(data)['worker_status'],'timedOut')
                 self.assertTrue(ready.wait(1),'Synthetic descendant did not start')
                 self.assertTrue(eof.wait(1),'Owned diagnostic descendant survived group retirement')
                 thread.join(1);self.assertFalse(thread.is_alive());self.assertEqual(errors,[])
             finally:server.close();thread.join(5)
+
+    def test_closed_progress_is_retained_and_does_not_stop_on_first_frame(self):
+        reader=m.FrameReader();reader.feed(frames('sourceAppMetadata','ownedDeviceMetadata'))
+        self.assertFalse(reader.complete);self.assertEqual(reader.count,2)
+        self.assertEqual(reader.latest['last_progress_stage'],'ownedDeviceMetadata')
+        self.assertEqual(reader.latest['worker_status'],'inProgress')
+
+    def test_fragmented_progress_and_complete_are_validated_as_one_protocol(self):
+        data=frames(*m.PROGRESS_STAGES[1:]);reader=m.FrameReader()
+        for index in range(0,len(data),7):reader.feed(data[index:index+7])
+        self.assertTrue(reader.complete);self.assertEqual(reader.count,8)
+        self.assertEqual(reader.latest['last_progress_stage'],'complete')
+
+    def test_later_unknown_private_frame_never_replaces_last_valid_progress(self):
+        reader=m.FrameReader();reader.feed(frames('sourceAppMetadata'))
+        bad=json.loads(frames('sourceAppMetadata').decode());bad['observation']['private_canary']='PRIVATE_SECRET'
+        with self.assertRaises(ValueError):reader.feed(json.dumps(bad).encode()+b'\n')
+        self.assertEqual(reader.count,1);self.assertNotIn('PRIVATE_SECRET',json.dumps(reader.latest))
+
+    def test_frame_limit_stage_order_and_raw_trailing_payload_fail_closed(self):
+        for data in (frames('sourceAppMetadata','sourceAppMetadata'),
+                     frames('ownedDeviceMetadata'),frames('sourceAppMetadata','complete')+b'PRIVATE_CANARY'):
+            reader=m.FrameReader()
+            with self.subTest(data=data[:40]),self.assertRaises(ValueError):reader.feed(data)
+            self.assertNotIn('PRIVATE_CANARY',json.dumps(reader.latest))
+        reader=m.FrameReader()
+        with self.assertRaises(ValueError):reader.feed(b'x'*(m.MAX_BYTES+1))
+
+    def test_timeout_after_progress_returns_last_valid_stage_with_retirement_facts(self):
+        read_in,write_in=os.pipe();read_out,write_out=os.pipe()
+        os.write(write_out,frames('sourceAppMetadata','ownedDeviceMetadata'))
+        process=mock.Mock(pid=123,stdin=os.fdopen(write_in,'wb',buffering=0),stdout=os.fdopen(read_out,'rb',buffering=0))
+        process.poll.side_effect=AssertionError('Must not reap before group retirement');process.wait.return_value=-9
+        try:
+            with mock.patch.object(m.subprocess,'Popen',return_value=process),mock.patch.object(m.os,'killpg'):
+                state,data=m.worker_command(b'{}',.01)
+            value=m.strict_json(data);self.assertEqual(state,'timedOut')
+            self.assertEqual(value['last_progress_stage'],'ownedDeviceMetadata')
+            self.assertEqual(value['worker_frames_received'],2);self.assertEqual(value['state'],'partial')
+            self.assertTrue(value['own_group_signal_sent']);self.assertTrue(value['direct_worker_reaped'])
+        finally:os.close(read_in);os.close(write_out)
 
 
 class FilesystemTests(unittest.TestCase):
@@ -335,6 +387,16 @@ class CaptureTests(unittest.TestCase):
         self.assertEqual(result['state'],'childExited'); self.assertEqual(result['post_observer_installer_exit_code'],0)
         self.assertFalse(result['startup_verified'])
 
+    def test_late_parent_liveness_failure_does_not_discard_valid_progress(self):
+        snapshot=m.blank();snapshot.update(state='partial',worker_status='timedOut',
+            last_progress_stage='sourceAppMetadata',worker_frames_received=1)
+        self.process.poll.side_effect=[None,RuntimeError('PRIVATE_POLL_ERROR'),None]
+        with mock.patch.object(m,'worker_command',return_value=('timedOut',json.dumps(snapshot).encode())):
+            value=m.capture(self.process,**self.kwargs)
+        self.assertEqual(value['last_progress_stage'],'sourceAppMetadata')
+        self.assertEqual(value['worker_frames_received'],1);self.assertEqual(value['worker_status'],'timedOut')
+        self.assertNotIn('PRIVATE_POLL_ERROR',json.dumps(value));self.assertFalse(value['startup_verified'])
+
     def test_parent_capture_performs_no_path_io_or_recursive_temporary_cleanup(self):
         with mock.patch.object(Path,'resolve',side_effect=AssertionError('Parent FS resolution')) as resolve,\
              mock.patch.object(Path,'lstat',side_effect=AssertionError('Parent FS metadata')) as lstat,\
@@ -359,6 +421,32 @@ class CaptureTests(unittest.TestCase):
         with mock.patch.object(m,'tool_context',return_value=m.blank()['tool']),mock.patch.object(m,'command',side_effect=command):
             result=m.worker_inner(request)
         self.assertEqual(result['sample']['state'],'rejected');self.assertFalse((private/'sample.txt').exists())
+
+    def test_actual_module_worker_protocol_completes_without_simulator_or_sampling(self):
+        # Real SCRIPT/transport/metadata traversal; this synthetic child has the
+        # wrong command identity, so no sample or native application can run.
+        child=m.subprocess.Popen([m.sys.executable,'-c','import time;time.sleep(30)'],
+            stdin=m.subprocess.DEVNULL,stdout=m.subprocess.DEVNULL,stderr=m.subprocess.DEVNULL,
+            env=m.clean_environment())
+        request={'pid':child.pid,'parent':os.getpid(),'uid':os.getuid(),'private_root':str(self.root),
+                 'identifier':ID,'device_name':NAME,'root_identity':list(self.kwargs['root_identity']),
+                 'app_path':str(self.app)}
+        try:
+            state,raw=m.worker_command(json.dumps(request).encode(),10)
+            value=m.validate_observation(m.strict_json(raw))
+            self.assertEqual(state,'payloadReceived')
+            self.assertEqual(value['worker_status'],'completeFrame')
+            self.assertEqual(value['last_progress_stage'],'complete')
+            self.assertGreaterEqual(value['worker_frames_received'],6)
+            self.assertLessEqual(value['worker_frames_received'],8)
+            self.assertEqual(value['identity']['state'],'rejected')
+            self.assertEqual(value['sample']['state'],'notAttempted')
+            self.assertTrue(value['direct_worker_reaped'])
+            self.assertFalse(value['startup_verified']);self.assertIsNone(child.poll())
+            for private in (str(self.base),ID,NAME,'"pid"','"uid"'):
+                self.assertNotIn(private,raw.decode())
+        finally:
+            child.terminate();child.wait(timeout=5)
 
 
 if __name__ == '__main__': unittest.main()

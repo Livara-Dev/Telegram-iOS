@@ -56,6 +56,11 @@ SAMPLE_EXEC = ("import os,resource,sys;"
                "os.execv('/usr/bin/sample',['/usr/bin/sample',sys.argv[1],'3','10','-file',sys.argv[2]])")
 APPLE_SIMCTL = Path('/Applications/Xcode_27.1.app/Contents/Developer/usr/bin/simctl')
 SCRIPT = str(Path(__file__).absolute())
+PROGRESS_STAGES=('notStarted','sourceAppMetadata','ownedDeviceMetadata','toolContext',
+                 'installerIdentity','sample','containerSnapshot','workerCleanup','complete')
+WORKER_STATES={'notStarted','inProgress','completeFrame','timedOut','protocolRejected',
+               'outputLimit','commandUnavailable','retirementUnverified','earlyExit'}
+MAX_FRAMES=8
 
 
 def require(value):
@@ -81,12 +86,14 @@ def strict_json(data):
 
 def blank():
     return {
-        'schema': 1, 'diagnostic_only': True, 'source': SOURCE,
+        'schema': 2, 'diagnostic_only': True, 'source': SOURCE,
         'source_simulator_ipa_sha256': IPA_SHA, 'attempt': 1, 'phase': 'installApplication',
         'state': 'unavailable', 'original_deadline_seconds': 120,
         'post_deadline_budget_seconds': BUDGET_SECONDS, 'post_deadline_elapsed_ms': 0,
         'budget_exceeded': False, 'post_observer_installer_exit_code': None,
         'raw_sample_removal_verified': False,
+        'worker_status':'notStarted','last_progress_stage':'notStarted','worker_frames_received':0,
+        'own_group_signal_sent':False,'direct_worker_reaped':False,
         'original_failure_preserved': True, 'startup_verified': False,
         'tool': {'state': 'notAttempted', 'file_kind': 'unavailable', 'fixed_apple_path_verified': False,
                  'xcrun_lookup_is_usr_bin': False,
@@ -132,6 +139,11 @@ def validate_observation(value):
     integer(value['post_deadline_elapsed_ms'], 2**63 - 1)
     boolean(value['budget_exceeded'])
     boolean(value['raw_sample_removal_verified'])
+    require(value['worker_status'] in WORKER_STATES and value['last_progress_stage'] in PROGRESS_STAGES)
+    integer(value['worker_frames_received'],MAX_FRAMES)
+    boolean(value['own_group_signal_sent']);boolean(value['direct_worker_reaped'])
+    if value['worker_frames_received']==0:require(value['last_progress_stage']=='notStarted')
+    else:require(value['last_progress_stage']!='notStarted')
     require(value['budget_exceeded'] == (value['post_deadline_elapsed_ms'] > BUDGET_SECONDS * 1000))
     if value['post_observer_installer_exit_code'] is not None:
         integer(value['post_observer_installer_exit_code'], 2**31 - 1, -(2**31))
@@ -231,14 +243,63 @@ def command(arguments, timeout, *, max_bytes=MAX_BYTES):
             if process.stdout is not None: process.stdout.close()
 
 
+class FrameReader:
+    """Accept at most eight closed snapshots, retaining no raw rejected data."""
+    def __init__(self):
+        self.buffer=bytearray();self.total=0;self.count=0;self.latest=blank()
+        self.complete=False;self.failed=False
+
+    def feed(self,data):
+        require(not self.failed and isinstance(data,bytes))
+        self.total+=len(data)
+        if self.total>MAX_BYTES:
+            self.failed=True;raise ValueError('observer_frame_limit')
+        self.buffer.extend(data)
+        try:
+            while b'\n' in self.buffer:
+                line,_,remaining=self.buffer.partition(b'\n');self.buffer=bytearray(remaining)
+                require(not self.complete and self.count<MAX_FRAMES and bool(line))
+                frame=strict_json(bytes(line));keys(frame,{'schema','kind','stage','observation'})
+                require(type(frame['schema']) is int and frame['schema']==1
+                        and frame['kind'] in {'progress','complete'}
+                        and frame['stage'] in PROGRESS_STAGES[1:])
+                if self.count==0:require(frame['stage']=='sourceAppMetadata' and frame['kind']=='progress')
+                require(PROGRESS_STAGES.index(frame['stage'])>PROGRESS_STAGES.index(self.latest['last_progress_stage']))
+                value=validate_observation(frame['observation'])
+                require(value['last_progress_stage']==frame['stage'] and value['worker_frames_received']==self.count+1
+                        and value['own_group_signal_sent'] is False and value['direct_worker_reaped'] is False)
+                require((frame['kind']=='complete')==(frame['stage']=='complete'))
+                require(value['worker_status']==('completeFrame' if frame['kind']=='complete' else 'inProgress'))
+                self.count+=1;self.latest=value;self.complete=frame['kind']=='complete'
+            if self.complete:require(not self.buffer)
+        except Exception:
+            self.failed=True;self.buffer.clear();raise ValueError('observer_frame_rejected') from None
+
+
+class FrameWriter:
+    def __init__(self,write=None):
+        self.write=write or sys.stdout.buffer.write;self.flush=sys.stdout.buffer.flush if write is None else lambda:None
+        self.count=0
+
+    def emit(self,value,stage,*,complete=False):
+        self.count+=1;require(self.count<=MAX_FRAMES)
+        value.update(last_progress_stage=stage,worker_frames_received=self.count,
+                     worker_status='completeFrame' if complete else 'inProgress')
+        validate_observation(value)
+        frame={'schema':1,'kind':'complete' if complete else 'progress','stage':stage,'observation':value}
+        data=json.dumps(frame,sort_keys=True).encode()+b'\n';require(len(data)<=MAX_BYTES)
+        self.write(data)
+        self.flush()
+
+
 def worker_command(request, timeout):
     """Never reap the new group leader until its exact group has been retired.
 
-    Its one newline-terminated closed JSON payload is a diagnostic protocol,
-    not a subprocess exit or application pass. An unreaped child PID cannot be
+    Its bounded newline-terminated progress/complete snapshots are diagnostics,
+    not subprocess exits or application passes. An unreaped child PID cannot be
     reused as an unrelated process-group ID, even when its leader exits early.
     """
-    process, captured, state = None, bytearray(), 'unavailable'
+    process,state=None,'commandUnavailable';reader=FrameReader();signal_sent=reaped=False
     deadline = time.monotonic() + timeout
     try:
         require(isinstance(request,bytes) and 0<len(request)<=4096)
@@ -253,26 +314,31 @@ def worker_command(request, timeout):
                 remaining=deadline-time.monotonic()
                 if remaining<=0:state='timedOut';break
                 for key,_ in selector.select(min(.02,remaining)):
-                    data=os.read(key.fileobj.fileno(),min(4096,MAX_BYTES+1-len(captured)))
-                    if not data:selector.unregister(key.fileobj);continue
-                    captured.extend(data)
-                    if len(captured)>MAX_BYTES:state='unavailable';break
-                    if captured.endswith(b'\n'):
-                        state='payloadReceived';break
-                if state=='payloadReceived' or len(captured)>MAX_BYTES:break
-    except (OSError,ValueError,subprocess.SubprocessError):state='unavailable'
+                    data=os.read(key.fileobj.fileno(),4096)
+                    if not data:selector.unregister(key.fileobj);state='earlyExit';continue
+                    try:reader.feed(data)
+                    except ValueError:state='outputLimit' if reader.total>MAX_BYTES else 'protocolRejected';break
+                    if reader.complete:state='payloadReceived';break
+                if state in {'payloadReceived','protocolRejected','outputLimit'}:break
+    except (OSError,ValueError,subprocess.SubprocessError):
+        state='timedOut' if time.monotonic()>=deadline else 'commandUnavailable'
     finally:
         if process is not None:
             # No poll/wait happened above. Even an exited leader is unreaped and
             # its PID is reserved, so this can only target our created group.
-            try:os.killpg(process.pid,signal.SIGKILL)
+            try:os.killpg(process.pid,signal.SIGKILL);signal_sent=True
             except ProcessLookupError:pass
-            except OSError:state='unavailable'
-            try:process.wait(timeout=.25)
+            except OSError:state='retirementUnverified'
+            try:process.wait(timeout=.25);reaped=True
             except subprocess.SubprocessError:state='retirementUnverified'
             for stream in (process.stdin,process.stdout):
                 if stream is not None and not stream.closed:stream.close()
-    return state,bytes(captured) if state=='payloadReceived' else b''
+    value=reader.latest
+    value.update(worker_status='completeFrame' if state=='payloadReceived' else state,
+                 worker_frames_received=reader.count,own_group_signal_sent=signal_sent,direct_worker_reaped=reaped)
+    if state!='payloadReceived':value['state']='partial' if reader.count else 'unavailable'
+    validate_observation(value)
+    return state,json.dumps(value,sort_keys=True).encode()
 
 
 def send_request(stream,data,deadline):
@@ -535,7 +601,9 @@ def snapshot_owned(request,root,device,result):
         return result
 
 
-def worker(request):
+def worker(request,emit=None):
+    result=blank();result['identity']['fixed_argv_context_verified']=True;result['state']='partial'
+    if emit:emit(result,'sourceAppMetadata')
     app=Path(request['app_path']);require(app.is_absolute() and app.resolve(strict=True)==app
         and app.name=='Telegram.app' and app.parent.name.startswith('ayu-launch-smoke-'))
     safe_info(app.lstat(),directory=True);safe_info(app.parent.lstat(),directory=True)
@@ -550,17 +618,22 @@ def worker(request):
         request_path=private/'request.json'
         with request_path.open('x') as stream:
             request_path.chmod(0o600);json.dump(request,stream)
-        return worker_inner({**request,'request_path':str(request_path)})
+        result=worker_inner({**request,'request_path':str(request_path)},result=result,emit=emit)
+        if emit:emit(result,'workerCleanup')
+        return result
 
 
-def worker_inner(request):
-    result = blank(); result['identity']['fixed_argv_context_verified'] = True
+def worker_inner(request,result=None,emit=None):
+    result=result if result is not None else blank();result['identity']['fixed_argv_context_verified']=True
     deadline = time.monotonic() + 10
+    if emit:emit(result,'ownedDeviceMetadata')
     try:
         with owned_device(request):pass
     except (OSError,ValueError,TypeError,plistlib.InvalidFileException):
         result['identity']['state']='rejected';return validate_observation(result)
+    if emit:emit(result,'toolContext')
     result['tool'] = tool_context()
+    if emit:emit(result,'installerIdentity')
     status, raw = command(['/bin/ps', '-p', str(request['pid']), '-o', 'pid=,ppid=,uid=,ucomm='], .8, max_bytes=4096)
     family = process_identity(raw, request['pid'], request['parent'], request['uid'],
         shell_wrapper_verified=result['tool']['run_first_launch_wrapper_observed']) if status == 'completed' else None
@@ -568,6 +641,7 @@ def worker_inner(request):
         result['identity']['state'] = 'unavailable' if status != 'completed' else 'rejected'
     else:
         result['identity'].update(state='verified', parent_and_uid_verified=True, command_family=family)
+        if emit:emit(result,'sample')
         private = Path(request['observation_root'])
         sample = private / 'sample.txt'
         descriptor = os.open(sample, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
@@ -593,6 +667,7 @@ def worker_inner(request):
             sample.unlink(missing_ok=True)
             result['raw_sample_removal_verified']=not os.path.lexists(sample)
     if time.monotonic() < deadline - 2.5:
+        if emit:emit(result,'containerSnapshot')
         status, raw = command([sys.executable, str(Path(__file__).resolve()), '--snapshot', str(request['request_path'])], 1.75,
                               max_bytes=16384)
         if status == 'completed':
@@ -605,7 +680,7 @@ def worker_inner(request):
 
 def capture(process, *, mapped_arguments, private_root, root_identity, identifier, device_name, command_started, timeout_seconds=120):
     """Called only by the stock timeout's kill hook; never signal the installer."""
-    started = time.monotonic(); result = blank()
+    started = time.monotonic(); result = blank();accepted_snapshot=False
     try:
         require(type(timeout_seconds) is int and timeout_seconds == 120 and type(command_started) in (int, float)
                 and math.isfinite(command_started) and started - command_started >= 120)
@@ -624,13 +699,16 @@ def capture(process, *, mapped_arguments, private_root, root_identity, identifie
         remaining=BUDGET_SECONDS-(time.monotonic()-started)-.75
         if remaining>0:
             status,raw=worker_command(json.dumps(request).encode(),remaining)
-            if status=='payloadReceived':result=validate_observation(strict_json(raw))
+            if raw:
+                result=validate_observation(strict_json(raw));accepted_snapshot=True
         if process.poll() is None and result['containers']['snapshot_state']=='completed':
             result['containers']['captured_while_child_alive']=True
         elif process.returncode is not None:result['state']='childExited'
     except Exception:
         # Do not emit exception text or change the caller's pending SmokeError.
-        result = blank()
+        if not accepted_snapshot:result=blank()
+        else:
+            result['state']='partial';result['containers']['captured_while_child_alive']=False
     elapsed = round((time.monotonic() - started) * 1000)
     result['post_deadline_elapsed_ms'] = elapsed
     result['budget_exceeded'] = elapsed > BUDGET_SECONDS * 1000
@@ -684,9 +762,13 @@ def main():
     try:
         require(args.worker != (args.snapshot is not None))
         request=validate_request(strict_json(sys.stdin.buffer.read(4097))) if args.worker else private_request(args.snapshot)
-        result=worker(request) if args.worker else snapshot(request)
-        data = json.dumps(result, sort_keys=True).encode(); require(len(data) <= MAX_BYTES)
-        sys.stdout.buffer.write(data + b'\n'); return 0
+        if args.worker:
+            writer=FrameWriter();result=worker(request,emit=writer.emit)
+            writer.emit(result,'complete',complete=True)
+        else:
+            result=snapshot(request);data=json.dumps(result,sort_keys=True).encode();require(len(data)<=MAX_BYTES)
+            sys.stdout.buffer.write(data+b'\n')
+        return 0
     except Exception:
         return 1
 

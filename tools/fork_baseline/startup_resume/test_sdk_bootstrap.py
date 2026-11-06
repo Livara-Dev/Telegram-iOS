@@ -1,12 +1,15 @@
 # SPDX-License-Identifier: GPL-2.0-or-later
 # Created 2026-11-06. Portable tests; no real Apple SDK or sudo commands run.
 import copy
+import contextlib
 import json
 import os
 from pathlib import Path
 import signal
+import stat
 import sys
 import tempfile
+from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
 
@@ -89,6 +92,16 @@ class BootstrapTests(unittest.TestCase):
         self.assertEqual(result['tool_after']['state'], 'unavailable')
         self.assertFalse(result['tool_after']['stable_bytes_verified'])
 
+    def test_rejected_tool_reason_never_negates_actual_initialization_and_after_zero(self):
+        def rejected_tool(*unused):
+            return {**sdk.blank_tool(), 'state': 'rejected', 'rejection_reason': 'owner'}
+        result, _ = self.execute(probe=rejected_tool)
+        self.assertTrue(result['success'])
+        self.assertEqual(result['initialization_exit_code'], 0)
+        self.assertEqual(result['after_exit_code'], 0)
+        self.assertEqual(result['tool_before']['rejection_reason'], 'owner')
+        self.assertEqual(result['tool_after']['rejection_reason'], 'owner')
+
     def test_closed_schema_rejects_canaries_forged_success_and_numeric_bools(self):
         result, _ = self.execute()
         variants = [{**result, 'secret': 'synthetic/private/token'}, {**result, 'after_exit_code': 1},
@@ -106,6 +119,24 @@ class BootstrapTests(unittest.TestCase):
             with self.subTest(key=key), self.assertRaises(sdk.Rejected): sdk.validate_report(bad)
         bad = copy.deepcopy(result); bad['tool_after']['wrapper_mentions_first_launch'] = True
         with self.assertRaises(sdk.Rejected): sdk.validate_report(bad)
+
+    def test_tool_reason_is_closed_typed_and_consistent_with_state(self):
+        result, _ = self.execute()
+        self.assertEqual(result['schema'], 2)
+        legacy = copy.deepcopy(result); legacy['schema'] = 1
+        with self.assertRaises(sdk.Rejected): sdk.validate_report(legacy)
+        for reason in ('synthetic/private/token', False, 1, {}, [], 'unknown'):
+            bad = copy.deepcopy(result)
+            bad['tool_after'].update(state='rejected', rejection_reason=reason)
+            with self.subTest(reason=reason), self.assertRaises(sdk.Rejected): sdk.validate_report(bad)
+        for state, reason in (('observed', 'owner'), ('unavailable', 'read'), ('rejected', None)):
+            bad = copy.deepcopy(result)
+            bad['tool_after'].update(state=state, rejection_reason=reason)
+            with self.subTest(state=state), self.assertRaises(sdk.Rejected): sdk.validate_report(bad)
+        for reason in sdk.TOOL_REJECTION_REASONS:
+            value = copy.deepcopy(result)
+            value['tool_after'] = {**sdk.blank_tool(), 'state': 'rejected', 'rejection_reason': reason}
+            sdk.validate_report(value)
 
     def test_sdk_commands_receive_only_the_minimal_environment(self):
         with patch.dict(os.environ, {'GH_TOKEN': 'synthetic-private', 'TELEGRAM_API_HASH': 'REDACTED',
@@ -155,6 +186,100 @@ class BootstrapTests(unittest.TestCase):
                 sdk.private_command([sys.executable, '-c', 'import time;time.sleep(60)'], 0.1,
                                     Path(temporary).resolve(), 'timeout')
             self.assertEqual(caught.exception.code, 'commandTimedOut')
+
+
+class ToolInspectionTests(unittest.TestCase):
+    PRIVATE = b'SYNTHETIC_PRIVATE_CANARY'
+    MACHO = b'\xcf\xfa\xed\xfe' + PRIVATE
+
+    def metadata(self, **changes):
+        fields = dict(st_dev=1, st_ino=2, st_uid=0, st_mode=stat.S_IFREG | 0o755,
+                      st_nlink=1, st_size=len(self.MACHO), st_mtime_ns=3, st_ctime_ns=4)
+        return SimpleNamespace(**{**fields, **changes})
+
+    def inspect(self, *, metadata=None, launcher='/usr/bin/xcrun', runner=None, data=None,
+                lstats=None, fstats=None, resolve_error=None, open_error=None, read_error=None,
+                close_error=None):
+        before = metadata or self.metadata()
+        runner = runner or (lambda *unused: (0, (str(sdk.SIMCTL) + '\n').encode()))
+        with contextlib.ExitStack() as stack:
+            stack.enter_context(patch.object(sdk.shutil, 'which', return_value=launcher))
+            stack.enter_context(patch.object(Path, 'resolve', side_effect=resolve_error)
+                                if resolve_error else patch.object(Path, 'resolve', lambda value, **unused: value))
+            stack.enter_context(patch.object(Path, 'lstat', side_effect=lstats or [before, before]))
+            stack.enter_context(patch.object(sdk.os, 'open', side_effect=open_error, return_value=42))
+            stack.enter_context(patch.object(sdk.os, 'fstat', side_effect=fstats or [before, before]))
+            stack.enter_context(patch.object(sdk.os, 'read', side_effect=read_error,
+                                            return_value=self.MACHO if data is None else data))
+            close = stack.enter_context(patch.object(sdk.os, 'close', side_effect=close_error))
+            value = sdk.inspect_tool(runner, Path('/synthetic/private'), 'tool')
+        self.assertNotIn(self.PRIVATE.decode(), json.dumps(value))
+        self.assertNotIn('/synthetic/private', json.dumps(value))
+        self.assertNotIn(str(sdk.SIMCTL), json.dumps(value))
+        return value, close
+
+    def rejected(self, reason, **options):
+        value, _ = self.inspect(**options)
+        self.assertEqual(value['state'], 'rejected')
+        self.assertEqual(value['rejection_reason'], reason)
+        report = sdk.blank(); report['tool_before'] = value
+        sdk.validate_report(report)
+
+    def test_successful_macho_and_shell_observations_have_no_rejection_reason(self):
+        value, close = self.inspect()
+        self.assertEqual(value['state'], 'observed')
+        self.assertEqual(value['file_kind'], 'machO')
+        self.assertIsNone(value['rejection_reason']); close.assert_called_once_with(42)
+        script = b'#!/bin/bash\n-runFirstLaunch\n' + self.PRIVATE
+        value, _ = self.inspect(metadata=self.metadata(st_size=len(script)), data=script)
+        self.assertEqual(value['file_kind'], 'shellWrapper')
+        self.assertTrue(value['wrapper_mentions_first_launch']); self.assertIsNone(value['rejection_reason'])
+
+    def test_lookup_resolution_failure_is_fixed_reason_and_advisory_false_is_preserved(self):
+        self.rejected('lookupMismatch', resolve_error=OSError(self.PRIVATE.decode()))
+        for launcher in (None, '/synthetic/private/xcrun'):
+            value, _ = self.inspect(launcher=launcher)
+            self.assertEqual(value['state'], 'observed')
+            self.assertFalse(value['xcrun_lookup_is_usr_bin']); self.assertIsNone(value['rejection_reason'])
+
+    def test_nonzero_missing_or_timed_out_lookup_command_is_closed(self):
+        self.rejected('commandUnavailable', runner=lambda *unused: (69, self.PRIVATE))
+        def unavailable(*unused): raise OSError(self.PRIVATE.decode())
+        def timed_out(*unused): raise sdk.Rejected('commandTimedOut')
+        self.rejected('commandUnavailable', runner=unavailable)
+        self.rejected('commandUnavailable', runner=timed_out)
+
+    def test_selected_path_and_output_bounds_are_independent_guards(self):
+        for raw in (b'/synthetic/private/simctl\n', b'\xff'):
+            self.rejected('pathMismatch', runner=lambda *unused: (0, raw))
+        for raw in (b'', b'x' * 4097):
+            self.rejected('size', runner=lambda *unused: (0, raw))
+
+    def test_file_type_owner_mode_links_and_size_keep_existing_trust_guards(self):
+        variants = [('type', dict(st_mode=stat.S_IFLNK | 0o755)),
+                    ('type', dict(st_mode=stat.S_IFDIR | 0o755)), ('owner', dict(st_uid=501)),
+                    ('mode', dict(st_mode=stat.S_IFREG | 0o775)),
+                    ('mode', dict(st_mode=stat.S_IFREG | 0o757)), ('links', dict(st_nlink=2)),
+                    ('size', dict(st_size=0)), ('size', dict(st_size=32 * 1024**2 + 1))]
+        for reason, changes in variants:
+            with self.subTest(reason=reason, changes=changes): self.rejected(reason, metadata=self.metadata(**changes))
+
+    def test_read_and_open_failures_never_publish_exception_text(self):
+        self.rejected('read', lstats=[OSError(self.PRIVATE.decode())])
+        self.rejected('read', open_error=OSError(self.PRIVATE.decode()))
+        self.rejected('read', read_error=OSError(self.PRIVATE.decode()))
+        self.rejected('read', close_error=OSError(self.PRIVATE.decode()))
+        self.rejected('read', data=b'')
+
+    def test_opened_final_descriptor_and_final_path_changes_are_unstable(self):
+        before, changed = self.metadata(), self.metadata(st_ino=99)
+        self.rejected('unstable', fstats=[changed])
+        self.rejected('unstable', fstats=[before, changed])
+        self.rejected('unstable', lstats=[before, changed])
+
+    def test_unknown_file_format_is_only_closed_format_rejection(self):
+        data = b'not-an-Apple-tool-' + self.PRIVATE
+        self.rejected('format', metadata=self.metadata(st_size=len(data)), data=data)
 
 
 if __name__ == '__main__':
