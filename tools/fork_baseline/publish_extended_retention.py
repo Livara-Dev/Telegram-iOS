@@ -27,6 +27,30 @@ FILES = {'tools/fork_audit/check.py',
          'submodules/TelegramCore/Sources/TelegramEngine/Messages/MarkMessageContentAsConsumedInteractively.swift',
          'submodules/SettingsUI/Sources/LocalTimedMediaInformationController.swift',
          'submodules/SettingsUI/Sources/CustomeOptionsCatalog.swift'}
+# Exact reviewed refinement seams; credentials, authentication and dependencies remain out of scope.
+FILES.update({
+    'Tests/CustomeOptionsHost/CustomeOptionsControllerTests.swift',
+    'Tests/CustomeOptionsHost/CustomeOptionsInteractionTests.swift',
+    'submodules/AccountUtils/Sources/AccountUtils.swift',
+    'submodules/SettingsUI/Sources/CustomeOptionsController.swift',
+    'submodules/SettingsUI/Sources/DeleteAccountOptionsController.swift',
+    'submodules/SettingsUI/Sources/LocalClientCosmeticsController.swift',
+    'submodules/SettingsUI/Sources/LocalGhostSettingsController.swift',
+    'submodules/SettingsUI/Sources/LocalMessageFilterSettingsController.swift',
+    'submodules/SettingsUI/Sources/LogoutOptionsController.swift',
+    'submodules/SettingsUI/Tests/CustomeOptionsCatalogTests.swift',
+    'submodules/TelegramCore/Sources/TelegramEngine/Messages/TelegramEngineMessages.swift',
+    'submodules/TelegramUI/Components/Chat/ChatHistoryEntry/Sources/ChatHistoryEntry.swift',
+    'submodules/TelegramUI/Components/Chat/ChatHistoryEntry/Sources/ChatLocalArchiveProjection.swift',
+    'submodules/TelegramUI/Components/Chat/ChatHistoryEntry/Tests/ChatLocalArchiveProjectionTests.swift',
+    'submodules/TelegramUI/Components/Chat/ChatHistoryEntry/Tests/ChatLocalArchiveRowRendererTests.swift',
+    'submodules/TelegramUI/Components/Chat/ChatMessageItemImpl/Sources/ChatLocalArchiveItem.swift',
+    'submodules/TelegramUI/Components/Chat/ChatMessageItemImpl/Sources/ChatLocalArchiveRowView.swift',
+    'submodules/TelegramUI/Components/ChatControllerInteraction/Sources/ChatControllerInteraction.swift',
+    'submodules/TelegramUI/Components/PeerInfo/PeerInfoScreen/Sources/PeerInfoScreenSettingsActions.swift',
+    'submodules/TelegramUI/Sources/ChatController.swift',
+    'submodules/TelegramUI/Sources/ChatHistoryListNode.swift',
+})
 MAX_PATCH = 1024 * 1024
 
 
@@ -60,7 +84,7 @@ def apply_request(root, request):
     if request.get('schema') != 1 or request.get('repository') != REPOSITORY or request.get('branch') != BRANCH:
         raise ValueError('Unexpected request authority')
     rows = request.get('files')
-    if not isinstance(rows, list) or not 1 <= len(rows) <= 40:
+    if not isinstance(rows, list) or not 1 <= len(rows) <= 64:
         raise ValueError('Unexpected file inventory')
     expected = {}
     for row in rows:
@@ -156,7 +180,7 @@ def main():
     if len(remote) != 2 or remote[0] != parent:
         raise ValueError('Integration branch advanced; refusing concurrent overwrite')
     git(root, '-c', 'user.name=AyuGram source build', '-c', 'user.email=41898282+github-actions[bot]@users.noreply.github.com',
-        'commit', '-m', 'Add opt-in local secret-chat and expiring-media archive with regression tests')
+        'commit', '-m', 'Refine AyuGram settings, retained media and account capacity')
     source = git(root, 'rev-parse', 'HEAD')
     git(root, 'push', 'origin', 'HEAD:refs/heads/' + BRANCH, env=private)
     # A normal fast-forward push is the final concurrency guard; never force.

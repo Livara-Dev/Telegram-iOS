@@ -110,7 +110,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        mode: [unsigned-device, native-tests]
+        mode: [unsigned-device, native-tests, settings-ui]
     runs-on: xcode-27
     timeout-minutes: 360
     env:
@@ -203,6 +203,8 @@ jobs:
           if [ "$MODE" = unsigned-device ]; then
             python3 tools/fork_baseline/baseline.py unsigned-device --build-number "$number" 2>&1 | tee build/fork-evidence/unsigned-device.log
             python3 tools/fork_baseline/branding.py --ipa build/fork-baseline-unsigned-device/Telegram.ipa --bundle org.livara.ayugram --output build/fork-evidence/branding.json
+          elif [ "$MODE" = settings-ui ]; then
+            python3 tools/fork_baseline/custom_options_ui.py 2>&1 | tee build/fork-evidence/settings-ui.log
           else
             python3 tools/fork_baseline/baseline.py simulator --integration-tests --tests-only --build-number "$number" 2>&1 | tee build/fork-evidence/native-integration.log
           fi
