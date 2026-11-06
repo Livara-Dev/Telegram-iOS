@@ -304,8 +304,66 @@ class DisposableRendererSimulator:
         self.recording_return_code = None
         self.recording_started = False
         self.recording_log = None
+        self.boot_attempts = []
+        self.boot_evidence_created = False
+
+    def _write_boot_evidence(self):
+        """A boot checkpoint, never a native-test or first-attempt success claim."""
+        if self.output.is_symlink() or self.output.parent.is_symlink():
+            raise InvalidVisualEvidence('Unsafe boot evidence destination')
+        self.output.mkdir(mode=0o700, parents=True, exist_ok=True)
+        destination = self.output / 'boot-attempts.json'
+        if destination.is_symlink() or (destination.exists() and not self.boot_evidence_created):
+            raise InvalidVisualEvidence('Boot evidence already exists or is unsafe')
+        value = {'boot_evidence_only': True, 'native_tests_started': False,
+                 'device_model': 'iPhone 15 Pro', 'runtime': RUNTIME,
+                 'restart_retry_limit': 1, 'boot_status_timeout_seconds': 240,
+                 'first_attempt_successful': bool(self.boot_attempts and self.boot_attempts[0]['status'] == 'ready'),
+                 'recovered_on_retry': len(self.boot_attempts) == 2 and self.boot_attempts[-1]['status'] == 'ready',
+                 'ready': bool(self.boot_attempts and self.boot_attempts[-1]['status'] == 'ready'),
+                 'attempts': self.boot_attempts}
+        temporary = None
+        try:
+            with tempfile.NamedTemporaryFile(mode='w', prefix='.renderer-boot-', suffix='.json', dir=self.output, delete=False) as target:
+                temporary = Path(target.name)
+                os.chmod(target.name, 0o600)
+                json.dump(value, target, indent=2)
+                target.write('\n')
+            if self.boot_evidence_created:
+                os.replace(temporary, destination)
+            else:
+                # An exclusive first publication never overwrites a preexisting
+                # report, symlink or FIFO; subsequent updates are atomic.
+                os.link(temporary, destination)
+                self.boot_evidence_created = True
+        finally:
+            if temporary is not None:
+                temporary.unlink(missing_ok=True)
+
+    def _boot_attempt(self, restarting):
+        attempt = {'attempt': len(self.boot_attempts) + 1, 'restart': restarting,
+                   'status': 'starting', 'phase': 'shutdownDevice' if restarting else 'bootDevice'}
+        self.boot_attempts.append(attempt)
+        try:
+            if restarting:
+                command(['xcrun', 'simctl', 'shutdown', self.identifier], timeout=30, phase='shutdownDevice')
+                attempt['phase'] = 'bootDevice'
+            command(['xcrun', 'simctl', 'boot', self.identifier], phase='bootDevice')
+            attempt['phase'] = 'waitForBoot'
+            command(['xcrun', 'simctl', 'bootstatus', self.identifier, '-b'], timeout=240, phase='waitForBoot')
+            attempt['status'] = 'ready'
+        except SmokeError as error:
+            attempt['status'] = 'failed'
+            attempt['failure'] = error.evidence()
+            raise
+        except Exception:
+            # No exception text, command output, identifiers or environment.
+            attempt['status'] = 'unavailable'
+            raise
 
     def __enter__(self):
+        if self.identifier is not None or self.boot_attempts:
+            raise InvalidVisualEvidence('Disposable simulator cannot be entered twice')
         devices = json.loads(command(['xcrun', 'simctl', 'list', 'devices', 'available', '--json']))['devices']
         if any(item.get('name') == DEVICE_NAME for item in devices.get(RUNTIME, [])):
             raise InvalidVisualEvidence('Renderer test requires a fresh runner without a matching device')
@@ -315,8 +373,21 @@ class DisposableRendererSimulator:
         except ValueError: raise InvalidVisualEvidence('Invalid disposable simulator identity') from None
         self.identifier = identifier
         try:
-            command(['xcrun', 'simctl', 'boot', identifier], phase='bootDevice')
-            command(['xcrun', 'simctl', 'bootstatus', identifier, '-b'], timeout=240, phase='waitForBoot')
+            try:
+                self._boot_attempt(restarting=False)
+            except SmokeError as original:
+                # Retrying is confined to preparation of this new, empty device.
+                # No test or assertion has run, and no other simulator is touched.
+                try: self._write_boot_evidence()
+                except (OSError, ValueError, TypeError): raise original from None
+                if original.phase != 'waitForBoot': raise
+                try:
+                    self._boot_attempt(restarting=True)
+                except Exception:
+                    try: self._write_boot_evidence()
+                    except (OSError, ValueError, TypeError): pass
+                    raise original from None
+            self._write_boot_evidence()
         except Exception:
             self.__exit__(None, None, None)
             raise

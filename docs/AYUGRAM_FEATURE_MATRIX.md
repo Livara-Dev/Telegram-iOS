@@ -88,6 +88,14 @@ binary. No proprietary exteraGram components are copied.
   filter case hit Postbox's unsupported single-value Codable container. These
   remain repair/qualification work, not an all-green application build. The
   artifact's outer SHA-256 and 94 inner checksum references were verified.
+- [42116837030](https://github.com/Livara-Dev/Telegram-iOS/actions/runs/42116837030)
+  at fd7be3a0 compiled and packaged the production renderer host, then timed out
+  waiting for its new simulator to boot. It ran **zero unit/XCUI cases** and
+  produced no recording or screenshots. Its outer checksum and seven inner
+  references were verified. The trait negative control and screenshot exporter
+  were not exercised. The follow-up keeps the existing boot timeout and permits
+  one restart of that run's new empty simulator, retaining both attempts and
+  the original failure; this is not a first-attempt reliability claim.
 
 ## Core features and native integration
 

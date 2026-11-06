@@ -100,6 +100,29 @@ Captured encrypted payloads are independent of later cache cleanup. Actual
 OS termination, low-storage races, live two-client events, network egress and
 physical-device protection remain separate verification requirements.
 
+### Qualification repairs after run 42114628197
+
+The run confirmed the Passcode (16), encrypted archive (99) and actual encrypted
+playback (18) cases pass at b492f097. Six Core cases failed, a further filter
+case crashed, SettingsUI did not compile and Projection never started tests.
+These results do not certify a complete application or the later candidates.
+
+The follow-up serializes replacement store opens behind previous open/close
+acknowledgements, covering unlock and stale asynchronous opens. This is an
+account-coordinator ordering barrier, not a distributed database lock. Strict
+transfer path validation now proves the existing Darwin system aliases with
+POSIX resolution; caller-created parent links remain rejected. The five Core
+transfer failures occurred during fixture export before facade import; native
+rerun must establish whether the path repair resolves them.
+
+Filter enum fields now use keyed Int32 primitives supported by Postbox. Folder
+schema 2 uses homogeneous keyed records instead of the unreleased dictionary
+shape that the adapter cannot encode. Normal, empty, legacy and unknown-version
+regressions are authored. The inherited adapter can still assert on deliberately
+malformed current-schema binary collection types; version/value validation is
+not a complete structural validator for Postbox's binary format. No global
+adapter semantics or networking/authentication architecture was changed.
+
 ## Assets and trust boundaries
 
 Protect Telegram authorization/session material; message text, metadata and media; archive/history records; archive encryption and recovery keys; sync credentials; filter rules; signing keys and CI secrets. Retained versions and deleted messages are especially sensitive because another party may reasonably expect them to have disappeared.

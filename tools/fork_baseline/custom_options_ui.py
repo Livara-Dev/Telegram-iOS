@@ -121,6 +121,7 @@ def run(env):
                 shutil.copyfile(ROOT / 'bazel-bin/Tests/CustomeOptionsHost/CustomeOptionsHost.ipa', ipa)
                 report['simulator_host'] = inspect_ipa(ipa, 'simulator', BUNDLE)
                 report['simulator_host_sha256'] = digest_file(ipa)
+                report['phase'] = 'bootSimulator'
                 with DisposableRendererSimulator(evidence) as simulator:
                     report['phase'] = 'nativeControllerTests'
                     try: baseline.run_redacted(common + ['test'] + base + ['--target=' + UNIT_TARGET], child, secrets)
