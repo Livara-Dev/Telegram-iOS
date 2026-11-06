@@ -1,0 +1,238 @@
+name: AyuGram extended retention source and device build
+
+on:
+  push:
+    branches: [integration/ayu-current]
+    paths: [tools/fork_baseline/extended-retention-request.json]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ayugram-extended-retention
+  cancel-in-progress: false
+
+jobs:
+  publish-reviewed-source:
+    if: github.repository == 'Livara-Dev/Telegram-iOS' && github.ref == 'refs/heads/integration/ayu-current'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: write
+    outputs:
+      source_sha: ${{ steps.publish.outputs.source_sha }}
+    steps:
+      - name: Check out the exact review request without persistent credentials
+        env:
+          CHECKOUT_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import base64, os, re, subprocess
+          sha = os.environ['GITHUB_SHA']
+          if os.environ['GITHUB_REPOSITORY'] != 'Livara-Dev/Telegram-iOS' or not re.fullmatch(r'[0-9a-f]{40}', sha):
+              raise SystemExit('Unexpected source request')
+          subprocess.run(['git', 'init', '-q'], check=True)
+          subprocess.run(['git', 'remote', 'add', 'origin', 'https://github.com/Livara-Dev/Telegram-iOS.git'], check=True)
+          private = os.environ.copy()
+          token = private.pop('CHECKOUT_TOKEN')
+          private.update(GIT_CONFIG_COUNT='1', GIT_CONFIG_KEY_0='http.https://github.com/.extraheader',
+              GIT_CONFIG_VALUE_0='AUTHORIZATION: basic ' + base64.b64encode(('x-access-token:' + token).encode()).decode())
+          subprocess.run(['git', 'fetch', '--no-tags', '--depth=1', 'origin', sha], env=private, check=True, timeout=600)
+          subprocess.run(['git', 'checkout', '--detach', sha], check=True)
+          PY
+      - name: Apply exact reviewed source and fast-forward only the authorized branch
+        id: publish
+        env:
+          PUBLISH_TOKEN: ${{ github.token }}
+        run: python3 tools/fork_baseline/publish_extended_retention.py
+
+  portable-tests:
+    needs: publish-reviewed-source
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      SOURCE_SHA: ${{ needs.publish-reviewed-source.outputs.source_sha }}
+    steps:
+      - name: Fetch the exact published source and immutable audit baseline
+        env:
+          CHECKOUT_TOKEN: ${{ github.token }}
+        run: |
+          python3 - <<'PY'
+          import base64, os, re, subprocess
+          sha = os.environ['SOURCE_SHA']
+          if not re.fullmatch(r'[0-9a-f]{40}', sha): raise SystemExit('Invalid published source')
+          subprocess.run(['git', 'init', '-q'], check=True)
+          subprocess.run(['git', 'remote', 'add', 'origin', 'https://github.com/Livara-Dev/Telegram-iOS.git'], check=True)
+          private = os.environ.copy(); token = private.pop('CHECKOUT_TOKEN')
+          private.update(GIT_CONFIG_COUNT='1', GIT_CONFIG_KEY_0='http.https://github.com/.extraheader',
+              GIT_CONFIG_VALUE_0='AUTHORIZATION: basic ' + base64.b64encode(('x-access-token:' + token).encode()).decode())
+          subprocess.run(['git', 'fetch', '--no-tags', '--depth=1', 'origin', sha, '279f89e4d4f63f17227bf877dc3d8990f22ecd58'], env=private, check=True)
+          subprocess.run(['git', 'checkout', '--detach', sha], check=True)
+          PY
+      - name: Run all portable suites and retain every independent outcome
+        run: |
+          python3 - <<'PY'
+          import hashlib, json, pathlib, subprocess
+          output = pathlib.Path('build/extended-portable'); output.mkdir(parents=True)
+          commands = {
+              'baseline': ['python3', '-m', 'unittest', 'discover', '-s', 'tools/fork_baseline/tests', '-v'],
+              'audit': ['python3', '-m', 'unittest', 'discover', '-s', 'tools/fork_audit/tests', '-v'],
+              'make': ['python3', '-m', 'unittest', 'discover', '-s', 'build-system/Make/tests', '-v'],
+              'source-guard': ['python3', 'tools/fork_audit/check.py'],
+              'telemetry-guard': ['python3', 'tools/fork_audit/telemetry.py'],
+          }
+          results = {}
+          for name, command in commands.items():
+              with (output / (name + '.log')).open('wb') as log:
+                  try:
+                      code = subprocess.run(command, stdout=log, stderr=subprocess.STDOUT, timeout=480).returncode
+                      results[name] = {'exit_code': code, 'timed_out': False}
+                  except subprocess.TimeoutExpired:
+                      results[name] = {'exit_code': None, 'timed_out': True}
+          (output / 'results.json').write_text(json.dumps(results, indent=2) + '\n')
+          (output / 'SHA256SUMS').write_text(''.join(hashlib.sha256(p.read_bytes()).hexdigest() + '  ' + p.name + '\n' for p in sorted(output.iterdir()) if p.is_file() and p.name != 'SHA256SUMS'))
+          raise SystemExit(0 if all(x['exit_code'] == 0 and not x['timed_out'] for x in results.values()) else 1)
+          PY
+      - name: Publish portable results without claiming native execution
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: extended-portable-${{ env.SOURCE_SHA }}
+          path: build/extended-portable/
+          retention-days: 14
+          if-no-files-found: warn
+
+  native-build-and-tests:
+    needs: publish-reviewed-source
+    strategy:
+      fail-fast: false
+      matrix:
+        mode: [unsigned-device, native-tests]
+    runs-on: xcode-27
+    timeout-minutes: 360
+    env:
+      SOURCE_SHA: ${{ needs.publish-reviewed-source.outputs.source_sha }}
+    defaults:
+      run:
+        shell: bash
+        working-directory: ./fork-source
+    steps:
+      - name: Check out exact published source and pinned recursive dependencies
+        working-directory: ${{ github.workspace }}
+        env:
+          CHECKOUT_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import base64, os, pathlib, re, subprocess
+          root = pathlib.Path(os.environ['GITHUB_WORKSPACE']) / 'fork-source'
+          root.mkdir(mode=0o700)
+          sha = os.environ['SOURCE_SHA']
+          if os.environ['GITHUB_REPOSITORY'] != 'Livara-Dev/Telegram-iOS' or not re.fullmatch(r'[0-9a-f]{40}', sha):
+              raise SystemExit('Invalid exact build source')
+          def run(args, env=None): subprocess.run(args, cwd=root, env=env, check=True, timeout=1800)
+          run(['git', 'init', '-q'])
+          run(['git', 'remote', 'add', 'origin', 'https://github.com/Livara-Dev/Telegram-iOS.git'])
+          private = os.environ.copy(); token = private.pop('CHECKOUT_TOKEN')
+          private.update(GIT_CONFIG_COUNT='1', GIT_CONFIG_KEY_0='http.https://github.com/.extraheader',
+              GIT_CONFIG_VALUE_0='AUTHORIZATION: basic ' + base64.b64encode(('x-access-token:' + token).encode()).decode())
+          run(['git', 'fetch', '--no-tags', '--depth=1', 'origin', sha, '279f89e4d4f63f17227bf877dc3d8990f22ecd58'], private)
+          run(['git', 'checkout', '--detach', sha])
+          run(['git', 'submodule', 'init'])
+          run(['git', 'config', 'submodule.submodules/rlottie/rlottie.url', 'https://github.com/TelegramMessenger/rlottie.git'])
+          run(['git', 'config', 'submodule.submodules/TgVoipWebrtc/tgcalls.url', 'https://github.com/TelegramMessenger/tgcalls.git'])
+          run(['git', 'submodule', 'update', '--init', '--recursive', '--depth', '1', '--jobs', '8'])
+          (root / 'build/fork-evidence').mkdir(parents=True)
+          PY
+      - name: Restore public dependency downloads only
+        continue-on-error: true
+        uses: actions/cache/restore@0400d5f644dc74513175e3cd8d07132dd4860809
+        with:
+          path: ${{ runner.temp }}/ayugram-public-dependencies-v1/portable
+          key: public-dependencies-v1-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('fork-source/MODULE.bazel', 'fork-source/MODULE.bazel.lock', 'fork-source/versions.json') }}-extended-${{ matrix.mode }}-${{ github.run_id }}-${{ github.run_attempt }}
+          restore-keys: |
+            public-dependencies-v1-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('fork-source/MODULE.bazel', 'fork-source/MODULE.bazel.lock', 'fork-source/versions.json') }}-
+      - name: Verify public dependency bytes
+        continue-on-error: true
+        run: python3 tools/fork_baseline/dependency_cache.py prepare
+      - name: Enforce source, telemetry and build-configuration guards
+        run: |
+          set -euo pipefail
+          { python3 -m unittest discover -s tools/fork_audit/tests -v &&
+            python3 -m unittest discover -s build-system/Make/tests -v &&
+            python3 -m unittest discover -s tools/fork_baseline/tests -p test_extended_publication.py -v &&
+            python3 tools/fork_audit/check.py &&
+            python3 tools/fork_audit/telemetry.py; } 2>&1 | tee build/fork-evidence/source-guards.log
+      - name: Select and verify pinned Apple toolchain
+        run: |
+          set -euo pipefail
+          sudo xcode-select -s /Applications/Xcode_27.1.app/Contents/Developer
+          python3 tools/fork_baseline/prepare_host.py 2>&1 | tee build/fork-evidence/host.log
+          python3 tools/fork_baseline/extended_retention_checks.py | tee build/fork-evidence/extended-host-policy.json
+      - name: Validate API configuration without exposing credentials
+        env:
+          TELEGRAM_API_ID: ${{ secrets.TELEGRAM_API_ID }}
+          TELEGRAM_API_HASH: ${{ secrets.TELEGRAM_API_HASH }}
+          IOS_BUNDLE_ID: org.livara.ayugram
+        run: |
+          python3 - <<'PY'
+          import os, sys
+          sys.path.insert(0, 'tools/fork_baseline')
+          from baseline import configuration
+          configuration(os.environ, unsigned=True)
+          print('Independent API configuration validated; values omitted.')
+          PY
+      - name: Prepare exact native test simulator
+        if: matrix.mode == 'native-tests'
+        run: python3 tools/fork_baseline/prepare_host.py --simulator
+      - name: Compile new device IPA or execute all fixed native suites
+        env:
+          MODE: ${{ matrix.mode }}
+          BUILD_NUMBER: ${{ github.run_number }}
+          TELEGRAM_API_ID: ${{ secrets.TELEGRAM_API_ID }}
+          TELEGRAM_API_HASH: ${{ secrets.TELEGRAM_API_HASH }}
+          IOS_BUNDLE_ID: org.livara.ayugram
+          APPLE_TEAM_ID: ${{ vars.APPLE_TEAM_ID }}
+        run: |
+          set -euo pipefail
+          umask 077
+          number=$((100 + BUILD_NUMBER))
+          if [ "$MODE" = unsigned-device ]; then
+            python3 tools/fork_baseline/baseline.py unsigned-device --build-number "$number" 2>&1 | tee build/fork-evidence/unsigned-device.log
+            python3 tools/fork_baseline/branding.py --ipa build/fork-baseline-unsigned-device/Telegram.ipa --bundle org.livara.ayugram --output build/fork-evidence/branding.json
+          else
+            python3 tools/fork_baseline/baseline.py simulator --integration-tests --tests-only --build-number "$number" 2>&1 | tee build/fork-evidence/native-integration.log
+          fi
+      - name: Record exact-source evidence hashes
+        if: always()
+        env:
+          MODE: ${{ matrix.mode }}
+          BUILD_NUMBER: ${{ github.run_number }}
+        run: |
+          python3 - <<'PY'
+          import hashlib, json, os
+          from pathlib import Path
+          output = Path('build/fork-evidence'); output.mkdir(parents=True, exist_ok=True)
+          (output / 'extended-build-origin.json').write_text(json.dumps({
+              'source_commit': os.environ['SOURCE_SHA'], 'workflow_commit': os.environ['GITHUB_SHA'],
+              'build_number': 100 + int(os.environ['BUILD_NUMBER']), 'mode': os.environ['MODE'],
+              'signed_for_device': False, 'physical_device_verified': False,
+              'note': 'Job logs determine build/test outcome. Source identity alone is not a pass.'
+          }, indent=2) + '\n')
+          files = sorted(p for p in output.rglob('*') if p.is_file() and p.name != 'SHA256SUMS')
+          (output / 'SHA256SUMS').write_text(''.join(hashlib.sha256(p.read_bytes()).hexdigest() + '  ' + str(p.relative_to(output)) + '\n' for p in files))
+          PY
+      - name: Publish new build or actual failed-build evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: extended-${{ matrix.mode }}-${{ env.SOURCE_SHA }}
+          path: |
+            ${{ github.workspace }}/fork-source/build/fork-evidence/
+            ${{ github.workspace }}/fork-source/build/fork-baseline-unsigned-device/
+          retention-days: 14
+          if-no-files-found: warn
+          include-hidden-files: false
