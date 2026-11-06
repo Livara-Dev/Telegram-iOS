@@ -8,7 +8,7 @@ on:
       validation_scope:
         description: Startup replay, host API probe, targeted iOS tests, or full qualification
         type: choice
-        options: [full, native-only, core-only, focused, projection, projection-only, custom-options-ui, custom-options-replay, probe, retained-clean, retained-modern, startup]
+        options: [full, native-only, core-only, focused, projection, projection-only, custom-options-ui, custom-options-replay, probe, retained-clean, retained-modern, projection-plan-only, startup]
         default: full
       replay_run:
         description: Required for startup or retained Projection probe; artifact run ID
@@ -59,14 +59,14 @@ permissions:
 # Development branches do not start macOS jobs; advance ci/verify-latest once
 # the next reviewed batch is ready. Existing runs retain their original policy.
 concurrency:
-  group: ${{ github.event_name == 'workflow_dispatch' && inputs.validation_scope == 'startup' && format('ayugram-startup-replay-{0}', inputs.replay_source) || github.event_name == 'workflow_dispatch' && (inputs.validation_scope == 'retained-clean' || inputs.validation_scope == 'retained-modern') && 'ayugram-projection-replay-c55e19c4f5cbe0d730499035d0a0ef712f6903a9' || github.event_name == 'workflow_dispatch' && inputs.validation_scope == 'probe' && inputs.replay_run != '' && format('ayugram-projection-replay-{0}', inputs.replay_source) || github.event_name == 'workflow_dispatch' && (inputs.validation_scope == 'custom-options-ui' || inputs.validation_scope == 'custom-options-replay') && 'ayugram-ui-qualification' || github.event_name == 'workflow_dispatch' && inputs.validation_scope == 'core-only' && 'ayugram-core-qualification' || 'ayugram-qualification' }}
+  group: ${{ github.event_name == 'workflow_dispatch' && inputs.validation_scope == 'startup' && format('ayugram-startup-replay-{0}', inputs.replay_source) || github.event_name == 'workflow_dispatch' && (inputs.validation_scope == 'retained-clean' || inputs.validation_scope == 'retained-modern' || inputs.validation_scope == 'projection-plan-only') && 'ayugram-projection-replay-c55e19c4f5cbe0d730499035d0a0ef712f6903a9' || github.event_name == 'workflow_dispatch' && inputs.validation_scope == 'probe' && inputs.replay_run != '' && format('ayugram-projection-replay-{0}', inputs.replay_source) || github.event_name == 'workflow_dispatch' && (inputs.validation_scope == 'custom-options-ui' || inputs.validation_scope == 'custom-options-replay') && 'ayugram-ui-qualification' || github.event_name == 'workflow_dispatch' && inputs.validation_scope == 'core-only' && 'ayugram-core-qualification' || 'ayugram-qualification' }}
   cancel-in-progress: false
 
 jobs:
   integration-tests:
     # Full qualification runs these suites in the app job's same private Bazel
     # root. Unknown manual scopes still enter the strict shell case and fail.
-    if: github.event_name == 'workflow_dispatch' && inputs.validation_scope != 'full' && inputs.validation_scope != '' && inputs.validation_scope != 'probe' && inputs.validation_scope != 'startup' && inputs.validation_scope != 'custom-options-ui' && inputs.validation_scope != 'custom-options-replay' && inputs.validation_scope != 'retained-clean' && inputs.validation_scope != 'retained-modern'
+    if: github.event_name == 'workflow_dispatch' && inputs.validation_scope != 'full' && inputs.validation_scope != '' && inputs.validation_scope != 'probe' && inputs.validation_scope != 'startup' && inputs.validation_scope != 'custom-options-ui' && inputs.validation_scope != 'custom-options-replay' && inputs.validation_scope != 'retained-clean' && inputs.validation_scope != 'retained-modern' && inputs.validation_scope != 'projection-plan-only'
     # macos-latest does not satisfy versions.json. This preview image does;
     # prepare_host.py additionally verifies the actual OS/Xcode versions.
     runs-on: xcode-27
@@ -590,7 +590,7 @@ jobs:
   native-api-probe:
     # Manual host API diagnostics, or one verified retained Projection replay.
     # Neither mode compiles Telegram, uses API Secrets, or qualifies the app.
-    if: github.event_name == 'workflow_dispatch' && (inputs.validation_scope == 'probe' || inputs.validation_scope == 'retained-clean' || inputs.validation_scope == 'retained-modern' || (inputs.validation_scope == 'startup' && inputs.retained_projection_tests))
+    if: github.event_name == 'workflow_dispatch' && (inputs.validation_scope == 'probe' || inputs.validation_scope == 'retained-clean' || (inputs.validation_scope == 'retained-modern' || inputs.validation_scope == 'projection-plan-only') || (inputs.validation_scope == 'startup' && inputs.retained_projection_tests))
     runs-on: xcode-27
     timeout-minutes: 25
     permissions:
@@ -605,8 +605,8 @@ jobs:
         working-directory: ${{ github.workspace }}
         env:
           CHECKOUT_TOKEN: ${{ github.token }}
-          REPLAY_RUN: ${{ (inputs.validation_scope == 'retained-clean' || inputs.validation_scope == 'retained-modern' || (inputs.validation_scope == 'startup' && inputs.retained_projection_tests)) && '42160468600' || inputs.replay_run }}
-          REPLAY_SOURCE: ${{ (inputs.validation_scope == 'retained-clean' || inputs.validation_scope == 'retained-modern') && 'c55e19c4f5cbe0d730499035d0a0ef712f6903a9' || inputs.replay_source }}
+          REPLAY_RUN: ${{ (inputs.validation_scope == 'retained-clean' || (inputs.validation_scope == 'retained-modern' || inputs.validation_scope == 'projection-plan-only') || (inputs.validation_scope == 'startup' && inputs.retained_projection_tests)) && '42160468600' || inputs.replay_run }}
+          REPLAY_SOURCE: ${{ (inputs.validation_scope == 'retained-clean' || (inputs.validation_scope == 'retained-modern' || inputs.validation_scope == 'projection-plan-only')) && 'c55e19c4f5cbe0d730499035d0a0ef712f6903a9' || inputs.replay_source }}
           RETAINED_WITH_STARTUP: ${{ inputs.validation_scope == 'startup' && inputs.retained_projection_tests && 'true' || 'false' }}
           STARTUP_REPLAY_RUN: ${{ inputs.replay_run }}
         run: |
@@ -663,11 +663,11 @@ jobs:
           PYTHON
 
       - name: Test clean retained diagnostic tooling
-        if: inputs.validation_scope == 'retained-clean' || inputs.validation_scope == 'retained-modern'
+        if: inputs.validation_scope == 'retained-clean' || (inputs.validation_scope == 'retained-modern' || inputs.validation_scope == 'projection-plan-only')
         run: python3 -m unittest discover -s tools/fork_baseline/tests -p test_clean_user_service.py -v
 
       - name: Refresh only the registered current-user simulator service on an exclusive hosted runner
-        if: inputs.validation_scope == 'retained-clean' || inputs.validation_scope == 'retained-modern'
+        if: inputs.validation_scope == 'retained-clean' || (inputs.validation_scope == 'retained-modern' || inputs.validation_scope == 'projection-plan-only')
         env:
           RUNNER_ENVIRONMENT: ${{ runner.environment }}
           AYU_CLEAN_RUNNER_ENVIRONMENT: ${{ runner.environment }}
@@ -677,15 +677,15 @@ jobs:
         run: python3 tools/fork_baseline/clean_user_service.py --output build/fork-evidence/clean-simulator-service.json
 
       - name: Test retained Projection replay tooling
-        if: inputs.validation_scope != 'retained-modern' && (inputs.validation_scope == 'retained-clean' || inputs.replay_run != '')
+        if: inputs.validation_scope != 'retained-modern' && inputs.validation_scope != 'projection-plan-only' && (inputs.validation_scope == 'retained-clean' || inputs.replay_run != '')
         run: python3 -m unittest discover -s tools/fork_baseline/tests -p test_projection_replay.py -v
 
       - name: Replay verified synthetic Projection products without recompilation
-        if: inputs.validation_scope != 'retained-modern' && (inputs.validation_scope == 'retained-clean' || inputs.replay_run != '')
+        if: inputs.validation_scope != 'retained-modern' && inputs.validation_scope != 'projection-plan-only' && (inputs.validation_scope == 'retained-clean' || inputs.replay_run != '')
         env:
           GH_TOKEN: ${{ github.token }}
-          REPLAY_RUN: ${{ (inputs.validation_scope == 'retained-clean' || inputs.validation_scope == 'retained-modern' || (inputs.validation_scope == 'startup' && inputs.retained_projection_tests)) && '42160468600' || inputs.replay_run }}
-          REPLAY_SOURCE: ${{ (inputs.validation_scope == 'retained-clean' || inputs.validation_scope == 'retained-modern') && 'c55e19c4f5cbe0d730499035d0a0ef712f6903a9' || inputs.replay_source }}
+          REPLAY_RUN: ${{ (inputs.validation_scope == 'retained-clean' || (inputs.validation_scope == 'retained-modern' || inputs.validation_scope == 'projection-plan-only') || (inputs.validation_scope == 'startup' && inputs.retained_projection_tests)) && '42160468600' || inputs.replay_run }}
+          REPLAY_SOURCE: ${{ (inputs.validation_scope == 'retained-clean' || (inputs.validation_scope == 'retained-modern' || inputs.validation_scope == 'projection-plan-only')) && 'c55e19c4f5cbe0d730499035d0a0ef712f6903a9' || inputs.replay_source }}
           PROJECTION_HOST_CONTROL: ${{ inputs.validation_scope == 'retained-clean' && 'resealed-host' || inputs.projection_host_control || 'original' }}
           PROJECTION_BOOTSTRAP_SAMPLE: ${{ (inputs.validation_scope == 'retained-clean' || inputs.projection_bootstrap_sample) && 'true' || 'false' }}
         run: |
@@ -700,25 +700,25 @@ jobs:
           python3 tools/fork_baseline/projection_replay.py --run "$REPLAY_RUN" --source "$REPLAY_SOURCE" "${projection_args[@]}" --output build/fork-evidence/projection-replay
 
       - name: Test the tiny Apple control and immutable Projection plan adapter
-        if: inputs.validation_scope == 'retained-modern'
+        if: (inputs.validation_scope == 'retained-modern' || inputs.validation_scope == 'projection-plan-only')
         run: |
           set -euo pipefail
           python3 -m unittest discover -s tools/fork_baseline/tests -p test_modern_projection_plan.py -v
           python3 -m unittest discover -s tools/fork_baseline/tests -p test_tiny_xcode_project.py -v
 
       - name: Verify the captured Projection products and prepare the tiny diagnostic project
-        if: inputs.validation_scope == 'retained-modern'
+        if: (inputs.validation_scope == 'retained-modern' || inputs.validation_scope == 'projection-plan-only')
         env:
           GH_TOKEN: ${{ github.token }}
         run: python3 tools/fork_baseline/modern_projection_plan.py prepare
 
       - name: Test Apple-generated hosting before executing all retained Projection cases
-        if: inputs.validation_scope == 'retained-modern'
+        if: (inputs.validation_scope == 'retained-modern' || inputs.validation_scope == 'projection-plan-only')
         run: python3 tools/fork_baseline/modern_projection_plan.py run
 
       - name: Stage only bounded modern XCTest plan evidence
         id: modern_evidence
-        if: always() && inputs.validation_scope == 'retained-modern'
+        if: always() && (inputs.validation_scope == 'retained-modern' || inputs.validation_scope == 'projection-plan-only')
         run: |
           python3 - <<'PYTHON'
           import hashlib, pathlib, shutil, stat
@@ -752,7 +752,7 @@ jobs:
           PYTHON
 
       - name: Publish modern hosting diagnostics without projects or test products
-        if: always() && inputs.validation_scope == 'retained-modern' && steps.modern_evidence.outcome == 'success'
+        if: always() && (inputs.validation_scope == 'retained-modern' || inputs.validation_scope == 'projection-plan-only') && steps.modern_evidence.outcome == 'success'
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
           name: modern-projection-plan-${{ github.sha }}
@@ -762,7 +762,7 @@ jobs:
           include-hidden-files: false
 
       - name: Prepare only the verified synthetic movie fixture
-        if: inputs.validation_scope != 'retained-clean' && inputs.validation_scope != 'retained-modern' && inputs.replay_run == ''
+        if: inputs.validation_scope != 'retained-clean' && inputs.validation_scope != 'retained-modern' && inputs.validation_scope != 'projection-plan-only' && inputs.replay_run == ''
         run: |
           set -euo pipefail
           umask 077
@@ -770,13 +770,13 @@ jobs:
           python3 tools/fork_baseline/prepare_probe_fixture.py --output build/native-api-probe/fixture.mp4 > build/fork-evidence/native-api-probe-fixture.json
 
       - name: Compile the production loader with the host API probe
-        if: inputs.validation_scope != 'retained-clean' && inputs.validation_scope != 'retained-modern' && inputs.replay_run == ''
+        if: inputs.validation_scope != 'retained-clean' && inputs.validation_scope != 'retained-modern' && inputs.validation_scope != 'projection-plan-only' && inputs.replay_run == ''
         run: |
           set -euo pipefail
           xcrun swiftc -swift-version 5 -target arm64-apple-macosx13.0 submodules/LocalMessageArchive/Sources/LocalArchivePlayback/ArchivePlaybackAsset.swift tools/fork_baseline/native_api_probe.swift -o build/native-api-probe/probe 2>&1 | tee build/fork-evidence/native-api-probe-compile.log
 
       - name: Run host API diagnostics without account data
-        if: inputs.validation_scope != 'retained-clean' && inputs.validation_scope != 'retained-modern' && inputs.replay_run == ''
+        if: inputs.validation_scope != 'retained-clean' && inputs.validation_scope != 'retained-modern' && inputs.validation_scope != 'projection-plan-only' && inputs.replay_run == ''
         run: |
           set -euo pipefail
           build/native-api-probe/probe build/native-api-probe/fixture.mp4 > build/fork-evidence/native-api-probe.json
@@ -788,7 +788,7 @@ jobs:
           PYTHON
 
       - name: Compare host API behavior with an ad-hoc signed app identity
-        if: inputs.validation_scope != 'retained-clean' && inputs.validation_scope != 'retained-modern' && inputs.replay_run == ''
+        if: inputs.validation_scope != 'retained-clean' && inputs.validation_scope != 'retained-modern' && inputs.validation_scope != 'projection-plan-only' && inputs.replay_run == ''
         run: |
           set -euo pipefail
           python3 - <<'PYTHON'

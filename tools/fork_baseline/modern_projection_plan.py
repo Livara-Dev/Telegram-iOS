@@ -14,6 +14,7 @@ from pathlib import Path
 import plistlib
 import re
 import shutil
+import stat
 import tempfile
 import time
 import uuid
@@ -94,11 +95,14 @@ def target(plan):
 def resolved_path(value, plan_root, host=None):
     if not isinstance(value, str) or not value or '\0' in value or '\\' in value:
         raise PlanError('invalid_apple_product_path')
+    # Validate plan tokens before inserting approved filesystem paths. A valid
+    # temporary/build root can itself contain double underscores.
+    if any(token not in {'__TESTHOST__', '__TESTROOT__'} for token in re.findall(r'__[A-Za-z][A-Za-z0-9_]*?__', value)):
+        raise PlanError('unsupported_apple_product_placeholder')
     if '__TESTHOST__' in value:
         if host is None: raise PlanError('invalid_apple_product_path')
         value = value.replace('__TESTHOST__', str(host))
     value = value.replace('__TESTROOT__', str(plan_root))
-    if '__' in value: raise PlanError('unsupported_apple_product_placeholder')
     path = Path(value)
     if not path.is_absolute() or '..' in path.parts or any(item.is_symlink() for item in (path, *path.parents)):
         raise PlanError('invalid_apple_product_path')
@@ -216,24 +220,46 @@ def control_cases(data):
             'all_expected_passed': passed, 'unexpected_or_duplicate_events': invalid or len(starts) > 1 or len(outcomes) > 1}
 
 
-def control_debug_entitlements(encoded):
-    """Read bounded codesign XML without confusing merged stderr for plist."""
+def _control_debug_entitlement_status(encoded):
+    """Check only XML read from codesign's private --xml output file."""
     try:
         if not isinstance(encoded, bytes) or not 0 < len(encoded) <= 65536 or b'\0' in encoded:
-            return False
+            return 'nonXML'
         if encoded.count(b'<?xml') != 1 or encoded.count(b'</plist>') != 1:
-            return False
-        start, end = encoded.index(b'<?xml'), encoded.index(b'</plist>') + len(b'</plist>')
-        warning = b"Warning: Specifying ':' in the path is deprecated and will not work in a future release"
-        prefix, suffix = encoded[:start].splitlines(), encoded[end:].splitlines()
-        if any(line and not (line.startswith(b'Executable=/') or line == warning) for line in prefix):
-            return False
-        if any(line and line != warning for line in suffix):
-            return False
-        value = plistlib.loads(encoded[start:end])
-        return isinstance(value, dict) and set(value) == {CONTROL_DEBUG_ENTITLEMENT} and value[CONTROL_DEBUG_ENTITLEMENT] is True
+            return 'nonXML'
+        value = plistlib.loads(encoded)
+        if isinstance(value, dict) and set(value) == {CONTROL_DEBUG_ENTITLEMENT} and value[CONTROL_DEBUG_ENTITLEMENT] is True:
+            return 'verified'
+        return 'unexpectedEntitlements'
     except Exception:
-        return False
+        return 'nonXML'
+
+
+def control_debug_entitlements(encoded):
+    return _control_debug_entitlement_status(encoded) == 'verified'
+
+
+def read_control_debug_entitlement_status(path):
+    """Read the newly extracted signature evidence, never the signing input."""
+    descriptor = None
+    try:
+        descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+        info = os.fstat(descriptor)
+        if (not stat.S_ISREG(info.st_mode) or info.st_nlink != 1 or info.st_uid != os.getuid()
+                or not 0 < info.st_size <= 65536):
+            return 'unsafeFile'
+        # The enclosing fresh temporary directory is 0700 throughout extraction.
+        os.fchmod(descriptor, 0o600)
+        encoded = os.read(descriptor, 65537)
+        if len(encoded) != info.st_size: return 'unsafeFile'
+        return _control_debug_entitlement_status(encoded)
+    except FileNotFoundError:
+        return 'missingFile'
+    except Exception:
+        return 'unsafeFile'
+    finally:
+        if descriptor is not None:
+            os.close(descriptor)
 
 
 def location(output, root):
@@ -284,6 +310,7 @@ def run(output=OUTPUT, root=None, command=projection.native_command, signing=sim
     report = {'schema': 1, 'source_commit': SOURCE, 'role': 'appleGeneratedXCTestPlanControl',
               'application_recompiled': False, 'projection_tests_recompiled': False,
               'tiny_control_compiled': False, 'tiny_control_debug_entitlement_verified': False,
+              'tiny_control_debug_entitlement_readback': 'notAttempted',
               'original_products_unchanged': False,
               'release_qualified': False, 'physical_device_verified': False, 'passed': False,
               'control': {'attempted': False, 'expected': 1}, 'projection': {'attempted': False, 'expected': 41},
@@ -386,9 +413,22 @@ def run(output=OUTPUT, root=None, command=projection.native_command, signing=sim
         call('sign_control_test', ['/usr/bin/codesign', '--force', '--sign', '-', '--timestamp=none', str(bundle)])
         call('sign_control_app', ['/usr/bin/codesign', '--force', '--sign', '-', '--timestamp=none',
             '--entitlements', str(entitlements), str(app)])
-        _, encoded = call('verify_control_entitlements', ['/usr/bin/codesign', '-d', '--entitlements', ':-', str(app)])
-        if not control_debug_entitlements(encoded):
-            raise PlanError('tiny_control_debug_entitlement_unverified')
+        # codesign's default display is an abstract representation, not XML.
+        # Its documented file destination and --xml keep signature data apart
+        # from Executable=.../warning diagnostics on merged stderr/stdout.
+        with tempfile.TemporaryDirectory(prefix='ayu-modern-entitlement-readback-') as directory:
+            private = Path(directory).resolve(); private.chmod(0o700)
+            readback = private / 'extracted-signature-entitlements.plist'
+            if readback.exists() or readback.is_symlink(): raise PlanError('unsafe_control_entitlement_readback')
+            report['tiny_control_debug_entitlement_readback'] = 'commandAttempted'
+            status, _ = call('verify_control_entitlements', ['/usr/bin/codesign', '--display', '--entitlements',
+                str(readback), '--xml', str(app)], required=False)
+            if status.get('status') != 'completed' or status.get('exit_code') != 0:
+                report['tiny_control_debug_entitlement_readback'] = 'commandFailed'
+                raise PlanError('modern_verify_control_entitlements_failed')
+            report['tiny_control_debug_entitlement_readback'] = read_control_debug_entitlement_status(readback)
+            if report['tiny_control_debug_entitlement_readback'] != 'verified':
+                raise PlanError('tiny_control_debug_entitlement_unverified')
         report['tiny_control_debug_entitlement_verified'] = True
         call('verify_control_signature', ['/usr/bin/codesign', '--verify', '--deep', '--strict', str(app)])
         report['phase'] = 'testTinyControl'

@@ -1,5 +1,44 @@
 # Qualification queue
 
+## Retained c55 qualification without rebuilding Telegram
+
+Preserve the successful `c55e19c4` device build82 and simulator build1. The
+`retained-modern` manual scope runs only `native-api-probe` and
+`custom-options-artifact-replay`; every application, device, startup and Bazel
+rebuild job is excluded. It shares the fixed c55 Projection queue with
+`retained-clean`, and never cancels an active run. For a further native-only
+diagnostic repair, `projection-plan-only` preserves the settings result and
+executes only the modern native job. Do not advance
+`ci/verify-latest` for diagnostic tools or documentation alone.
+
+The native job verifies the fixed captured products and their source/hashes,
+refreshes only the registered current-user simulator service on an exclusive
+hosted runner, then builds a tiny account-free Apple UIKit/XCTest control. This
+compiles diagnostic code only. Its one hosted identity test and owned-device
+cleanup must pass before Xcode's actual generated plan can be rebound to the
+unchanged captured application/test code and all 41 Projection tests. Its
+independent diagnostic copy is resealed without changing that code. The control is separate
+from AyuGram feature coverage. Unsupported plan formats or failed controls do
+not become skipped passes; the job fails and records that Projection was not
+attempted. A later standalone launch cannot change test outcomes.
+
+The settings job verifies the retained account-free host against five unchanged
+source files, installs it on its own disposable iPhone 15 Pro / iOS 27.0 simulator,
+and attempts a recording, explicit relaunch and screenshot. OCR and recording
+failures stay failures while preserving any actual screenshot for manual
+review. Neither this root observation nor the earlier eight controller and one
+UI test proves authenticated full-app Settings navigation.
+
+Only bounded, explicitly selected diagnostics and visuals are uploaded. Modern
+native JSON is limited to 1 MiB per file, logs to 2 MiB and the combined selection
+to 8 MiB; symbolic links and nonregular files are rejected before copying. Uploads require
+a successful staging step even when the preceding native check failed. Raw test
+plans, project products, simulator IPAs, credentials and account data stay private.
+The diagnostic download token is absent from native child processes. A failed
+qualification does not delete the separately successful device package.
+
+## Historical qualification and general queue policy
+
 Repository Actions has been enabled by the owner. After 104 focused native
 cases passed for source `62546557807ee5d8ff468ea3d7d46ce1a090c8cf`, its canonical
 branch push automatically started

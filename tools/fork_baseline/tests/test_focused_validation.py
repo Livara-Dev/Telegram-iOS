@@ -291,7 +291,7 @@ class FocusedWorkflowRoutingTests(unittest.TestCase):
                 self.assertTrue(self.condition('integration-tests', 'workflow_dispatch', 'projection', device))
                 for job in ('application-build', 'unsigned-device-build', 'native-api-probe', 'startup-artifact-replay'):
                     self.assertFalse(self.condition(job, 'workflow_dispatch', 'projection', device))
-        self.assertIn('options: [full, native-only, core-only, focused, projection, projection-only, custom-options-ui, custom-options-replay, probe, retained-clean, retained-modern, startup]', WORKFLOW.read_text())
+        self.assertIn('options: [full, native-only, core-only, focused, projection, projection-only, custom-options-ui, custom-options-replay, probe, retained-clean, retained-modern, projection-plan-only, startup]', WORKFLOW.read_text())
         self.assertIn('projection) repair_options+=(--projection-tests)', WORKFLOW.read_text())
 
     def test_projection_only_dispatch_skips_every_other_build_or_probe(self):
@@ -437,6 +437,24 @@ class FocusedWorkflowRoutingTests(unittest.TestCase):
         self.assertNotIn('TELEGRAM_API_', source)
         self.assertLess(source.index('Refresh only the registered current-user'), source.index('modern_projection_plan.py prepare'))
         self.assertLess(source.index('modern_projection_plan.py prepare'), source.index('modern_projection_plan.py run'))
+
+    def test_modern_plan_only_scope_preserves_successful_ui_and_application_artifacts(self):
+        self.assertTrue(self.condition('native-api-probe', 'workflow_dispatch', 'projection-plan-only', False))
+        for device in (False, True):
+            for job in ('custom-options-artifact-replay', 'integration-tests', 'application-build', 'unsigned-device-build', 'custom-options-ui', 'startup-artifact-replay'):
+                self.assertFalse(self.condition(job, 'workflow_dispatch', 'projection-plan-only', device), job)
+        source = self.section('native-api-probe')
+        for title in ('Replay verified synthetic Projection products without recompilation', 'Prepare only the verified synthetic movie fixture', 'Compile the production loader with the host API probe'):
+            step = source.split('      - name: ' + title + '\n', 1)[1].split('      - name: ', 1)[0]
+            condition = re.search(r'^        if: (.*?)$', step, re.M).group(1)
+            for run in ('', '42160468600'):
+                self.assertFalse(self.expression(condition, 'workflow_dispatch', 'projection-plan-only', False, replay_run=run))
+        for name, expected in (('REPLAY_RUN', '42160468600'), ('REPLAY_SOURCE', 'c55e19c4f5cbe0d730499035d0a0ef712f6903a9')):
+            expression = re.search(r'^          ' + name + r': \$\{\{ (.*?) \}\}$', source, re.M).group(1)
+            self.assertEqual(self.expression(expression, 'workflow_dispatch', 'projection-plan-only', False, replay_source='b' * 40, replay_run='1'), expected)
+        group = re.search(r'^  group: \$\{\{ (.*?) \}\}$', WORKFLOW.read_text(), re.M).group(1)
+        self.assertEqual(self.expression(group, 'workflow_dispatch', 'projection-plan-only', False),
+                         'ayugram-projection-replay-c55e19c4f5cbe0d730499035d0a0ef712f6903a9')
 
     def test_modern_plan_publication_excludes_raw_plans_products_and_private_logs(self):
         import hashlib

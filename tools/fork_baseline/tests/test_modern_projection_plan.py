@@ -3,6 +3,7 @@
 """Portable plan/ownership tests, never an Xcode compilation claim."""
 import copy
 import json
+import os
 from pathlib import Path
 import plistlib
 import shutil
@@ -125,6 +126,17 @@ class ModernPlanTests(unittest.TestCase):
             for value in ('__TESTROOT__/../outside', '__TESTROOT__/link/private', '__UNPROVEN__/private', str(outside), 'relative-path'):
                 with self.subTest(value=value), self.assertRaises(ValueError): modern.resolved_path(value, inside)
 
+    def test_approved_root_double_underscores_are_not_treated_as_unresolved_plan_tokens(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve() / 'ordinary__PRIVATE__approved'
+            root.mkdir()
+            plan, app, _ = apple_fixture(root, version=2, executable=False, sibling=True)
+            version, _, resolved, _, kind = modern.generated_products(plan, root)
+            self.assertEqual((version, resolved, kind), (2, app, 'bundle'))
+            for value in ('__TESTROOT__/__UNPROVEN__/item', '__OTHER__/item', '__unverified__/item'):
+                with self.subTest(value=value), self.assertRaises(modern.PlanError):
+                    modern.resolved_path(value, root)
+
     def test_one_control_requires_exact_start_and_pass_without_retry_unknown_skip_or_partial_outcome(self):
         self.assertTrue(modern.control_cases(control_log())['all_expected_passed'])
         for data in (b'', control_log('failed'), control_log('skipped'), control_log('crashed'), control_log() * 2,
@@ -139,18 +151,33 @@ class ModernPlanTests(unittest.TestCase):
                 with self.assertRaises(ValueError): modern.prepare(root=root, api=api, fetch=fetch)
             api.assert_not_called(); fetch.assert_not_called()
 
-    def test_codesign_xml_accepts_real_executable_warning_prefix_without_exposing_or_guessing_it(self):
+    def test_only_private_xml_content_is_accepted_not_merged_codesign_diagnostics(self):
         xml = plistlib.dumps({modern.CONTROL_DEBUG_ENTITLEMENT: True})
         prefix = (b'Executable=/private/control-private-canary/AyuProjectionControl\n'
                   b"Warning: Specifying ':' in the path is deprecated and will not work in a future release\n")
         self.assertTrue(modern.control_debug_entitlements(xml))
-        self.assertTrue(modern.control_debug_entitlements(prefix + xml))
-        for data in (prefix + xml + xml, b'private-unrecognized-prefix\n' + xml, xml + b'private-tail',
+        for data in (prefix + xml, prefix + xml + xml, b'private-unrecognized-prefix\n' + xml, xml + b'private-tail',
                      b'<?xml version="1.0"?><plist><dict><key>private-canary</key>',
-                     plistlib.dumps({modern.CONTROL_DEBUG_ENTITLEMENT: 1}), b'x' * 65537):
+                     plistlib.dumps({modern.CONTROL_DEBUG_ENTITLEMENT: 1}),
+                     plistlib.dumps({modern.CONTROL_DEBUG_ENTITLEMENT: False}),
+                     plistlib.dumps({modern.CONTROL_DEBUG_ENTITLEMENT: True, 'extra': True}), b'x' * 65537):
             self.assertFalse(modern.control_debug_entitlements(data))
 
-    def execute_fixture(self, root, control_outcome='passed', mutate=False):
+    def test_signature_readback_requires_bounded_regular_independent_file_and_sets_private_mode(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve(); xml = plistlib.dumps({modern.CONTROL_DEBUG_ENTITLEMENT: True})
+            good = root / 'readback.plist'; good.write_bytes(xml); good.chmod(0o644)
+            self.assertEqual(modern.read_control_debug_entitlement_status(good), 'verified'); self.assertEqual(good.stat().st_mode & 0o777, 0o600)
+            link = root / 'link'; link.symlink_to(good)
+            hardlink = root / 'hardlink'; os.link(good, hardlink)
+            empty = root / 'empty'; empty.write_bytes(b'')
+            oversized = root / 'oversized'; oversized.write_bytes(b'x' * 65537)
+            fifo = root / 'fifo'; os.mkfifo(fifo)
+            self.assertEqual(modern.read_control_debug_entitlement_status(root / 'missing'), 'missingFile')
+            for path in (root, link, hardlink, empty, oversized, fifo):
+                self.assertEqual(modern.read_control_debug_entitlement_status(path), 'unsafeFile')
+
+    def execute_fixture(self, root, control_outcome='passed', mutate=False, readback='correct'):
         output = root / modern.OUTPUT; output.mkdir(parents=True)
         capture = fixtures.captured(root, current=True)
         info = capture / 'TEST_ROOT' / modern.products.APP / 'PlugIns' / modern.products.TEST / 'Info.plist'
@@ -163,8 +190,23 @@ class ModernPlanTests(unittest.TestCase):
             calls.append((args, timeout))
             if args == ['xcodebuild', '-version']: return complete(b'Xcode 27.1\nBuild version 27A9275\n')
             if '--show-sdk-version' in args: return complete(b'27.1')
-            if args[:4] == ['/usr/bin/codesign', '-d', '--entitlements', ':-']:
-                return complete(plistlib.dumps({modern.CONTROL_DEBUG_ENTITLEMENT: True}))
+            if args[:3] == ['/usr/bin/codesign', '--display', '--entitlements']:
+                path = Path(args[3]); self.assertFalse(path.exists()); self.assertEqual(args[4], '--xml')
+                self.assertEqual(path.parent.stat().st_mode & 0o777, 0o700)
+                self.assertNotEqual(path, output / 'private-derived/control-debug-entitlements.plist')
+                xml = plistlib.dumps({modern.CONTROL_DEBUG_ENTITLEMENT: True})
+                if readback == 'correct': path.write_bytes(xml)
+                elif readback == 'wrong': path.write_bytes(plistlib.dumps({modern.CONTROL_DEBUG_ENTITLEMENT: False}))
+                elif readback == 'malformed': path.write_bytes(b'<?xml version="1.0"?><plist><dict><key>private-canary</key>')
+                elif readback == 'symlink': path.symlink_to(output / 'private-derived/control-debug-entitlements.plist')
+                elif readback == 'missing': pass
+                elif readback == 'command_failed': return complete(b'private-command-canary', 1)
+                elif readback == 'timed_out': return {'status': 'timedOut', 'exit_code': None, 'timeout': True,
+                    'output_limit': False, 'captured_bytes': 0}, b''
+                else: raise AssertionError('Unknown readback fixture')
+                # A valid stdout plist is deliberately ignored: evidence must
+                # come from the requested signature-output file, independently.
+                return complete(b'Executable=/private/readback-private-canary\n' + xml)
             if 'build-for-testing' in args:
                 products = Path(args[args.index('-derivedDataPath') + 1]) / 'Build/Products'
                 plan, _, _ = apple_fixture(products, 2)
@@ -201,6 +243,7 @@ class ModernPlanTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             result, calls = self.execute_fixture(Path(directory).resolve())
             self.assertTrue(result['passed']); self.assertEqual(result['control']['passed'], 1)
+            self.assertEqual(result['tiny_control_debug_entitlement_readback'], 'verified')
             self.assertEqual(result['projection']['started'], 41); self.assertEqual(result['projection']['passed'], 41)
             self.assertTrue(result['original_products_unchanged']); self.assertTrue(result['projection']['cleanup_completed'])
             self.assertEqual([timeout for args, timeout in calls if 'test-without-building' in args], [300, 300])
@@ -208,6 +251,22 @@ class ModernPlanTests(unittest.TestCase):
             for key in ('application_recompiled', 'projection_tests_recompiled', 'physical_device_verified', 'release_qualified'):
                 self.assertFalse(result[key])
             self.assertFalse(any('bazel' in ' '.join(args).lower() for args, _ in calls))
+
+    def test_missing_unsafe_false_or_malformed_signature_output_blocks_all_tests_despite_valid_input_and_stdout(self):
+        for readback in ('missing', 'symlink', 'wrong', 'malformed', 'command_failed', 'timed_out'):
+            with self.subTest(readback=readback), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory).resolve(); result, calls = self.execute_fixture(root, readback=readback)
+                self.assertFalse(result['passed']); self.assertFalse(result['tiny_control_debug_entitlement_verified'])
+                self.assertEqual(result['failure'], 'modern_verify_control_entitlements_failed'
+                    if readback in {'command_failed', 'timed_out'} else 'tiny_control_debug_entitlement_unverified')
+                self.assertEqual(result['tiny_control_debug_entitlement_readback'], {
+                    'missing': 'missingFile', 'symlink': 'unsafeFile', 'wrong': 'unexpectedEntitlements',
+                    'malformed': 'nonXML', 'command_failed': 'commandFailed', 'timed_out': 'commandFailed'}[readback])
+                self.assertFalse(result['control']['attempted']); self.assertFalse(result['projection']['attempted'])
+                self.assertFalse(any('test-without-building' in args for args, _ in calls))
+                self.assertFalse(any(args[:3] == ['xcrun', 'simctl', 'create'] for args, _ in calls))
+                self.assertNotIn('private-canary', json.dumps(result))
+                self.assertNotIn('private-command-canary', json.dumps(result))
 
     def test_post_execution_source_mutation_never_leaves_a_passed_result(self):
         with tempfile.TemporaryDirectory() as directory:
