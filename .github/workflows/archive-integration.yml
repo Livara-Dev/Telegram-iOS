@@ -27,6 +27,10 @@ on:
         description: Run only a fresh explicitly pinned private-storage main-app control
         type: boolean
         default: false
+      startup_historical_control:
+        description: Compare the fixed historical package once before the c55 private startup control
+        type: boolean
+        default: false
       projection_host_control:
         description: Diagnostic control for the fixed synthetic Projection host only
         type: choice
@@ -830,6 +834,28 @@ jobs:
           umask 077
           python3 tools/fork_baseline/replay_artifact.py --run "$REPLAY_RUN" --source "$REPLAY_SOURCE" --output build/fork-evidence/startup-replay
 
+      - name: Verify the fixed historical installer comparison package
+        if: inputs.startup_historical_control
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPLAY_RUN: ${{ inputs.replay_run }}
+          REPLAY_SOURCE: ${{ inputs.replay_source }}
+          STARTUP_VARIANT: ${{ inputs.startup_variant }}
+          STARTUP_PRIVATE_ONLY: ${{ inputs.startup_private_only && 'true' || 'false' }}
+        run: |
+          set -euo pipefail
+          if [[ "$REPLAY_RUN" != '42174474046' || "$REPLAY_SOURCE" != 'c55e19c4f5cbe0d730499035d0a0ef712f6903a9' || "$STARTUP_VARIANT" != 'main-app-only' || "$STARTUP_PRIVATE_ONLY" != 'true' ]]; then
+            exit 2
+          fi
+          python3 tools/fork_baseline/installer_control.py prepare --output build/fork-evidence/startup-replay-historical
+
+      # This arm has its own new disposable simulator and no API/download token.
+      # An expected failure remains passed:false in its report. Failed cleanup
+      # aborts the comparison; no historical success can satisfy the c55 gate.
+      - name: Run the historical installer comparison once without recompiling
+        if: inputs.startup_historical_control
+        run: python3 tools/fork_baseline/installer_control.py run --output build/fork-evidence/startup-replay-historical
+
       - name: Replay the selected startup control without compiling
         env:
           STARTUP_VARIANT: ${{ inputs.startup_variant || 'original' }}
@@ -948,6 +974,45 @@ jobs:
             ${{ github.workspace }}/fork-source/build/fork-evidence/startup-replay/replay-controls/main-app-only-automatic/launch-smoke/launch-1.png
             ${{ github.workspace }}/fork-source/build/fork-evidence/startup-replay/replay-controls/main-app-only-automatic/launch-smoke/launch-2.png
             ${{ github.workspace }}/fork-source/build/fork-evidence/startup-replay/SHA256SUMS
+          if-no-files-found: warn
+          retention-days: 7
+          include-hidden-files: false
+
+      - name: Hash historical comparison diagnostics separately
+        if: always() && inputs.startup_historical_control
+        run: |
+          python3 - <<'PYTHON'
+          import hashlib, pathlib
+          root = pathlib.Path('build/fork-evidence/startup-replay-historical')
+          root.mkdir(parents=True, exist_ok=True)
+          names = ['verification.json', 'comparison.json', 'archive-evidence/manifest.json', 'replay-controls/replay.json']
+          names += ['replay-controls/main-app-only/launch-smoke/' + name for name in
+                    ('result.json', 'checker-compiler.log', 'recording.log', 'launch.mp4', 'launch-1.png', 'launch-2.png')]
+          rows = []
+          for name in names:
+              file = root / name
+              if file.is_file() and not file.is_symlink():
+                  rows.append(hashlib.sha256(file.read_bytes()).hexdigest() + '  ' + name + '\n')
+          (root / 'SHA256SUMS').write_text(''.join(rows))
+          PYTHON
+
+      - name: Publish historical comparison evidence without its IPA
+        if: always() && inputs.startup_historical_control
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: startup-historical-comparison-${{ github.sha }}
+          path: |
+            ${{ github.workspace }}/fork-source/build/fork-evidence/startup-replay-historical/verification.json
+            ${{ github.workspace }}/fork-source/build/fork-evidence/startup-replay-historical/comparison.json
+            ${{ github.workspace }}/fork-source/build/fork-evidence/startup-replay-historical/archive-evidence/manifest.json
+            ${{ github.workspace }}/fork-source/build/fork-evidence/startup-replay-historical/replay-controls/replay.json
+            ${{ github.workspace }}/fork-source/build/fork-evidence/startup-replay-historical/replay-controls/main-app-only/launch-smoke/result.json
+            ${{ github.workspace }}/fork-source/build/fork-evidence/startup-replay-historical/replay-controls/main-app-only/launch-smoke/checker-compiler.log
+            ${{ github.workspace }}/fork-source/build/fork-evidence/startup-replay-historical/replay-controls/main-app-only/launch-smoke/recording.log
+            ${{ github.workspace }}/fork-source/build/fork-evidence/startup-replay-historical/replay-controls/main-app-only/launch-smoke/launch.mp4
+            ${{ github.workspace }}/fork-source/build/fork-evidence/startup-replay-historical/replay-controls/main-app-only/launch-smoke/launch-1.png
+            ${{ github.workspace }}/fork-source/build/fork-evidence/startup-replay-historical/replay-controls/main-app-only/launch-smoke/launch-2.png
+            ${{ github.workspace }}/fork-source/build/fork-evidence/startup-replay-historical/SHA256SUMS
           if-no-files-found: warn
           retention-days: 7
           include-hidden-files: false
