@@ -79,6 +79,16 @@ entitlements and every test/resource byte, and still requires all 41 cases in
 one bounded invocation. It never signs a device app or overrides a failed
 qualification. Local mocked signing tests do not establish native execution.
 
+The actual control in `42176767770` preserved executable/test content and passed
+strict seal verification, but XCTest still started zero cases. Re-sealing is
+therefore not a sufficient repair. The optional `projection_bootstrap_sample`
+input defaults to false and is restricted to the fixed new capture. It observes
+the known live Xcode child once after ninety seconds without expected case
+starts, retaining only fixed wait-category counts and relationship/status flags.
+The original three-hundred-second command deadline remains unchanged. Raw
+samples, arguments, environment values, addresses and private paths are not
+published. Unknown or capped samples remain unavailable, not a causal diagnosis.
+
 The simulator-only fallback build `42174474046` uses that exact application
 source and does not build another device IPA. Startup replay accepts this one
 fixed baseline origin and may pair it only with device build 82 from run

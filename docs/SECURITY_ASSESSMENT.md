@@ -103,6 +103,17 @@ test-host signing diagnostic uses only synthetic captured products, must preserv
 all executable code and XCTest content, and cannot sign a production device app
 or relabel the original failed qualification. No physical startup is verified.
 
+The actual re-sealed control `42176767770` passed strict verification while
+preserving code, signing identity metadata and all XCTest content; it still
+started zero of 41 cases. Post-command simulator queries timed out, but those
+observations occurred after cleanup and do not prove an earlier deadlock. The
+next opt-in diagnostic is restricted to the known synthetic capture and live
+Xcode child. It observes once before timeout, with private file/command budgets
+and fixed public status/wait-category fields. It never publishes raw process
+samples, arguments, environments or paths, changes the test deadline, or turns
+missing tests into a pass. Actual sampling behavior still requires native
+verification.
+
 ## Additional source review at `f295948a`
 
 The [expanded telemetry inventory](fork/TELEMETRY-REVIEW.md) identifies additional
