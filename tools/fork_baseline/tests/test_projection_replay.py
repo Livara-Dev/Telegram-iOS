@@ -642,25 +642,87 @@ class ProjectionReplayTests(unittest.TestCase):
                 'trigger': {'state': 'notTriggered', 'planned_after_ms': 120, 'actual_after_ms': None}})
 
     def test_worker_rechecks_exit_and_captured_expected_start_after_scheduling_delay(self):
-        # Delay only this diagnostic worker while the native supervisor keeps
-        # draining events and observing the actual child's lifecycle.
+        # Exercise the real supervisor/worker, with deterministic child I/O and
+        # a held worker. No relative sleep assumes how quickly Python starts.
         actual_thread = threading.Thread
-        def delayed_thread(*args, **options):
-            target = options.pop('target')
-            def delayed():
-                time.sleep(.15); target()
-            return actual_thread(*args, target=delayed, **options)
-        expected = "Test Case '-[Module." + next(iter(replay.EXPECTED)).replace('.', ' ') + "]' started."
-        for source, reason in [('import time;time.sleep(.08);print(' + repr(expected) + ',flush=True);time.sleep(5)', 'expectedCaseStarted'),
-                               ('import time;time.sleep(.08)', 'commandEndedBeforeTrigger')]:
-            with self.subTest(reason=reason), patch.object(replay, 'BOOTSTRAP_SAMPLE_LATE_AFTER_SECONDS', .03), \
-                    patch.object(replay.threading, 'Thread', side_effect=delayed_thread):
-                calls = []
-                status, _ = replay.native_command([sys.executable, '-c', source], timeout=.35,
-                    bootstrap_diagnostic=lambda *args: calls.append(args), bootstrap_after_seconds=480)
-            self.assertEqual(calls, [])
-            self.assertEqual(status['bootstrap_diagnostic'], {'state': 'notTriggered', 'reason': reason,
-                'trigger': {'state': 'notTriggered', 'planned_after_ms': 30, 'actual_after_ms': None}})
+        expected = ("Test Case '-[Module." + next(iter(replay.EXPECTED)).replace('.', ' ') + "]' started.\n").encode()
+        for reason in ('expectedCaseStarted', 'commandEndedBeforeTrigger'):
+            with self.subTest(reason=reason):
+                scheduled, release, finished = threading.Event(), threading.Event(), threading.Event()
+                calls, worker_entries, thread_errors = [], [], []
+                clock = [0.0]
+                class Stream:
+                    def fileno(self): return 17
+                    def close(self): pass
+                class Process:
+                    pid = 10001
+                    stdout = Stream()
+                    code = None
+                    def poll(self): return self.code
+                    def wait(self, timeout=None):
+                        if self.code is None: raise replay.subprocess.TimeoutExpired('fixture', timeout)
+                        return self.code
+                    def kill(self): self.code = -signal.SIGKILL
+                process = Process()
+                key = type('Key', (), {'fileobj': process.stdout})()
+                reads = []
+                def read(descriptor, count):
+                    self.assertEqual((descriptor, count), (17, 4096))
+                    reads.append(True)
+                    return expected if reason == 'expectedCaseStarted' and len(reads) == 1 else b''
+                def delayed_thread(*args, **options):
+                    target = options.pop('target')
+                    def delayed():
+                        scheduled.set()
+                        try:
+                            if not release.wait(2):
+                                thread_errors.append('workerReleaseMissing'); return
+                            worker_entries.append(True); target()
+                        finally: finished.set()
+                    return actual_thread(*args, target=delayed, **options)
+                class Selector:
+                    active = False
+                    step = 0
+                    def __enter__(self): return self
+                    def __exit__(self, *args): pass
+                    def register(self, *args): self.active = True
+                    def unregister(self, *args): self.active = False
+                    def get_map(self): return {17: key} if self.active else {}
+                    def select(self, timeout=None):
+                        self.step += 1
+                        if self.step == 1:
+                            clock[0] = .04; return []
+                        self_test.assertTrue(scheduled.wait(2), 'Diagnostic worker was not created')
+                        if self.step == 2 and reason == 'expectedCaseStarted':
+                            return [(key, 1)]
+                        # The next select is reached only AFTER native_command
+                        # appended the prior read. Release cannot race extend().
+                        self_test.assertEqual(self.step, 3 if reason == 'expectedCaseStarted' else 2)
+                        if reason == 'expectedCaseStarted': self_test.assertEqual(len(reads), 1)
+                        else: process.code = 0
+                        release.set()
+                        self_test.assertTrue(finished.wait(2), 'Diagnostic worker never entered its target')
+                        process.code = 0
+                        return [(key, 1)]
+                self_test = self
+                try:
+                    with patch.object(replay, 'BOOTSTRAP_SAMPLE_LATE_AFTER_SECONDS', .03), \
+                            patch.object(replay.threading, 'Thread', side_effect=delayed_thread), \
+                            patch.object(replay.time, 'monotonic', side_effect=lambda: clock[0]), \
+                            patch.object(replay.subprocess, 'Popen', return_value=process), \
+                            patch.object(replay.selectors, 'DefaultSelector', return_value=Selector()), \
+                            patch.object(replay.os, 'getpgid', return_value=process.pid), \
+                            patch.object(replay.os, 'killpg') as retire, patch.object(replay.os, 'read', side_effect=read):
+                        status, raw = replay.native_command(['controlled-child-fixture'], timeout=.35,
+                            bootstrap_diagnostic=lambda *args: calls.append(args), bootstrap_after_seconds=480)
+                        retire.assert_called_once_with(process.pid, signal.SIGKILL)
+                finally:
+                    release.set(); self.assertTrue(finished.wait(2))
+                self.assertEqual(thread_errors, []); self.assertEqual(worker_entries, [True])
+                self.assertEqual(raw, expected if reason == 'expectedCaseStarted' else b'')
+                self.assertEqual(calls, [])
+                self.assertEqual(status['bootstrap_diagnostic'], {'state': 'notTriggered', 'reason': reason,
+                    'trigger': {'state': 'notTriggered', 'planned_after_ms': 30, 'actual_after_ms': None}})
 
     def test_late_trigger_survives_callback_failure_and_slow_worker_without_mutable_partial_results(self):
         for kind in ('exception', 'slow'):
