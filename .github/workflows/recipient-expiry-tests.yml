@@ -1,0 +1,168 @@
+# SPDX-License-Identifier: GPL-2.0-or-later
+# Created 2026-11-06.
+name: Recipient expiry worker native Core tests
+
+on:
+  push:
+    branches: [test/recipient-expiry-worker]
+    paths: [ci/recipient-expiry-request.json]
+
+permissions:
+  contents: read
+
+# Share the existing Core queue and preserve its active qualification.
+concurrency:
+  group: ayugram-core-qualification
+  cancel-in-progress: false
+
+jobs:
+  recipient-core-tests:
+    if: github.repository == 'Livara-Dev/Telegram-iOS' && github.ref == 'refs/heads/test/recipient-expiry-worker'
+    runs-on: xcode-27
+    timeout-minutes: 360
+    defaults:
+      run:
+        shell: bash
+        working-directory: ./fork-source
+    steps:
+      - name: Check out the exact request without persistent credentials
+        working-directory: ${{ github.workspace }}
+        env:
+          CHECKOUT_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          umask 077
+          python3 - <<'PY'
+          import base64, os, pathlib, re, subprocess
+          root = pathlib.Path(os.environ['GITHUB_WORKSPACE']) / 'fork-source'
+          sha = os.environ['GITHUB_SHA']
+          if os.environ['GITHUB_REPOSITORY'] != 'Livara-Dev/Telegram-iOS' or not re.fullmatch(r'[0-9a-f]{40}', sha):
+              raise SystemExit('Invalid recipient test checkout coordinates')
+          root.mkdir(mode=0o700)
+          clean = os.environ.copy()
+          token = clean.pop('CHECKOUT_TOKEN')
+          private = clean.copy()
+          private.update(GIT_CONFIG_COUNT='1', GIT_CONFIG_KEY_0='http.https://github.com/.extraheader',
+              GIT_CONFIG_VALUE_0='AUTHORIZATION: basic ' + base64.b64encode(('x-access-token:' + token).encode()).decode())
+          def run(args, env=clean):
+              subprocess.run(args, cwd=root, env=env, check=True, timeout=1800)
+          run(['git', 'init', '-q'])
+          run(['git', 'remote', 'add', 'origin', 'https://github.com/Livara-Dev/Telegram-iOS.git'])
+          # The request must be a direct, metadata-only child of its candidate.
+          # Fetch both parents and the immutable production/audit comparison trees.
+          run(['git', 'fetch', '--no-tags', '--depth=2', 'origin', sha,
+              '5d241267735b3958c225681d173853568bab705d',
+              '279f89e4d4f63f17227bf877dc3d8990f22ecd58'], private)
+          run(['git', 'checkout', '--detach', sha])
+          (root / 'build/fork-evidence').mkdir(parents=True)
+          PY
+
+      - name: Validate the request and select only its reviewed candidate
+        id: request
+        run: |
+          set -euo pipefail
+          python3 tools/fork_baseline/recipient_expiry_request.py > build/fork-evidence/recipient-request.json
+          python3 - <<'PY'
+          import json, os, pathlib, re, subprocess
+          report = json.loads(pathlib.Path('build/fork-evidence/recipient-request.json').read_text())
+          candidate = report['candidate_sha']
+          if not re.fullmatch(r'[0-9a-f]{40}', candidate) or report['validation_scope'] != 'core-only':
+              raise SystemExit('Invalid reviewed recipient candidate')
+          subprocess.run(['git', 'checkout', '--detach', candidate], check=True)
+          with open(os.environ['GITHUB_OUTPUT'], 'a') as target:
+              target.write('candidate_sha=' + candidate + '\n')
+          PY
+
+      - name: Initialize only the pinned recursive dependencies
+        run: |
+          set -euo pipefail
+          git submodule init
+          git config submodule.submodules/rlottie/rlottie.url https://github.com/TelegramMessenger/rlottie.git
+          git config submodule.submodules/TgVoipWebrtc/tgcalls.url https://github.com/TelegramMessenger/tgcalls.git
+          git submodule update --init --recursive --depth 1 --jobs 8
+
+      - name: Run portable tests and source security guards
+        run: |
+          set -euo pipefail
+          { python3 -m unittest discover -s tools/fork_baseline/tests -v &&
+            python3 -m unittest discover -s tools/fork_audit/tests -v &&
+            python3 -m unittest discover -s build-system/Make/tests -v &&
+            python3 tools/fork_audit/check.py &&
+            python3 tools/fork_audit/telemetry.py; } 2>&1 | tee build/fork-evidence/portable-tests.log
+
+      - name: Select and verify the pinned Apple toolchain
+        run: |
+          set -euo pipefail
+          sudo xcode-select -s /Applications/Xcode_27.1.app/Contents/Developer
+          python3 tools/fork_baseline/prepare_host.py 2>&1 | tee build/fork-evidence/host.log
+
+      - name: Validate the pinned native test runtime
+        run: |
+          set -euo pipefail
+          xcrun simctl list runtimes --json 2>&1 | tee build/fork-evidence/runtime.log
+          python3 tools/fork_baseline/prepare_host.py --simulator
+
+      - name: Validate build configuration without exposing credentials
+        env:
+          TELEGRAM_API_ID: ${{ secrets.TELEGRAM_API_ID }}
+          TELEGRAM_API_HASH: ${{ secrets.TELEGRAM_API_HASH }}
+          IOS_BUNDLE_ID: org.livara.ayugram
+        run: |
+          python3 - <<'PY'
+          import os, sys
+          sys.path.insert(0, 'tools/fork_baseline')
+          from baseline import configuration, InvalidSetup
+          try:
+              configuration(os.environ, unsigned=True)
+          except InvalidSetup as error:
+              print('::error::' + str(error))
+              sys.exit(1)
+          print('Simulator build configuration validated; values omitted.')
+          PY
+
+      - name: Run the fixed native Core suite without an application build
+        env:
+          TELEGRAM_API_ID: ${{ secrets.TELEGRAM_API_ID }}
+          TELEGRAM_API_HASH: ${{ secrets.TELEGRAM_API_HASH }}
+          IOS_BUNDLE_ID: org.livara.ayugram
+        run: |
+          set -euo pipefail
+          umask 077
+          python3 tools/fork_baseline/baseline.py simulator --integration-tests --tests-only --core-only-tests 2>&1 | tee build/fork-evidence/native-core.log
+
+      - name: Hash only the bounded review and native test evidence
+        if: always()
+        run: |
+          python3 - <<'PY'
+          import hashlib, pathlib
+          root = pathlib.Path('build/fork-evidence')
+          if not root.is_dir() or root.is_symlink():
+              raise SystemExit(0)
+          names = ['recipient-request.json', 'portable-tests.log', 'host.log', 'runtime.log',
+              'native-core.log', 'integration-tests.json', 'prebuild-telegram-core/collection.json',
+              'prebuild-telegram-core/test.xml', 'prebuild-telegram-core/test.log']
+          files = [root / name for name in names if (root / name).is_file() and not (root / name).is_symlink()]
+          (root / 'recipient-SHA256SUMS').write_text(''.join(
+              hashlib.sha256(path.read_bytes()).hexdigest() + '  ' + str(path.relative_to(root)) + '\n'
+              for path in sorted(files)))
+          PY
+
+      - name: Publish redacted Core evidence only
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: recipient-core-${{ steps.request.outputs.candidate_sha }}
+          path: |
+            ${{ github.workspace }}/fork-source/build/fork-evidence/recipient-request.json
+            ${{ github.workspace }}/fork-source/build/fork-evidence/portable-tests.log
+            ${{ github.workspace }}/fork-source/build/fork-evidence/host.log
+            ${{ github.workspace }}/fork-source/build/fork-evidence/runtime.log
+            ${{ github.workspace }}/fork-source/build/fork-evidence/native-core.log
+            ${{ github.workspace }}/fork-source/build/fork-evidence/integration-tests.json
+            ${{ github.workspace }}/fork-source/build/fork-evidence/prebuild-telegram-core/collection.json
+            ${{ github.workspace }}/fork-source/build/fork-evidence/prebuild-telegram-core/test.xml
+            ${{ github.workspace }}/fork-source/build/fork-evidence/prebuild-telegram-core/test.log
+            ${{ github.workspace }}/fork-source/build/fork-evidence/recipient-SHA256SUMS
+          if-no-files-found: warn
+          retention-days: 7
+          include-hidden-files: false

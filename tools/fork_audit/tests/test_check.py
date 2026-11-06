@@ -100,6 +100,17 @@ class SourceGuardTests(unittest.TestCase):
         self.write(".github/workflows/ayu-source-snapshot-extra.yml", "name: Unreviewed workflow\n")
         self.assertFailure("Addition outside audit/build scope")
 
+    def test_exact_recipient_worker_workflow_and_request_do_not_allow_neighbors(self):
+        self.write(".github/workflows/recipient-expiry-tests.yml", "name: Recipient Core tests\n")
+        self.write("ci/recipient-expiry-request.json", '{"schemaVersion":1}\n')
+        self.assertEqual([], self.failures())
+        for neighbor in (".github/workflows/recipient-expiry-tests-extra.yml",
+                         "ci/recipient-expiry-request-extra.json", "ci/unrelated.json"):
+            with self.subTest(neighbor=neighbor):
+                self.write(neighbor, "{}\n")
+                self.assertFailure("Addition outside audit/build scope")
+                (self.root / neighbor).unlink()
+
     def test_exact_reviewed_seam_can_change_but_neighbor_cannot(self):
         path = "submodules/TelegramCore/Sources/Account/Account.swift"
         self.add_upstream_fixture(path)

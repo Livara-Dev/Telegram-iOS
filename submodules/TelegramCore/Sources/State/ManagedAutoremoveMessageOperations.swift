@@ -73,11 +73,20 @@ func expireMessageContentLocally(transaction: Transaction, message: Message) {
 }
 
 func managedAutoremoveMessageOperations(network: Network, postbox: Postbox, isRemove: Bool) -> Signal<Void, NoError> {
+    return managedAutoremoveMessageOperations(postbox: postbox, isRemove: isRemove,
+        globalTimeDifference: { network.globalTimeDifference })
+}
+
+// Modified 2026-11-06: the real worker needs only the network time offset. Keeping that reader
+// injectable lets native tests drive its actual timestamp view and timer without
+// constructing an unrelated live Network/session or calling expiry helpers.
+func managedAutoremoveMessageOperations(postbox: Postbox, isRemove: Bool,
+                                        globalTimeDifference: @escaping () -> Double) -> Signal<Void, NoError> {
     return Signal { _ in
         let helper = Atomic(value: ManagedAutoremoveMessageOperationsHelper())
         
         let timeOffsetOnce = Signal<Double, NoError> { subscriber in
-            subscriber.putNext(network.globalTimeDifference)
+            subscriber.putNext(globalTimeDifference())
             return EmptyDisposable
         }
         
