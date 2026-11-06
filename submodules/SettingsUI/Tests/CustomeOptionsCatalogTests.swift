@@ -49,7 +49,7 @@ final class CustomeOptionsCatalogTests: XCTestCase {
         XCTAssertEqual(complete.utf16.count, CustomeOptionsCatalog.maximumQueryUTF16Length)
 
         let splitPrefix = completePrefix + "x"
-        let repaired = CustomeOptionsCatalog.boundedQuery(splitPrefix + "👩")
+        let repaired = CustomeOptionsCatalog.boundedQuery(splitPrefix + "👩" + "ignored")
         // String(decoding:as:) repairs the trailing high surrogate rather than
         // reading the low surrogate beyond the fixed work budget.
         XCTAssertEqual(repaired, splitPrefix + "\u{FFFD}")
