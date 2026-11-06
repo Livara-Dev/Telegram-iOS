@@ -35,6 +35,14 @@ No archive-store or Keychain readiness wait may postpone mandatory expiry.
 This limitation remains in the frozen 5d device build until a separately tested
 source change and corresponding binary explicitly replace it.
 
+Derived source `d020bfd7` relocates the unchanged coordinator construction before
+worker subscriptions. [Run 42295994007](https://github.com/Livara-Dev/Telegram-iOS/actions/runs/42295994007)
+passed 854 Core cases, including 16 recipient-worker and three startup-order
+regressions. Those fixtures test real Postbox/coordinator/timer behavior and
+mandatory cleanup, but do not instantiate the complete Account initializer.
+The frozen 5d binary is not changed or qualified by that component run.
+See [its source-specific evidence](fork/NATIVE-CORE-VERIFICATION-D020BFD7.md).
+
 No runtime zero-telemetry finding, external penetration test, full cryptographic audit or complete corresponding-source/dependency-license certification follows from these results. The publicly retained three GPL/source material files correct packaging omission but are not a complete GPL certification. The SideSign screenshot's Apple 403 / timeout occurred during signing/networking and is not evidence of a repaired or reproduced app crash. Independent signing and physical-device verification remain external release gates.
 
 ## Startup and storage review, 2026-11-05
