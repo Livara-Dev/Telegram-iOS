@@ -49,7 +49,7 @@ final class CustomeOptionsCatalogTests: XCTestCase {
         XCTAssertEqual(complete.utf16.count, CustomeOptionsCatalog.maximumQueryUTF16Length)
 
         let splitPrefix = completePrefix + "x"
-        let repaired = CustomeOptionsCatalog.boundedQuery(splitPrefix + "👩" + "ignored")
+        let repaired = CustomeOptionsCatalog.boundedQuery(splitPrefix + "👩")
         // String(decoding:as:) repairs the trailing high surrogate rather than
         // reading the low surrogate beyond the fixed work budget.
         XCTAssertEqual(repaired, splitPrefix + "\u{FFFD}")
@@ -81,9 +81,13 @@ final class CustomeOptionsCatalogTests: XCTestCase {
         XCTAssertFalse(partial.isAvailable(.messageFilters))
     }
 
-    func testTimedAndPremiumCategoriesNeverAdvertiseRetentionOrServerEntitlementSwitches() {
+    func testTimedCategoryDisclosesDefaultOffAccountRetentionAndUnchangedCanonicalTimers() {
         XCTAssertEqual(CustomeOptionsCatalog.links(for: .timedMedia).map { $0.action }, [.timedMediaInformation])
-        XCTAssertTrue(CustomeOptionsCatalog.explanation(for: .timedMedia).contains("not retained"))
+        let explanation = CustomeOptionsCatalog.explanation(for: .timedMedia)
+        XCTAssertTrue(explanation.contains("independent account-local archive options, off by default"))
+        XCTAssertTrue(explanation.contains("completed-media, storage and API-contract limits"))
+        XCTAssertTrue(explanation.contains("Canonical timers and reads remain active"))
+        XCTAssertFalse(explanation.contains("not retained by the archive"))
         XCTAssertTrue(CustomeOptionsCatalog.explanation(for: .localPremium).contains("do not grant Telegram Premium"))
         XCTAssertEqual(CustomeOptionsCatalog.links(for: .localPremium).map { $0.action }, [.localCosmetics, .appearance, .animationSettings])
     }
