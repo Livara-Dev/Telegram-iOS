@@ -177,8 +177,24 @@ binary. No proprietary exteraGram components are copied.
   unsupported-entry path and every mutator. These repairs await native execution
   in the new fixed `core-only` scope before another full qualification. The
   artifact's outer digest and all eighteen inner references were verified.
-  The original ARM64 device job is still running and has not been cancelled;
-  compilation by itself cannot qualify its failed source run.
+  The preserved ARM64 device job subsequently succeeded and published
+  [build 79, artifact 13476251721](https://github.com/Livara-Dev/Telegram-iOS/actions/runs/42152205369/artifacts/13476251721).
+  Its IPA SHA-256 is
+  `7c44f61b5940ca9df4ea70dac5fb737b32a13621150cf4b2a719912b5df1543d`.
+  All twelve binaries are unsigned ARM64 iPhoneOS; the five frameworks resolve
+  across seven executable contexts. Active metadata includes the stable
+  `AyuGramBaseBundleIdentifier`. All eleven outer-package checksum references,
+  including the three exact-source/license materials, were verified. This is
+  the failed run's build candidate, without a matching simulator application or
+  startup result, and is not a qualified replacement for the installed app.
+- [Core-only run 42157989839](https://github.com/Livara-Dev/Telegram-iOS/actions/runs/42157989839)
+  tests source `72b7c6b4` before another full build. Subsequent tool-only source
+  `644ccb94` adds a shared publication/replay gate for every embedded device
+  binary, required executable-bundle metadata and actual loader/RPATH dependency
+  closure. Nineteen malformed-package regressions and all **430 portable checks**
+  pass; independent review is clean. The new gate also passes against build 79
+  without modifying its bytes. Static package checks do not establish signing,
+  system-library availability, dynamic loading or successful application startup.
 
 ## Core features and native integration
 

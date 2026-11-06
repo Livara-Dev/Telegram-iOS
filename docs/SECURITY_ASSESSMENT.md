@@ -76,6 +76,17 @@ diagnostic canary. This closes that upload omission; it does not certify the ful
 dependency license inventory or physical-device startup. No new IPA is implied
 by the portable packaging test.
 
+Source `644ccb94` also closes the initial publication gap where only the main
+executable's platform was checked. The build and device-variant paths now share
+a bounded, read-only check of all embedded Mach-O images, signatures/profiles,
+required executable-bundle metadata and loader-relative framework dependencies.
+Malformed compressed/XML/date metadata fails with closed errors; unsupported ZIP
+codecs, ambiguous paths, missing libraries and non-dylib load targets fail before
+publication. Nineteen dedicated regressions and all 430 portable checks pass.
+Both retained historical packages and newly compiled build 79 pass without byte
+changes. These checks neither validate Apple system libraries or `dlopen`
+resources nor establish correct signing, startup or physical installation.
+
 ## Additional source review at `f295948a`
 
 The [expanded telemetry inventory](fork/TELEMETRY-REVIEW.md) identifies additional
