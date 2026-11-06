@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
+// Modified 2026-11-06: bounded owned media sources before asynchronous archive writes.
 import Foundation
 import Postbox
 import SwiftSignalKit
@@ -95,6 +96,7 @@ protocol LocalArchiveStorage: AnyObject {
                           completion: @escaping (Result<ArchiveWriteResult, ArchiveError>) -> Void)
     func recordMedia(eventKey: String, slot: Int, kind: String, mimeType: String, data: Data, generation: Int64, completion: @escaping (Result<Bool, ArchiveError>) -> Void)
     func recordMediaFile(eventKey: String, slot: Int, kind: String, mimeType: String, source: URL, expectedSize: Int64?, generation: Int64, completion: @escaping (Result<Bool, ArchiveError>) -> Void)
+    func recordMediaFile(eventKey: String, slot: Int, kind: String, mimeType: String, source: ArchiveMediaFileSource, expectedSize: Int64?, generation: Int64, completion: @escaping (Result<Bool, ArchiveError>) -> Void)
     func mediaInfo(eventKey: String, slot: Int, completion: @escaping (Result<ArchivedMediaInfo?, ArchiveError>) -> Void)
     func mediaRange(eventKey: String, slot: Int, offset: Int64, count: Int, completion: @escaping (Result<Data?, ArchiveError>) -> Void)
     func containsMedia(eventKey: String, slot: Int, completion: @escaping (Result<Bool, ArchiveError>) -> Void)
@@ -122,6 +124,12 @@ protocol LocalArchiveStorage: AnyObject {
 }
 
 extension LocalArchiveStorage {
+    // Older/test adapters must explicitly forward this capability. Reopening a
+    // URL or materializing Data here would discard the pre-unlink descriptor.
+    func recordMediaFile(eventKey: String, slot: Int, kind: String, mimeType: String, source: ArchiveMediaFileSource,
+                         expectedSize: Int64?, generation: Int64, completion: @escaping (Result<Bool, ArchiveError>) -> Void) {
+        completion(.failure(.protectionUnavailable))
+    }
     // Existing test doubles retain conservative coordinator-side invalidation.
     // Production ArchiveStore reports even a prune inside a read transaction.
     func setMutationObserver(_ observer: (() -> Void)?, completion: @escaping () -> Void) { completion() }
@@ -157,6 +165,7 @@ public final class LocalArchiveCoordinator {
     private let accountId: Int64
     private let testingEnvironment: Bool
     private let baseDirectory: URL
+    private let mediaSourceHandoff: LocalArchiveMediaSourceHandoff
     private let queue = Queue(name: "LocalArchive.handoff", qos: .utility)
     private let storageFactory: LocalArchiveStorageFactory
     private let subscriptions = DisposableSet()
@@ -221,6 +230,8 @@ public final class LocalArchiveCoordinator {
         self.accountId = accountId
         self.testingEnvironment = testingEnvironment
         self.baseDirectory = baseDirectory
+        self.mediaSourceHandoff = LocalArchiveMediaSourceHandoff(mediaBox: postbox.mediaBox, accountPeerId: accountPeerId,
+                                                              accountId: accountId, testingEnvironment: testingEnvironment)
         self.storageFactory = storageFactory ?? { directory, id, retention, createIfMissing, callbackQueue, completion in
             ArchiveStore.open(baseDirectory: directory, accountId: id, keyProvider: KeychainArchiveKeyStore(), createIfMissing: createIfMissing,
                               retention: retention, callbackQueue: callbackQueue) { result in
@@ -231,6 +242,7 @@ public final class LocalArchiveCoordinator {
         self.subscriptions.add(self.transactionDisposable)
         self.subscriptions.add((protectedData ?? localArchiveProtectedDataSignal()).start(next: { [weak self] available in
             guard let self else { return }
+            self.mediaSourceHandoff.setProtectedDataAvailable(available)
             self.queue.justDispatch { [weak self] in
                 guard let self, !self.stopped else { return }
                 self.mayAccessProtectedData = available
@@ -243,6 +255,9 @@ public final class LocalArchiveCoordinator {
             }
         }))
         self.subscriptions.add(self.settings.start(next: { [weak self] settings in
+            // Revoke promptly on the preference publisher's queue. The pool
+            // only flips cancellation flags here; descriptor closes are async.
+            self?.mediaSourceHandoff.applySettings(settings)
             self?.queue.justDispatch { [weak self] in
                 guard let self else { return }
                 // A privacy, retention or purge change cancels an uncommitted
@@ -260,12 +275,14 @@ public final class LocalArchiveCoordinator {
     }
 
     deinit {
+        self.mediaSourceHandoff.dispose()
         self.activeTransfer?.cancel()
         self.subscriptions.dispose()
         self.storage?.close(completion: {})
     }
 
     public func dispose() {
+        self.mediaSourceHandoff.dispose()
         self.subscriptions.dispose()
         self.queue.justDispatch { [weak self] in
             guard let self else { return }
@@ -757,6 +774,7 @@ public final class LocalArchiveCoordinator {
     }
 
     private func invalidateWork() {
+        self.mediaSourceHandoff.invalidate()
         self.cancelPendingTransfer()
         self.activeTransfer?.cancel()
         self.activeTransfer = nil
@@ -981,8 +999,12 @@ public final class LocalArchiveCoordinator {
                                     setLocalArchiveSettings(transaction: transaction, settings: current)
                                 }
                             }
-                        } |> deliverOn(self.queue)).start(next: { [weak self] _ in
+                            return acknowledged
+                        } |> deliverOn(self.queue)).start(next: { [weak self] acknowledged in
                             guard let self, self.isCurrent(epoch) else { return }
+                            if acknowledged {
+                                self.mediaSourceHandoff.acknowledged(eventKey: operation.eventKey, generation: operation.generation)
+                            }
                             self.needsDrain = true
                             self.finished(epoch: epoch)
                         }))
@@ -1025,12 +1047,52 @@ public final class LocalArchiveCoordinator {
             self.copyCachedMedia(storage: storage, operation: operation, slot: slot + 1, epoch: epoch, missing: true, completion: completion)
             return
         }
-        let path = self.postbox.mediaBox.storePathsForId(MediaResourceId(keys[candidate])).complete
-        // ArchiveStore opens and streams the completed file on its own worker. Never
-        // materialize a video or document as a full Data buffer on this account queue.
+        let lease: LocalArchiveMediaSourceLease
+        let secretDeletion = operation.messageId.peerId.namespace == Namespaces.Peer.SecretChat
+            && operation.kindRawValue == ArchiveEventKind.deleted.rawValue
+        if secretDeletion {
+            switch self.mediaSourceHandoff.source(eventKey: operation.eventKey, generation: operation.generation,
+                                                  slot: slot, resourceKey: keys[candidate]) {
+            case let .source(source):
+                lease = source
+            case .revoked:
+                // A revoked pre-unlink source must never reopen a subsequently
+                // replaced URL. Preserve the metadata with an honest media gap.
+                self.copyCachedMedia(storage: storage, operation: operation, slot: slot + 1, epoch: epoch, missing: true, completion: completion)
+                return
+            case .absent:
+                // Canonical cleanup may still be queued. A pin refusal cannot
+                // bypass its quota/cancellation by opening that surviving URL.
+                self.copyMediaFile(storage: storage, operation: operation, item: item, slot: slot, epoch: epoch,
+                                   missing: missing, candidate: candidate + 1, completion: completion)
+                return
+            }
+        } else {
+            // Acquire on this utility queue, before the Store worker is queued.
+            // Every newly admitted source uses the same account/global budget.
+            switch self.mediaSourceHandoff.acquire(operation: operation, slot: slot, resourceKey: keys[candidate], expectedSize: item.byteSize) {
+            case let .source(source):
+                lease = source
+            case .missing:
+                self.copyMediaFile(storage: storage, operation: operation, item: item, slot: slot, epoch: epoch,
+                                   missing: missing, candidate: candidate + 1, completion: completion)
+                return
+            case .revoked:
+                // Expiry/cancellation is permanent for this event in this pool.
+                // Do not retry its tombstone forever or reopen a replacement.
+                self.copyCachedMedia(storage: storage, operation: operation, slot: slot + 1, epoch: epoch, missing: true, completion: completion)
+                return
+            case .retry:
+                // Permission/I/O/transient-capacity failure is not absence. Keep
+                // the outbox and retry without invalidating other source leases.
+                self.failed(.unavailable, epoch: epoch)
+                return
+            }
+        }
         storage.recordMediaFile(eventKey: operation.eventKey, slot: slot, kind: item.kind.rawValue,
-                                mimeType: item.mimeType ?? "application/octet-stream", source: URL(fileURLWithPath: path),
-                                expectedSize: item.byteSize, generation: operation.generation) { [weak self] result in
+                                mimeType: item.mimeType ?? "application/octet-stream", source: lease.source,
+                                expectedSize: item.byteSize, generation: operation.generation) { [weak self, lease] result in
+            withExtendedLifetime(lease) {}
             self?.queue.justDispatch { [weak self] in
                 guard let self, self.isCurrent(epoch) else { return }
                 guard case let .success(retained) = result else { self.failed(.unavailable, epoch: epoch); return }

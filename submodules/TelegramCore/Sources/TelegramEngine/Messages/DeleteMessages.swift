@@ -43,7 +43,9 @@ func _internal_deleteEphemeralReplacements(transaction: Transaction, anchorIds: 
 }
 
 public func _internal_deleteMessages(transaction: Transaction, mediaBox: MediaBox, ids: [MessageId], deleteMedia: Bool = true, manualAddMessageThreadStatsDifference: ((MessageThreadKey, Int, Int) -> Void)? = nil) {
-    let deferredArchiveResources = captureExtendedLocalArchiveBeforeRemoval(transaction: transaction, ids: ids)
+    // An outbox record owns metadata, not the cached media bytes. Preserve the
+    // canonical secret-media cleanup even if archive storage is disabled or fails.
+    let capturedArchiveResources = captureExtendedLocalArchiveBeforeRemoval(transaction: transaction, ids: ids)
     var resourceIds: [MediaResourceId] = []
     if deleteMedia {
         for id in ids {
@@ -54,8 +56,9 @@ public func _internal_deleteMessages(transaction: Transaction, mediaBox: MediaBo
             }
         }
     }
-    resourceIds.removeAll(where: { deferredArchiveResources.contains($0) })
     if !resourceIds.isEmpty {
+        localArchivePinMediaBeforeRemoval(transaction: transaction, mediaBox: mediaBox,
+            resourceIds: resourceIds, capturedResources: capturedArchiveResources)
         let _ = mediaBox.removeCachedResources(Array(Set(resourceIds)), force: true).start()
     }
     for id in ids {
@@ -97,7 +100,12 @@ func _internal_deleteAllMessagesWithAuthor(transaction: Transaction, mediaBox: M
         addMessageMediaResourceIdsToRemove(media: media, resourceIds: &resourceIds)
     })
     let deferredArchiveResources = archiveCapture?.finish() ?? []
-    resourceIds.removeAll(where: { deferredArchiveResources.contains($0) })
+    if peerId.namespace != Namespaces.Peer.SecretChat {
+        resourceIds.removeAll(where: { deferredArchiveResources.contains($0) })
+    } else {
+        localArchivePinMediaBeforeRemoval(transaction: transaction, mediaBox: mediaBox,
+            resourceIds: resourceIds, capturedResources: deferredArchiveResources)
+    }
     if !resourceIds.isEmpty {
         let _ = mediaBox.removeCachedResources(Array(Set(resourceIds))).start()
     }
@@ -113,7 +121,12 @@ func _internal_deleteAllMessagesWithForwardAuthor(transaction: Transaction, medi
         addMessageMediaResourceIdsToRemove(media: media, resourceIds: &resourceIds)
     })
     let deferredArchiveResources = archiveCapture?.finish() ?? []
-    resourceIds.removeAll(where: { deferredArchiveResources.contains($0) })
+    if peerId.namespace != Namespaces.Peer.SecretChat {
+        resourceIds.removeAll(where: { deferredArchiveResources.contains($0) })
+    } else {
+        localArchivePinMediaBeforeRemoval(transaction: transaction, mediaBox: mediaBox,
+            resourceIds: resourceIds, capturedResources: deferredArchiveResources)
+    }
     if !resourceIds.isEmpty {
         let _ = mediaBox.removeCachedResources(Array(Set(resourceIds)), force: true).start()
     }
@@ -330,9 +343,10 @@ func _internal_clearHistory(transaction: Transaction, mediaBox: MediaBox, peerId
     }
     transaction.clearHistory(peerId, threadId: threadId, minTimestamp: nil, maxTimestamp: nil, namespaces: namespaces, beforeRemoving: beforeRemoving, forEachMedia: { _ in
     })
-    let deferredArchiveResources = archiveCapture?.finish() ?? []
-    resourceIds.removeAll(where: { deferredArchiveResources.contains($0) })
+    let capturedArchiveResources = archiveCapture?.finish() ?? []
     if !resourceIds.isEmpty {
+        localArchivePinMediaBeforeRemoval(transaction: transaction, mediaBox: mediaBox,
+            resourceIds: resourceIds, capturedResources: capturedArchiveResources)
         let _ = mediaBox.removeCachedResources(Array(Set(resourceIds)), force: true).start()
     }
 }
@@ -353,9 +367,10 @@ func _internal_clearHistoryInRange(transaction: Transaction, mediaBox: MediaBox,
     }
     transaction.clearHistory(peerId, threadId: threadId, minTimestamp: minTimestamp, maxTimestamp: maxTimestamp, namespaces: namespaces, beforeRemoving: beforeRemoving, forEachMedia: { _ in
     })
-    let deferredArchiveResources = archiveCapture?.finish() ?? []
-    resourceIds.removeAll(where: { deferredArchiveResources.contains($0) })
+    let capturedArchiveResources = archiveCapture?.finish() ?? []
     if !resourceIds.isEmpty {
+        localArchivePinMediaBeforeRemoval(transaction: transaction, mediaBox: mediaBox,
+            resourceIds: resourceIds, capturedResources: capturedArchiveResources)
         let _ = mediaBox.removeCachedResources(Array(Set(resourceIds)), force: true).start()
     }
 }

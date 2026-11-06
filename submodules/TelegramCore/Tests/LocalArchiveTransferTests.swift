@@ -73,6 +73,9 @@ final class LocalArchiveTransferTests: XCTestCase {
         func recordMediaFile(eventKey: String, slot: Int, kind: String, mimeType: String, source: URL, expectedSize: Int64?, generation: Int64, completion: @escaping (Result<Bool, ArchiveError>) -> Void) {
             self.store.recordMediaFile(eventKey: eventKey, slot: slot, kind: kind, mimeType: mimeType, source: source, expectedSize: expectedSize, generation: generation, completion: completion)
         }
+        func recordMediaFile(eventKey: String, slot: Int, kind: String, mimeType: String, source: ArchiveMediaFileSource, expectedSize: Int64?, generation: Int64, completion: @escaping (Result<Bool, ArchiveError>) -> Void) {
+            self.store.recordMediaFile(eventKey: eventKey, slot: slot, kind: kind, mimeType: mimeType, source: source, expectedSize: expectedSize, generation: generation, completion: completion)
+        }
         func mediaInfo(eventKey: String, slot: Int, completion: @escaping (Result<ArchivedMediaInfo?, ArchiveError>) -> Void) {
             self.store.mediaInfo(eventKey: eventKey, slot: slot, completion: completion)
         }

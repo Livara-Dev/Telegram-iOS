@@ -268,6 +268,17 @@ final class LocalArchiveTimedMediaExclusionTests: XCTestCase {
         return (photo, resource, bytes)
     }
 
+    private func assertSecretCacheRemoved(_ mediaBox: MediaBox, resourceId: MediaResourceId,
+                                          file: StaticString = #filePath, line: UInt = #line) {
+        // The production removal is queued before the deletion transaction returns.
+        // Fence that queue; never make these assertions pass by clearing it ourselves.
+        mediaBox.dataQueue.sync {}
+        let paths = mediaBox.storePathsForId(resourceId)
+        for path in [paths.complete, paths.partial, paths.partial + ".meta"] {
+            XCTAssertFalse(FileManager.default.fileExists(atPath: path), "Canonical secret cache cleanup must finish independently of the archive", file: file, line: line)
+        }
+    }
+
     private func assertOptedTimedCapture(_ media: (Media, MediaResource, Data), timeout: Int32,
                                         expectedExpired: TelegramMediaExpiredContentData,
                                         file: StaticString = #filePath, line: UInt = #line) throws {
@@ -401,7 +412,7 @@ final class LocalArchiveTimedMediaExclusionTests: XCTestCase {
         for forbidden in ["123456789", "aesKey", "aesIv", "accessHash", Data(repeating: 0x62, count: 32).base64EncodedString(), Data(repeating: 0x63, count: 32).base64EncodedString()] {
             XCTAssertFalse(json.contains(forbidden))
         }
-        XCTAssertEqual(try localArchiveReadCompletedMedia(postbox.mediaBox.storePathsForId(photo.1.id).complete), photo.2)
+        self.assertSecretCacheRemoved(postbox.mediaBox, resourceId: photo.1.id)
     }
 
     func testOptedSecretClearHistoryCapturesBeforeForcedCacheRemoval() throws {
@@ -416,17 +427,24 @@ final class LocalArchiveTimedMediaExclusionTests: XCTestCase {
         postbox.mediaBox.dataQueue.sync {}
         XCTAssertNil(try self.message(id))
         XCTAssertEqual(try self.captures().map(\.messageId), [id])
-        XCTAssertEqual(try localArchiveReadCompletedMedia(postbox.mediaBox.storePathsForId(photo.1.id).complete), photo.2)
+        self.assertSecretCacheRemoved(postbox.mediaBox, resourceId: photo.1.id)
     }
 
     func testOptedSecretClearHistoryRangeRetainsOnlySelectedRows() throws {
         try self.configureExtended(secret: true, timed: false)
         let peer = try self.secretPeer(), postbox = self.fixture.postbox!
+        let media = self.completedSecretPhoto(), outsideMedia = self.completedPhoto()
         let id = MessageId(peerId: peer, namespace: Namespaces.Message.SecretIncoming, id: 12)
+        let outside = MessageId(peerId: peer, namespace: Namespaces.Message.SecretIncoming, id: 13)
+        postbox.mediaBox.storeResourceData(media.1.id, data: media.2, synchronous: true)
+        postbox.mediaBox.storeResourceData(outsideMedia.1.id, data: outsideMedia.2, synchronous: true)
         let _ = try self.localArchiveValue(postbox.transaction { transaction in
-            _ = transaction.addMessages([localArchiveTestMessage(id, authorId: self.chatPeerId)], location: .Random)
+            _ = transaction.addMessages([localArchiveTestMessage(id, authorId: self.chatPeerId, media: [media.0]),
+                StoreMessage(id: outside, customStableId: nil, globallyUniqueId: nil, groupingKey: nil, threadId: nil,
+                    timestamp: 110, flags: [.Incoming], tags: [], globalTags: [], localTags: [], forwardInfo: nil,
+                    authorId: self.chatPeerId, text: "outside removal range", attributes: [], media: [outsideMedia.0])], location: .Random)
             _internal_clearHistoryInRange(transaction: transaction, mediaBox: postbox.mediaBox, peerId: peer, threadId: nil,
-                minTimestamp: 101, maxTimestamp: 200, namespaces: .all)
+                minTimestamp: 101, maxTimestamp: 109, namespaces: .all)
         })
         XCTAssertNotNil(try self.message(id)); XCTAssertTrue(try self.captures().isEmpty)
         let _ = try self.localArchiveValue(postbox.transaction { transaction in
@@ -434,6 +452,37 @@ final class LocalArchiveTimedMediaExclusionTests: XCTestCase {
                 minTimestamp: 100, maxTimestamp: 100, namespaces: .all)
         })
         XCTAssertNil(try self.message(id)); XCTAssertEqual(try self.captures().map(\.messageId), [id])
+        self.assertSecretCacheRemoved(postbox.mediaBox, resourceId: media.1.id)
+        XCTAssertNotNil(try self.message(outside))
+        XCTAssertEqual(try localArchiveReadCompletedMedia(postbox.mediaBox.storePathsForId(outsideMedia.1.id).complete), outsideMedia.2)
+    }
+
+    func testSecretCleanupRemainsActiveWhenExtendedRetentionIsOff() throws {
+        let peer = try self.secretPeer(), media = self.completedSecretPhoto(), postbox = self.fixture.postbox!
+        let id = MessageId(peerId: peer, namespace: Namespaces.Message.SecretIncoming, id: 14)
+        postbox.mediaBox.storeResourceData(media.1.id, data: media.2, synchronous: true)
+        let _ = try self.localArchiveValue(postbox.transaction { transaction in
+            _ = transaction.addMessages([localArchiveTestMessage(id, authorId: self.chatPeerId, media: [media.0])], location: .Random)
+            _internal_deleteMessages(transaction: transaction, mediaBox: postbox.mediaBox, ids: [id])
+        })
+        XCTAssertNil(try self.message(id))
+        XCTAssertTrue(try self.captures().isEmpty)
+        self.assertSecretCacheRemoved(postbox.mediaBox, resourceId: media.1.id)
+    }
+
+    func testExplicitDeleteMediaFalseKeepsItsExistingCacheSemantics() throws {
+        try self.configureExtended(secret: true, timed: false)
+        let peer = try self.secretPeer(), media = self.completedSecretPhoto(), postbox = self.fixture.postbox!
+        let id = MessageId(peerId: peer, namespace: Namespaces.Message.SecretIncoming, id: 15)
+        postbox.mediaBox.storeResourceData(media.1.id, data: media.2, synchronous: true)
+        let _ = try self.localArchiveValue(postbox.transaction { transaction in
+            _ = transaction.addMessages([localArchiveTestMessage(id, authorId: self.chatPeerId, media: [media.0])], location: .Random)
+            _internal_deleteMessages(transaction: transaction, mediaBox: postbox.mediaBox, ids: [id], deleteMedia: false)
+        })
+        postbox.mediaBox.dataQueue.sync {}
+        XCTAssertNil(try self.message(id))
+        XCTAssertEqual(try self.captures().map(\.messageId), [id])
+        XCTAssertEqual(try localArchiveReadCompletedMedia(postbox.mediaBox.storePathsForId(media.1.id).complete), media.2)
     }
 
     func testExtendedDeletionObserversDeduplicateTheSamePendingSnapshot() throws {
@@ -491,32 +540,216 @@ final class LocalArchiveTimedMediaExclusionTests: XCTestCase {
         func key(accountId: Int64, createIfMissing: Bool) throws -> Data { Data(repeating: 0x58, count: 32) }
     }
 
-    private func assertEncryptedExtendedMediaAfterCacheCleanup(secret: Bool) throws {
+    private enum SecretDrainOutcome {
+        case committed, quotaRejected, excluded, disabled, purged, storageUnavailable
+    }
+
+    /// Start draining only after canonical cache removal. These cases prove that
+    /// cleanup has no dependency on archive success or an in-memory source owner.
+    private func assertSecretCleanupIndependentOfArchive(_ outcome: SecretDrainOutcome) throws {
+        try self.configureExtended(secret: true, timed: true)
+        let peer = try self.secretPeer(), media = self.completedSecretPhoto()
+        let id = MessageId(peerId: peer, namespace: Namespaces.Message.SecretIncoming, id: 96)
+        var postbox: Postbox? = self.fixture.postbox
+        postbox!.mediaBox.storeResourceData(media.1.id, data: media.2, synchronous: true)
+        let paths = postbox!.mediaBox.storePathsForId(media.1.id)
+        // Include real owned partial/meta paths in the production removal scope.
+        try Data([0x31]).write(to: URL(fileURLWithPath: paths.partial))
+        try Data([0x32]).write(to: URL(fileURLWithPath: paths.partial + ".meta"))
+        let _ = try self.localArchiveValue(postbox!.transaction { transaction in
+            _ = transaction.addMessages([localArchiveTestMessage(id, authorId: self.chatPeerId,
+                attributes: [AutoremoveTimeoutMessageAttribute(timeout: 30, countdownBeginTime: 1)],
+                media: [media.0])], location: .Random)
+            _internal_deleteMessages(transaction: transaction, mediaBox: postbox!.mediaBox, ids: [id])
+        })
+        self.assertSecretCacheRemoved(postbox!.mediaBox, resourceId: media.1.id)
+        XCTAssertNil(try self.message(id))
+        XCTAssertEqual(try self.captures().count, 1)
+
+        let _ = try self.localArchiveValue(postbox!.transaction { transaction in
+            var settings = localArchiveSettings(transaction: transaction)
+            switch outcome {
+            case .quotaRejected: settings.maxPayloadBytes = 1
+            case .excluded: settings.excludedPeerIds.insert(peer.toInt64())
+            case .disabled: settings.enabled = false
+            case .purged:
+                // The persisted request produced by requestPurge, before a sink opens.
+                settings.generation += 1
+                settings.pendingPurge = true
+            case .committed, .storageUnavailable: break
+            }
+            setLocalArchiveSettings(transaction: transaction, settings: settings)
+        })
+        // Reopening establishes that cleanup does not depend on a live capture
+        // callback. It is not an actual OS-kill or physical-device test.
+        postbox = nil
+        try self.fixture.reopen()
+        postbox = self.fixture.postbox
+        self.assertSecretCacheRemoved(postbox!.mediaBox, resourceId: media.1.id)
+
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent("secret-cleanup-" + UUID().uuidString)
+        let opened = Atomic<ArchiveStore?>(value: nil)
+        let attempted = ValuePromise<Bool>(false, ignoreRepeated: true)
+        var archive: LocalArchiveCoordinator? = LocalArchiveCoordinator(postbox: postbox!, accountPeerId: self.accountPeerId,
+            accountId: 9461, testingEnvironment: true, baseDirectory: directory,
+            storageFactory: { directory, accountId, retention, createIfMissing, queue, completion in
+                attempted.set(true)
+                if case .storageUnavailable = outcome {
+                    completion(.failure(.protectionUnavailable))
+                    return
+                }
+                ArchiveStore.open(baseDirectory: directory, accountId: accountId, keyProvider: ExtendedFixtureKey(),
+                    createIfMissing: createIfMissing, retention: retention, callbackQueue: queue) { result in
+                    switch result {
+                    case let .success(store): _ = opened.swap(store); completion(.success(store))
+                    case let .failure(error): completion(.failure(error))
+                    }
+                }
+            }, protectedData: .single(true))
+        defer {
+            archive?.dispose()
+            if let store = opened.swap(nil) {
+                let closed = self.expectation(description: "close secret cleanup archive")
+                store.close { closed.fulfill() }
+                self.wait(for: [closed], timeout: 15)
+            }
+            if FileManager.default.fileExists(atPath: directory.path) { try? FileManager.default.removeItem(at: directory) }
+        }
+        switch outcome {
+        case .disabled:
+            _ = try self.localArchiveValue(archive!.status |> filter { $0 == .disabled })
+            XCTAssertNil(opened.with { $0 })
+            XCTAssertEqual(try self.captures().count, 1)
+        case .storageUnavailable:
+            _ = try self.localArchiveValue(attempted.get() |> filter { $0 })
+            _ = try self.localArchiveValue(archive!.status |> filter { $0 == .unavailable })
+            XCTAssertEqual(try self.captures().count, 1)
+        case .committed, .quotaRejected, .excluded, .purged:
+            _ = try self.localArchiveValue(archive!.status |> filter { $0 == .ready })
+            XCTAssertTrue(try self.captures().isEmpty)
+            let page = try self.localArchiveValue(archive!.deletedMessages())
+            XCTAssertFalse(page.unavailable)
+            let records = page.records
+            if case .committed = outcome {
+                let record = try XCTUnwrap(records.first)
+                XCTAssertEqual(records.count, 1)
+                XCTAssertEqual(record.text, "original text")
+                XCTAssertEqual(record.storedMediaCount, 0)
+                XCTAssertEqual(record.unavailableMediaCount, 1)
+                XCTAssertNil(try self.localArchiveValue(archive!.mediaData(eventKey: record.eventKey, slot: 0)))
+            } else {
+                XCTAssertTrue(records.isEmpty)
+            }
+            if case .purged = outcome {
+                let settings = try self.localArchiveValue(archive!.settings)
+                XCTAssertFalse(settings.pendingPurge)
+                XCTAssertEqual(settings.generation, 1)
+            }
+        }
+        self.assertSecretCacheRemoved(postbox!.mediaBox, resourceId: media.1.id)
+        archive?.dispose()
+        _ = try self.localArchiveValue(archive!.status |> filter { $0 == .unavailable })
+        archive = nil
+    }
+
+    func testSecretCacheCleanupDoesNotWaitForSuccessfulMetadataArchive() throws {
+        try self.assertSecretCleanupIndependentOfArchive(.committed)
+    }
+
+    func testSecretCacheCleanupSurvivesArchiveQuotaRejection() throws {
+        try self.assertSecretCleanupIndependentOfArchive(.quotaRejected)
+    }
+
+    func testSecretCacheCleanupSurvivesExclusionBeforeArchiveDrain() throws {
+        try self.assertSecretCleanupIndependentOfArchive(.excluded)
+    }
+
+    func testSecretCacheCleanupSurvivesDisabledArchiveBeforeDrain() throws {
+        try self.assertSecretCleanupIndependentOfArchive(.disabled)
+    }
+
+    func testSecretCacheCleanupSurvivesPendingArchivePurge() throws {
+        try self.assertSecretCleanupIndependentOfArchive(.purged)
+    }
+
+    func testSecretCacheCleanupDoesNotWaitForAvailableArchiveStorage() throws {
+        try self.assertSecretCleanupIndependentOfArchive(.storageUnavailable)
+    }
+
+    func testSecretCleanupDoesNotTouchSameResourceInAnotherAccountOrUnrelatedLiveMedia() throws {
+        try self.configureExtended(secret: true, timed: false)
+        let other = try LocalArchivePostboxFixture(test: self, name: "secret-cleanup-other-account")
+        defer { try? other.destroy() }
+        let peer = try self.secretPeer(), secretMedia = self.completedSecretPhoto(), liveMedia = self.completedPhoto()
+        let deleted = MessageId(peerId: peer, namespace: Namespaces.Message.SecretIncoming, id: 97)
+        let live = self.id(98), foreign = self.id(99)
+        let foreignOwner = PeerId(namespace: Namespaces.Peer.CloudUser, id: ._internalFromInt64Value(2))
+        let postbox = self.fixture.postbox!
+        postbox.mediaBox.storeResourceData(secretMedia.1.id, data: secretMedia.2, synchronous: true)
+        postbox.mediaBox.storeResourceData(liveMedia.1.id, data: liveMedia.2, synchronous: true)
+        other.postbox.mediaBox.storeResourceData(secretMedia.1.id, data: secretMedia.2, synchronous: true)
+        let _ = try self.localArchiveValue(other.postbox.transaction { transaction in
+            transaction.updatePeersInternal([localArchiveTestUser(foreignOwner), localArchiveTestUser(self.chatPeerId)], update: { _, updated in updated })
+            transaction.setState(AuthorizedAccountState(isTestingEnvironment: true, masterDatacenterId: 1,
+                peerId: foreignOwner, state: AuthorizedAccountState.State(pts: 10, qts: 2, date: 100, seq: 3), invalidatedChannels: []))
+            _ = transaction.addMessages([localArchiveTestMessage(foreign, media: [secretMedia.0])], location: .Random)
+        })
+        let _ = try self.localArchiveValue(postbox.transaction { transaction in
+            _ = transaction.addMessages([localArchiveTestMessage(deleted, authorId: self.chatPeerId, media: [secretMedia.0]),
+                localArchiveTestMessage(live, media: [liveMedia.0])], location: .Random)
+            _internal_deleteMessages(transaction: transaction, mediaBox: postbox.mediaBox, ids: [deleted])
+        })
+        self.assertSecretCacheRemoved(postbox.mediaBox, resourceId: secretMedia.1.id)
+        other.postbox.mediaBox.dataQueue.sync {}
+        XCTAssertNotNil(try self.message(live))
+        XCTAssertNotNil(try self.localArchiveValue(other.postbox.transaction { $0.getMessage(foreign) }))
+        XCTAssertEqual(try localArchiveReadCompletedMedia(postbox.mediaBox.storePathsForId(liveMedia.1.id).complete), liveMedia.2)
+        XCTAssertEqual(try localArchiveReadCompletedMedia(other.postbox.mediaBox.storePathsForId(secretMedia.1.id).complete), secretMedia.2)
+    }
+
+    private func assertEncryptedExtendedMediaAfterCacheCleanup(secret: Bool, liveOwner: Bool = false) throws {
         try self.configureExtended(secret: secret, timed: true)
         let peer = secret ? try self.secretPeer() : self.chatPeerId
         let id = MessageId(peerId: peer, namespace: secret ? Namespaces.Message.SecretIncoming : Namespaces.Message.Cloud, id: secret ? 0 : 80)
         let media = secret ? self.completedSecretPhoto() : self.completedPhoto()
         var postbox: Postbox? = self.fixture.postbox
         postbox!.mediaBox.storeResourceData(media.1.id, data: media.2, synchronous: true)
-        let _ = try self.localArchiveValue(postbox!.transaction { transaction in
-            _ = transaction.addMessages([localArchiveTestMessage(id, authorId: self.chatPeerId,
-                attributes: [AutoclearTimeoutMessageAttribute(timeout: viewOnceTimeout, countdownBeginTime: nil),
-                    ConsumableContentMessageAttribute(consumed: false)], media: [media.0])], location: .Random)
-            if secret {
-                _internal_deleteMessages(transaction: transaction, mediaBox: postbox!.mediaBox, ids: [id])
-            } else {
-                markMessageContentAsConsumedRemotely(transaction: transaction, messageId: id, consumeDate: 1)
-            }
-        })
+        func deleteMessage() throws {
+            let _ = try self.localArchiveValue(postbox!.transaction { transaction in
+                _ = transaction.addMessages([localArchiveTestMessage(id, authorId: self.chatPeerId,
+                    attributes: [AutoclearTimeoutMessageAttribute(timeout: viewOnceTimeout, countdownBeginTime: nil),
+                        ConsumableContentMessageAttribute(consumed: false)], media: [media.0])], location: .Random)
+                if secret {
+                    _internal_deleteMessages(transaction: transaction, mediaBox: postbox!.mediaBox, ids: [id])
+                } else {
+                    markMessageContentAsConsumedRemotely(transaction: transaction, messageId: id, consumeDate: 1)
+                }
+            })
+            if secret { self.assertSecretCacheRemoved(postbox!.mediaBox, resourceId: media.1.id) }
+        }
+        // Without an active owner, metadata is captured but normally erased secret
+        // bytes cannot be recovered later. The live-owner case pins before unlink.
+        if !liveOwner { try deleteMessage() }
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent("extended-archive-" + UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: directory) }
         let opened = Atomic<ArchiveStore?>(value: nil)
+        let holdNextClock = Atomic<Bool>(value: false)
+        let clockTimedOut = Atomic<Bool>(value: false)
+        let writerBlocked = liveOwner ? self.expectation(description: "archive worker blocked before deleted media import") : nil
+        let releaseWriter = DispatchSemaphore(value: 0)
+        defer { releaseWriter.signal() }
         let owner = self.accountPeerId
         func start(_ postbox: Postbox) -> LocalArchiveCoordinator {
-            LocalArchiveCoordinator(postbox: postbox, accountPeerId: owner, accountId: 9461, baseDirectory: directory,
+            LocalArchiveCoordinator(postbox: postbox, accountPeerId: owner, accountId: 9461, testingEnvironment: true, baseDirectory: directory,
                 storageFactory: { directory, accountId, retention, createIfMissing, queue, completion in
                     ArchiveStore.open(baseDirectory: directory, accountId: accountId, keyProvider: ExtendedFixtureKey(),
-                        createIfMissing: createIfMissing, retention: retention, callbackQueue: queue) { result in
+                        createIfMissing: createIfMissing, retention: retention, callbackQueue: queue, clock: {
+                            if holdNextClock.swap(false) {
+                                writerBlocked?.fulfill()
+                                if releaseWriter.wait(timeout: .now() + 8) == .timedOut { _ = clockTimedOut.swap(true) }
+                            }
+                            return Int64(Date().timeIntervalSince1970)
+                        }) { result in
                         switch result {
                         case let .success(store): _ = opened.swap(store); completion(.success(store))
                         case let .failure(error): completion(.failure(error))
@@ -535,19 +768,50 @@ final class LocalArchiveTimedMediaExclusionTests: XCTestCase {
         var archive: LocalArchiveCoordinator? = start(postbox!)
         defer { if let archive { try? stop(archive) } }
         _ = try self.localArchiveValue(archive!.status |> filter { $0 == .ready })
+        if liveOwner {
+            let revision = try self.localArchiveValue(archive!.historyRevision)
+            let settings = try self.localArchiveValue(archive!.settings)
+            let store = try XCTUnwrap(opened.with { $0 })
+            let priorOperationDone = self.expectation(description: "prior retention operation released")
+            _ = holdNextClock.swap(true)
+            defer { releaseWriter.signal() }
+            // Block an independent earlier worker operation before deletion starts.
+            // This cannot pass merely because a media API opened the URL before
+            // its own clock callback: no media operation can reach the worker yet.
+            store.setRetention(ArchiveRetentionPolicy(maxAgeSeconds: settings.maxAgeSeconds,
+                maxPayloadBytes: settings.maxPayloadBytes)) { result in
+                if case .failure = result { XCTFail("Prior real archive operation failed") }
+                priorOperationDone.fulfill()
+            }
+            self.wait(for: [try XCTUnwrap(writerBlocked)], timeout: 15)
+            try deleteMessage()
+            // The real MediaBox paths are gone while SQLite cannot copy anything.
+            // A URL-only handoff cannot satisfy the subsequent byte assertions.
+            self.assertSecretCacheRemoved(postbox!.mediaBox, resourceId: media.1.id)
+            releaseWriter.signal()
+            self.wait(for: [priorOperationDone], timeout: 15)
+            _ = try self.localArchiveValue(archive!.historyRevision |> filter { $0 > revision })
+            _ = try self.localArchiveValue(archive!.status |> filter { $0 == .ready })
+            XCTAssertFalse(clockTimedOut.with { $0 })
+        }
         let rows = try self.localArchiveValue(archive!.deletedMessages())
+        XCTAssertFalse(rows.unavailable)
         let row = try XCTUnwrap(rows.records.first)
         XCTAssertEqual(rows.records.count, 1)
         XCTAssertEqual(row.messageId, id.id)
         XCTAssertEqual(row.namespace, id.namespace)
-        XCTAssertEqual(row.storedMediaCount, 1)
-        XCTAssertEqual(row.unavailableMediaCount, 0)
+        let mediaExpected = !secret || liveOwner
+        XCTAssertEqual(row.storedMediaCount, mediaExpected ? 1 : 0)
+        XCTAssertEqual(row.unavailableMediaCount, mediaExpected ? 0 : 1)
         XCTAssertTrue(try self.captures().isEmpty, "durable commit precedes acknowledgement")
-        let removalDone = self.expectation(description: "clear actual MediaBox cache")
-        let removal = postbox!.mediaBox.removeCachedResources([media.1.id], force: true).start(completed: { removalDone.fulfill() })
-        self.wait(for: [removalDone], timeout: 15); removal.dispose()
+        if !secret {
+            let removalDone = self.expectation(description: "clear actual MediaBox cache")
+            let removal = postbox!.mediaBox.removeCachedResources([media.1.id], force: true).start(completed: { removalDone.fulfill() })
+            self.wait(for: [removalDone], timeout: 15); removal.dispose()
+        }
         XCTAssertNil(try localArchiveReadCompletedMedia(postbox!.mediaBox.storePathsForId(media.1.id).complete))
-        XCTAssertEqual(try self.localArchiveValue(archive!.mediaData(eventKey: row.eventKey, slot: 0)), media.2)
+        let expectedMedia: Data? = mediaExpected ? media.2 : nil
+        XCTAssertEqual(try self.localArchiveValue(archive!.mediaData(eventKey: row.eventKey, slot: 0)), expectedMedia)
         XCTAssertTrue(try self.localArchiveValue(archive!.setEnabled(false)))
         try stop(archive!); archive = nil; postbox = nil
         try self.fixture.reopen()
@@ -555,7 +819,7 @@ final class LocalArchiveTimedMediaExclusionTests: XCTestCase {
         let lease = archive!.acquireReadAccess()
         defer { lease.dispose() }
         _ = try self.localArchiveValue(archive!.status |> filter { $0 == .browsing })
-        XCTAssertEqual(try self.localArchiveValue(archive!.mediaData(eventKey: row.eventKey, slot: 0)), media.2)
+        XCTAssertEqual(try self.localArchiveValue(archive!.mediaData(eventKey: row.eventKey, slot: 0)), expectedMedia)
         XCTAssertEqual(try self.localArchiveValue(archive!.timeline(peerId: peer.toInt64(), namespace: id.namespace, messageId: id.id)).records.count, 1)
         XCTAssertFalse(try self.localArchiveValue(archive!.settings).enabled)
     }
@@ -563,8 +827,204 @@ final class LocalArchiveTimedMediaExclusionTests: XCTestCase {
     func testActualEncryptedViewOnceArchiveSurvivesCacheCleanupAndReopen() throws {
         try self.assertEncryptedExtendedMediaAfterCacheCleanup(secret: false)
     }
-    func testActualEncryptedSecretArchiveSurvivesCacheCleanupAndReopen() throws {
+    func testSecretMetadataArchiveSurvivesCleanupAndReopenWithoutClaimingMissingMedia() throws {
         try self.assertEncryptedExtendedMediaAfterCacheCleanup(secret: true)
+    }
+
+    func testLiveSecretMediaOwnerPreservesBytesWhileCanonicalCleanupPrecedesArchiveWrite() throws {
+        try self.assertEncryptedExtendedMediaAfterCacheCleanup(secret: true, liveOwner: true)
+    }
+
+    func testSecretDeletionWithoutPinnedOwnerDoesNotReopenURLWhileCleanupIsQueued() throws {
+        try self.configureExtended(secret: true, timed: false)
+        let peer = try self.secretPeer(), media = self.completedSecretPhoto(), postbox = self.fixture.postbox!
+        let id = MessageId(peerId: peer, namespace: Namespaces.Message.SecretIncoming, id: 101)
+        postbox.mediaBox.storeResourceData(media.1.id, data: media.2, synchronous: true)
+        let cacheBlocked = self.expectation(description: "MediaBox queue held before ordinary cleanup")
+        let releaseCache = DispatchSemaphore(value: 0)
+        let cacheTimedOut = Atomic<Bool>(value: false)
+        postbox.mediaBox.dataQueue.async {
+            cacheBlocked.fulfill()
+            if releaseCache.wait(timeout: .now() + 30) == .timedOut { _ = cacheTimedOut.swap(true) }
+        }
+        defer { releaseCache.signal(); postbox.mediaBox.dataQueue.sync {} }
+        self.wait(for: [cacheBlocked], timeout: 15)
+        // There is no coordinator/descriptor owner at this destructive boundary.
+        // Only its real queued cache removal is held; the source URL still exists.
+        let _ = try self.localArchiveValue(postbox.transaction { transaction in
+            _ = transaction.addMessages([localArchiveTestMessage(id, authorId: self.chatPeerId, media: [media.0])], location: .Random)
+            _internal_deleteMessages(transaction: transaction, mediaBox: postbox.mediaBox, ids: [id])
+        })
+        XCTAssertEqual(try self.captures().count, 1)
+        let sourcePath = postbox.mediaBox.storePathsForId(media.1.id).complete
+        XCTAssertEqual(try localArchiveReadCompletedMedia(sourcePath), media.2)
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent("secret-refused-source-" + UUID().uuidString)
+        let opened = Atomic<ArchiveStore?>(value: nil)
+        let archive = LocalArchiveCoordinator(postbox: postbox, accountPeerId: self.accountPeerId,
+            accountId: 9461, testingEnvironment: true, baseDirectory: directory,
+            storageFactory: { directory, accountId, retention, createIfMissing, queue, completion in
+                ArchiveStore.open(baseDirectory: directory, accountId: accountId, keyProvider: ExtendedFixtureKey(),
+                    createIfMissing: createIfMissing, retention: retention, callbackQueue: queue) { result in
+                    switch result {
+                    case let .success(store): _ = opened.swap(store); completion(.success(store))
+                    case let .failure(error): completion(.failure(error))
+                    }
+                }
+            }, protectedData: .single(true))
+        defer {
+            releaseCache.signal()
+            archive.dispose()
+            if let store = opened.swap(nil) {
+                let closed = self.expectation(description: "close refused-source archive")
+                store.close { closed.fulfill() }; self.wait(for: [closed], timeout: 15)
+            }
+            if FileManager.default.fileExists(atPath: directory.path) { try? FileManager.default.removeItem(at: directory) }
+        }
+        _ = try self.localArchiveValue(archive.status |> filter { $0 == .ready })
+        let page = try self.localArchiveValue(archive.deletedMessages())
+        XCTAssertFalse(page.unavailable)
+        let record = try XCTUnwrap(page.records.first)
+        XCTAssertEqual(page.records.count, 1)
+        XCTAssertEqual(record.storedMediaCount, 0)
+        XCTAssertEqual(record.unavailableMediaCount, 1)
+        XCTAssertTrue(try self.captures().isEmpty)
+        XCTAssertNil(try self.localArchiveValue(archive.mediaData(eventKey: record.eventKey, slot: 0)))
+        XCTAssertEqual(try localArchiveReadCompletedMedia(sourcePath), media.2,
+            "Missing archived media must follow the refused handoff even while its old URL remains readable")
+        XCTAssertFalse(cacheTimedOut.with { $0 })
+        releaseCache.signal()
+        self.assertSecretCacheRemoved(postbox.mediaBox, resourceId: media.1.id)
+    }
+
+    func testPinnedSecretSourceExpiresWithoutReopeningReplacedCachePath() throws {
+        try self.configureExtended(secret: true, timed: false)
+        let peer = try self.secretPeer(), media = self.completedSecretPhoto(), postbox = self.fixture.postbox!
+        let settings = try self.localArchiveValue(postbox.transaction { localArchiveSettings(transaction: $0) })
+        let now = Atomic<TimeInterval>(value: 100)
+        let handoff = LocalArchiveMediaSourceHandoff(mediaBox: postbox.mediaBox, accountPeerId: self.accountPeerId,
+            accountId: 9461, testingEnvironment: true, clock: { now.with { $0 } })
+        defer { handoff.dispose() }
+        handoff.applySettings(settings); handoff.setProtectedDataAvailable(true)
+        let id = MessageId(peerId: peer, namespace: Namespaces.Message.SecretIncoming, id: 102)
+        postbox.mediaBox.storeResourceData(media.1.id, data: media.2, synchronous: true)
+        let _ = try self.localArchiveValue(postbox.transaction { transaction in
+            _ = transaction.addMessages([localArchiveTestMessage(id, authorId: self.chatPeerId, media: [media.0])], location: .Random)
+            _internal_deleteMessages(transaction: transaction, mediaBox: postbox.mediaBox, ids: [id])
+        })
+        self.assertSecretCacheRemoved(postbox.mediaBox, resourceId: media.1.id)
+        let operation = try XCTUnwrap(try self.captures().first)
+        let key = media.1.id.stringRepresentation
+        guard case .source = handoff.source(eventKey: operation.eventKey, generation: operation.generation, slot: 0, resourceKey: key) else {
+            XCTFail("Eligible completed secret media was not pinned"); return
+        }
+        _ = now.swap(100 + LocalArchiveMediaSourceHandoff.lifetime + 1)
+        postbox.mediaBox.storeResourceData(media.1.id, data: Data([8, 6, 4]), synchronous: true)
+        guard case .revoked = handoff.source(eventKey: operation.eventKey, generation: operation.generation, slot: 0, resourceKey: key) else {
+            XCTFail("Expired lease must not become an absent URL fallback"); return
+        }
+        let _ = try self.localArchiveValue(postbox.transaction { transaction in
+            localArchivePinMediaBeforeRemoval(transaction: transaction, mediaBox: postbox.mediaBox,
+                resourceIds: [media.1.id], capturedResources: Set([media.1.id]))
+        })
+        if case .revoked = handoff.source(eventKey: operation.eventKey, generation: operation.generation, slot: 0, resourceKey: key) {} else {
+            XCTFail("Expired event must not be re-pinned from a replacement path")
+        }
+    }
+
+    func testDisablingAndReenablingSecretRetentionDoesNotReviveRevokedEvent() throws {
+        try self.configureExtended(secret: true, timed: false)
+        let peer = try self.secretPeer(), media = self.completedSecretPhoto(), postbox = self.fixture.postbox!
+        let settings = try self.localArchiveValue(postbox.transaction { localArchiveSettings(transaction: $0) })
+        let handoff = LocalArchiveMediaSourceHandoff(mediaBox: postbox.mediaBox, accountPeerId: self.accountPeerId,
+            accountId: 9461, testingEnvironment: true)
+        defer { handoff.dispose() }
+        handoff.applySettings(settings); handoff.setProtectedDataAvailable(true)
+        let id = MessageId(peerId: peer, namespace: Namespaces.Message.SecretIncoming, id: 103)
+        postbox.mediaBox.storeResourceData(media.1.id, data: media.2, synchronous: true)
+        let _ = try self.localArchiveValue(postbox.transaction { transaction in
+            _ = transaction.addMessages([localArchiveTestMessage(id, authorId: self.chatPeerId, media: [media.0])], location: .Random)
+            _internal_deleteMessages(transaction: transaction, mediaBox: postbox.mediaBox, ids: [id])
+        })
+        self.assertSecretCacheRemoved(postbox.mediaBox, resourceId: media.1.id)
+        let operation = try XCTUnwrap(try self.captures().first)
+        let key = media.1.id.stringRepresentation
+        guard case .source = handoff.source(eventKey: operation.eventKey, generation: operation.generation, slot: 0, resourceKey: key) else {
+            XCTFail("Eligible completed secret media was not pinned"); return
+        }
+        var disabled = settings
+        disabled.includeSecretChats = false
+        handoff.applySettings(disabled)
+        handoff.applySettings(settings)
+        postbox.mediaBox.storeResourceData(media.1.id, data: media.2, synchronous: true)
+        let _ = try self.localArchiveValue(postbox.transaction { transaction in
+            localArchivePinMediaBeforeRemoval(transaction: transaction, mediaBox: postbox.mediaBox,
+                resourceIds: [media.1.id], capturedResources: Set([media.1.id]))
+        })
+        if case .revoked = handoff.source(eventKey: operation.eventKey, generation: operation.generation, slot: 0, resourceKey: key) {} else {
+            XCTFail("Same-generation policy cancellation must survive reenabling")
+        }
+    }
+
+    func testSecretDescriptorLeasesStayWithTheirAccountForIdenticalResourceKeys() throws {
+        try self.configureExtended(secret: true, timed: false)
+        let peer = try self.secretPeer(), media = self.completedSecretPhoto(), postbox = self.fixture.postbox!
+        let other = try LocalArchivePostboxFixture(test: self, name: "secret-source-other-account")
+        defer { try? other.destroy() }
+        let otherOwner = PeerId(namespace: Namespaces.Peer.CloudUser, id: ._internalFromInt64Value(2))
+        let settings = try self.localArchiveValue(postbox.transaction { localArchiveSettings(transaction: $0) })
+        let _ = try self.localArchiveValue(other.postbox.transaction { transaction in
+            transaction.updatePeersInternal([localArchiveTestUser(otherOwner), localArchiveTestUser(self.chatPeerId),
+                TelegramSecretChat(id: peer, creationDate: 0, regularPeerId: self.chatPeerId, accessHash: 0,
+                    role: .creator, embeddedState: .active, messageAutoremoveTimeout: nil)], update: { _, updated in updated })
+            transaction.setState(AuthorizedAccountState(isTestingEnvironment: true, masterDatacenterId: 1,
+                peerId: otherOwner, state: AuthorizedAccountState.State(pts: 10, qts: 2, date: 100, seq: 3), invalidatedChannels: []))
+            setLocalArchiveSettings(transaction: transaction, settings: settings)
+        })
+        let localHandoff = LocalArchiveMediaSourceHandoff(mediaBox: postbox.mediaBox, accountPeerId: self.accountPeerId,
+            accountId: 9461, testingEnvironment: true)
+        let otherHandoff = LocalArchiveMediaSourceHandoff(mediaBox: other.postbox.mediaBox, accountPeerId: otherOwner,
+            accountId: 9462, testingEnvironment: true)
+        defer { localHandoff.dispose(); otherHandoff.dispose() }
+        for handoff in [localHandoff, otherHandoff] {
+            handoff.applySettings(settings); handoff.setProtectedDataAvailable(true)
+        }
+        let otherBytes = media.2 + Data([0x41])
+        postbox.mediaBox.storeResourceData(media.1.id, data: media.2, synchronous: true)
+        other.postbox.mediaBox.storeResourceData(media.1.id, data: otherBytes, synchronous: true)
+        let id = MessageId(peerId: peer, namespace: Namespaces.Message.SecretIncoming, id: 104)
+        func delete(_ database: Postbox, owner: PeerId) throws -> LocalArchiveCaptureOperation {
+            let operation: LocalArchiveCaptureOperation? = try self.localArchiveValue(database.transaction { transaction in
+                _ = transaction.addMessages([localArchiveTestMessage(id, authorId: self.chatPeerId, media: [media.0])], location: .Random)
+                _internal_deleteMessages(transaction: transaction, mediaBox: database.mediaBox, ids: [id])
+                return localArchivePendingCaptures(transaction: transaction, accountPeerId: owner).compactMap { $0.operation }.first
+            })
+            return try XCTUnwrap(operation)
+        }
+        let localOperation = try delete(postbox, owner: self.accountPeerId)
+        let key = media.1.id.stringRepresentation
+        self.assertSecretCacheRemoved(postbox.mediaBox, resourceId: media.1.id)
+        guard case let .source(localSource) = localHandoff.source(eventKey: localOperation.eventKey,
+            generation: localOperation.generation, slot: 0, resourceKey: key) else {
+            XCTFail("First account did not own its completed source"); return
+        }
+        XCTAssertEqual(localSource.source.byteCount, Int64(media.2.count))
+        if case .absent = otherHandoff.source(eventKey: localOperation.eventKey,
+            generation: localOperation.generation, slot: 0, resourceKey: key) {} else {
+            XCTFail("Second account must not resolve the first account's event")
+        }
+        XCTAssertEqual(try localArchiveReadCompletedMedia(other.postbox.mediaBox.storePathsForId(media.1.id).complete), otherBytes)
+        let otherOperation = try delete(other.postbox, owner: otherOwner)
+        self.assertSecretCacheRemoved(other.postbox.mediaBox, resourceId: media.1.id)
+        XCTAssertNotEqual(localOperation.eventKey, otherOperation.eventKey)
+        guard case let .source(otherSource) = otherHandoff.source(eventKey: otherOperation.eventKey,
+            generation: otherOperation.generation, slot: 0, resourceKey: key) else {
+            XCTFail("Second account did not own its completed source"); return
+        }
+        XCTAssertEqual(otherSource.source.byteCount, Int64(otherBytes.count))
+        if case .absent = localHandoff.source(eventKey: otherOperation.eventKey,
+            generation: otherOperation.generation, slot: 0, resourceKey: key) {} else {
+            XCTFail("First account must not resolve the second account's event")
+        }
     }
 
     func testSecretZeroIdentifierRequiresAnExplicitPersistedIdentifierField() throws {

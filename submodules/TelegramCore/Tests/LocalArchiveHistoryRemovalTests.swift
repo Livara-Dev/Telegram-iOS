@@ -219,6 +219,43 @@ final class LocalArchiveHistoryRemovalTests: XCTestCase {
         XCTAssertTrue(try self.captures().isEmpty)
     }
 
+    func testOptedSecretAuthorRemovalsDoNotDeferCanonicalMediaCleanup() throws {
+        let postbox = self.fixture.postbox!, secret = self.secret, user = self.user
+        _ = try self.localArchiveValue(postbox.transaction { transaction in
+            setLocalArchiveSettings(transaction: transaction, settings: LocalArchiveSettings(enabled: true, includeSecretChats: true))
+        })
+        let bytes = localArchiveTestPhotoData()
+        for forwarded in [false, true] {
+            let number: Int32 = forwarded ? 31 : 30
+            let id = self.id(secret, number, namespace: Namespaces.Message.SecretIncoming)
+            let resource = CloudPhotoSizeMediaResource(datacenterId: 1, photoId: Int64(9230 + number), accessHash: 0,
+                sizeSpec: "x", size: Int64(bytes.count), fileReference: nil)
+            let photo = TelegramMediaImage(imageId: MediaId(namespace: Namespaces.Media.CloudImage, id: Int64(9230 + number)),
+                representations: [TelegramMediaImageRepresentation(dimensions: PixelDimensions(width: 16, height: 16),
+                    resource: resource, progressiveSizes: [], immediateThumbnailData: nil)],
+                immediateThumbnailData: nil, reference: nil, partialReference: nil, flags: [])
+            postbox.mediaBox.storeResourceData(resource.id, data: bytes, synchronous: true)
+            try self.store([self.message(id, author: forwarded ? self.other : user,
+                forward: forwarded ? user : nil, media: [photo])])
+            _ = try self.localArchiveValue(postbox.transaction { transaction in
+                if forwarded {
+                    _internal_deleteAllMessagesWithForwardAuthor(transaction: transaction, mediaBox: postbox.mediaBox,
+                        peerId: secret, forwardAuthorId: user, namespace: Namespaces.Message.SecretIncoming)
+                } else {
+                    _internal_deleteAllMessagesWithAuthor(transaction: transaction, mediaBox: postbox.mediaBox,
+                        peerId: secret, authorId: user, namespace: Namespaces.Message.SecretIncoming)
+                }
+            })
+            postbox.mediaBox.dataQueue.sync {}
+            XCTAssertNil(try self.current(id))
+            XCTAssertEqual(try self.captures().filter { $0.messageId == id }.count, 1)
+            let paths = postbox.mediaBox.storePathsForId(resource.id)
+            for path in [paths.complete, paths.partial, paths.partial + ".meta"] {
+                XCTAssertFalse(FileManager.default.fileExists(atPath: path))
+            }
+        }
+    }
+
     func testMissingAuthorizedOwnerAndDefaultPostboxObserverNeverGuessCaptureAccount() throws {
         let postbox = self.fixture.postbox!, group = self.group
         let first = self.id(group, 1), second = self.id(group, 2)

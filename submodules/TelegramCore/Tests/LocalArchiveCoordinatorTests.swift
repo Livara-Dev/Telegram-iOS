@@ -63,14 +63,20 @@ private final class LocalArchiveInterceptingStorage: LocalArchiveStorage {
     private let behavior: WriteBehavior
     private let didWrite: ((Result<ArchiveWriteResult, ArchiveError>) -> Void)?
     private let closeGate: LocalArchiveOperationGate?
+    private let beforeOwnedMediaWrite: ((ArchiveStore) -> Void)?
+    private let metadataAcknowledgementGate: LocalArchiveOperationGate?
 
     init(store: ArchiveStore, behavior: WriteBehavior,
          didWrite: ((Result<ArchiveWriteResult, ArchiveError>) -> Void)?,
-         closeGate: LocalArchiveOperationGate? = nil) {
+         closeGate: LocalArchiveOperationGate? = nil,
+         beforeOwnedMediaWrite: ((ArchiveStore) -> Void)? = nil,
+         metadataAcknowledgementGate: LocalArchiveOperationGate? = nil) {
         self.store = store
         self.behavior = behavior
         self.didWrite = didWrite
         self.closeGate = closeGate
+        self.beforeOwnedMediaWrite = beforeOwnedMediaWrite
+        self.metadataAcknowledgementGate = metadataAcknowledgementGate
     }
 
     func recordFromOutbox(_ capture: ArchiveCapture, index: Int64, generation: Int64,
@@ -85,7 +91,11 @@ private final class LocalArchiveInterceptingStorage: LocalArchiveStorage {
         self.store.recordFromOutbox(capture, index: index, generation: generation, policy: policy) { result in
             self.didWrite?(result)
             if case .withholdAcknowledgement = self.behavior { return }
-            completion(result)
+            if let gate = self.metadataAcknowledgementGate {
+                gate.perform { completion(result) }
+            } else {
+                completion(result)
+            }
         }
     }
 
@@ -97,6 +107,16 @@ private final class LocalArchiveInterceptingStorage: LocalArchiveStorage {
         }
     }
     func recordMediaFile(eventKey: String, slot: Int, kind: String, mimeType: String, source: URL, expectedSize: Int64?, generation: Int64, completion: @escaping (Result<Bool, ArchiveError>) -> Void) {
+        self.store.recordMediaFile(eventKey: eventKey, slot: slot, kind: kind, mimeType: mimeType, source: source, expectedSize: expectedSize, generation: generation) { result in
+            self.mediaWritten.set(true)
+            if case .withholdMediaAcknowledgement = self.behavior { return }
+            completion(result)
+        }
+    }
+    func recordMediaFile(eventKey: String, slot: Int, kind: String, mimeType: String, source: ArchiveMediaFileSource, expectedSize: Int64?, generation: Int64, completion: @escaping (Result<Bool, ArchiveError>) -> Void) {
+        // Keep the actual owned descriptor and SQLCipher operation. A test can
+        // enqueue an independent earlier operation to hold the real worker.
+        self.beforeOwnedMediaWrite?(self.store)
         self.store.recordMediaFile(eventKey: eventKey, slot: slot, kind: kind, mimeType: mimeType, source: source, expectedSize: expectedSize, generation: generation) { result in
             self.mediaWritten.set(true)
             if case .withholdMediaAcknowledgement = self.behavior { return }
@@ -198,6 +218,8 @@ final class LocalArchiveCoordinatorTests: XCTestCase {
                        protectedData: Signal<Bool, NoError>? = .single(true),
                        openGate: LocalArchiveOperationGate? = nil,
                        closeGate: LocalArchiveOperationGate? = nil,
+                       beforeOwnedMediaWrite: ((ArchiveStore) -> Void)? = nil,
+                       metadataAcknowledgementGate: LocalArchiveOperationGate? = nil,
                        didWrite: ((Result<ArchiveWriteResult, ArchiveError>) -> Void)? = nil) -> Running {
         let instance = Running()
         instance.coordinator = LocalArchiveCoordinator(postbox: postbox ?? self.fixture.postbox, accountPeerId: self.accountPeerId,
@@ -211,7 +233,9 @@ final class LocalArchiveCoordinatorTests: XCTestCase {
                     let deliver = {
                         switch result {
                         case let .success(store):
-                            let intercepted = LocalArchiveInterceptingStorage(store: store, behavior: behavior, didWrite: didWrite, closeGate: closeGate)
+                            let intercepted = LocalArchiveInterceptingStorage(store: store, behavior: behavior, didWrite: didWrite,
+                                closeGate: closeGate, beforeOwnedMediaWrite: beforeOwnedMediaWrite,
+                                metadataAcknowledgementGate: metadataAcknowledgementGate)
                             let _ = instance.storage.swap(intercepted)
                             completion(.success(intercepted))
                         case let .failure(error):
@@ -691,6 +715,80 @@ final class LocalArchiveCoordinatorTests: XCTestCase {
         XCTAssertEqual(try self.localArchiveValue(reopened.mediaRange(eventKey: key, slot: 0, offset: size - 7, count: 64)), Data(repeating: 0x69, count: 7))
     }
 
+    func testOrdinaryCloudOwnedSourceSurvivesForcedCacheRemovalAndSameSizeReplacementBeforeWorkerCopy() throws {
+        let original = Data(repeating: 0x42, count: 128 * 1024)
+        let replacement = Data(repeating: 0x64, count: original.count)
+        let resource = CloudDocumentMediaResource(datacenterId: 1, fileId: 9601, accessHash: 0,
+            size: Int64(original.count), fileReference: nil, fileName: nil)
+        self.fixture.postbox.mediaBox.storeResourceData(resource.id, data: original, synchronous: true)
+        let file = TelegramMediaFile(fileId: MediaId(namespace: Namespaces.Media.CloudFile, id: 9601),
+            partialReference: nil, resource: resource, previewRepresentations: [], videoThumbnails: [],
+            immediateThumbnailData: nil, mimeType: "application/octet-stream", size: Int64(original.count),
+            attributes: [.FileName(fileName: "owned-source.bin")], alternativeRepresentations: [])
+        _ = try self.queueDeletion(106, media: [file])
+        let eventKey = try XCTUnwrap(self.pending().first?.operation?.eventKey)
+        let blockNextClock = Atomic<Bool>(value: false)
+        let didIntercept = Atomic<Bool>(value: false)
+        let gateTimedOut = Atomic<Bool>(value: false)
+        let workerBlocked = self.expectation(description: "prior real storage operation blocks cloud media copy")
+        let priorOperationDone = self.expectation(description: "prior real storage operation completed")
+        let releaseWorker = DispatchSemaphore(value: 0)
+        defer { releaseWorker.signal() }
+        let first = self.start(clock: {
+            if blockNextClock.swap(false) {
+                workerBlocked.fulfill()
+                if releaseWorker.wait(timeout: .now() + 15) == .timedOut { _ = gateTimedOut.swap(true) }
+            }
+            return 1000
+        }, beforeOwnedMediaWrite: { store in
+            // This callback is reached only with the actual owned-source API.
+            // The coordinator has acquired its descriptor on its utility queue.
+            guard !didIntercept.swap(true) else { XCTFail("Unexpected repeated media submission"); return }
+            _ = blockNextClock.swap(true)
+            // Enqueue a separate earlier operation. Holding the media method's
+            // own clock would not prove its file had not already been opened.
+            store.setRetention(ArchiveRetentionPolicy()) { result in
+                if case .failure = result { XCTFail("Prior real retention operation failed") }
+                priorOperationDone.fulfill()
+            }
+        })
+        self.wait(for: [workerBlocked], timeout: 15)
+        XCTAssertTrue(didIntercept.with { $0 })
+        XCTAssertEqual(try self.pending().count, 1)
+        let cleared = self.expectation(description: "real force-clear before cloud archive worker copy")
+        let removal = self.fixture.postbox.mediaBox.removeCachedResources([resource.id], force: true).start(completed: { cleared.fulfill() })
+        defer { removal.dispose() }
+        self.wait(for: [cleared], timeout: 15)
+        let path = self.fixture.postbox.mediaBox.storePathsForId(resource.id).complete
+        XCTAssertFalse(FileManager.default.fileExists(atPath: path))
+        self.fixture.postbox.mediaBox.storeResourceData(resource.id, data: replacement, synchronous: true)
+        XCTAssertEqual(try localArchiveReadCompletedMedia(path), replacement)
+        releaseWorker.signal()
+        self.wait(for: [priorOperationDone], timeout: 15)
+        try self.awaitStatus(.ready, in: first)
+        XCTAssertFalse(gateTimedOut.with { $0 })
+        XCTAssertTrue(try self.pending().isEmpty)
+        let coordinator = try XCTUnwrap(first.coordinator)
+        let page = try self.localArchiveValue(coordinator.deletedMessages())
+        XCTAssertFalse(page.unavailable)
+        XCTAssertEqual(page.records.count, 1)
+        XCTAssertEqual(page.records.first?.storedMediaCount, 1)
+        XCTAssertEqual(page.records.first?.unavailableMediaCount, 0)
+        XCTAssertEqual(try self.localArchiveValue(coordinator.settings).droppedCaptures, 0)
+        XCTAssertEqual(try self.localArchiveValue(coordinator.mediaData(eventKey: eventKey, slot: 0)), original)
+        XCTAssertEqual(try localArchiveReadCompletedMedia(path), replacement, "Archive import must not alter the new cache resource")
+        XCTAssertTrue(try self.localArchiveValue(coordinator.setEnabled(false)))
+        try self.awaitStatus(.disabled, in: first)
+        try self.stop(first)
+        try self.fixture.reopen()
+        let reopened = self.start()
+        let reader = try XCTUnwrap(reopened.coordinator)
+        let access = reader.acquireReadAccess()
+        defer { access.dispose() }
+        try self.awaitStatus(.browsing, in: reopened)
+        XCTAssertEqual(try self.localArchiveValue(reader.mediaData(eventKey: eventKey, slot: 0)), original)
+    }
+
     func testMediaCommitBeforeOutboxAckSurvivesRestartAndSourceRemoval() throws {
         let bytes = localArchiveTestPhotoData()
         let resource = CloudPhotoSizeMediaResource(datacenterId: 1, photoId: 9200, accessHash: 0, sizeSpec: "x", size: Int64(bytes.count), fileReference: nil)
@@ -715,6 +813,77 @@ final class LocalArchiveCoordinatorTests: XCTestCase {
         store.media(eventKey: key, slot: 0) { result = $0; done.fulfill() }
         wait(for: [done], timeout: 15)
         XCTAssertEqual(try XCTUnwrap(result).get()?.data, bytes)
+    }
+
+    func testPeerExclusionAfterMetadataCommitDoesNotImportMediaOrStallReceiptReplay() throws {
+        let bytes = localArchiveTestPhotoData()
+        let resource = CloudPhotoSizeMediaResource(datacenterId: 1, photoId: 9602, accessHash: 0,
+            sizeSpec: "x", size: Int64(bytes.count), fileReference: nil)
+        self.fixture.postbox.mediaBox.storeResourceData(resource.id, data: bytes, synchronous: true)
+        let photo = TelegramMediaImage(imageId: MediaId(namespace: Namespaces.Media.CloudImage, id: 9602),
+            representations: [TelegramMediaImageRepresentation(dimensions: PixelDimensions(width: 16, height: 16),
+                resource: resource, progressiveSizes: [], immediateThumbnailData: nil)],
+            immediateThumbnailData: nil, reference: nil, partialReference: nil, flags: [])
+        _ = try self.queueDeletion(107, text: "metadata committed before exclusion", media: [photo])
+        let originalEventKey = try XCTUnwrap(self.pending().first?.operation?.eventKey)
+        let gate = LocalArchiveOperationGate()
+        defer { gate.release() }
+        let first = self.start(metadataAcknowledgementGate: gate)
+        _ = try self.localArchiveValue(gate.intercepted.get() |> filter { $0 })
+        XCTAssertEqual(try self.pending().count, 1)
+        let coordinator = try XCTUnwrap(first.coordinator)
+        XCTAssertTrue(try self.localArchiveValue(coordinator.setPeerExcluded(peerId: self.chatPeerId.toInt64(), excluded: true)))
+        // A genuine Store callback runs on the coordinator's callback queue after
+        // the committed Postbox preference notification has been enqueued there.
+        let policyObserved = self.expectation(description: "coordinator callback queue observed new exclusion")
+        let store = try XCTUnwrap(first.storage.with { $0?.store })
+        store.currentGeneration { result in
+            if case .failure = result { XCTFail("Real archive generation query failed") }
+            policyObserved.fulfill()
+        }
+        self.wait(for: [policyObserved], timeout: 15)
+        let allowedPeer = PeerId(namespace: Namespaces.Peer.CloudUser, id: ._internalFromInt64Value(1003))
+        let allowedId = MessageId(peerId: allowedPeer, namespace: Namespaces.Message.Cloud, id: 108)
+        let owner = self.accountPeerId
+        let _ = try self.localArchiveValue(self.fixture.postbox.transaction { transaction in
+            transaction.updatePeersInternal([localArchiveTestUser(allowedPeer)], update: { _, updated in updated })
+            _ = transaction.addMessages([localArchiveTestMessage(allowedId, text: "later allowed capture")], location: .Random)
+            captureDeletedLocalArchiveMessages(transaction: transaction, accountPeerId: owner, ids: [allowedId], observedAt: 201)
+            transaction.deleteMessages([allowedId], forEachMedia: nil)
+        })
+        XCTAssertEqual(try self.pending().count, 2)
+        // Recreate the coordinator after the real SQL commit but before its
+        // acknowledgement. This exercises durable receipt replay, not an OS kill.
+        try self.stop(first)
+        gate.release()
+        try self.fixture.reopen()
+        let sawReceiptDuplicate = Atomic<Bool>(value: false)
+        let sawLaterInsert = Atomic<Bool>(value: false)
+        let recovered = self.start(beforeOwnedMediaWrite: { _ in
+            XCTFail("Excluded attachment must not be admitted to a media write")
+        }, didWrite: { result in
+            if case let .success(written) = result {
+                if written.duplicates == 1 && written.excluded == 0 { _ = sawReceiptDuplicate.swap(true) }
+                if written.inserted == 1 { _ = sawLaterInsert.swap(true) }
+            }
+        })
+        try self.awaitStatus(.ready, in: recovered)
+        XCTAssertTrue(sawReceiptDuplicate.with { $0 }, "Exercise the existing receipt path that does not reapply capture policy")
+        XCTAssertTrue(sawLaterInsert.with { $0 }, "A denied attachment must not stall later allowed outbox entries")
+        XCTAssertTrue(try self.pending().isEmpty)
+        let reader = try XCTUnwrap(recovered.coordinator)
+        let page = try self.localArchiveValue(reader.deletedMessages())
+        XCTAssertFalse(page.unavailable)
+        XCTAssertEqual(page.records.count, 2)
+        let original = try XCTUnwrap(page.records.first { $0.eventKey == originalEventKey })
+        XCTAssertEqual(original.text, "metadata committed before exclusion")
+        XCTAssertEqual(original.storedMediaCount, 0)
+        XCTAssertEqual(original.unavailableMediaCount, 1)
+        XCTAssertEqual(page.records.first { $0.peerId == allowedPeer.toInt64() }?.text, "later allowed capture")
+        XCTAssertNil(try self.localArchiveValue(reader.mediaData(eventKey: originalEventKey, slot: 0)))
+        XCTAssertEqual(try self.localArchiveValue(reader.settings).droppedCaptures, 1)
+        XCTAssertEqual(try localArchiveReadCompletedMedia(self.fixture.postbox.mediaBox.storePathsForId(resource.id).complete), bytes,
+            "Policy denial must not import or erase an otherwise readable ordinary-cloud source")
     }
 
     func testPhotoFallbackPreservesOnlyTheCompletedLocalVariant() throws {
