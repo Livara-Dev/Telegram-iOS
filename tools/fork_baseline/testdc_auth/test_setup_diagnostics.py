@@ -16,6 +16,11 @@ import ci_gate as c
 
 
 class SetupOnlyTests(unittest.TestCase):
+    def setUp(self):
+        scope = patch.object(d, 'REVIEWED_EXECUTION_SCOPE', 'setupOnly')
+        scope.start()
+        self.addCleanup(scope.stop)
+
     PRIVATE = 'SYNTHETIC_PRIVATE_PATH_AND_MESSAGE_MUST_NOT_ESCAPE'
 
     def run_setup(self, fail_phase=None, error_type=ValueError, cleanup_error=False, post_seed_error=False, metadata_reason=None):
@@ -116,8 +121,10 @@ class SetupOnlyTests(unittest.TestCase):
             stack.enter_context(patch('subprocess.Popen', side_effect=AssertionError('No real subprocess')))
             stack.enter_context(patch('subprocess.run', side_effect=AssertionError('No real subprocess')))
             output = Path(temp) / 'result.json'
+            synthetic_review = Path(temp) / 'synthetic-setup-review.json'
+            synthetic_review.write_text(json.dumps(d.expected_review()))
             value = d.execute(Path(temp) / 'fixture.ipa', d.BASE / 'artifact-evidence.json', Path(temp),
-                d.BASE / 'review-gate.REVIEWED.json', output, setup_only=True)
+                synthetic_review, output, setup_only=True)
             serialized = output.read_text()
             self.assertNotIn(self.PRIVATE, serialized)
             self.assertFalse(any('test-without-building' in args for args in commands))
@@ -190,7 +197,7 @@ class SetupOnlyTests(unittest.TestCase):
         self.assertFalse(value['cleanup_passed'])
         self.assertFalse(value['setup_completed'])
 
-    def test_current_review_blocks_auth_mode_before_any_subprocess(self):
+    def test_setup_only_review_blocks_auth_mode_before_any_subprocess(self):
         with patch('subprocess.Popen', side_effect=AssertionError('No subprocess')), \
                 patch('subprocess.run', side_effect=AssertionError('No subprocess')), self.assertRaises(d.Rejected) as caught:
             d.execute(None, None, None, None, None)
@@ -198,6 +205,11 @@ class SetupOnlyTests(unittest.TestCase):
 
 
 class ClosedDiagnosticTests(unittest.TestCase):
+    def setUp(self):
+        scope = patch.object(d, 'REVIEWED_EXECUTION_SCOPE', 'setupOnly')
+        scope.start()
+        self.addCleanup(scope.stop)
+
     def setup_success(self):
         value = d.closed_result(setup_only=True)
         for key in ['setup_completed', 'driver_compiled', 'signature_checks_passed', 'private_selection_seeded', 'cleanup_passed']:

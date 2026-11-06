@@ -1,8 +1,8 @@
 {
   "application_source": "c55e19c4f5cbe0d730499035d0a0ef712f6903a9",
-  "driver_pins_sha256": "91dc9c9c54cb287ed628a22b99495ea2f688660b4390cbab557e2b990fcf9b16",
-  "driver_source_sha256": "7c9e62fec5ceff3f4e1f83bb4fbc05552e80a6776f7ef0f7d701b593e2d9edbb",
-  "execution_scope": "setupOnly",
+  "driver_pins_sha256": "0ebcab09f8b105995f29f1596223e59e6941e068e9c2fba2dac0cd7dd7812a9c",
+  "driver_source_sha256": "971102dbc89c6cb6389d7ff44e0ceef54692b0dc3251a4aabdf888472c5a589c",
+  "execution_scope": "authOnly",
   "main_code_unchanged": true,
   "private_account_store_stable_after_restart": true,
   "private_selection_seeded": true,

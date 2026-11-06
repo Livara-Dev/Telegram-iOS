@@ -93,8 +93,7 @@ class MetadataTests(unittest.TestCase):
 
 class ResultTests(unittest.TestCase):
     def setUp(self):
-        # Dormant auth-mode parser contracts remain exercised explicitly; the
-        # actual workflow/receipt currently permits only setupOnly publication.
+        # Exercise auth-mode parser contracts independently of review defaults.
         review = patch.object(d, 'REVIEWED_EXECUTION_SCOPE', 'authOnly')
         review.start()
         self.addCleanup(review.stop)
@@ -213,7 +212,9 @@ class WorkflowTests(unittest.TestCase):
         self.assertIn('paths: [ci/testdc-auth-request.json]', text)
         self.assertIn('branches: [ci/testdc-auth-smoke]', text)
         self.assertIn('cancel-in-progress: false', text)
-        self.assertIn('auth_only_driver.py\" --execute --setup-only', text)
+        self.assertEqual(d.REVIEWED_EXECUTION_SCOPE, 'authOnly')
+        self.assertIn('auth_only_driver.py\" --execute \\', text)
+        self.assertNotIn('--setup-only', text)
         self.assertNotIn('secrets.', text)
         self.assertNotIn('bazel', text.lower())
         self.assertNotIn('Make.py', text)

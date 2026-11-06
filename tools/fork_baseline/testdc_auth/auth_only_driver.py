@@ -27,10 +27,10 @@ import time
 import uuid
 
 EXECUTION_REVIEWED = True
-REVIEW_PINS_SHA256 = '91dc9c9c54cb287ed628a22b99495ea2f688660b4390cbab557e2b990fcf9b16'
+REVIEW_PINS_SHA256 = '0ebcab09f8b105995f29f1596223e59e6941e068e9c2fba2dac0cd7dd7812a9c'
 REVIEWED_STARTUP_RUN = 42204637743  # Root reviewed exact source/startup proof; auth result pending.
 STARTUP_CONTROL_RUN = 42204637743
-REVIEWED_EXECUTION_SCOPE = 'setupOnly'  # One pre-auth diagnostic; no UI authentication invocation.
+REVIEWED_EXECUTION_SCOPE = 'authOnly'  # One official-public-TestDC attempt after setup run 42297681349.
 STARTUP_ARTIFACT = 13495439062
 STARTUP_ARTIFACT_SHA256 = 'aefdac1cb0edc2dff994129577da44490a44045a8e5bcb0ec432fc5eac14aa79'
 STARTUP_RESULT_SHA256 = '6e3a44f2f8b4222ed4164d4d590163cb38be1d4592c5b383ac0ca6d4700173d7'

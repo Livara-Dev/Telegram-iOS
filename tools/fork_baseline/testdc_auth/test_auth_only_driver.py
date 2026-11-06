@@ -118,6 +118,13 @@ class EvidenceTests(unittest.TestCase):
 
 
 class GateAndPinsTests(unittest.TestCase):
+    def test_auth_only_review_blocks_setup_mode_before_any_subprocess(self):
+        self.assertEqual(d.REVIEWED_EXECUTION_SCOPE, 'authOnly')
+        with patch('subprocess.Popen', side_effect=AssertionError('No subprocess')), \
+                patch('subprocess.run', side_effect=AssertionError('No subprocess')), self.assertRaises(d.Rejected) as caught:
+            d.execute(None, None, None, None, None, setup_only=True)
+        self.assertEqual(caught.exception.code, 'reviewGate')
+
     def test_native_execution_disabled_without_subprocess(self):
         with (patch.object(d, 'EXECUTION_REVIEWED', False),
               patch('subprocess.Popen', side_effect=AssertionError('must not execute')),

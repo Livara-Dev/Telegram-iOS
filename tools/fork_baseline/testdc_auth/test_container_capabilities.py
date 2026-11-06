@@ -183,7 +183,7 @@ class ClosedMetadataFailureTests(unittest.TestCase):
             error = m.PlanError(secret)
             self.assertEqual(error.code, 'unexpectedMetadataFailure')
             self.assertNotIn(secret, str(error)); self.assertNotIn(secret, repr(error.args))
-            value = d.closed_result(setup_only=True)
+            value = d.closed_result(setup_only=d.REVIEWED_EXECUTION_SCOPE == 'setupOnly')
             value.update(failure='internal', exception_kind='otherException', phase='dataContainer',
                 metadata_failure=d.metadata_failure_code(error, m))
             c.exportable(value)
@@ -199,9 +199,9 @@ class ClosedMetadataFailureTests(unittest.TestCase):
 
     def test_closed_schema_rejects_unapproved_metadata_reason_or_unfailed_success(self):
         for reason in ['/synthetic/private/path', 'arbitrary-message', True, ['owned_container_not_unique']]:
-            value = d.closed_result(setup_only=True); value['metadata_failure'] = reason
+            value = d.closed_result(setup_only=d.REVIEWED_EXECUTION_SCOPE == 'setupOnly'); value['metadata_failure'] = reason
             with self.subTest(reason=reason), self.assertRaises(d.Rejected): c.exportable(value)
-        value = d.closed_result(setup_only=True); value['metadata_failure'] = 'owned_container_not_unique'
+        value = d.closed_result(setup_only=d.REVIEWED_EXECUTION_SCOPE == 'setupOnly'); value['metadata_failure'] = 'owned_container_not_unique'
         with self.assertRaises(d.Rejected): c.exportable(value)
 
 
