@@ -19,6 +19,17 @@ class SimulatorProbeTests(unittest.TestCase):
     def empty_diagnostic(arguments, secrets, timeout=20):
         return {'exit_code': 0, 'status': 'completed', 'stderr': ''}, b'[]'
 
+    @staticmethod
+    def diagnostic_inventory(payload, probe=None):
+        def execute(arguments, secrets, timeout=20):
+            if arguments == ['xcrun', 'simctl', 'list', 'devices', 'available', '--json']:
+                if timeout != 10: raise AssertionError('Inventory budget must remain ten seconds')
+                data = json.dumps(payload).encode()
+                return {'exit_code': 0, 'status': 'completed', 'timeout': False, 'output_limit': False,
+                        'stdout_bytes': len(data), 'stderr_bytes': 0, 'stderr': ''}, data
+            return (probe or SimulatorProbeTests.empty_diagnostic)(arguments, secrets, timeout)
+        return execute
+
     def test_only_synthetic_host_is_launched_and_marker_is_read_before_and_after(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -31,7 +42,7 @@ class SimulatorProbeTests(unittest.TestCase):
             devices = {'devices': {'com.apple.CoreSimulator.SimRuntime.iOS-27-0': [
                 {'name': 'BAZEL_TEST_iPhone 17_27.0', 'state': 'Booted', 'udid': identifier},
                 {'name': 'Personal phone', 'state': 'Booted', 'udid': 'do-not-touch'}]}}
-            replies = iter([json.dumps(devices).encode(), str(app).encode(), str(data).encode(), b'host pid=3'])
+            replies = iter([str(app).encode(), str(data).encode(), b'host pid=3'])
             def reply(args, **kwargs):
                 value = next(replies)
                 if 'launch' in args:
@@ -46,11 +57,11 @@ class SimulatorProbeTests(unittest.TestCase):
                 if 'launch' in args:
                     order.append('standalone')
                 return reply(args, **kwargs)
-            with patch.object(simulator_probe.subprocess, 'run', side_effect=observed_reply) as run, patch.object(simulator_probe, 'capture_crashes', side_effect=crash_snapshot), patch.object(simulator_probe, 'diagnostic_command', side_effect=self.empty_diagnostic) as diagnostic:
+            with patch.object(simulator_probe.subprocess, 'run', side_effect=observed_reply) as run, patch.object(simulator_probe, 'capture_crashes', side_effect=crash_snapshot), patch.object(simulator_probe, 'diagnostic_command', side_effect=self.diagnostic_inventory(devices)) as diagnostic:
                 simulator_probe.capture(root, ['private-fixture-secret'], started_at=1234.5)
             calls = [c.args[0] for c in run.call_args_list]
-            self.assertEqual(len(calls), 4)
-            self.assertEqual(calls[2], ['xcrun', 'simctl', 'get_app_container', identifier, simulator_probe.BUNDLE, 'data'])
+            self.assertEqual(len(calls), 3)
+            self.assertEqual(calls[1], ['xcrun', 'simctl', 'get_app_container', identifier, simulator_probe.BUNDLE, 'data'])
             self.assertEqual(calls[-1], ['xcrun', 'simctl', 'launch', '--terminate-running-process', identifier, simulator_probe.BUNDLE])
             text = (root / 'build/fork-evidence/projection-launch-probe.json').read_text()
             for private_value in ('private-fixture-secret', 'Personal phone', str(root), identifier, 'pid=3'):
@@ -61,7 +72,7 @@ class SimulatorProbeTests(unittest.TestCase):
             self.assertEqual(report['marker_after_standalone_launch'], {'state': 'observed', 'stage': 'sceneVisible'})
             self.assertEqual(report['commands']['installed_signature'], {'exit_code': 0})
             self.assertEqual(report['commands']['standalone_host_launch'], {'exit_code': 0})
-            self.assertEqual(diagnostic.call_count, 2)
+            self.assertEqual(diagnostic.call_count, 3)
             self.assertEqual(diagnostic.call_args_list[0].kwargs['timeout'], 10)
             log_args = diagnostic.call_args_list[1].args[0]
             self.assertEqual(log_args, ['xcrun', 'simctl', 'spawn', identifier, 'log', 'show', '--style', 'json',
@@ -103,7 +114,7 @@ class SimulatorProbeTests(unittest.TestCase):
             identifier = '11111111-2222-3333-4444-555555555555'
             devices = {'devices': {'com.apple.CoreSimulator.SimRuntime.iOS-27-0': [
                 {'name': 'BAZEL_TEST_iPhone 17_27.0', 'state': 'Booted', 'udid': identifier}]}}
-            replies = iter([json.dumps(devices).encode(), str(app).encode(), str(data).encode(), b'pid=999'])
+            replies = iter([str(app).encode(), str(data).encode(), b'pid=999'])
             def reply(args, **kwargs):
                 value = next(replies)
                 if 'launch' in args:
@@ -112,7 +123,7 @@ class SimulatorProbeTests(unittest.TestCase):
             def diagnostic(arguments, secrets, timeout=20):
                 code = 1 if arguments[0] == '/usr/bin/codesign' else 0
                 return {'exit_code': code, 'status': 'commandFailed' if code else 'completed', 'stderr': 'injected seal invalid' if code else ''}, b'[]'
-            with patch.object(simulator_probe.subprocess, 'run', side_effect=reply), patch.object(simulator_probe, 'diagnostic_command', side_effect=diagnostic):
+            with patch.object(simulator_probe.subprocess, 'run', side_effect=reply), patch.object(simulator_probe, 'diagnostic_command', side_effect=self.diagnostic_inventory(devices, diagnostic)):
                 simulator_probe.capture(root, [])
             report = json.loads((root / 'build/fork-evidence/projection-launch-probe.json').read_text())
             self.assertEqual(report['marker_before_standalone_launch'], {'state': 'absent'})
@@ -151,21 +162,115 @@ class SimulatorProbeTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             payload = {'devices': {'com.apple.CoreSimulator.SimRuntime.iOS-27-0': [{'name': 'Personal phone', 'state': 'Booted', 'udid': '11111111-2222-3333-4444-555555555555'}]}}
-            with patch.object(simulator_probe.subprocess, 'run', return_value=SimpleNamespace(returncode=0, stdout=json.dumps(payload).encode())) as run:
+            with patch.object(simulator_probe.subprocess, 'run') as run, patch.object(simulator_probe, 'diagnostic_command', side_effect=self.diagnostic_inventory(payload)) as diagnostic:
                 simulator_probe.capture(root, [])
-            self.assertEqual(run.call_count, 1)
+            run.assert_not_called()
+            self.assertEqual(diagnostic.call_count, 1)
             report = (root / 'build/fork-evidence/projection-launch-probe.json').read_text()
             self.assertNotIn('Personal phone', report)
             self.assertNotIn('standalone_host_launch', report)
 
-    def test_timeout_does_not_change_test_outcome_or_launch_another_app(self):
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
-            with patch.object(simulator_probe.subprocess, 'run', side_effect=subprocess.TimeoutExpired('simctl', 10)) as run:
-                simulator_probe.capture(root, [])
-            self.assertEqual(run.call_count, 1)
-            report = json.loads((root / 'build/fork-evidence/projection-launch-probe.json').read_text())
-            self.assertEqual(report['commands']['devices'], {'state': 'unavailable'})
+    def test_inventory_failure_retains_real_bounded_redacted_status_without_launching_any_app(self):
+        original_command, original_popen = simulator_probe.diagnostic_command, subprocess.Popen
+        secret = 'inventory-private-sentinel'
+        for status in ('timedOut', 'commandFailed', 'unavailable', 'outputLimit'):
+            with self.subTest(status=status), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                def launch(arguments, **kwargs):
+                    self.assertEqual(arguments, ['xcrun', 'simctl', 'list', 'devices', 'available', '--json'])
+                    if status == 'unavailable': raise OSError('private launch exception ' + secret)
+                    code = ('import sys,time;sys.stderr.write(' + repr(secret + ' /private/inventory-secret-path/file.log')
+                            + ');sys.stderr.flush();')
+                    if status == 'timedOut': code += 'time.sleep(10)'
+                    elif status == 'commandFailed': code += 'sys.stdout.write("unparsed-private-inventory");sys.exit(7)'
+                    else: code += 'sys.stdout.write("unparsed-private-inventory" * 10000)'
+                    return original_popen([sys.executable, '-c', code], **kwargs)
+                def bounded_inventory(arguments, secrets, timeout=20):
+                    self.assertEqual(timeout, 10)
+                    return original_command(arguments, secrets, timeout=0.1 if status == 'timedOut' else 2)
+                with patch.object(simulator_probe.subprocess, 'Popen', side_effect=launch), patch.object(simulator_probe.subprocess, 'run') as run, patch.object(simulator_probe, 'diagnostic_command', side_effect=bounded_inventory) as diagnostic:
+                    simulator_probe.capture(root, [secret])
+                run.assert_not_called(); self.assertEqual(diagnostic.call_count, 1)
+                path = root / 'build/fork-evidence/projection-launch-probe.json'
+                text = path.read_text(); report = json.loads(text)
+                inventory = report['commands']['devices']
+                self.assertEqual(inventory['status'], status)
+                self.assertEqual(inventory['timeout'], status == 'timedOut')
+                self.assertEqual(inventory['output_limit'], status == 'outputLimit')
+                self.assertEqual(inventory['exit_code'], 7 if status == 'commandFailed' else None)
+                for private in (secret, '/private/inventory-secret-path', 'unparsed-private-inventory', 'private launch exception'):
+                    self.assertNotIn(private, text)
+                self.assertNotIn('diagnostics', report)
+                self.assertNotIn('standalone_host_launch', report['commands'])
+                self.assertTrue(report['probe_only_not_test_result'])
+                self.assertEqual(stat.S_IMODE(path.stat().st_mode), 0o600)
+
+    def test_invalid_or_ambiguous_inventory_never_runs_device_probes_or_retains_raw_payload(self):
+        owned = {'name': simulator_probe.DEVICE_NAME, 'state': 'Booted',
+                 'udid': '11111111-2222-3333-4444-555555555555'}
+        payloads = [
+            'private inventory string', [], {'devices': 'private inventory value'},
+            {'devices': {simulator_probe.RUNTIME: 'private malformed devices'}},
+            {'devices': {simulator_probe.RUNTIME: [owned, owned]}},
+            {'devices': {simulator_probe.RUNTIME: [dict(owned, state='Shutdown')]}},
+            {'devices': {simulator_probe.RUNTIME: [dict(owned, udid=None)]}},
+            {'devices': {'unexpected-' + simulator_probe.RUNTIME: [owned]}},
+            {'devices': {simulator_probe.RUNTIME + '-other': [owned]}},
+            {'devices': {simulator_probe.RUNTIME: [dict(owned, name='Personal phone')]}},
+        ]
+        for payload in payloads:
+            with self.subTest(payload=payload), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                with patch.object(simulator_probe.subprocess, 'run') as run, patch.object(simulator_probe, 'diagnostic_command', side_effect=self.diagnostic_inventory(payload)) as diagnostic:
+                    simulator_probe.capture(root, [])
+                run.assert_not_called(); self.assertEqual(diagnostic.call_count, 1)
+                text = (root / 'build/fork-evidence/projection-launch-probe.json').read_text()
+                report = json.loads(text)
+                self.assertEqual(report['commands']['devices']['status'], 'completed')
+                self.assertNotIn('diagnostics', report)
+                for private in ('private inventory', 'private malformed', 'Personal phone', owned['udid']):
+                    self.assertNotIn(private, text)
+
+    def test_failed_or_invalid_app_container_does_not_suppress_selected_bootstrap_logs(self):
+        owned = {'name': simulator_probe.DEVICE_NAME, 'state': 'Booted',
+                 'udid': '11111111-2222-3333-4444-555555555555'}
+        devices = {'devices': {simulator_probe.RUNTIME: [owned]}}
+        secret = 'bootstrap-private-sentinel'
+        events = [
+            {'process': 'testmanagerd', 'eventMessage': 'ProjectionTestHost install failed ' + secret + ' /private/container-secret-path/app'},
+            {'process': 'unapproved', 'eventMessage': 'ProjectionTestHost private dropped event'},
+        ]
+        for failure in ('commandFailed', 'absent', 'relative', 'symlink'):
+            with self.subTest(failure=failure), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                app = root / 'Synthetic.app'; app.mkdir()
+                link = root / 'Linked.app'; link.symlink_to(app, target_is_directory=True)
+                container = {'commandFailed': app, 'absent': root / 'Absent.app', 'relative': 'relative.app', 'symlink': link}[failure]
+                order = []
+                def reply(arguments, **kwargs):
+                    order.append('container')
+                    self.assertEqual(arguments, ['xcrun', 'simctl', 'get_app_container', owned['udid'], simulator_probe.BUNDLE, 'app'])
+                    return SimpleNamespace(returncode=1 if failure == 'commandFailed' else 0, stdout=str(container).encode())
+                def bootstrap(arguments, secrets, timeout=20):
+                    order.append('bootstrap')
+                    self.assertEqual(arguments, ['xcrun', 'simctl', 'spawn', owned['udid'], 'log', 'show',
+                        '--style', 'json', '--last', '15m', '--info', '--debug', '--predicate', simulator_probe.BOOTSTRAP_PREDICATE])
+                    return self.empty_diagnostic(arguments, secrets, timeout)[0], json.dumps(events).encode()
+                with patch.object(simulator_probe.subprocess, 'run', side_effect=reply) as run, patch.object(simulator_probe, 'diagnostic_command', side_effect=self.diagnostic_inventory(devices, bootstrap)) as diagnostic:
+                    simulator_probe.capture(root, [secret])
+                self.assertEqual(order, ['bootstrap', 'container'])
+                self.assertEqual(run.call_count, 1); self.assertEqual(diagnostic.call_count, 2)
+                text = (root / 'build/fork-evidence/projection-launch-probe.json').read_text()
+                report = json.loads(text)
+                self.assertEqual(report['commands']['installed_host']['exit_code'], 1 if failure == 'commandFailed' else 0)
+                selected = report['bootstrap_events_before_standalone_launch']
+                self.assertEqual(selected['state'], 'parsed'); self.assertEqual(len(selected['events']), 1)
+                self.assertIn('ProjectionTestHost install failed', selected['events'][0]['message'])
+                self.assertIn('<REDACTED_CREDENTIAL>', selected['events'][0]['message'])
+                self.assertNotIn('standalone_host_launch', report['commands'])
+                self.assertNotIn('installed_signature', report['diagnostics'])
+                for private in (secret, '/private/container-secret-path', 'private dropped event', str(root), owned['udid']):
+                    self.assertNotIn(private, text)
 
     def test_diagnostic_command_redacts_known_credentials_paths_and_tokens_and_sanitizes_child_environment(self):
         secret = 'synthetic-' + 'private-sentinel'
@@ -249,7 +354,7 @@ class SimulatorProbeTests(unittest.TestCase):
             identifier = '11111111-2222-3333-4444-555555555555'
             devices = {'devices': {'com.apple.CoreSimulator.SimRuntime.iOS-27-0': [
                 {'name': 'BAZEL_TEST_iPhone 17_27.0', 'state': 'Booted', 'udid': identifier}]}}
-            replies = iter([json.dumps(devices).encode(), str(app).encode(), str(data).encode(), b''])
+            replies = iter([str(app).encode(), str(data).encode(), b''])
             order = []
             def reply(arguments, **kwargs):
                 if 'launch' in arguments: order.append('standalone')
@@ -258,11 +363,11 @@ class SimulatorProbeTests(unittest.TestCase):
                 order.append('signature' if arguments[0] == '/usr/bin/codesign' else 'bootstrap')
                 return {'status': 'outputLimit', 'exit_code': None, 'stderr': '<REDACTED_CREDENTIAL>',
                     'stdout_bytes': 65536, 'stderr_bytes': 0}, b'[{"eventMessage":"unparsed-private-sentinel"'
-            with patch.object(simulator_probe.subprocess, 'run', side_effect=reply), patch.object(simulator_probe, 'diagnostic_command', side_effect=diagnostic):
+            with patch.object(simulator_probe.subprocess, 'run', side_effect=reply), patch.object(simulator_probe, 'diagnostic_command', side_effect=self.diagnostic_inventory(devices, diagnostic)):
                 simulator_probe.capture(root, [])
             path = root / 'build/fork-evidence/projection-launch-probe.json'
             text = path.read_text(); report = json.loads(text)
             self.assertNotIn('unparsed-private-sentinel', text)
             self.assertEqual(report['bootstrap_events_before_standalone_launch'], {'state': 'unavailable', 'reason': 'outputLimit', 'events': []})
-            self.assertEqual(order, ['signature', 'bootstrap', 'standalone'])
+            self.assertEqual(order, ['bootstrap', 'signature', 'standalone'])
             self.assertEqual(stat.S_IMODE(path.stat().st_mode), 0o600)

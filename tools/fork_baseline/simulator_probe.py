@@ -13,6 +13,8 @@ from custom_options_smoke import EXPORT_ENVIRONMENT_KEYS, redact_export_stderr
 from launch_smoke import COMMAND_OUTPUT_LIMIT, POST_EXIT_DRAIN_SECONDS
 
 BUNDLE = 'org.livara.ayugram.tests.native-security.projection'
+RUNTIME = 'com.apple.CoreSimulator.SimRuntime.iOS-27-0'
+DEVICE_NAME = 'BAZEL_TEST_iPhone 17_27.0'
 MARKER = 'Library/Caches/AyuGramNativeTestHost/projection-lifecycle.json'
 STAGES = {'didFinish', 'sceneVisible'}
 BOOTSTRAP_PROCESSES = {'testmanagerd', 'runningboardd', 'xctest', 'launchd_sim'}
@@ -44,7 +46,7 @@ def redact_probe_text(data, secrets):
 
 
 def diagnostic_command(arguments, secrets, timeout=20):
-    """Bound only the two fixed read-only probes; never change test outcomes.
+    """Bound the fixed read-only probes; never change test outcomes.
 
     Stdout remains transient for closed-schema log selection. Only redacted
     stderr and fixed status/counts can be retained on cap/timeout/parse failure.
@@ -198,14 +200,36 @@ def capture(root, secrets, started_at=None):
             except (OSError, subprocess.SubprocessError):
                 report['commands'][name] = {'state': 'unavailable'}
                 return None, ''
-        code, data = command('devices', ['xcrun', 'simctl', 'list', 'devices', 'available', '--json'])
-        if code == 0:
-            devices = json.loads(data).get('devices', {})
-            candidates = [d for runtime, values in devices.items() if runtime.endswith('iOS-27-0')
-                          for d in values if d.get('name') == 'BAZEL_TEST_iPhone 17_27.0' and d.get('state') == 'Booted']
+        inventory, data = diagnostic_command(['xcrun', 'simctl', 'list', 'devices', 'available', '--json'], secrets, timeout=10)
+        # Keep the bounded/redacted failure metadata even when CoreSimulator
+        # inventory cannot complete. No raw device inventory is published.
+        report['commands']['devices'] = inventory
+        if inventory['status'] == 'completed' and inventory['exit_code'] == 0:
+            try:
+                payload = json.loads(data)
+                devices = payload.get('devices') if isinstance(payload, dict) else None
+                values = devices.get(RUNTIME, []) if isinstance(devices, dict) else None
+                if not isinstance(values, list): raise ValueError('Invalid device inventory')
+                candidates = [d for d in values if isinstance(d, dict)
+                              and d.get('name') == DEVICE_NAME and d.get('state') == 'Booted']
+            except (ValueError, TypeError, UnicodeError, RecursionError):
+                candidates = []
+                inventory['payload_state'] = 'invalid'
             report['commands']['devices']['matching_booted_devices'] = len(candidates)
-            if len(candidates) == 1 and re.fullmatch(r'[0-9a-fA-F]{8}(?:-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}', candidates[0].get('udid', '')):
+            if (len(candidates) == 1 and isinstance(candidates[0].get('udid'), str)
+                    and re.fullmatch(r'[0-9a-fA-F]{8}(?:-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}', candidates[0]['udid'])):
                 identifier = candidates[0]['udid']
+                # Installation/path validation can fail during XCTest bootstrap.
+                # Read selected logs for the verified owned device first so
+                # those failures do not suppress the most useful evidence.
+                diagnostics = report['diagnostics'] = {}
+                log, stdout = diagnostic_command(['xcrun', 'simctl', 'spawn', identifier, 'log', 'show',
+                    '--style', 'json', '--last', '15m', '--info', '--debug', '--predicate', BOOTSTRAP_PREDICATE], secrets)
+                diagnostics['test_bootstrap_log'] = log
+                report['commands']['test_bootstrap_log'] = {'exit_code': log['exit_code']}
+                report['bootstrap_events_before_standalone_launch'] = (
+                    {'state': 'unavailable', 'reason': log['status'], 'events': []}
+                    if log['status'] in {'outputLimit', 'timedOut', 'unavailable'} else bootstrap_events(stdout, secrets))
                 code, container = command('installed_host', ['xcrun', 'simctl', 'get_app_container', identifier, BUNDLE, 'app'])
                 container = container.strip()
                 if code == 0 and container and '\0' not in container and Path(container).is_absolute() and Path(container).suffix == '.app' and Path(container).is_dir() and not Path(container).is_symlink():
@@ -219,17 +243,9 @@ def capture(root, secrets, started_at=None):
                     # Capture XCTest's host state before a standalone launch can
                     # create/overwrite its marker and obscure the distinction.
                     report['marker_before_standalone_launch'] = read_marker(data_path)
-                    diagnostics = report['diagnostics'] = {}
                     signature, _ = diagnostic_command(['/usr/bin/codesign', '--verify', '--strict', '--verbose=2', container], secrets, timeout=10)
                     diagnostics['installed_signature'] = signature
                     report['commands']['installed_signature'] = {'exit_code': signature['exit_code']}
-                    log, stdout = diagnostic_command(['xcrun', 'simctl', 'spawn', identifier, 'log', 'show',
-                        '--style', 'json', '--last', '15m', '--info', '--debug', '--predicate', BOOTSTRAP_PREDICATE], secrets)
-                    diagnostics['test_bootstrap_log'] = log
-                    report['commands']['test_bootstrap_log'] = {'exit_code': log['exit_code']}
-                    report['bootstrap_events_before_standalone_launch'] = (
-                        {'state': 'unavailable', 'reason': log['status'], 'events': []}
-                        if log['status'] in {'outputLimit', 'timedOut', 'unavailable'} else bootstrap_events(stdout, secrets))
                     # Strict sealing can differ after XCTest bundle injection;
                     # neither this check nor standalone launch proves test entry.
                     launch_code, _ = command('standalone_host_launch', ['xcrun', 'simctl', 'launch', '--terminate-running-process', identifier, BUNDLE])
