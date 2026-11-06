@@ -53,12 +53,23 @@ final class LocalArchiveTransferTests: XCTestCase {
         if let root = self.root { try? FileManager.default.removeItem(at: root) }
     }
 
-    private func awaitResult<T, E: Error>(_ action: (@escaping (Result<T, E>) -> Void) -> Void) throws -> T {
-        let finished = self.expectation(description: "real archive transfer result")
+    private enum BackupStage: String {
+        case openSource, recordVersion, recordMedia, exportSnapshot
+    }
+
+    private func awaitResult<T, E: Error>(_ stage: BackupStage, file: StaticString = #filePath, line: UInt = #line,
+                                         _ action: (@escaping (Result<T, E>) -> Void) -> Void) throws -> T {
+        let finished = self.expectation(description: "real archive transfer result: " + stage.rawValue)
         let result = Atomic<Result<T, E>?>(value: nil)
         action { value in let _ = result.swap(value); finished.fulfill() }
         self.wait(for: [finished], timeout: 60)
-        return try XCTUnwrap(result.with { $0 }).get()
+        let value = try XCTUnwrap(result.with { $0 }, file: file, line: line)
+        if case .failure = value {
+            // Closed stage names identify fixture failures without logging
+            // passwords, SQL, keys, paths or underlying exception payloads.
+            XCTFail("Encrypted archive fixture failed during " + stage.rawValue, file: file, line: line)
+        }
+        return try value.get()
     }
 
     private func transferValue(_ signal: Signal<LocalArchiveTransferResult, NoError>) throws -> LocalArchiveTransferResult {
@@ -114,7 +125,7 @@ final class LocalArchiveTransferTests: XCTestCase {
     }
 
     private func backup(ownerId: Int64? = nil, testingEnvironment: Bool = false) throws -> URL {
-        let source: ArchiveStore = try self.awaitResult {
+        let source: ArchiveStore = try self.awaitResult(.openSource) {
             ArchiveStore.open(baseDirectory: self.root.appendingPathComponent("source"), accountId: 17,
                 keyProvider: Keys(0x31), clock: { 1000 }, completion: $0)
         }
@@ -123,16 +134,19 @@ final class LocalArchiveTransferTests: XCTestCase {
             message: .init(accountId: 17, peerId: 100, namespace: 0, messageId: 1),
             kind: .deleted, observedAt: 900,
             content: .init(text: "restored through the real account facade", authorId: 100, sentAt: 800))
-        let _: ArchiveWriteResult = try self.awaitResult {
+        let written: ArchiveWriteResult = try self.awaitResult(.recordVersion) {
             source.record([ArchiveCapture(event: event, context: .init(ordinaryCloudMessage: true))],
                 generation: 0, policy: .init(enabled: true), completion: $0)
         }
-        let _: Bool = try self.awaitResult {
+        XCTAssertEqual(written.inserted + written.duplicates, 1)
+        XCTAssertEqual(written.excluded, 0)
+        let retained: Bool = try self.awaitResult(.recordMedia) {
             source.recordMedia(eventKey: event.eventKey, slot: 0, kind: "document", mimeType: "application/octet-stream",
                 data: self.media, generation: 0, completion: $0)
         }
+        XCTAssertTrue(retained, "the export fixture requires a genuinely retained media payload")
         let url = self.root.appendingPathComponent(UUID().uuidString + ".ayuarchive")
-        let _: ArchiveTransferExport = try self.awaitResult {
+        let _: ArchiveTransferExport = try self.awaitResult(.exportSnapshot) {
             source.exportBackup(to: url, password: self.password, ownerId: ownerId ?? self.owner.toInt64(),
                 testingEnvironment: testingEnvironment, cancellation: ArchiveTransferCancellation(), completion: $0)
         }

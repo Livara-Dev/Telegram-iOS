@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 import Foundation
+import Darwin
 import XCTest
 import sqlcipher
 @testable import LocalMessageArchive
@@ -363,6 +364,50 @@ final class ArchiveTransferTests: XCTestCase {
         sqlite3_close_v2(input)
         let destination = try self.open(2)
         XCTAssertEqual(try self.restore(destination, url: url).addedVersions, 1)
+    }
+
+    func testKnownSystemParentAliasesRequirePosixCanonicalTargets() throws {
+        for (alias, expected) in [("/var", "/private/var"), ("/tmp", "/private/tmp")] {
+            let url = URL(fileURLWithPath: alias, isDirectory: true)
+            var info = stat()
+            if lstat(alias, &info) != 0 {
+                XCTAssertThrowsError(try ArchiveTransferFiles.validateParents(url))
+                continue
+            }
+            if (info.st_mode & S_IFMT) == S_IFLNK {
+                // The exact allowlisted target is a POSIX fact; Foundation's
+                // preferred spelling is not evidence about a symlink target.
+                let physical = try ArchiveTransferFiles.physicalURL(url)
+                if physical.path == expected {
+                    XCTAssertNoThrow(try ArchiveTransferFiles.validateParents(url))
+                } else {
+                    XCTAssertThrowsError(try ArchiveTransferFiles.validateParents(url))
+                }
+            } else {
+                XCTAssertEqual(info.st_mode & S_IFMT, S_IFDIR)
+                XCTAssertNoThrow(try ArchiveTransferFiles.validateParents(url))
+            }
+        }
+    }
+
+    func testCallerCreatedParentAliasCannotRedirectTransferFileOrDirectoryCreation() throws {
+        let actual = self.root.appendingPathComponent("actual-parent", isDirectory: true)
+        try FileManager.default.createDirectory(at: actual, withIntermediateDirectories: false)
+        let link = self.root.appendingPathComponent("parent-alias", isDirectory: true)
+        try FileManager.default.createSymbolicLink(at: link, withDestinationURL: actual)
+        let original = actual.appendingPathComponent("source.ayuarchive")
+        let canary = Data("synthetic transfer path canary".utf8)
+        try canary.write(to: original)
+        for operation in [
+            { let fd = try ArchiveTransferFiles.create(link.appendingPathComponent("blocked.ayuarchive")); _ = Darwin.close(fd) },
+            { try ArchiveTransferFiles.protectedDirectory(link.appendingPathComponent("blocked-directory", isDirectory: true)) },
+            { let file = try ArchiveTransferFiles.openRead(link.appendingPathComponent("source.ayuarchive")); _ = Darwin.close(file.fd) }
+        ] {
+            XCTAssertThrowsError(try operation()) { XCTAssertEqual($0 as? ArchiveTransferError, .storageUnavailable) }
+        }
+        XCTAssertFalse(FileManager.default.fileExists(atPath: actual.appendingPathComponent("blocked.ayuarchive").path))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: actual.appendingPathComponent("blocked-directory").path))
+        XCTAssertEqual(try Data(contentsOf: original), canary)
     }
 
     func testCancellationAfterRealBlobWriteRollsBackVersionsAndMedia() throws {

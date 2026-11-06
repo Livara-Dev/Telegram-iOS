@@ -205,7 +205,12 @@ enum ArchiveTransferFiles {
             guard lstat(current.path, &info) == 0 else { throw ArchiveTransferError.storageUnavailable }
             if (info.st_mode & S_IFMT) == S_IFLNK {
                 let aliases = ["/var": "/private/var", "/tmp": "/private/tmp"]
-                guard aliases[current.path] == current.resolvingSymlinksInPath().path else {
+                // Foundation can preserve a Darwin /var or /tmp spelling even
+                // when the endpoint is a known system alias. Match the POSIX
+                // physical-path proof used for SQLite's NOFOLLOW opens. This
+                // allowlist still rejects every caller-created parent link.
+                guard let expected = aliases[current.path],
+                      try self.physicalURL(current).path == expected else {
                     throw ArchiveTransferError.storageUnavailable
                 }
             } else if (info.st_mode & S_IFMT) != S_IFDIR { throw ArchiveTransferError.storageUnavailable }
