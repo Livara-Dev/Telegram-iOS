@@ -25,6 +25,17 @@ import custom_options_replay as replay
 ROOT = TOOLS.parents[1]
 HEAD = 'd' * 40
 IDENTIFIER = '11111111-2222-3333-4444-555555555555'
+CONTAINER = '99999999-8888-7777-6666-555555555555'
+
+
+def device_tree(home, name='AYU_OPTIONS_ROOT_fixture'):
+    device = home / 'Library/Developer/CoreSimulator/Devices' / IDENTIFIER
+    device.mkdir(parents=True)
+    (device / 'device.plist').write_bytes(plistlib.dumps({'UDID': IDENTIFIER, 'name': name,
+        'deviceType': replay.DEVICE_TYPE, 'runtime': replay.RUNTIME}))
+    candidate = device / 'data/Containers/Bundle/Application' / CONTAINER / 'CustomeOptionsHost.app'
+    candidate.parent.mkdir(parents=True)
+    return device, candidate
 
 
 def metadata():
@@ -103,13 +114,15 @@ def self_controls(kind=None):
 
 
 class Native:
-    def __init__(self, root, kind=None):
+    def __init__(self, root, kind=None, filesystem=False):
         self.root = root; self.kind = kind; self.calls = []; self.device_name = None; self.app = None
+        self.filesystem = filesystem; self.home = root / 'owned-home'
         self.installed = root / 'owned-installed/CustomeOptionsHost.app'
     def __call__(self, args, timeout=30):
         self.calls.append((args, timeout))
         if args[0] == '/usr/bin/codesign':
             if self.kind == 'signature': return {'status': 'commandFailed', 'exit_code': 1, 'timeout': False, 'output_limit': False, 'captured_bytes': 0}, b''
+            if self.kind == 'installedSignature' and args[-1] == str(self.installed): return {'status': 'commandFailed', 'exit_code': 1, 'timeout': False, 'output_limit': False, 'captured_bytes': 0}, b''
         elif args[:2] == ['xcodebuild', '-version']: return complete(b'Xcode 27.1\nBuild version 27A9275\n')
         elif args[:2] == ['xcrun', 'swiftc']: Path(args[-1]).write_bytes(b'synthetic helper')
         elif len(args) == 3 and args[1] == '--self-test':
@@ -136,26 +149,41 @@ class Native:
         elif args[:3] == ['xcrun', 'simctl', 'bootstatus'] and self.kind in ('149', '149wrong'):
             return {'status': 'commandFailed', 'exit_code': 149, 'timeout': False, 'output_limit': False, 'captured_bytes': 0}, b''
         elif args[:4] == ['xcrun', 'simctl', 'list', 'devices']:
+            if args == ['xcrun', 'simctl', 'list', 'devices', '--json']:
+                if self.kind == 'cleanupTimedOut': return {'status': 'timedOut', 'exit_code': None, 'timeout': True, 'output_limit': False, 'captured_bytes': 0}, b''
+                if self.kind == 'cleanupMalformed': return complete(b'{"devices":')
+                return complete(json.dumps({'devices': {replay.RUNTIME: [{'udid': IDENTIFIER.lower()}] if self.kind == 'cleanup' else []}}).encode())
             return complete(json.dumps({'devices': {replay.RUNTIME: [{'udid': IDENTIFIER, 'name': self.device_name,
                 'deviceTypeIdentifier': replay.DEVICE_TYPE, 'state': 'Booted' if self.kind == '149' else 'Shutdown'}]}}).encode())
         elif args[:3] == ['xcrun', 'simctl', 'install']:
             self.app = Path(args[-1])
             if self.kind == 'install': return {'status': 'timedOut', 'exit_code': None, 'timeout': True, 'output_limit': False, 'captured_bytes': 0}, b''
-            self.installed.parent.mkdir(); shutil.copytree(self.app, self.installed)
+            if self.filesystem:
+                device, self.installed = device_tree(self.home, self.device_name)
+                if self.kind == 'wrongOwnedDevice':
+                    path = device / 'device.plist'; value = plistlib.loads(path.read_bytes()); value['deviceType'] += '.wrong'
+                    path.write_bytes(plistlib.dumps(value))
+                if self.kind == 'unknownSchema': (device / 'device.plist').write_bytes(plistlib.dumps({'UDID': IDENTIFIER}))
+            self.installed.parent.mkdir(parents=True, exist_ok=True); shutil.copytree(self.app, self.installed)
             if self.kind == 'installed': (self.installed / 'CustomeOptionsHost').write_bytes(b'wrong executable')
             if self.kind == 'installedXML': (self.installed / 'Info.plist').write_bytes(b'<plist><dict>PRIVATE-CANARY</broken>')
             if self.kind == 'extraFile': (self.installed / 'UnexpectedExecutable').write_bytes(b'PRIVATE-CANARY')
             if self.kind == 'extraDir': (self.installed / 'UnexpectedDirectory').mkdir()
             if self.kind == 'extraSymlink': (self.installed / 'UnexpectedLink').symlink_to(self.app / 'CustomeOptionsHost')
-        elif args[:3] == ['xcrun', 'simctl', 'get_app_container']: return complete(str(self.installed).encode())
+        elif args[:3] == ['xcrun', 'simctl', 'get_app_container']:
+            if self.filesystem and self.kind != 'unknownSchema': raise AssertionError('Attested owned filesystem must not wait on optional API lookup')
+            if timeout != 5: raise AssertionError('API fallback must be bounded to five seconds')
+            return complete(str(self.installed).encode())
         elif args[:3] == ['xcrun', 'simctl', 'io'] and args[4] == 'screenshot': Path(args[-1]).write_bytes(b'synthetic PNG checked by mocked native Vision')
         elif len(args) == 3 and args[0].endswith('visible-root-check') and args[1] == '--metadata':
             return complete(b'{"width":1179,"height":2556}')
         elif len(args) == 2 and args[0].endswith('visible-root-check'):
             if self.kind == 'mutate': (self.root / replay.OUTPUT / 'CustomeOptionsHost-simulator.ipa').write_bytes(b'changed')
             return complete(json.dumps({'root_title_visible': self.kind != 'title', 'width': 1179, 'height': 2556}).encode())
-        elif args[:3] == ['xcrun', 'simctl', 'shutdown'] and self.kind == 'cleanup':
+        elif args[:3] == ['xcrun', 'simctl', 'shutdown'] and self.kind in ('cleanup', 'shutdownOnly'):
             return {'status': 'timedOut', 'exit_code': None, 'timeout': True, 'output_limit': False, 'captured_bytes': 0}, b''
+        elif args[:3] == ['xcrun', 'simctl', 'delete'] and self.kind == 'deleteFailed':
+            return {'status': 'commandFailed', 'exit_code': 1, 'timeout': False, 'output_limit': False, 'captured_bytes': 0}, b''
         return complete()
     def popen(self, args, **kwargs):
         if set(kwargs['env']) - replay.child_environment().keys(): raise AssertionError('unbounded child environment')
@@ -292,6 +320,91 @@ class RetainedSettingsReplayTests(unittest.TestCase):
             self.assertNotEqual(replay.BUNDLE, replay.artifacts.BUNDLE)
             self.assertEqual(len([p for p in destination.rglob('*') if p.is_file()]), 4)
 
+    def test_owned_filesystem_locator_requires_exact_fresh_device_identity(self):
+        for key in (None, 'UDID', 'name', 'deviceType', 'runtime'):
+            with self.subTest(key=key), tempfile.TemporaryDirectory() as directory:
+                home = Path(directory).resolve(); device, candidate = device_tree(home); candidate.mkdir()
+                if key:
+                    path = device / 'device.plist'; value = plistlib.loads(path.read_bytes()); value[key] += '-wrong'
+                    path.write_bytes(plistlib.dumps(value))
+                result, proof = replay.owned_installed_bundle(IDENTIFIER, 'AYU_OPTIONS_ROOT_fixture', home=home)
+                if key:
+                    self.assertIsNone(result); self.assertEqual(proof['state'], 'rejected')
+                    self.assertEqual(proof['reason'], 'ownedDeviceIdentityMismatch')
+                else:
+                    self.assertEqual(result, candidate); self.assertEqual(proof['state'], 'candidateLocated')
+                    self.assertTrue(proof['device_identity_verified']); self.assertTrue(proof['unique_candidate_verified'])
+                self.assertNotIn(str(home), json.dumps(proof))
+
+    def test_owned_locator_rejects_symbolic_links_wrong_owner_multiple_candidates_and_container_overflow(self):
+        for kind in ('deviceLink', 'metadataLink', 'appLink', 'owner', 'multiple', 'overflow', 'fifo'):
+            with self.subTest(kind=kind), tempfile.TemporaryDirectory() as directory:
+                home = Path(directory).resolve(); device, candidate = device_tree(home); candidate.mkdir()
+                if kind == 'deviceLink':
+                    actual = home / 'actual-device'; device.rename(actual); device.symlink_to(actual, target_is_directory=True)
+                if kind == 'metadataLink':
+                    metadata = device / 'device.plist'; actual = home / 'actual.plist'; metadata.rename(actual); metadata.symlink_to(actual)
+                if kind == 'appLink':
+                    actual = home / 'Actual.app'; candidate.rename(actual); candidate.symlink_to(actual, target_is_directory=True)
+                if kind == 'multiple': (candidate.parent.parent / 'AAAAAAAA-BBBB-CCCC-DDDD-EEEEEEEEEEEE/CustomeOptionsHost.app').mkdir(parents=True)
+                if kind == 'overflow':
+                    for i in range(33): (candidate.parent.parent / (f'{i:08X}-0000-0000-0000-000000000001')).mkdir()
+                if kind == 'fifo': (device / 'device.plist').unlink(); os.mkfifo(device / 'device.plist')
+                result, proof = replay.owned_installed_bundle(IDENTIFIER, 'AYU_OPTIONS_ROOT_fixture', home=home,
+                    uid=os.getuid() + 1 if kind == 'owner' else os.getuid())
+                self.assertIsNone(result); self.assertEqual(proof['state'], 'rejected')
+
+    def test_owned_filesystem_candidate_still_requires_complete_bytes_metadata_and_installed_signature(self):
+        for kind in (None, 'installed', 'installedXML', 'extraFile', 'extraSymlink', 'installedSignature', 'wrongOwnedDevice'):
+            with self.subTest(kind=kind), self.prepared() as (root, output, _, _), patch.object(replay.platform, 'system', return_value='Darwin'):
+                native = Native(root, kind, filesystem=True)
+                with patch.object(replay.Path, 'home', return_value=native.home):
+                    if kind:
+                        with self.assertRaises(ValueError): replay.execute(root=root, command=native, popen=native.popen, pause=lambda _: None)
+                        report = json.loads((output / 'result.json').read_text()); self.assertFalse(report['passed'])
+                        self.assertFalse(report['installed_host_verified'])
+                        self.assertFalse(any(a[:3] == ['xcrun', 'simctl', 'launch'] for a, _ in native.calls))
+                        self.assertIsNotNone(report['installed_host_locator']['reason'])
+                    else:
+                        report = replay.execute(root=root, command=native, popen=native.popen, pause=lambda _: None)
+                        self.assertTrue(report['passed']); self.assertTrue(report['installed_host_verified'])
+                        self.assertEqual(report['installed_host_locator']['origin'], 'ownedDeviceFilesystem')
+                        self.assertEqual(report['installed_host_locator']['state'], 'attested')
+                    self.assertFalse(any(a[:3] == ['xcrun', 'simctl', 'get_app_container'] for a, _ in native.calls))
+                    self.assertNotIn(str(root), (output / 'result.json').read_text())
+
+    def test_unknown_private_device_schema_falls_back_only_to_bounded_own_api_and_full_attestation(self):
+        with self.prepared() as (root, _, _, _), patch.object(replay.platform, 'system', return_value='Darwin'):
+            native = Native(root, 'unknownSchema', filesystem=True)
+            with patch.object(replay.Path, 'home', return_value=native.home):
+                report = replay.execute(root=root, command=native, popen=native.popen, pause=lambda _: None)
+            self.assertTrue(report['passed']); self.assertEqual(report['installed_host_locator']['origin'], 'simctl')
+            self.assertEqual(report['installed_host_locator']['filesystem']['reason'], 'deviceMetadataUnsupported')
+            self.assertTrue(report['installed_host_verified'])
+            lookups = [(a, t) for a, t in native.calls if a[:3] == ['xcrun', 'simctl', 'get_app_container']]
+            self.assertEqual(lookups, [(['xcrun', 'simctl', 'get_app_container', IDENTIFIER, replay.BUNDLE, 'app'], 5)])
+
+    def test_cleanup_requires_delete_success_and_unfiltered_uuid_absence_without_faking_shutdown(self):
+        for kind in ('shutdownOnly', 'cleanup', 'cleanupMalformed', 'cleanupTimedOut', 'deleteFailed'):
+            with self.subTest(kind=kind), self.prepared() as (root, output, _, _), patch.object(replay.platform, 'system', return_value='Darwin'):
+                native = Native(root, kind)
+                if kind == 'shutdownOnly':
+                    report = replay.execute(root=root, command=native, popen=native.popen, pause=lambda _: None)
+                    self.assertTrue(report['passed']); self.assertTrue(report['cleanup_passed'])
+                    self.assertEqual(report['cleanup_results'], {'shutdown_completed': False, 'delete_command_completed': True, 'owned_uuid_absent': True})
+                else:
+                    with self.assertRaisesRegex(replay.ReplayError, '^settings_cleanup_not_verified$'):
+                        replay.execute(root=root, command=native, popen=native.popen, pause=lambda _: None)
+                    report = json.loads((output / 'result.json').read_text()); self.assertFalse(report['passed']); self.assertFalse(report['cleanup_passed'])
+                    self.assertEqual(report['cleanup_results']['owned_uuid_absent'], False if kind == 'cleanup' else None)
+                inventories = [a for a, _ in native.calls if a[:4] == ['xcrun', 'simctl', 'list', 'devices']]
+                self.assertEqual(inventories, [] if kind == 'deleteFailed' else [['xcrun', 'simctl', 'list', 'devices', '--json']])
+        self.assertIsNone(replay.owned_uuid_absent(b'{"devices": {"runtime": [null]}}', IDENTIFIER))
+        self.assertFalse(replay.owned_uuid_absent(json.dumps({'devices': {'runtime': [{'udid': IDENTIFIER.lower()}]}}).encode(), IDENTIFIER))
+        for data in (b'{"devices":{"runtime":[{"udid":"' + IDENTIFIER.encode() + b'"}],"runtime":[]}}',
+                     b'{"devices":{"runtime":[{"udid":"' + IDENTIFIER.encode() + b'"}]},"devices":{}}'):
+            self.assertIsNone(replay.owned_uuid_absent(data, IDENTIFIER))
+
     def test_wrong_prepared_source_stale_checkout_or_fresh_test_claim_blocks_commands(self):
         for key, value in [('source_commit', replay.CURRENT_SOURCE), ('artifact_id', 1), ('replay_checkout_commit', 'e' * 40),
                            ('new_xctest_cases_executed', 9), ('logged_in_settings_verified', True), ('native_source_hashes', {})]:
@@ -328,7 +441,7 @@ class RetainedSettingsReplayTests(unittest.TestCase):
             self.assertFalse(result['recording_started_before_launch'])
             self.assertTrue(result['recording_started_before_recorded_launch'])
             self.assertTrue(result['recording_available'])
-            self.assertEqual([a[2] for a in commands[-2:]], ['shutdown', 'delete'])
+            self.assertEqual([a[2] for a in commands[-3:]], ['shutdown', 'delete', 'list'])
             text = (output / 'result.json').read_text()
             for private in ('PRIVATE-CANARY', str(root), IDENTIFIER): self.assertNotIn(private, text)
 
@@ -393,7 +506,7 @@ class RetainedSettingsReplayTests(unittest.TestCase):
                 self.assertEqual(result['new_xctest_cases_executed'], 0)
                 for name in ('root-light.png', 'root-light.mp4', 'title-check-positive.png'): self.assertTrue((output / name).is_file())
                 self.assertFalse(any(len(a) == 2 and a[0].endswith('visible-root-check') for a, _ in native.calls))
-                self.assertEqual([a[2] for a, _ in native.calls[-2:]], ['shutdown', 'delete'])
+                self.assertEqual([a[2] for a, _ in native.calls[-3:]], ['shutdown', 'delete', 'list'])
 
     def test_self_control_invalid_payload_crash_timeout_or_status_mismatch_never_creates_simulator(self):
         for kind in ('selfMalformed', 'selfCrashed', 'selfMismatch', 'selfTimeout', 'largePositive'):
@@ -436,7 +549,7 @@ class RetainedSettingsReplayTests(unittest.TestCase):
                 with self.assertRaises(replay.ReplayError): replay.execute(root=root, command=native, popen=native.popen, pause=lambda _: None)
                 result = json.loads((output / 'result.json').read_text()); self.assertFalse(result['passed'])
                 self.assertEqual(result['new_xctest_cases_executed'], 0)
-                self.assertEqual([args[2] for args, _ in native.calls[-2:]], ['shutdown', 'delete'])
+                self.assertEqual([args[2] for args, _ in native.calls[-3:]], ['shutdown', 'delete', 'list'])
                 if kind in ('installed', 'installedXML', 'extraFile', 'extraDir', 'extraSymlink', 'install'):
                     self.assertFalse(any(a[:3] == ['xcrun', 'simctl', 'launch'] for a, _ in native.calls))
                 if kind == 'install': self.assertEqual(result['phase'], 'installFrozenHost')

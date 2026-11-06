@@ -452,6 +452,96 @@ def host_snapshot(app):
     return result
 
 
+def owned_installed_bundle(identifier, name, *, home=None, uid=None):
+    """Inspect only this invocation's new device; unknown layouts grant no path."""
+    proof = {'state': 'unavailable', 'reason': 'deviceSetUnavailable', 'device_identity_verified': False,
+             'unique_candidate_verified': False}
+    try:
+        if not isinstance(identifier, str) or re.fullmatch(r'[0-9A-Fa-f]{8}(?:-[0-9A-Fa-f]{4}){3}-[0-9A-Fa-f]{12}', identifier) is None:
+            return None, {**proof, 'state': 'rejected', 'reason': 'invalidOwnedIdentifier'}
+        user = os.getuid() if uid is None else uid
+        root = Path(home if home is not None else Path.home()).resolve(strict=True)
+        device = root / 'Library/Developer/CoreSimulator/Devices' / identifier
+        path = root
+        for part in device.relative_to(root).parts:
+            path = path / part
+            if path.is_symlink(): return None, {**proof, 'state': 'rejected', 'reason': 'symbolicLink'}
+            if not path.is_dir(): return None, proof
+        if device.stat().st_uid != user: return None, {**proof, 'state': 'rejected', 'reason': 'ownerMismatch'}
+        metadata = device / 'device.plist'
+        if metadata.is_symlink(): return None, {**proof, 'state': 'rejected', 'reason': 'symbolicLink'}
+        if not metadata.exists(): return None, {**proof, 'reason': 'deviceMetadataUnavailable'}
+        info = metadata.lstat()
+        if not stat.S_ISREG(info.st_mode) or info.st_uid != user:
+            return None, {**proof, 'state': 'rejected', 'reason': 'unsafeDeviceMetadata'}
+        if not 0 < info.st_size <= 65536: return None, {**proof, 'reason': 'deviceMetadataUnsupported'}
+        descriptor = os.open(metadata, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+        try:
+            opened = os.fstat(descriptor)
+            if not stat.S_ISREG(opened.st_mode) or opened.st_uid != user or not 0 < opened.st_size <= 65536:
+                return None, {**proof, 'state': 'rejected', 'reason': 'unsafeDeviceMetadata'}
+            raw = os.read(descriptor, 65537)
+        finally: os.close(descriptor)
+        if len(raw) != opened.st_size: return None, {**proof, 'reason': 'deviceMetadataUnavailable'}
+        try: value = plistlib.loads(raw)
+        except (ValueError, TypeError, ExpatError, OverflowError): return None, {**proof, 'reason': 'deviceMetadataUnsupported'}
+        if not isinstance(value, dict) or any(not isinstance(value.get(k), str) for k in ('UDID', 'name', 'deviceType', 'runtime')):
+            return None, {**proof, 'reason': 'deviceMetadataUnsupported'}
+        if (value['UDID'].casefold() != identifier.casefold() or value['name'] != name or
+                value['deviceType'] != DEVICE_TYPE or value['runtime'] != RUNTIME):
+            return None, {**proof, 'state': 'rejected', 'reason': 'ownedDeviceIdentityMismatch'}
+        proof['device_identity_verified'] = True
+        application = device
+        for part in ('data', 'Containers', 'Bundle', 'Application'):
+            application = application / part
+            if application.is_symlink(): return None, {**proof, 'state': 'rejected', 'reason': 'symbolicLink'}
+            if not application.is_dir(): return None, {**proof, 'reason': 'applicationLayoutUnavailable'}
+            if application.stat().st_uid != user: return None, {**proof, 'state': 'rejected', 'reason': 'ownerMismatch'}
+        candidates = []
+        for index, container in enumerate(application.iterdir()):
+            if index >= 32: return None, {**proof, 'state': 'rejected', 'reason': 'containerLimitExceeded'}
+            if container.is_symlink(): return None, {**proof, 'state': 'rejected', 'reason': 'symbolicLink'}
+            if (not container.is_dir() or re.fullmatch(r'[0-9A-Fa-f]{8}(?:-[0-9A-Fa-f]{4}){3}-[0-9A-Fa-f]{12}', container.name) is None):
+                return None, {**proof, 'reason': 'applicationLayoutUnsupported'}
+            if container.stat().st_uid != user: return None, {**proof, 'state': 'rejected', 'reason': 'ownerMismatch'}
+            candidate = container / 'CustomeOptionsHost.app'
+            if candidate.is_symlink(): return None, {**proof, 'state': 'rejected', 'reason': 'symbolicLink'}
+            if candidate.exists():
+                if not candidate.is_dir() or candidate.stat().st_uid != user:
+                    return None, {**proof, 'state': 'rejected', 'reason': 'unsafeApplicationBundle'}
+                candidates.append(candidate)
+        if len(candidates) > 1: return None, {**proof, 'state': 'rejected', 'reason': 'ambiguousApplicationBundle'}
+        if not candidates: return None, {**proof, 'reason': 'applicationBundleUnavailable'}
+        return candidates[0], {**proof, 'state': 'candidateLocated', 'reason': None, 'unique_candidate_verified': True}
+    except (OSError, ValueError, TypeError, RuntimeError):
+        return None, {**proof, 'reason': 'filesystemUnavailable'}
+
+
+def owned_uuid_absent(data, identifier):
+    """Only a valid unfiltered inventory may establish final device absence."""
+    if not isinstance(data, bytes) or not 0 < len(data) <= 65536: return None
+    def unique(items):
+        value = {}
+        for key, item in items:
+            if key in value: raise ValueError('Ambiguous device inventory')
+            value[key] = item
+        return value
+    try:
+        payload = json.loads(data, object_pairs_hook=unique)
+        devices = payload.get('devices') if isinstance(payload, dict) else None
+        if not isinstance(devices, dict): return None
+        matches, count = 0, 0
+        for runtime, rows in devices.items():
+            if not isinstance(runtime, str) or not isinstance(rows, list): return None
+            for row in rows:
+                count += 1
+                if count > 1024 or not isinstance(row, dict) or not isinstance(row.get('udid'), str): return None
+                if re.fullmatch(r'[0-9A-Fa-f]{8}(?:-[0-9A-Fa-f]{4}){3}-[0-9A-Fa-f]{12}', row['udid']) is None: return None
+                matches += row['udid'].casefold() == identifier.casefold()
+        return matches == 0
+    except (ValueError, TypeError, UnicodeError, RecursionError): return None
+
+
 class Recording:
     """The one fixed simctl recorder, with bounded private copies of both pipes."""
     def __init__(self, identifier, video, popen, pause):
@@ -559,7 +649,8 @@ def execute(output=OUTPUT, root=None, command=native_command, pause=time.sleep, 
               'physical_device_verified': False, 'release_qualified': False, 'visual_review_required': True,
               'commands': [], 'cleanup_passed': False, 'source_codesign_verified': False, 'installed_host_verified': False,
               'root_title_automatically_verified': False, 'diagnostic_root_captured': False,
-              'warmup_launch_completed': False, 'recording_available': False, 'recording_started_before_launch': False}
+              'warmup_launch_completed': False, 'recording_available': False, 'recording_started_before_launch': False,
+              'cleanup_results': {'shutdown_completed': None, 'delete_command_completed': None, 'owned_uuid_absent': None}}
     identifier, recorder = None, None
     def call(label, args, timeout=30, self_test=False):
         report['phase'] = label
@@ -641,10 +732,38 @@ def execute(output=OUTPUT, root=None, command=native_command, pause=time.sleep, 
                         raise ReplayError('settings_owned_boot_not_verified')
                     report['owned_already_booted_state_verified'] = True
                 call('installFrozenHost', ['xcrun', 'simctl', 'install', identifier, str(app)], timeout=120)
-                installed = Path(call('locateInstalledHost', ['xcrun', 'simctl', 'get_app_container', identifier, BUNDLE, 'app']).decode().strip())
-                if not installed.is_absolute() or any(p.is_symlink() for p in (installed, *installed.parents)): raise ReplayError('settings_installed_host_invalid')
-                checked_metadata(installed)
-                if host_snapshot(installed) != snapshot: raise ReplayError('settings_installed_host_invalid')
+                report['phase'] = 'locateInstalledHost'
+                installed, filesystem = owned_installed_bundle(identifier, device_name)
+                locator = report['installed_host_locator'] = {'origin': 'ownedDeviceFilesystem' if installed is not None else 'notLocated',
+                    'state': 'unverified', 'reason': None, 'filesystem': filesystem}
+                if filesystem['state'] == 'rejected':
+                    locator.update(state='rejected', reason=filesystem['reason'])
+                    raise ReplayError('settings_installed_host_invalid')
+                if installed is None:
+                    try: installed = Path(call('locateInstalledHost', ['xcrun', 'simctl', 'get_app_container', identifier, BUNDLE, 'app'], timeout=5).decode().strip())
+                    except (ValueError, RuntimeError):
+                        locator.update(reason='apiLookupUnavailable')
+                        raise
+                    locator['origin'] = 'simctl'
+                if not installed.is_absolute() or any(p.is_symlink() for p in (installed, *installed.parents)):
+                    locator.update(state='rejected', reason='unsafeInstalledPath')
+                    raise ReplayError('settings_installed_host_invalid')
+                try: checked_metadata(installed)
+                except (OSError, ValueError):
+                    locator.update(state='rejected', reason='installedMetadataMismatch')
+                    raise
+                try: installed_snapshot = host_snapshot(installed)
+                except (OSError, ValueError):
+                    locator.update(state='rejected', reason='installedInventoryMismatch')
+                    raise
+                if installed_snapshot != snapshot:
+                    locator.update(state='rejected', reason='installedInventoryMismatch')
+                    raise ReplayError('settings_installed_host_invalid')
+                try: call('verifyInstalledSignature', ['/usr/bin/codesign', '--verify', '--deep', '--strict', str(installed)])
+                except (ValueError, RuntimeError):
+                    locator.update(state='rejected', reason='installedSignatureUnverified')
+                    raise
+                locator.update(state='attested', reason=None)
                 report['installed_host_verified'] = True
                 # Activate this owned simulator's framebuffer with the frozen
                 # host before asking simctl to record it. This warm-up is an
@@ -689,11 +808,19 @@ def execute(output=OUTPUT, root=None, command=native_command, pause=time.sleep, 
                     report['recording_return_code'] = recorder.exit_code
                     report['recording_diagnostic'] = recorder.diagnostic()
                     recorder = None
-                cleaned = True
+                cleanup = report['cleanup_results']
                 for action in ('shutdown', 'delete'):
-                    try: call(action + 'OwnedSimulator', ['xcrun', 'simctl', action, identifier], timeout=30)
-                    except (OSError, ValueError, RuntimeError, subprocess.SubprocessError): cleaned = False
-                report['cleanup_passed'] = cleaned
+                    field = 'shutdown_completed' if action == 'shutdown' else 'delete_command_completed'
+                    try:
+                        call(action + 'OwnedSimulator', ['xcrun', 'simctl', action, identifier], timeout=30)
+                        cleanup[field] = True
+                    except (OSError, ValueError, RuntimeError, subprocess.SubprocessError): cleanup[field] = False
+                if cleanup['delete_command_completed']:
+                    try:
+                        inventory = call('verifyOwnedDeletion', ['xcrun', 'simctl', 'list', 'devices', '--json'], timeout=10)
+                        cleanup['owned_uuid_absent'] = owned_uuid_absent(inventory, identifier)
+                    except (OSError, ValueError, RuntimeError, subprocess.SubprocessError): pass
+                report['cleanup_passed'] = cleanup['delete_command_completed'] is True and cleanup['owned_uuid_absent'] is True
                 report['phase'] = original_phase
             if not report['cleanup_passed']:
                 report['phase'] = 'cleanupOwnedSimulator'
