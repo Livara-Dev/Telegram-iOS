@@ -161,6 +161,24 @@ binary. No proprietary exteraGram components are copied.
   all 47 inner references were verified. This closes the writable-copy export
   defect without changing production rendering. It remains an account-free
   settings fixture, not complete-application startup or physical-device proof.
+- The automatically triggered full run
+  [42152205369](https://github.com/Livara-Dev/Telegram-iOS/actions/runs/42152205369)
+  at dc68f12f passed **1,116 cases and failed four**, with no crashes or skips,
+  before its application gate stopped. Passcode 16, Postbox 201 and archive 114
+  passed; Core completed 785 passing and four failing cases. Both deleted-history
+  integration cases now pass. The later playback/TextFormat/SettingsUI/Projection
+  targets and full simulator app were not run. Of the 126 new methods, 100 passed
+  and 26 were not reached. Three import-facade cases returned transient
+  `unavailable` while startup storage work was still in flight. The fourth
+  fixture attempted to construct a current typed model from a future schema
+  before testing its opaque Postbox preservation. The next source queues one
+  explicit transfer at a safe storage boundary, revalidates all authority, and
+  adds seven regressions; the future-policy fixture now exercises the real
+  unsupported-entry path and every mutator. These repairs await native execution
+  in the new fixed `core-only` scope before another full qualification. The
+  artifact's outer digest and all eighteen inner references were verified.
+  The original ARM64 device job is still running and has not been cancelled;
+  compilation by itself cannot qualify its failed source run.
 
 ## Core features and native integration
 
@@ -179,7 +197,7 @@ follow-up extends that candidate. None is certified by the older 62546557 IPA.
 | Reconnect/history-fetch replacements, validation removals and media-reference refreshes | Precise Postbox replacement observer, ordinary cloud-load wrappers, cached channel minimum-ID handling and original-request namespace guards; all 28 additional cases passed at b492 in 42114628197 | Current later source needs qualification. Same-second repeated content uses persisted UUIDs and SQLite sequence ordering. One pending-outbox budget scan per upsert batch; no measured latency. Validation removal includes upstream RPC-error fallback and is not proof of remote sender deletion |
 | Legacy group, broadcast and supergroup edit/delete replay | New actual replay fixtures and acknowledged channel-edit coverage | Native execution pending; no live two-client server claim |
 | Deleted/Edited label preferences and current live-version preview | Account-local editor and archive timeline/gallery bindings; later saved-edit marker candidate described below | New native tests pending. The older IPA does not contain the inline marker candidate |
-| Encrypted import/export | Native picker, strict owner/environment binding, authenticated envelope, live-row reconstruction and transactional merge; all 24 library transfer cases passed at 17033 | Later Core transfer fixtures were not reached after an unrelated test abort; facade/UI qualification remains open. Capture must be explicitly paused, with warned capture gap. No AyuSync/network transport |
+| Encrypted import/export | Native picker, strict owner/environment binding, authenticated envelope, live-row reconstruction and transactional merge; all 24 library transfer cases passed. Core now reaches all five existing facade cases: two pass and three expose startup-storage availability races; one-request deferred handoff plus seven regressions authored | New coordinator source requires native `core-only` execution. Capture must be explicitly paused, with warned capture gap. Policy/lock/lease/disposal changes revoke pending transfers; authentication remains before destination creation. No AyuSync/network transport |
 | Ordinary GIF, PDF and typed encrypted media playback | All 18 encrypted-playback cases passed at 17033, including real Ogg/Opus PCM, video frames and the PDF fixture; SettingsUI compiled and its eight media-preview cases passed | Complete-app gallery recordings and physical-device playback remain unverified; generated native fixtures do not prove live incoming-media capture |
 | Ordinary read/presence controls, story-opening warning, read after confirmed send | Account-scoped production hooks, bounded acknowledged-send intent, central story gate | New native tests pending; server behavior and other-client interactions unverified, mandatory expiry receipts preserved |
 | Text, bounded-expression, media-type and cached blocked-author filters | Background projection, temporary reveal and native rule editor | New native tests pending; unknown metadata/albums/rich/secret/timed content stays visible |

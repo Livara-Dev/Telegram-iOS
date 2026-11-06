@@ -54,6 +54,19 @@ was changed to obtain the startup pass or IPA.
 
 ## Artifact upload review, 2026-11-06
 
+A separate source review found ninety modified upstream text files lacking
+dated fork-change notices. The notice-only patch is preserved in
+[`76d671b1`](https://github.com/Livara-Dev/Telegram-iOS/commit/76d671b10010a073bd8b6514d533ad5cf3a4c093)
+and adopted in integration source `20199728` for the next required repair build.
+Dates come from each file's Git author-date history; removing the inserted
+comments restores every preceding byte. Existing attribution, SwiftPM/XML
+directives, build statements and plist values are preserved. This addresses the
+identified GPLv2 section 2(a) file-notice gap in the newer source, not in an
+already-built `dc68f12f` binary's source identity. Older artifacts must not be
+relabelled as built from the patched revision. Complete component-license and
+recipient source-access review remains open; three material files are not a
+complete corresponding-source bundle or a GPL certification.
+
 The November 6 packaging review found that the main-app-only artifact upload
 selected the IPA, manifest and checksums but omitted the three generated license
 and exact-source materials. The upload now selects those three files explicitly.
