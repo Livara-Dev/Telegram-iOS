@@ -45,6 +45,17 @@ renderer job can be investigated without stopping healthy native suites.
 Use that scope only for a distinct diagnostic or repair; do not duplicate an
 already-running renderer check. Its queue also preserves the active job.
 
+For the zero-case Projection startup failure in run `42134690056`, the existing
+`probe` scope accepts `replay_run=42134690056` and
+`replay_source=17033b099458c258236b5a01411ab6efb45b37b6`. This selects a bounded
+replay of that exact retained synthetic test product instead of the ordinary
+host API probes. It verifies the GitHub origin, artifact digest, captured files,
+toolchain and sanitized plan, then runs the 41 expected cases once on a fresh
+owned simulator. No Bazel compilation, Telegram API secrets, account data or raw
+result-bundle upload is involved. Its separate source-scoped queue preserves
+active qualification jobs. This historical diagnostic cannot qualify a later
+application revision or turn a zero-case source run into a passing run.
+
 After qualification passes, advancing `ci/verify-latest` starts the full
 application/device workflow automatically. The simulator application job first
 runs all eight suites and then reuses that invocation's private Bazel outputs

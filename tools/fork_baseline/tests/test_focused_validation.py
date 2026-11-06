@@ -180,11 +180,11 @@ class FocusedWorkflowRoutingTests(unittest.TestCase):
             return True
         return bool(self.expression(match.group(1), event, scope, device))
 
-    def expression(self, expression, event, scope, device, replay_source='c' * 40):
+    def expression(self, expression, event, scope, device, replay_source='c' * 40, replay_run=''):
         # Interpret the checked-in boolean/equality gates and the one fixed
         # concurrency formatter. No arbitrary Python calls or code execution.
-        expression = expression.replace('github.event_name', 'event').replace('inputs.validation_scope', 'scope').replace('inputs.unsigned_device', 'device').replace('inputs.replay_source', 'source').replace('||', 'or').replace('&&', 'and')
-        inputs = {'event': event, 'scope': scope, 'device': device, 'source': replay_source}
+        expression = expression.replace('github.event_name', 'event').replace('inputs.validation_scope', 'scope').replace('inputs.unsigned_device', 'device').replace('inputs.replay_source', 'source').replace('inputs.replay_run', 'run').replace('||', 'or').replace('&&', 'and')
+        inputs = {'event': event, 'scope': scope, 'device': device, 'source': replay_source, 'run': replay_run}
         def value(node):
             if isinstance(node, ast.Name):
                 return inputs[node.id]
@@ -204,8 +204,9 @@ class FocusedWorkflowRoutingTests(unittest.TestCase):
                 self.assertEqual(node.func.id, 'format')
                 self.assertEqual(len(node.args), 2)
                 self.assertEqual(node.keywords, [])
-                self.assertEqual(value(node.args[0]), 'ayugram-startup-replay-{0}')
-                return 'ayugram-startup-replay-' + value(node.args[1])
+                template = value(node.args[0])
+                self.assertIn(template, {'ayugram-startup-replay-{0}', 'ayugram-projection-replay-{0}'})
+                return template.replace('{0}', value(node.args[1]))
             if isinstance(node, ast.Compare) and len(node.ops) == 1:
                 self.assertIn(type(node.ops[0]), (ast.Eq, ast.NotEq))
                 equal = value(node.left) == value(node.comparators[0])
@@ -252,7 +253,31 @@ class FocusedWorkflowRoutingTests(unittest.TestCase):
         self.assertEqual(self.expression(expression, 'workflow_dispatch', 'custom-options-ui', False), 'ayugram-ui-qualification')
         self.assertEqual(self.expression(expression, 'workflow_dispatch', 'startup', False), 'ayugram-startup-replay-' + 'c' * 40)
         self.assertEqual(self.expression(expression, 'workflow_dispatch', 'startup', False, 'd' * 40), 'ayugram-startup-replay-' + 'd' * 40)
+        self.assertEqual(self.expression(expression, 'workflow_dispatch', 'probe', False, replay_run='42134690056'), 'ayugram-projection-replay-' + 'c' * 40)
+        self.assertEqual(self.expression(expression, 'workflow_dispatch', 'probe', False, 'd' * 40, '42134690056'), 'ayugram-projection-replay-' + 'd' * 40)
+        self.assertEqual(self.expression(expression, 'push', 'probe', False, replay_run='42134690056'), 'ayugram-qualification')
+        self.assertEqual(self.expression(expression, 'workflow_dispatch', 'full', False, replay_run='42134690056'), 'ayugram-qualification')
         self.assertIn('cancel-in-progress: false', block)
+
+    def test_probe_replay_and_compilation_paths_are_mutually_exclusive(self):
+        section = self.section('native-api-probe')
+        self.assertIn('      actions: read', section)
+        self.assertIn('timeout-minutes: 25', section)
+        steps = {name: body for name, body in re.findall(r'(?ms)^      - name: ([^\n]+)\n(.*?)(?=^      - name: |\Z)', section)}
+        replay_steps = ('Test retained Projection replay tooling', 'Replay verified synthetic Projection products without recompilation')
+        compile_steps = ('Prepare only the verified synthetic movie fixture', 'Compile the production loader with the host API probe',
+                         'Run host API diagnostics without account data', 'Compare host API behavior with an ad-hoc signed app identity')
+        for run in ('', '42134690056'):
+            for name in (*replay_steps, *compile_steps):
+                condition = re.search(r'^        if: (.+)$', steps[name], re.M).group(1)
+                selected = bool(self.expression(condition, 'workflow_dispatch', 'probe', False, replay_run=run))
+                self.assertEqual(selected, bool(run) if name in replay_steps else not run, name)
+        self.assertIn('projection_replay.py --run "$REPLAY_RUN" --source "$REPLAY_SOURCE"', steps[replay_steps[1]])
+        published = steps['Publish host probe diagnostics only']
+        for name in ('result.json', 'case-results.json', 'test.log', 'projection-launch-probe.json', 'SHA256SUMS'):
+            self.assertIn('/projection-replay/' + name, published)
+        self.assertNotIn('/projection-replay/**', published)
+        self.assertNotIn('.xcresult', published)
 
     def test_startup_job_reuses_existing_artifact_without_submodules_or_api_credentials(self):
         source = self.section('startup-artifact-replay')

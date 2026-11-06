@@ -11,11 +11,11 @@ on:
         options: [full, native-only, focused, projection, projection-only, custom-options-ui, probe, startup]
         default: full
       replay_run:
-        description: Required for startup scope; simulator artifact run ID
+        description: Required for startup or retained Projection probe; artifact run ID
         type: string
         default: ''
       replay_source:
-        description: Required for startup scope; full source commit SHA
+        description: Required for startup or retained Projection probe; full source SHA
         type: string
         default: ''
       startup_variant:
@@ -42,7 +42,7 @@ permissions:
 # Development branches do not start macOS jobs; advance ci/verify-latest once
 # the next reviewed batch is ready. Existing runs retain their original policy.
 concurrency:
-  group: ${{ github.event_name == 'workflow_dispatch' && inputs.validation_scope == 'startup' && format('ayugram-startup-replay-{0}', inputs.replay_source) || github.event_name == 'workflow_dispatch' && inputs.validation_scope == 'custom-options-ui' && 'ayugram-ui-qualification' || 'ayugram-qualification' }}
+  group: ${{ github.event_name == 'workflow_dispatch' && inputs.validation_scope == 'startup' && format('ayugram-startup-replay-{0}', inputs.replay_source) || github.event_name == 'workflow_dispatch' && inputs.validation_scope == 'probe' && inputs.replay_run != '' && format('ayugram-projection-replay-{0}', inputs.replay_source) || github.event_name == 'workflow_dispatch' && inputs.validation_scope == 'custom-options-ui' && 'ayugram-ui-qualification' || 'ayugram-qualification' }}
   cancel-in-progress: false
 
 jobs:
@@ -570,11 +570,14 @@ jobs:
       # integration artifacts, not a telemetry-free release or an installable signed IPA.
 
   native-api-probe:
-    # Manual host-only API diagnostics. This does not compile the Telegram app,
-    # use API Secrets, or qualify iOS/physical-device behavior.
+    # Manual host API diagnostics, or one verified retained Projection replay.
+    # Neither mode compiles Telegram, uses API Secrets, or qualifies the app.
     if: github.event_name == 'workflow_dispatch' && inputs.validation_scope == 'probe'
     runs-on: xcode-27
-    timeout-minutes: 15
+    timeout-minutes: 25
+    permissions:
+      contents: read
+      actions: read
     defaults:
       run:
         shell: bash
@@ -619,7 +622,23 @@ jobs:
               raise SystemExit('Pinned Xcode is unavailable')
           PYTHON
 
+      - name: Test retained Projection replay tooling
+        if: inputs.replay_run != ''
+        run: python3 -m unittest discover -s tools/fork_baseline/tests -p test_projection_replay.py -v
+
+      - name: Replay verified synthetic Projection products without recompilation
+        if: inputs.replay_run != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPLAY_RUN: ${{ inputs.replay_run }}
+          REPLAY_SOURCE: ${{ inputs.replay_source }}
+        run: |
+          set -euo pipefail
+          umask 077
+          python3 tools/fork_baseline/projection_replay.py --run "$REPLAY_RUN" --source "$REPLAY_SOURCE" --output build/fork-evidence/projection-replay
+
       - name: Prepare only the verified synthetic movie fixture
+        if: inputs.replay_run == ''
         run: |
           set -euo pipefail
           umask 077
@@ -627,11 +646,13 @@ jobs:
           python3 tools/fork_baseline/prepare_probe_fixture.py --output build/native-api-probe/fixture.mp4 > build/fork-evidence/native-api-probe-fixture.json
 
       - name: Compile the production loader with the host API probe
+        if: inputs.replay_run == ''
         run: |
           set -euo pipefail
           xcrun swiftc -swift-version 5 -target arm64-apple-macosx13.0 submodules/LocalMessageArchive/Sources/LocalArchivePlayback/ArchivePlaybackAsset.swift tools/fork_baseline/native_api_probe.swift -o build/native-api-probe/probe 2>&1 | tee build/fork-evidence/native-api-probe-compile.log
 
       - name: Run host API diagnostics without account data
+        if: inputs.replay_run == ''
         run: |
           set -euo pipefail
           build/native-api-probe/probe build/native-api-probe/fixture.mp4 > build/fork-evidence/native-api-probe.json
@@ -643,6 +664,7 @@ jobs:
           PYTHON
 
       - name: Compare host API behavior with an ad-hoc signed app identity
+        if: inputs.replay_run == ''
         run: |
           set -euo pipefail
           python3 - <<'PYTHON'
@@ -696,6 +718,11 @@ jobs:
             ${{ github.workspace }}/fork-source/build/fork-evidence/native-api-probe-fixture.json
             ${{ github.workspace }}/fork-source/build/fork-evidence/native-api-probe-compile.log
             ${{ github.workspace }}/fork-source/build/fork-evidence/native-api-probe-SHA256SUMS
+            ${{ github.workspace }}/fork-source/build/fork-evidence/projection-replay/result.json
+            ${{ github.workspace }}/fork-source/build/fork-evidence/projection-replay/case-results.json
+            ${{ github.workspace }}/fork-source/build/fork-evidence/projection-replay/test.log
+            ${{ github.workspace }}/fork-source/build/fork-evidence/projection-replay/projection-launch-probe.json
+            ${{ github.workspace }}/fork-source/build/fork-evidence/projection-replay/SHA256SUMS
           if-no-files-found: warn
           retention-days: 7
           include-hidden-files: false
