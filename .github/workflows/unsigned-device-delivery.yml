@@ -1,0 +1,30 @@
+name: Unsigned device delivery (qualified source)
+
+# Registration only. Select the reviewed ci/qualified-device-delivery branch;
+# that workflow gates its exact app source on retained native XCTest evidence.
+# This default-branch entry never builds or signs an application.
+on:
+  workflow_dispatch:
+    inputs:
+      qualification_run:
+        description: Completed successful exact-source archive-core qualification run ID
+        required: true
+        type: string
+      expected_source:
+        description: Full application SHA; must match the successful native qualification
+        required: true
+        type: string
+        default: 5d241267735b3958c225681d173853568bab705d
+
+permissions:
+  contents: read
+
+jobs:
+  select-reviewed-delivery-branch:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Require the reviewed delivery tooling branch
+        run: |
+          echo "::error::Select ci/qualified-device-delivery. This registration entry does not build an app."
+          exit 1
