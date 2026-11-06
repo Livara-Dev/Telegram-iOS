@@ -1,6 +1,6 @@
 # AyuGram native iOS feature matrix
 
-Audit date: **2026-11-05**. Baseline statuses below refer to application source
+Audit date: **2026-11-06**. Baseline statuses below refer to application source
 `62546557807ee5d8ff468ea3d7d46ce1a090c8cf` and audited integration source
 `73b52244d4fc7e82cb82970ed9657a499d3cda2c`, before the current dashboard/feature
 implementation batch. A setting or compiled library is not marked fully working
@@ -105,6 +105,19 @@ binary. No proprietary exteraGram components are copied.
   A tooling-only follow-up moves boot before compilation and uses the same
   combined `bootstatus -b` preparation as native preflight. This removes known
   ordering differences; the underlying host cause and recovery remain unproven.
+- [42138477547](https://github.com/Livara-Dev/Telegram-iOS/actions/runs/42138477547)
+  at 5ba6d074 booted its owned simulator on the first attempt and passed all
+  **eight controller tests**, including the repaired actual-appearance negative
+  control. The XCUI scenario failed after four recorded stages: the Search
+  action dismissed the keyboard between its existence check and frame query.
+  This is a test race, not evidence of a production renderer failure. The
+  root-dark observation sampled dark window/table traits and resolved color;
+  the remaining eight stages and screenshot exporter were not reached.
+  The original variable-rate video was retained. The outer artifact checksum
+  and all nineteen inner references passed verification. The follow-up removes
+  the disappearing-keyboard geometry query while retaining the strict hidden
+  keyboard, hittable-control and actual-appearance assertions. A passing rerun
+  is still required; this run does not qualify the complete application.
 
 ## Core features and native integration
 

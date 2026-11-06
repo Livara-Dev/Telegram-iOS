@@ -42,21 +42,28 @@ final class CustomeOptionsInteractionTests: XCTestCase {
             if clear.exists { clear.tap() }
         }
         if !text.isEmpty { field.typeText(text) }
-        let done = app.keyboards.buttons["Search"]
-        if done.exists && done.isEnabled && done.isHittable { done.tap() }
+        let keyboard = app.keyboards.firstMatch
+        let isHidden = NSPredicate(format: "exists == false")
+        if !text.isEmpty {
+            let done = app.keyboards.buttons["Search"]
+            if done.exists && done.isEnabled && done.isHittable { done.tap() }
+            // Search dismisses asynchronously. Wait for the hidden state before
+            // continuing; the disappearing keyboard has no stable frame to read.
+            let hidden = XCTNSPredicateExpectation(predicate: isHidden, object: keyboard)
+            XCTAssertEqual(XCTWaiter.wait(for: [hidden], timeout: 5), .completed)
+            return
+        }
         // Empty searches disable the keyboard's Search action. Exercise the
-        // production table's interactive keyboard dismissal instead of tapping
-        // an offscreen toolbar through the keyboard.
-        for _ in 0..<3 where app.keyboards.firstMatch.exists {
-            let keyboard = app.keyboards.firstMatch.frame
-            XCTAssertGreaterThan(keyboard.height, 100)
-            XCTAssertGreaterThan(keyboard.minY - table.frame.minY, 100)
-            let start = table.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0))
-                .withOffset(CGVector(dx: 0, dy: keyboard.minY - table.frame.minY - 60))
-            let end = app.windows.firstMatch.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.9))
+        // production table's interactive dismissal with stable window-relative
+        // coordinates on this fixed portrait iPhone profile, without querying
+        // keyboard geometry between a visibility check and an animation.
+        let window = app.windows.firstMatch
+        let start = window.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.45))
+        let end = window.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.9))
+        if keyboard.exists {
             start.press(forDuration: 0.1, thenDragTo: end)
         }
-        let hidden = XCTNSPredicateExpectation(predicate: NSPredicate(format: "exists == false"), object: app.keyboards.firstMatch)
+        let hidden = XCTNSPredicateExpectation(predicate: isHidden, object: keyboard)
         XCTAssertEqual(XCTWaiter.wait(for: [hidden], timeout: 5), .completed)
     }
 
