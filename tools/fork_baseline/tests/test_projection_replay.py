@@ -570,7 +570,11 @@ class ProjectionReplayTests(unittest.TestCase):
                                                   bootstrap_diagnostic=observe)
             self.assertLess(time.monotonic() - began, 1)
             self.assertTrue(status['timeout']); self.assertEqual(observations, [True])
-            self.assertEqual(status['bootstrap_diagnostic'], {'state': 'unavailable', 'reason': 'diagnosticDidNotFinishBeforeDeadline'})
+            self.assertEqual({key: value for key, value in status['bootstrap_diagnostic'].items() if key != 'trigger'},
+                             {'state': 'unavailable', 'reason': 'diagnosticDidNotFinishBeforeDeadline'})
+            self.assertEqual(status['bootstrap_diagnostic']['trigger']['state'], 'triggered')
+            self.assertEqual(status['bootstrap_diagnostic']['trigger']['planned_after_ms'], 50)
+            self.assertGreaterEqual(status['bootstrap_diagnostic']['trigger']['actual_after_ms'], 50)
         finally:
             release.set(); self.assertTrue(finished.wait(1))
         self.assertEqual(status['bootstrap_diagnostic']['state'], 'unavailable')
@@ -581,7 +585,126 @@ class ProjectionReplayTests(unittest.TestCase):
             status, _ = replay.native_command([sys.executable, '-c', 'import time;time.sleep(5)'], timeout=.2,
                 bootstrap_diagnostic=lambda *args: calls.append(args))
         self.assertTrue(status['timeout']); self.assertEqual(calls, [])
-        self.assertEqual(status['bootstrap_diagnostic'], {'state': 'unavailable', 'reason': 'ownedProcessGroupUnverified'})
+        self.assertEqual(status['bootstrap_diagnostic'], {'state': 'unavailable', 'reason': 'ownedProcessGroupUnverified',
+            'trigger': {'state': 'unavailable', 'planned_after_ms': 50, 'actual_after_ms': None}})
+
+    def test_late_override_is_only_exact_480_with_callback_and_rejects_before_starting_a_child(self):
+        self.assertEqual(replay.BOOTSTRAP_SAMPLE_AFTER_SECONDS, 90)
+        self.assertEqual(replay.BOOTSTRAP_SAMPLE_LATE_AFTER_SECONDS, 480)
+        for threshold, callback in [(90, lambda *args: {}), (479, lambda *args: {}), (481, lambda *args: {}),
+                (480.0, lambda *args: {}), (True, lambda *args: {}), (False, lambda *args: {}),
+                ('480', lambda *args: {}), ([], lambda *args: {}), ({}, lambda *args: {}), (480, None), (480, 7)]:
+            with self.subTest(threshold=threshold), patch.object(replay.subprocess, 'Popen') as start:
+                with self.assertRaisesRegex(ValueError, '^Invalid bootstrap observation threshold$'):
+                    replay.native_command(['private-never-executed-canary'], bootstrap_diagnostic=callback,
+                                          bootstrap_after_seconds=threshold)
+                start.assert_not_called()
+
+    def test_late_single_observation_waits_for_its_own_threshold_and_records_runner_entry_timing(self):
+        observations = []
+        began = time.monotonic()
+        def observe(pid, group, alive):
+            observations.append((time.monotonic() - began, alive()))
+            return {'state': 'captured', 'trigger': {'state': 'private-timing-canary', 'raw': '/private/raw'}}
+        with patch.object(replay, 'BOOTSTRAP_SAMPLE_AFTER_SECONDS', .01), \
+                patch.object(replay, 'BOOTSTRAP_SAMPLE_LATE_AFTER_SECONDS', .12):
+            status, _ = replay.native_command([sys.executable, '-c', 'import time;print("Testing started",flush=True);time.sleep(5)'],
+                timeout=.3, bootstrap_diagnostic=observe, bootstrap_after_seconds=480)
+        self.assertEqual(len(observations), 1); self.assertTrue(observations[0][1])
+        self.assertGreaterEqual(observations[0][0], .12)
+        self.assertTrue(status['timeout']); self.assertEqual(status['bootstrap_diagnostic']['state'], 'captured')
+        trigger = status['bootstrap_diagnostic']['trigger']
+        self.assertEqual(set(trigger), {'state', 'planned_after_ms', 'actual_after_ms'})
+        self.assertEqual((trigger['state'], trigger['planned_after_ms']), ('triggered', 120))
+        self.assertGreaterEqual(trigger['actual_after_ms'], 120); self.assertLessEqual(trigger['actual_after_ms'], 300)
+        self.assertNotIn('private-timing-canary', json.dumps(status)); self.assertNotIn('/private/', json.dumps(status))
+
+    def test_late_observation_still_runs_for_a_live_child_with_closed_stdout(self):
+        calls = []
+        with patch.object(replay, 'BOOTSTRAP_SAMPLE_LATE_AFTER_SECONDS', .05):
+            status, _ = replay.native_command([sys.executable, '-c', 'import os,time;os.close(1);os.close(2);time.sleep(5)'],
+                timeout=.2, bootstrap_diagnostic=lambda pid, group, alive: calls.append(alive()) or {'state': 'captured'},
+                bootstrap_after_seconds=480)
+        self.assertTrue(status['timeout']); self.assertEqual(calls, [True])
+        self.assertEqual(status['bootstrap_diagnostic']['trigger']['state'], 'triggered')
+        self.assertGreaterEqual(status['bootstrap_diagnostic']['trigger']['actual_after_ms'], 50)
+
+    def test_late_observation_is_not_invoked_after_already_observed_expected_start_or_early_exit(self):
+        expected = "Test Case '-[Module." + next(iter(replay.EXPECTED)).replace('.', ' ') + "]' started."
+        for source, reason in [('print(' + repr(expected) + ',flush=True);import time;time.sleep(5)', 'expectedCaseStarted'),
+                               ('pass', 'commandEndedBeforeTrigger')]:
+            with self.subTest(reason=reason), patch.object(replay, 'BOOTSTRAP_SAMPLE_LATE_AFTER_SECONDS', .12):
+                calls = []
+                status, _ = replay.native_command([sys.executable, '-c', source], timeout=.25,
+                    bootstrap_diagnostic=lambda *args: calls.append(args), bootstrap_after_seconds=480)
+            self.assertEqual(calls, [])
+            self.assertEqual(status['bootstrap_diagnostic'], {'state': 'notTriggered', 'reason': reason,
+                'trigger': {'state': 'notTriggered', 'planned_after_ms': 120, 'actual_after_ms': None}})
+
+    def test_worker_rechecks_exit_and_captured_expected_start_after_scheduling_delay(self):
+        # Delay only this diagnostic worker while the native supervisor keeps
+        # draining events and observing the actual child's lifecycle.
+        actual_thread = threading.Thread
+        def delayed_thread(*args, **options):
+            target = options.pop('target')
+            def delayed():
+                time.sleep(.15); target()
+            return actual_thread(*args, target=delayed, **options)
+        expected = "Test Case '-[Module." + next(iter(replay.EXPECTED)).replace('.', ' ') + "]' started."
+        for source, reason in [('import time;time.sleep(.08);print(' + repr(expected) + ',flush=True);time.sleep(5)', 'expectedCaseStarted'),
+                               ('import time;time.sleep(.08)', 'commandEndedBeforeTrigger')]:
+            with self.subTest(reason=reason), patch.object(replay, 'BOOTSTRAP_SAMPLE_LATE_AFTER_SECONDS', .03), \
+                    patch.object(replay.threading, 'Thread', side_effect=delayed_thread):
+                calls = []
+                status, _ = replay.native_command([sys.executable, '-c', source], timeout=.35,
+                    bootstrap_diagnostic=lambda *args: calls.append(args), bootstrap_after_seconds=480)
+            self.assertEqual(calls, [])
+            self.assertEqual(status['bootstrap_diagnostic'], {'state': 'notTriggered', 'reason': reason,
+                'trigger': {'state': 'notTriggered', 'planned_after_ms': 30, 'actual_after_ms': None}})
+
+    def test_late_trigger_survives_callback_failure_and_slow_worker_without_mutable_partial_results(self):
+        for kind in ('exception', 'slow'):
+            release, finished = threading.Event(), threading.Event()
+            def observe(*args):
+                if kind == 'exception': raise ValueError('private-late-canary /private/raw')
+                release.wait(2); finished.set(); return {'state': 'private-late-canary'}
+            began = time.monotonic()
+            try:
+                with self.subTest(kind=kind), patch.object(replay, 'BOOTSTRAP_SAMPLE_LATE_AFTER_SECONDS', .03):
+                    status, _ = replay.native_command([sys.executable, '-c', 'import time;time.sleep(5)'], timeout=.15,
+                        bootstrap_diagnostic=observe, bootstrap_after_seconds=480)
+                self.assertLess(time.monotonic() - began, 1)
+                self.assertTrue(status['timeout']); self.assertEqual(status['bootstrap_diagnostic']['state'], 'unavailable')
+                self.assertEqual(status['bootstrap_diagnostic']['trigger']['state'], 'triggered')
+                self.assertEqual(status['bootstrap_diagnostic']['trigger']['planned_after_ms'], 30)
+                self.assertGreaterEqual(status['bootstrap_diagnostic']['trigger']['actual_after_ms'], 30)
+                frozen = json.dumps(status)
+            finally:
+                release.set()
+                if kind == 'slow': self.assertTrue(finished.wait(1))
+            self.assertEqual(json.dumps(status), frozen)
+            self.assertNotIn('private-late-canary', frozen); self.assertNotIn('/private/', frozen)
+
+    def test_invalid_worker_entry_clock_never_invokes_the_optional_callback(self):
+        actual_clock = time.monotonic
+        for kind in ('nan', 'infinite', 'negativeElapsed', 'pastDeadline'):
+            worker_reads = []
+            def clock():
+                if threading.current_thread().name == 'projection-bootstrap-observer':
+                    worker_reads.append(True)
+                    if len(worker_reads) > 1:
+                        if kind == 'nan': return float('nan')
+                        if kind == 'infinite': return float('inf')
+                        return actual_clock() + (-100 if kind == 'negativeElapsed' else 601)
+                return actual_clock()
+            with self.subTest(kind=kind), patch.object(replay, 'BOOTSTRAP_SAMPLE_LATE_AFTER_SECONDS', .03), \
+                    patch.object(replay.time, 'monotonic', side_effect=clock):
+                calls = []
+                status, _ = replay.native_command([sys.executable, '-c', 'import time;time.sleep(5)'], timeout=.15,
+                    bootstrap_diagnostic=lambda *args: calls.append(args), bootstrap_after_seconds=480)
+            self.assertTrue(status['timeout']); self.assertEqual(calls, [])
+            self.assertEqual(status['bootstrap_diagnostic'], {'state': 'unavailable', 'reason': 'diagnosticClockUnverified',
+                'trigger': {'state': 'unavailable', 'planned_after_ms': 30, 'actual_after_ms': None}})
 
     def test_sampler_option_reaches_only_single_xctest_and_does_not_promote_zero_cases_to_pass(self):
         with tempfile.TemporaryDirectory() as directory:

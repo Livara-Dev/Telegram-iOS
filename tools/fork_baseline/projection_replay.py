@@ -8,6 +8,7 @@ import argparse
 from contextlib import contextmanager
 import hashlib
 import json
+import math
 import os
 from pathlib import Path
 import plistlib
@@ -50,6 +51,7 @@ DEVICE_PROFILE = 'replay-iphone15pro'
 OUTPUT = 'build/fork-evidence/projection-replay'
 MAX_OUTPUT = 1024 * 1024
 BOOTSTRAP_SAMPLE_AFTER_SECONDS = 90
+BOOTSTRAP_SAMPLE_LATE_AFTER_SECONDS = 480
 BOOTSTRAP_SAMPLE_JOIN_SECONDS = 20
 BOOTSTRAP_SAMPLE_OUTPUT_LIMIT = 64 * 1024
 POST_EXIT_DIAGNOSTIC_SECONDS = 3
@@ -469,11 +471,19 @@ def _closed_post_exit_diagnostic(value):
     return json.loads(encoded)
 
 
-def native_command(arguments, timeout=30, bootstrap_diagnostic=None, post_exit_diagnostic=None):
+def native_command(arguments, timeout=30, bootstrap_diagnostic=None, post_exit_diagnostic=None,
+                   bootstrap_after_seconds=None):
     """Bound subprocess lifetime/output, including inherited pipes after exit."""
+    if bootstrap_after_seconds is not None and (
+            type(bootstrap_after_seconds) is not int or bootstrap_after_seconds != 480 or
+            not callable(bootstrap_diagnostic)):
+        raise ValueError('Invalid bootstrap observation threshold')
+    threshold = BOOTSTRAP_SAMPLE_AFTER_SECONDS if bootstrap_after_seconds is None else BOOTSTRAP_SAMPLE_LATE_AFTER_SECONDS
+    planned_after_ms = int(threshold * 1000)
     process = None; data = bytearray(); code = None; state = 'unavailable'
     started = time.monotonic(); deadline = started + timeout
     observer = None; observation = []; observation_decided = False
+    callback_entry = []
     verified_initial_group = None
     post_exit_observation = {'state': 'notTriggered', 'reason': 'commandDidNotSucceed',
                              'received_before_retirement': False}
@@ -490,8 +500,27 @@ def native_command(arguments, timeout=30, bootstrap_diagnostic=None, post_exit_d
             return process.poll() is None and time.monotonic() < deadline
         def observe():
             try:
+                # The process may exit or emit its first expected test event
+                # between the parent's decision and this worker being scheduled.
+                # Recheck only already captured events, never invoke afterward.
+                if cases(bytes(data))['started']:
+                    observation.append({'state': 'notTriggered', 'reason': 'expectedCaseStarted'})
+                    return
+                if not alive():
+                    observation.append({'state': 'notTriggered', 'reason': 'commandEndedBeforeTrigger'})
+                    return
+                entered = time.monotonic()
+                elapsed = entered - started
+                if (not math.isfinite(elapsed) or not threshold <= elapsed <= 600 or entered >= deadline):
+                    observation.append({'state': 'unavailable', 'reason': 'diagnosticClockUnverified'})
+                    return
+                callback_entry.append({'state': 'triggered', 'planned_after_ms': planned_after_ms,
+                                       'actual_after_ms': int(elapsed * 1000)})
                 selected = bootstrap_diagnostic(process.pid, group, alive)
                 if not isinstance(selected, dict): raise ValueError('Invalid diagnostic selection')
+                selected = dict(selected)
+                # Trigger timing comes from this runner, not diagnostic text.
+                selected.pop('trigger', None)
                 encoded = json.dumps(selected, ensure_ascii=True, allow_nan=False).encode('ascii')
                 if len(encoded) > BOOTSTRAP_SAMPLE_OUTPUT_LIMIT:
                     selected = {'state': 'unavailable', 'reason': 'diagnosticOutputLimit'}
@@ -511,7 +540,7 @@ def native_command(arguments, timeout=30, bootstrap_diagnostic=None, post_exit_d
     def consider_observation(now, code):
         nonlocal observation_decided, not_observed
         if (bootstrap_diagnostic is not None and not observation_decided and code is None
-                and now - started >= BOOTSTRAP_SAMPLE_AFTER_SECONDS):
+                and now - started >= threshold):
             observation_decided = True
             if cases(bytes(data))['started']:
                 not_observed = {'state': 'notTriggered', 'reason': 'expectedCaseStarted'}
@@ -608,8 +637,12 @@ def native_command(arguments, timeout=30, bootstrap_diagnostic=None, post_exit_d
     status = {'status': state, 'exit_code': code, 'timeout': state == 'timedOut',
               'output_limit': state == 'outputLimit', 'captured_bytes': len(data)}
     if bootstrap_diagnostic is not None:
-        status['bootstrap_diagnostic'] = (observation[0] if observation else
+        selected = (observation[0] if observation else
             {'state': 'unavailable', 'reason': 'diagnosticDidNotFinishBeforeDeadline'} if observer is not None else not_observed)
+        trigger = (dict(callback_entry[0]) if callback_entry else {
+            'state': 'notTriggered' if selected.get('state') == 'notTriggered' else 'unavailable',
+            'planned_after_ms': planned_after_ms, 'actual_after_ms': None})
+        status['bootstrap_diagnostic'] = {**selected, 'trigger': trigger}
     if post_exit_diagnostic is not None:
         status['post_exit_diagnostic'] = post_exit_observation
     return status, bytes(data)

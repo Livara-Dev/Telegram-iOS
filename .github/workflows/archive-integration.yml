@@ -703,6 +703,7 @@ jobs:
         if: (inputs.validation_scope == 'retained-modern' || inputs.validation_scope == 'projection-plan-only' || inputs.validation_scope == 'retained-interaction')
         run: |
           set -euo pipefail
+          python3 -W error -m unittest discover -s tools/fork_baseline/tests -p test_projection_replay.py -v
           python3 -m unittest discover -s tools/fork_baseline/tests -p test_modern_projection_plan.py -v
           python3 -m unittest discover -s tools/fork_baseline/tests -p test_tiny_xcode_project.py -v
 

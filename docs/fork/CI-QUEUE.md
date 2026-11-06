@@ -127,6 +127,14 @@ confirmed application repair. If full attachment collection is incomplete, one
 strictly validated original root attachment may be retained as diagnostic-only
 `root-light.png`; it cannot satisfy any twelve-stage qualification gate.
 
+The next native-only diagnostic moves just modern Projection’s one live probe
+from 90 to 480 seconds; the earlier probe ran before app installation. The control
+and historical profiles keep 90 seconds. The command remains bounded to 600
+seconds and the observer to 18 seconds, with no second callback or test retry.
+Runner-owned planned/actual trigger timing is published as closed metadata;
+case starts, exit and the deadline suppress inappropriate observations. This
+change is prepared, not a successful native outcome or a diagnosed cause.
+
 Only bounded, explicitly selected diagnostics and visuals are uploaded. Modern
 native JSON is limited to 1 MiB per file, logs to 2 MiB and the combined selection
 to 8 MiB. Settings evidence has separate 1 MiB JSON, 2 MiB log, 16 MiB image,

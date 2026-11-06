@@ -296,7 +296,7 @@ class ModernPlanTests(unittest.TestCase):
     def execute_fixture(self, root, control_outcome='passed', mutate=False, readback='correct', entitlements=None, warming='correct',
                         test_entitlements=None, test_readback='missing', host_input=True, device_metadata='correct', boot_request='completed',
                         projection_outcome='passed', cleanup_failure=False, mutate_control=False, repeat_uuid=False,
-                        post_app_only=False):
+                        post_app_only=False, projection_trigger=None):
         output = root / modern.OUTPUT; output.mkdir(parents=True)
         capture = fixtures.captured(root, current=True)
         info = capture / 'TEST_ROOT' / modern.products.APP / 'PlugIns' / modern.products.TEST / 'Info.plist'
@@ -405,7 +405,11 @@ class ModernPlanTests(unittest.TestCase):
                     shutil.copytree(host, parent / (modern.CONTROL_APP + '.app'))
                 if projection_outcome == 'timeout':
                     return {'status': 'timedOut', 'exit_code': None, 'timeout': True, 'output_limit': False, 'captured_bytes': 0}, b''
-                return complete(fixtures.log(projection_outcome), 0 if projection_outcome == 'passed' else 65)
+                status, raw = complete(fixtures.log(projection_outcome), 0 if projection_outcome == 'passed' else 65)
+                if projection_trigger is not None:
+                    status['bootstrap_diagnostic'] = {'state': 'partial', 'callback_result_received': True,
+                        'reason': 'samplingTargetUnverified', 'trigger': projection_trigger}
+                return status, raw
             return complete()
         def reseal(original, destination, *args, **kwargs):
             shutil.copytree(original, destination)
@@ -465,6 +469,21 @@ class ModernPlanTests(unittest.TestCase):
             self.assertFalse(any(args[:3] == ['xcrun', 'simctl', 'bootstatus'] for args, _ in calls))
             for operation, expected_timeout in (('create', 30), ('boot', 30), ('shutdown', 30), ('delete', 30)):
                 self.assertEqual([timeout for args, timeout in calls if args[:3] == ['xcrun', 'simctl', operation]], [expected_timeout] * 2)
+
+    def test_only_modern_projection_requests_fixed_late_observation_and_retains_hook_owned_timing(self):
+        with tempfile.TemporaryDirectory() as directory:
+            trigger = {'state': 'triggered', 'planned_after_ms': 480000, 'actual_after_ms': 480123, 'path': 'private-trigger-canary'}
+            result, _ = self.execute_fixture(Path(directory).resolve(), projection_trigger=trigger)
+            self.assertTrue(result['passed']); self.assertEqual(result['native_projection_observation_after_seconds'], 480)
+            observed = [(args, options) for args, options in self.fixture_options if 'bootstrap_diagnostic' in options]
+            self.assertEqual(len(observed), 2)
+            self.assertNotIn('bootstrap_after_seconds', observed[0][1])
+            self.assertEqual(observed[1][1]['bootstrap_after_seconds'], 480)
+            self.assertTrue(all('test-without-building' in args for args, _ in observed))
+            self.assertEqual(modern.projection.BOOTSTRAP_SAMPLE_AFTER_SECONDS, 90)
+            self.assertEqual(result['projection']['live_bootstrap']['trigger'],
+                {'state': 'triggered', 'planned_after_ms': 480000, 'actual_after_ms': 480123})
+            self.assertNotIn('private-trigger-canary', json.dumps(result))
 
     def test_missing_unsafe_false_or_malformed_signature_output_blocks_all_tests_despite_valid_input_and_stdout(self):
         for readback in ('missing', 'symlink', 'wrong', 'malformed', 'command_failed', 'timed_out'):
@@ -924,6 +943,30 @@ class ModernPlanTests(unittest.TestCase):
         value = modern.public_live_observation(status['bootstrap_diagnostic'])
         self.assertEqual(value['state'], 'notTriggered'); self.assertEqual(value['reason'], 'commandEndedBeforeTrigger')
         self.assertEqual(value['phase'], 'nativeSupervisor'); self.assertFalse(value['callback_result_received'])
+
+    def test_public_trigger_metadata_accepts_only_fixed_plans_bounded_monotonic_elapsed_and_closed_states(self):
+        for state, planned, actual in (('triggered', 480000, 480123), ('triggered', 90000, 90001),
+                                       ('notTriggered', 480000, None), ('unavailable', 480000, 480123)):
+            expected = {'state': state, 'planned_after_ms': planned, 'actual_after_ms': actual}
+            self.assertEqual(modern.public_live_observation({'trigger': expected})['trigger'], expected)
+        for reason in ('expectedCaseStarted', 'commandEndedBeforeTrigger', 'diagnosticClockUnverified'):
+            state = 'unavailable' if reason == 'diagnosticClockUnverified' else 'notTriggered'
+            trigger = {'state': state, 'planned_after_ms': 480000, 'actual_after_ms': None}
+            actual = modern.public_live_observation({'state': state, 'reason': reason, 'trigger': trigger})
+            self.assertEqual(actual['reason'], reason); self.assertEqual(actual['phase'], 'nativeSupervisor')
+            self.assertEqual(actual['trigger'], trigger); self.assertFalse(actual['callback_result_received'])
+        for trigger in ({'state': 'triggered', 'planned_after_ms': 480000, 'actual_after_ms': 479999},
+                        {'state': 'triggered', 'planned_after_ms': 480000, 'actual_after_ms': 600001},
+                        {'state': 'triggered', 'planned_after_ms': 480000, 'actual_after_ms': True},
+                        {'state': 'triggered', 'planned_after_ms': 480000, 'actual_after_ms': {'private-canary': 1}},
+                        {'state': 'notTriggered', 'planned_after_ms': 480000, 'actual_after_ms': 480123},
+                        {'state': 'triggered', 'planned_after_ms': 123, 'actual_after_ms': 480123},
+                        {'state': 'triggered', 'planned_after_ms': True, 'actual_after_ms': 480123},
+                        {'state': 'private-canary', 'planned_after_ms': [], 'actual_after_ms': 'private-canary'}):
+            with self.subTest(trigger=trigger):
+                value = modern.public_live_observation({'trigger': trigger})['trigger']
+                self.assertEqual(value['state'], 'unavailable'); self.assertIsNone(value['actual_after_ms'])
+                self.assertNotIn('private-canary', json.dumps(value))
 
     def test_unknown_child_liveness_never_becomes_measured_exit_or_permits_filesystem_or_pid_sampling(self):
         for alive, reason in ((lambda: False, 'childNotAlive'), (lambda: None, 'childLivenessUnknown'),

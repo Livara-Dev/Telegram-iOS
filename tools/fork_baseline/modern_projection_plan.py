@@ -46,6 +46,7 @@ MAX_OWNED_CONTAINERS = 512
 NATIVE_CONTROL_TIMEOUT_SECONDS = 600
 NATIVE_PROJECTION_TIMEOUT_SECONDS = 600
 NATIVE_DESTINATION_TIMEOUT_SECONDS = 600
+NATIVE_PROJECTION_OBSERVATION_AFTER_SECONDS = 480
 GROUP_ROLES = ('CoreSimulatorService', 'SimulatorTrampoline', 'simctl', 'launchd_sim', 'xcodebuild', CONTROL_APP, 'other')
 KERNEL_PATH = (
     "import ctypes,os,sys;"
@@ -932,7 +933,7 @@ def public_live_observation(value):
     result['reason'] = choice(value.get('reason'), {'notObserved', 'childNotAlive', 'childLivenessUnknown', 'samplingTargetUnverified',
         'observed', 'sampleUnavailable', 'observationUnavailable', 'commandEndedBeforeTrigger', 'expectedCaseStarted',
         'ownedProcessGroupUnverified', 'diagnosticDidNotFinishBeforeDeadline', 'diagnosticOutputLimit',
-        'diagnosticFailed', 'diagnosticWorkerUnavailable'}, 'unreported')
+        'diagnosticFailed', 'diagnosticWorkerUnavailable', 'diagnosticClockUnverified'}, 'unreported')
     for key in ('xcode_identity_verified', 'owned_container_verified', 'installed_bytes_match', 'host_executable_bytes_match'):
         result[key] = value.get(key) is True
     marker = value.get('marker', {}); marker = marker if isinstance(marker, dict) else {}
@@ -960,6 +961,15 @@ def public_live_observation(value):
         {'notAttempted', 'notParsed', 'observed', 'ownershipUnverified', 'invalidPayload'}, 'notAttempted'),
         'identity_verified': process.get('identity_verified') is True}
     if isinstance(process.get('command'), dict): result['xcode_process']['command'] = bootstrap._metadata(process['command'])
+    trigger = value.get('trigger', {}); trigger = trigger if isinstance(trigger, dict) else {}
+    planned = trigger.get('planned_after_ms'); actual = trigger.get('actual_after_ms')
+    planned = planned if type(planned) is int and planned in {90000, 480000} else None
+    actual = actual if type(actual) is int and 0 <= actual <= 600000 else None
+    trigger_state = choice(trigger.get('state'), {'triggered', 'notTriggered', 'unavailable'}, 'unavailable')
+    if (planned is None or trigger_state == 'triggered' and (actual is None or actual < planned)
+            or trigger_state == 'notTriggered' and actual is not None):
+        trigger_state, actual = 'unavailable', None
+    result['trigger'] = {'state': trigger_state, 'planned_after_ms': planned, 'actual_after_ms': actual}
     host = value.get('host_process', {}); host = host if isinstance(host, dict) else {}
     result['host_process'] = {'state': choice(host.get('state'),
         {'notMeasured', 'unavailable', 'notObserved', 'verifiedOwnedPathAndUID'}, 'unavailable')}
@@ -1039,13 +1049,19 @@ def run(output=OUTPUT, root=None, command=projection.native_command, signing=sim
               'native_control_timeout_seconds': NATIVE_CONTROL_TIMEOUT_SECONDS,
               'native_projection_timeout_seconds': NATIVE_PROJECTION_TIMEOUT_SECONDS,
               'native_destination_timeout_seconds': NATIVE_DESTINATION_TIMEOUT_SECONDS,
+              'native_projection_observation_after_seconds': NATIVE_PROJECTION_OBSERVATION_AFTER_SECONDS,
               'control': {'attempted': False, 'expected': 1}, 'projection': {'attempted': False, 'expected': 41},
               'commands': {}, 'command_timing': {}, 'post_exit_group_observations': {}, 'phase': 'preflight'}
     secrets = tuple(value for key, value in os.environ.items() if value and re.search(r'TOKEN|SECRET|AUTH|PASSWORD|API_ID|API_HASH|SESSION|PRIVATE_KEY', key, re.I))
-    def call(label, args, timeout=30, required=True, groups=False, observer=None):
+    def call(label, args, timeout=30, required=True, groups=False, observer=None, bootstrap_after_seconds=None):
         options = {}
         if groups: options['post_exit_diagnostic'] = lambda pid, group: group_observation(pid, group, secrets)
         if observer is not None: options['bootstrap_diagnostic'] = observer
+        if bootstrap_after_seconds is not None:
+            if (label != 'projection_xctest' or observer is None or type(bootstrap_after_seconds) is not int
+                    or bootstrap_after_seconds != NATIVE_PROJECTION_OBSERVATION_AFTER_SECONDS):
+                raise PlanError('modern_invalid_late_observation')
+            options['bootstrap_after_seconds'] = bootstrap_after_seconds
         command_started = time.monotonic()
         status, data = command(args, timeout=timeout, **options)
         elapsed = time.monotonic() - command_started
@@ -1106,7 +1122,8 @@ def run(output=OUTPUT, root=None, command=projection.native_command, signing=sim
                 status, raw = call(label + '_xctest', ['xcodebuild', 'test-without-building', '-xctestrun', str(plan),
                     '-destination', 'id=' + identifier, '-destination-timeout', str(NATIVE_DESTINATION_TIMEOUT_SECONDS), '-parallel-testing-enabled', 'NO',
                     '-derivedDataPath', str(Path(temporary) / 'derived'), '-resultBundlePath', str(Path(temporary) / 'result.xcresult'),
-                    '-collect-test-diagnostics=never'], NATIVE_PROJECTION_TIMEOUT_SECONDS if label == 'projection' else NATIVE_CONTROL_TIMEOUT_SECONDS, False, observer=observer)
+                    '-collect-test-diagnostics=never'], NATIVE_PROJECTION_TIMEOUT_SECONDS if label == 'projection' else NATIVE_CONTROL_TIMEOUT_SECONDS,
+                    False, observer=observer, bootstrap_after_seconds=NATIVE_PROJECTION_OBSERVATION_AFTER_SECONDS if label == 'projection' else None)
                 if observer is not None: owned['live_bootstrap'] = status.pop('bootstrap_diagnostic')
                 counts = control_cases(raw) if expected == 1 else projection.cases(raw)
                 owned.update(counts)

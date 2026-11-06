@@ -1175,6 +1175,18 @@
       "status": "not_reached_in_run_42247024748_archive_switch_failed_first"
     },
     "future_ui_experiment_ci_run_claimed": false,
+    "late_projection_observation": {
+      "actual_native_cases_verified_with_change": 0,
+      "callbacks_maximum": 1,
+      "command_budget_seconds": 600,
+      "control_and_historical_trigger_after_seconds": 90,
+      "observer_budget_seconds": 18,
+      "original_bundle_changed": false,
+      "projection_trigger_after_seconds": 480,
+      "root_cause_established": false,
+      "status": "prepared_not_yet_executed_in_native_run",
+      "test_retries": 0
+    },
     "native_owned_simulator_lifecycle": {
       "bootstatus_not_a_pre_xctest_hard_gate": true,
       "cleanup_and_integrity_verified": true,

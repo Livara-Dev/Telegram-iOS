@@ -543,6 +543,8 @@ class FocusedWorkflowRoutingTests(unittest.TestCase):
         self.assertIn('custom_options_replay.py run', execute)
 
     def test_modern_native_control_uses_fresh_devices_without_forced_service_restart(self):
+        section = self.section('native-api-probe')
+        self.assertIn('python3 -W error -m unittest discover -s tools/fork_baseline/tests -p test_projection_replay.py -v', section)
         source = self.section('native-api-probe')
         step = source.split('      - name: Refresh only the registered current-user simulator service on an exclusive hosted runner\n', 1)[1].split('      - name: ', 1)[0]
         condition = re.search(r'^        if: (.*?)$', step, re.M).group(1)
