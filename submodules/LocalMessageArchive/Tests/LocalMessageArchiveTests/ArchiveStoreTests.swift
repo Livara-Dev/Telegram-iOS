@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 import Foundation
+import Darwin
 import XCTest
 import sqlcipher
 @testable import LocalMessageArchive
@@ -425,6 +426,250 @@ final class ArchiveStoreTests: XCTestCase {
         let chunk = Data(repeating: 0x5b, count: 64 * 1024)
         for _ in 0..<chunks { try handle.write(contentsOf: chunk) }
         return url
+    }
+
+    private final class MediaWorkerGate {
+        private let lock = NSLock()
+        private var armed = false
+        let entered = DispatchSemaphore(value: 0)
+        let released = DispatchSemaphore(value: 0)
+
+        func arm() { lock.lock(); armed = true; lock.unlock() }
+        func clock() -> Int64 {
+            lock.lock()
+            let shouldWait = armed
+            armed = false
+            lock.unlock()
+            if shouldWait {
+                entered.signal()
+                _ = released.wait(timeout: .now() + 10)
+            }
+            return 1000
+        }
+    }
+
+    func testOwnedMediaDescriptorSurvivesUnlinkBeforeQueuedReadAndReopen() throws {
+        let gate = MediaWorkerGate()
+        let store = try open(clock: { gate.clock() })
+        _ = try write(store, [event("owned-unlink")])
+        let url = try mediaFile(chunks: 5)
+        var owner = try ArchiveMediaFileSource.acquire(source: url, expectedSize: 5 * 64 * 1024)
+        let descriptor = try XCTUnwrap(owner).descriptor
+        weak var observedOwner = owner
+        let done = expectation(description: "owned copy after unlink")
+        gate.arm()
+        defer { gate.released.signal() }
+        store.recordMediaFile(eventKey: "owned-unlink", slot: 0, kind: "video", mimeType: "video/mp4",
+                              source: try XCTUnwrap(owner), generation: 0) { result in
+            XCTAssertEqual(try? result.get(), true)
+            done.fulfill()
+        }
+        owner = nil // The queued store operation must keep the descriptor alive.
+        guard gate.entered.wait(timeout: .now() + 5) == .success else { XCTFail("Worker did not enter gate"); return }
+        XCTAssertNotNil(observedOwner)
+        XCTAssertGreaterThanOrEqual(fcntl(descriptor, F_GETFD), 0)
+        try FileManager.default.removeItem(at: url)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: url.path))
+        gate.released.signal()
+        wait(for: [done], timeout: 10)
+        _ = try usage(store) // A worker barrier after the retained operation ends.
+        XCTAssertNil(observedOwner)
+        close(store)
+        let reopened = try open()
+        XCTAssertEqual(try awaitResult { reopened.mediaInfo(eventKey: "owned-unlink", slot: 0, completion: $0) }?.byteCount, 5 * 64 * 1024)
+        for chunk in 0..<5 {
+            XCTAssertEqual(try awaitResult { reopened.mediaRange(eventKey: "owned-unlink", slot: 0, offset: Int64(chunk * 64 * 1024), count: 64 * 1024, completion: $0) }, Data(repeating: 0x5b, count: 64 * 1024))
+        }
+    }
+
+    func testOwnedMediaEqualSizePathReplacementUsesOriginalBytesAndRetryOffsets() throws {
+        let store = try open()
+        _ = try write(store, [event("owned-replace")])
+        let url = try mediaFile(chunks: 2)
+        let owner = try XCTUnwrap(ArchiveMediaFileSource.acquire(source: url))
+        let replacement = directory.appendingPathComponent("replacement")
+        XCTAssertTrue(FileManager.default.createFile(atPath: replacement.path, contents: nil))
+        let writer = try FileHandle(forWritingTo: replacement)
+        for _ in 0..<2 { try writer.write(contentsOf: Data(repeating: 0x44, count: 64 * 1024)) }
+        try writer.close()
+        XCTAssertEqual(Darwin.rename(replacement.path, url.path), 0)
+        // The replacement is complete and the same size, so reopening by path
+        // would silently archive the wrong bytes. The acquired descriptor wins.
+        for _ in 0..<2 {
+            XCTAssertTrue(try awaitResult { store.recordMediaFile(eventKey: "owned-replace", slot: 0, kind: "document", mimeType: "application/octet-stream", source: owner, generation: 0, completion: $0) })
+        }
+        for chunk in 0..<2 {
+            XCTAssertEqual(try awaitResult { store.mediaRange(eventKey: "owned-replace", slot: 0, offset: Int64(chunk * 64 * 1024), count: 64 * 1024, completion: $0) }, Data(repeating: 0x5b, count: 64 * 1024))
+        }
+        let different = try XCTUnwrap(ArchiveMediaFileSource.acquire(source: url))
+        assertError(.eventConflict) { try awaitResult { store.recordMediaFile(eventKey: "owned-replace", slot: 0, kind: "document", mimeType: "application/octet-stream", source: different, generation: 0, completion: $0) } }
+    }
+
+    func testURLMediaCompatibilityStillOpensOnWorkerAfterItsClockCheck() throws {
+        let gate = MediaWorkerGate()
+        let store = try open(clock: { gate.clock() })
+        _ = try write(store, [event("url-compatibility")])
+        let url = try mediaFile()
+        let done = expectation(description: "URL source missing before worker open")
+        gate.arm()
+        defer { gate.released.signal() }
+        store.recordMediaFile(eventKey: "url-compatibility", slot: 0, kind: "document", mimeType: "application/octet-stream", source: url, generation: 0) { result in
+            XCTAssertEqual(try? result.get(), false)
+            done.fulfill()
+        }
+        guard gate.entered.wait(timeout: .now() + 5) == .success else { XCTFail("Worker did not enter gate"); return }
+        try FileManager.default.removeItem(at: url)
+        gate.released.signal()
+        wait(for: [done], timeout: 10)
+        XCTAssertNil(try awaitResult { store.mediaInfo(eventKey: "url-compatibility", slot: 0, completion: $0) })
+    }
+
+    func testOwnedMediaDescriptorFlagsInvalidationAndLastOwnerLifetime() throws {
+        _ = try open()
+        let url = try mediaFile()
+        var owner = try ArchiveMediaFileSource.acquire(source: url)
+        var shared = owner
+        let descriptor = try XCTUnwrap(owner).descriptor
+        XCTAssertNotEqual(fcntl(descriptor, F_GETFD) & FD_CLOEXEC, 0)
+        XCTAssertNotEqual(fcntl(descriptor, F_GETFL) & O_NONBLOCK, 0)
+        XCTAssertEqual(fcntl(descriptor, F_GETFL) & O_ACCMODE, O_RDONLY)
+        owner?.invalidate()
+        owner?.invalidate()
+        XCTAssertGreaterThanOrEqual(fcntl(descriptor, F_GETFD), 0, "Revocation must not close a descriptor still retained by a reader")
+        owner = nil
+        XCTAssertGreaterThanOrEqual(fcntl(descriptor, F_GETFD), 0)
+        assertError(.protectionUnavailable) { try shared!.stream { _, _, _ in XCTFail("Invalidated owner was read") } }
+        shared = nil
+        let closedFlags = fcntl(descriptor, F_GETFD)
+        let closedError = errno
+        XCTAssertEqual(closedFlags, -1)
+        XCTAssertEqual(closedError, EBADF)
+    }
+
+    func testOwnedMediaAcquisitionRejectsMissingSymlinkNonregularOversizeAndMismatch() throws {
+        _ = try open()
+        let url = try mediaFile()
+        let link = directory.appendingPathComponent("owned-link")
+        try FileManager.default.createSymbolicLink(at: link, withDestinationURL: url)
+        let fifo = directory.appendingPathComponent("owned-fifo")
+        XCTAssertEqual(mkfifo(fifo.path, 0o600), 0)
+        for source in [link, fifo, directory!, directory.appendingPathComponent("missing")] {
+            XCTAssertNil(try ArchiveMediaFileSource.acquire(source: source))
+        }
+        XCTAssertNil(try ArchiveMediaFileSource.acquire(source: url, expectedSize: 1))
+        assertError(.invalidInput) { try ArchiveMediaFileSource.acquire(source: url, expectedSize: -1) }
+        assertError(.invalidInput) { try ArchiveMediaFileSource.acquire(source: URL(string: "https://example.invalid/file")!) }
+        let oversized = try mediaFile(name: "owned-oversized", chunks: 0)
+        let sparse = try FileHandle(forWritingTo: oversized)
+        try sparse.truncate(atOffset: 512 * 1024 * 1024 + 1)
+        try sparse.close()
+        XCTAssertNil(try ArchiveMediaFileSource.acquire(source: oversized))
+    }
+
+    func testOwnedMediaCloseCallbackRunsOnceAfterFinalCloseButNotOnAcquisitionFailure() throws {
+        _ = try open()
+        let url = try mediaFile()
+        var calls = 0
+        var descriptor: Int32 = -1
+        var callbackObservedClosedDescriptor = false
+        var owner = try ArchiveMediaFileSource.acquire(source: url, onClose: {
+            calls += 1
+            callbackObservedClosedDescriptor = fcntl(descriptor, F_GETFD) == -1 && errno == EBADF
+        })
+        descriptor = try XCTUnwrap(owner).descriptor
+        var retained = owner
+        owner?.invalidate()
+        owner = nil
+        XCTAssertEqual(calls, 0)
+        XCTAssertNotNil(retained)
+        retained = nil
+        XCTAssertEqual(calls, 1)
+        XCTAssertTrue(callbackObservedClosedDescriptor)
+        XCTAssertNil(try ArchiveMediaFileSource.acquire(source: directory.appendingPathComponent("missing-owner"), onClose: { calls += 1 }))
+        XCTAssertNil(try ArchiveMediaFileSource.acquire(source: url, expectedSize: 1, onClose: { calls += 1 }))
+        assertError(.invalidInput) { try ArchiveMediaFileSource.acquire(source: url, expectedSize: -1, onClose: { calls += 1 }) }
+        XCTAssertEqual(calls, 1, "The caller releases its reservation on nil/error acquisition")
+    }
+
+    func testOwnedMediaQuotaStaleGenerationAndClosedStoreKeepExistingData() throws {
+        let store = try open(retention: ArchiveRetentionPolicy(maxPayloadBytes: 1024))
+        _ = try write(store, [event("owned-policy")])
+        let owner = try XCTUnwrap(ArchiveMediaFileSource.acquire(source: mediaFile()))
+        let before = try usage(store)
+        XCTAssertFalse(try awaitResult { store.recordMediaFile(eventKey: "owned-policy", slot: 0, kind: "document", mimeType: "application/octet-stream", source: owner, generation: 0, completion: $0) })
+        XCTAssertEqual(try usage(store), before)
+        XCTAssertFalse(try awaitResult { store.recordMediaFile(eventKey: "owned-policy", slot: 0, kind: "document", mimeType: "application/octet-stream", source: owner, expectedSize: 1, generation: 0, completion: $0) })
+        _ = try purge(store, to: 1)
+        assertError(.generationMismatch(expected: 1, received: 0)) { try awaitResult { store.recordMediaFile(eventKey: "owned-policy", slot: 0, kind: "document", mimeType: "application/octet-stream", source: owner, generation: 0, completion: $0) } }
+        close(store)
+        assertError(.closed) { try awaitResult { store.recordMediaFile(eventKey: "owned-policy", slot: 0, kind: "document", mimeType: "application/octet-stream", source: owner, generation: 1, completion: $0) } }
+        XCTAssertGreaterThanOrEqual(fcntl(owner.descriptor, F_GETFD), 0, "Store rejection must not close the caller's owner")
+    }
+
+    func testOwnedMediaInvalidatedWhileQueuedDoesNotWriteAttachmentOrUsage() throws {
+        let gate = MediaWorkerGate()
+        let store = try open(clock: { gate.clock() })
+        _ = try write(store, [event("owned-revoked")])
+        let owner = try XCTUnwrap(ArchiveMediaFileSource.acquire(source: mediaFile(chunks: 3)))
+        let before = try usage(store)
+        let done = expectation(description: "revoked queued copy")
+        gate.arm()
+        defer { gate.released.signal() }
+        store.recordMediaFile(eventKey: "owned-revoked", slot: 0, kind: "video", mimeType: "video/mp4", source: owner, generation: 0) { result in
+            if case let .failure(error) = result { XCTAssertEqual(error, .protectionUnavailable) }
+            else { XCTFail("A revoked queued source was accepted") }
+            done.fulfill()
+        }
+        guard gate.entered.wait(timeout: .now() + 5) == .success else { XCTFail("Worker did not enter gate"); return }
+        owner.invalidate()
+        gate.released.signal()
+        wait(for: [done], timeout: 10)
+        XCTAssertEqual(try usage(store), before)
+        XCTAssertNil(try awaitResult { store.mediaInfo(eventKey: "owned-revoked", slot: 0, completion: $0) })
+    }
+
+    func testOwnedMediaCancellationBetweenChunksAndMetadataMutationAreRejected() throws {
+        let store = try open()
+        _ = try write(store, [event("owned-mutation")])
+        let url = try mediaFile(chunks: 3)
+        let revoked = try XCTUnwrap(ArchiveMediaFileSource.acquire(source: url))
+        var consumed = 0
+        assertError(.protectionUnavailable) {
+            try revoked.stream { _, count, _ in consumed += count; revoked.invalidate() }
+        }
+        XCTAssertEqual(consumed, 64 * 1024)
+        let changed = try XCTUnwrap(ArchiveMediaFileSource.acquire(source: url))
+        let before = try usage(store)
+        let writer = try FileHandle(forWritingTo: url)
+        try writer.truncate(atOffset: 1)
+        try writer.close()
+        assertError(.protectionUnavailable) { try awaitResult { store.recordMediaFile(eventKey: "owned-mutation", slot: 0, kind: "document", mimeType: "application/octet-stream", source: changed, generation: 0, completion: $0) } }
+        XCTAssertEqual(try usage(store), before)
+        XCTAssertNil(try awaitResult { store.mediaInfo(eventKey: "owned-mutation", slot: 0, completion: $0) })
+    }
+
+    func testOwnedMediaDetectsSameSizeModificationDuringStream() throws {
+        _ = try open()
+        let url = try mediaFile(chunks: 3)
+        let owner = try XCTUnwrap(ArchiveMediaFileSource.acquire(source: url))
+        var initial = stat()
+        XCTAssertEqual(fstat(owner.descriptor, &initial), 0)
+        let writer = try FileHandle(forWritingTo: url)
+        defer { try? writer.close() }
+        assertError(.protectionUnavailable) {
+            try owner.stream { _, _, offset in
+                if offset == 0 {
+                    try writer.seek(toOffset: 64 * 1024)
+                    try writer.write(contentsOf: Data([0x44]))
+                    // Make timestamp change deterministic even on coarse or fast filesystems.
+                    var times = [initial.st_atimespec, timespec(tv_sec: initial.st_mtimespec.tv_sec + 1, tv_nsec: initial.st_mtimespec.tv_nsec)]
+                    XCTAssertEqual(times.withUnsafeMutableBufferPointer { futimens(writer.fileDescriptor, $0.baseAddress) }, 0)
+                }
+            }
+        }
+        var after = stat()
+        XCTAssertEqual(fstat(owner.descriptor, &after), 0)
+        XCTAssertEqual(after.st_size, initial.st_size)
     }
 
     func testStreamedLargeMediaSurvivesSourceRemovalAndReopenWithBoundedReads() throws {
