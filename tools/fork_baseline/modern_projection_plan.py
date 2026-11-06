@@ -160,7 +160,7 @@ def _copy_bundle(source, destination):
 
 
 def bind_plan(generated, plan_root, captured_app, destination):
-    """Rebind the proven Apple plan without changing its observed path model."""
+    """Rebind the validated Apple plan without changing its observed path model."""
     plan_root, captured_app, destination = Path(plan_root), Path(captured_app), Path(destination)
     version, original, app, bundle, kind = generated_products(generated, plan_root)
     captured_info = plistlib.loads(products.read_small(products.fixed_path(captured_app, 'Info.plist')))
@@ -453,6 +453,48 @@ def owned_data_root(identifier):
     return data
 
 
+def owned_device_identity(identifier, name, *, home=None, uid=None):
+    """Prove only identity from this new device's metadata, never readiness."""
+    proof = {'source': 'ownedDeviceMetadata', 'state': 'unavailable', 'reason': 'metadataUnavailable',
+             'identity_verified': False, 'readiness_asserted': False}
+    try:
+        user = os.getuid() if uid is None else uid
+        if (not isinstance(identifier, str) or re.fullmatch(r'[0-9A-Fa-f]{8}(?:-[0-9A-Fa-f]{4}){3}-[0-9A-Fa-f]{12}', identifier) is None
+                or not isinstance(name, str) or not name or len(name) > 128 or type(user) is not int or not 0 <= user < 2**32 - 1):
+            return {**proof, 'state': 'rejected', 'reason': 'invalidOwnedIdentity'}
+        root = Path(home if home is not None else Path.home()).resolve(strict=True)
+        device = root / 'Library/Developer/CoreSimulator/Devices' / identifier
+        path = root
+        for part in (None, *device.relative_to(root).parts):
+            if part is not None: path = path / part
+            try: info = path.lstat()
+            except FileNotFoundError: return proof
+            if not stat.S_ISDIR(info.st_mode) or info.st_uid != user:
+                return {**proof, 'state': 'rejected', 'reason': 'unsafeOwnedDevicePath'}
+        metadata = device / 'device.plist'
+        try: info = metadata.lstat()
+        except FileNotFoundError: return proof
+        if not stat.S_ISREG(info.st_mode) or info.st_uid != user or info.st_nlink != 1:
+            return {**proof, 'state': 'rejected', 'reason': 'unsafeDeviceMetadata'}
+        if not 0 < info.st_size <= MAX_PRIVATE: return {**proof, 'reason': 'unsupportedDeviceMetadata'}
+        try: value = plistlib.loads(private_bytes(metadata))
+        except Exception: return {**proof, 'reason': 'unsupportedDeviceMetadata'}
+        if not isinstance(value, dict): return {**proof, 'reason': 'unsupportedDeviceMetadata'}
+        expected = {'UDID': identifier, 'name': name, 'deviceType': DEVICE_TYPE, 'runtime': RUNTIME}
+        # A known mismatch remains a rejection even when another field is
+        # absent; partial metadata cannot downgrade it to an API fallback.
+        for key, wanted in expected.items():
+            if key not in value: continue
+            observed = value[key]
+            matches = (type(observed) is str and
+                (observed.casefold() == wanted.casefold() if key == 'UDID' else observed == wanted))
+            if not matches: return {**proof, 'state': 'rejected', 'reason': 'ownedDeviceIdentityMismatch'}
+        if any(key not in value for key in expected): return {**proof, 'reason': 'unsupportedDeviceMetadata'}
+        return {**proof, 'state': 'verified', 'reason': None, 'identity_verified': True}
+    except (OSError, ValueError, TypeError, RuntimeError):
+        return proof
+
+
 def verify_owned_device(raw, identifier, name):
     try:
         if not isinstance(raw, bytes) or not 0 < len(raw) <= MAX_PRIVATE: return False
@@ -548,7 +590,7 @@ def group_observation(pid, group, secrets):
     return result
 
 
-def live_control_observation(pid, group, identifier, expected, secrets, is_alive):
+def live_control_observation(pid, group, identifier, expected, secrets, is_alive, device_name):
     """Inspect the exact owned control without relying on live simctl IPC."""
     report = {'diagnostic_only': True, 'state': 'unavailable', 'xcode_identity_verified': False,
               'owned_container_verified': False, 'installed_bytes_match': False,
@@ -563,6 +605,8 @@ def live_control_observation(pid, group, identifier, expected, secrets, is_alive
         if not report['xcode_identity_verified'] or not bootstrap._alive(is_alive): return report
         selected_pid, target = pid, 'xcodebuild'
         try:
+            if owned_device_identity(identifier, device_name)['identity_verified'] is not True:
+                raise PlanError('live_control_device_identity_unavailable')
             containers = control_containers(identifier)
             report['owned_container_verified'] = True
             report['installed_bytes_match'] = control_inventory(containers['app']) == expected
@@ -715,6 +759,7 @@ def run(output=OUTPUT, root=None, command=projection.native_command, signing=sim
         if required and (status.get('status') != 'completed' or status.get('exit_code') != 0):
             raise PlanError('modern_' + label + '_failed')
         return ({**status, 'bootstrap_diagnostic': public_live_observation(observation)} if observer is not None else status), data
+    used_identifiers = set()
     def suite(label, plan, expected):
         identifier = None; owned = {'attempted': True, 'expected': expected, 'cleanup_completed': False,
             'xctest_command_attempted': False, 'tests_started': False, 'started': 0, 'passed': 0}
@@ -724,6 +769,8 @@ def run(output=OUTPUT, root=None, command=projection.native_command, signing=sim
             _, raw = call(label + '_create', ['xcrun', 'simctl', 'create', name, DEVICE_TYPE, RUNTIME], groups=True)
             candidate = raw.decode().strip()
             if str(uuid.UUID(candidate)).casefold() != candidate.casefold(): raise PlanError('modern_device_invalid')
+            if candidate.casefold() in used_identifiers: raise PlanError('modern_owned_device_reused')
+            used_identifiers.add(candidate.casefold())
             identifier = candidate
             call(label + '_boot_request', ['xcrun', 'simctl', 'boot', identifier], 30, groups=True)
             status, _ = call(label + '_boot', ['xcrun', 'simctl', 'bootstatus', identifier, '-b'], 240, False, groups=True)
@@ -736,42 +783,20 @@ def run(output=OUTPUT, root=None, command=projection.native_command, signing=sim
                 if (len(rows) != 1 or rows[0][0] != RUNTIME or rows[0][1].get('name') != name or
                         rows[0][1].get('deviceTypeIdentifier') != DEVICE_TYPE or rows[0][1].get('state') != 'Booted'):
                     raise PlanError('modern_owned_boot_unverified')
+            identity = owned_device_identity(identifier, name)
+            owned['device_identity'] = identity
+            if identity['state'] == 'rejected': raise PlanError('modern_owned_simulator_identity_rejected')
+            if identity['identity_verified'] is not True:
+                status, raw = call(label + '_owned_identity', ['xcrun', 'simctl', 'list', 'devices', 'available', '--json'], 15, False)
+                verified = status.get('status') == 'completed' and status.get('exit_code') == 0 and verify_owned_device(raw, identifier, name)
+                owned['identity_fallback'] = {'source': 'boundedSimctlInventory', 'identity_verified': verified,
+                                            'readiness_asserted': False}
+                if not verified: raise PlanError('modern_owned_simulator_identity_unverified')
+            owned.update(owned_simulator_identity_verified=True, manual_prewarm_performed=False,
+                         xcode_manages_install_and_launch=True, gui_assisted=False)
             observer = None
             if label == 'control':
-                owned['standalone'] = warm = {'attempted': True, 'passed': False, 'xctest_result': False}
-                warm['gui_assisted'] = False
-                _, raw = call('control_owned_identity', ['xcrun', 'simctl', 'list', 'devices', 'available', '--json'], 15)
-                if not verify_owned_device(raw, identifier, name): raise PlanError('tiny_owned_simulator_identity_unverified')
-                warm['owned_simulator_identity_verified'] = True
-                # The only warmed device is the UUID created by this suite.
-                call('control_install', ['xcrun', 'simctl', 'install', identifier, str(control_app)], 120, groups=True)
-                containers = control_containers(identifier)
-                if control_inventory(containers['app']) != control_expected: raise PlanError('tiny_installed_bytes_changed')
-                warm['installed_bytes_match'] = True
-                before = control_marker(containers['data'])
-                if before.get('state') == 'observed': control_marker(containers['data'], clear=True)
-                if control_marker(containers['data']) != {'state': 'absent'}: raise PlanError('tiny_initial_marker_not_absent')
-                launched = False
-                try:
-                    call('control_standalone_launch', ['xcrun', 'simctl', 'launch', identifier, CONTROL_APP_ID], 30, groups=True)
-                    launched = True; deadline = time.monotonic() + 15
-                    marker = control_marker(containers['data'])
-                    while marker != {'state': 'observed', 'stage': 'sceneVisible'} and time.monotonic() < deadline:
-                        if marker.get('state') not in {'absent', 'observed'}: break
-                        time.sleep(.1); marker = control_marker(containers['data'])
-                    warm['marker'] = marker
-                    if marker != {'state': 'observed', 'stage': 'sceneVisible'}: raise PlanError('tiny_standalone_scene_unverified')
-                finally:
-                    if launched: call('control_standalone_terminate', ['xcrun', 'simctl', 'terminate', identifier, CONTROL_APP_ID], 30, groups=True)
-                # Rediscover exact metadata after lifecycle calls, never reset a
-                # stale/foreign path supplied by a previous simulator command.
-                current = control_containers(identifier)
-                if current != containers: raise PlanError('tiny_standalone_container_changed')
-                if control_marker(current['data'], clear=True) != {'state': 'cleared'} or control_marker(current['data']) != {'state': 'absent'}:
-                    raise PlanError('tiny_pretest_marker_not_absent')
-                warm.update(passed=True, marker_cleared_before_xctest=True)
-                owned['simulator_warmed_by_standalone_control'] = True
-                observer = lambda pid, group, alive: live_control_observation(pid, group, identifier, control_expected, secrets, alive)
+                observer = lambda pid, group, alive: live_control_observation(pid, group, identifier, control_expected, secrets, alive, name)
             with tempfile.TemporaryDirectory(prefix='ayu-modern-xcresult-') as temporary:
                 started_at = time.time()
                 owned['xctest_command_attempted'] = True
@@ -784,6 +809,8 @@ def run(output=OUTPUT, root=None, command=projection.native_command, signing=sim
                 owned.update(counts)
                 owned['tests_started'] = counts.get('started', 0) > 0
                 owned['passed_own_cases'] = status.get('status') == 'completed' and status.get('exit_code') == 0 and counts['all_expected_passed']
+                if not owned['passed_own_cases']:
+                    owned['failure'] = 'tiny_hosted_control_not_passed' if label == 'control' else 'modern_projection_not_passed'
                 projection.write(output / (label + '-test.log'), simulator_probe.redact_probe_text(raw, secrets), text=True)
                 projection.write(output / (label + '-cases.json'), counts)
                 if label == 'projection' and not owned['passed_own_cases']:
@@ -837,9 +864,11 @@ def run(output=OUTPUT, root=None, command=projection.native_command, signing=sim
         verify_xcode_signing(derived, app, bundle, raw, call, report)
         report['tiny_control_entitlement_readback'] = 'matchedActualCodeSignInput'
         report['tiny_control_signing_verified'] = True
-        control_app, control_expected = app, control_inventory(app)
+        control_expected = control_inventory(app)
         report['phase'] = 'testTinyControl'
-        if not suite('control', plans[0], 1): raise PlanError('tiny_hosted_control_not_passed')
+        control_passed = suite('control', plans[0], 1)
+        if report['control']['cleanup_completed'] is not True: raise PlanError('tiny_control_cleanup_unverified')
+        if projection.snapshot_tree(original) != original_snapshot: raise PlanError('original_products_changed_before_projection')
         report['phase'] = 'bindModernPlan'
         controlled = output / 'private-resealed'
         report['signing_control'] = projection.prepare_control(original, controlled, 'resealed-host', {}, secrets, signing)
@@ -848,9 +877,11 @@ def run(output=OUTPUT, root=None, command=projection.native_command, signing=sim
         frozen = projection.snapshot_tree(output / 'private-modern')
         report['phase'] = 'testProjection'
         report['configuration_change']['modern_plan_executed'] = True
-        if not suite('projection', plan, 41): raise PlanError('modern_projection_not_passed')
+        projection_passed = suite('projection', plan, 41)
         if projection.snapshot_tree(output / 'private-modern') != frozen:
             raise PlanError('modern_products_changed')
+        if not control_passed: raise PlanError('tiny_hosted_control_not_passed')
+        if not projection_passed: raise PlanError('modern_projection_not_passed')
         report['passed'] = True; report['phase'] = 'complete'
     except Exception as error:
         report['passed'] = False

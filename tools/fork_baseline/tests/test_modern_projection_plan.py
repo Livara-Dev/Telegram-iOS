@@ -70,6 +70,9 @@ IDENTIFIER = '11111111-2222-3333-4444-555555555555'
 
 def owned_fixture(home):
     data = home / 'Library/Developer/CoreSimulator/Devices' / IDENTIFIER / 'data'
+    data.parent.mkdir(parents=True)
+    (data.parent / 'device.plist').write_bytes(plistlib.dumps({'UDID': IDENTIFIER, 'name': 'owned-control',
+        'deviceType': modern.DEVICE_TYPE, 'runtime': modern.RUNTIME}))
     result = {}
     for role, relative in (('data', 'Containers/Data/Application'), ('app', 'Containers/Bundle/Application')):
         parent = data / relative / 'AAAAAAAA-BBBB-CCCC-DDDD-EEEEEEEEEEEE'; parent.mkdir(parents=True)
@@ -196,7 +199,8 @@ class ModernPlanTests(unittest.TestCase):
                 with self.assertRaises(modern.PlanError): modern.private_bytes(path)
 
     def execute_fixture(self, root, control_outcome='passed', mutate=False, readback='correct', entitlements=None, warming='correct',
-                        test_entitlements=None, test_readback='missing', host_input=True):
+                        test_entitlements=None, test_readback='missing', host_input=True, device_metadata='correct', boot_status=0,
+                        projection_outcome='passed', cleanup_failure=False, mutate_control=False, repeat_uuid=False):
         output = root / modern.OUTPUT; output.mkdir(parents=True)
         capture = fixtures.captured(root, current=True)
         info = capture / 'TEST_ROOT' / modern.products.APP / 'PlugIns' / modern.products.TEST / 'Info.plist'
@@ -204,7 +208,7 @@ class ModernPlanTests(unittest.TestCase):
         value['CFBundleIdentifier'] = 'org.livara.ayugram.tests.native-security.projectionTests'
         info.write_bytes(plistlib.dumps(value)); fixtures.ProjectionReplayTests.refresh(capture)
         shutil.copytree(capture, output / 'private-products')
-        calls = []; self.fixture_options = []; entitlements = entitlements or EXPECTED_ENTITLEMENTS
+        calls = []; created_ids = []; self.fixture_options = []; entitlements = entitlements or EXPECTED_ENTITLEMENTS
         installed, data_root = root / 'owned-device/installed.app', root / 'owned-device/data-container'
         data_root.mkdir(parents=True)
         def command(args, timeout=30, **options):
@@ -254,25 +258,38 @@ class ModernPlanTests(unittest.TestCase):
                     if explicit is not None: arguments += ['--entitlements', str(explicit)]
                     commands.append(shlex.join(arguments + ['--timestamp=none', '--generate-entitlement-der', str(product)]))
                 return complete(('\n'.join(commands) + '\n').encode())
-            elif args[:3] == ['xcrun', 'simctl', 'create']: return complete(b'11111111-2222-3333-4444-555555555555')
+            elif args[:3] == ['xcrun', 'simctl', 'create']:
+                identifier = IDENTIFIER if not created_ids or repeat_uuid else '66666666-7777-8888-9999-AAAAAAAAAAAA'
+                created_ids.append(identifier)
+                device = root / 'Library/Developer/CoreSimulator/Devices' / identifier; device.mkdir(parents=True, exist_ok=True)
+                metadata = device / 'device.plist'
+                value = {'UDID': identifier, 'name': args[3], 'deviceType': modern.DEVICE_TYPE, 'runtime': modern.RUNTIME}
+                if warming == 'wrong_identity': value['name'] = 'other'
+                if device_metadata in {'unsupported', 'fallback_timeout'}: value = {'UDID': identifier}
+                if device_metadata == 'partial_mismatch': value = {'UDID': '00000000-0000-0000-0000-000000000000'}
+                if device_metadata != 'missing': metadata.write_bytes(plistlib.dumps(value))
+                return complete(identifier.encode())
+            elif args[:3] == ['xcrun', 'simctl', 'bootstatus']:
+                return complete(code=boot_status)
             elif args[:4] == ['xcrun', 'simctl', 'list', 'devices']:
-                name = next(value[0][3] for value in calls if value[0][:3] == ['xcrun', 'simctl', 'create'])
-                return complete(json.dumps({'devices': {modern.RUNTIME: [{'udid': IDENTIFIER,
-                    'name': name if warming != 'wrong_identity' else 'other', 'state': 'Booted', 'isAvailable': True,
+                if device_metadata == 'fallback_timeout':
+                    return {'status': 'timedOut', 'exit_code': None, 'timeout': True, 'output_limit': False, 'captured_bytes': 0}, b''
+                name = next(value[0][3] for value in reversed(calls) if value[0][:3] == ['xcrun', 'simctl', 'create'])
+                return complete(json.dumps({'devices': {modern.RUNTIME: [{'udid': created_ids[-1],
+                    'name': name if warming != 'wrong_identity' else 'other', 'state': 'Booted' if warming != 'not_booted' else 'Shutdown', 'isAvailable': True,
                     'deviceTypeIdentifier': modern.DEVICE_TYPE}]}}).encode())
-            elif args[:3] == ['xcrun', 'simctl', 'install']:
-                shutil.copytree(Path(args[-1]), installed)
-                if warming == 'wrong_bytes': (installed / modern.CONTROL_APP).write_bytes(b'changed')
-            elif args[:3] == ['xcrun', 'simctl', 'launch']:
-                path = data_root / modern.tiny.MARKER_RELATIVE; path.parent.mkdir(parents=True)
-                path.write_bytes(b'sceneVisible' if warming != 'invalid_marker' else b'private-marker-canary')
-            elif args[:3] == ['xcrun', 'simctl', 'terminate'] and warming == 'terminate_failure':
-                return complete(b'private-termination-canary', 1)
+            elif args[:2] == ['xcrun', 'simctl'] and args[2] in {'install', 'launch', 'terminate'}:
+                raise AssertionError('The native XCTest command owns installation and launch')
+            elif args[:2] == ['xcrun', 'simctl'] and args[2] in {'shutdown', 'delete'} and cleanup_failure and len(created_ids) == 1:
+                return complete(code=1)
             elif 'test-without-building' in args:
                 if sum('test-without-building' in args for args, _ in calls) == 1:
+                    if mutate_control: (output / 'private-products/capture.json').write_bytes(b'private-corruption-before-projection')
+                    if control_outcome == 'timeout':
+                        return {'status': 'timedOut', 'exit_code': None, 'timeout': True, 'output_limit': False, 'captured_bytes': 0}, b''
                     return complete(control_log(control_outcome), 0 if control_outcome == 'passed' else 65)
                 if mutate: (output / 'private-products/capture.json').write_bytes(b'private-corruption-canary')
-                return complete(fixtures.log())
+                return complete(fixtures.log(projection_outcome), 0 if projection_outcome == 'passed' else 65)
             return complete()
         def reseal(original, destination, *args, **kwargs):
             shutil.copytree(original, destination)
@@ -281,19 +298,21 @@ class ModernPlanTests(unittest.TestCase):
         with patch.object(modern, 'MANIFEST_SHA256', modern.projection.digest(original / 'manifest.json')), \
              patch.object(modern, 'CAPTURE_SHA256', modern.projection.digest(original / 'capture.json')), \
              patch.object(modern.projection, 'verify_current_checkout'), patch.object(modern.projection, 'prepare_control', side_effect=reseal), \
-             patch.object(modern, 'control_containers', return_value={'app': installed, 'data': data_root}):
+             patch.object(modern, 'control_containers', return_value={'app': installed, 'data': data_root}), \
+             patch.object(modern.Path, 'home', return_value=root):
             proof = modern.verification(original, modern.projection.validate_products(original, modern.SOURCE))
             modern.projection.write(output / 'verification.json', proof)
-            report = modern.run(root=root, command=command)
+            report = modern.run(root=root, command=command, probe=lambda *args, **kwargs: None)
         return report, calls
 
-    def test_failed_authoritative_control_never_attempts_projection_or_claims_test_pass(self):
+    def test_failed_diagnostic_control_preserves_failure_and_still_runs_all_projection_cases_after_cleanup(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory).resolve(); result, calls = self.execute_fixture(root, 'failed')
             self.assertFalse(result['passed']); self.assertEqual(result['control']['started'], 1)
-            self.assertEqual(result['control']['passed'], 0); self.assertFalse(result['projection']['attempted'])
-            self.assertEqual(sum('test-without-building' in args for args, _ in calls), 1)
-            self.assertEqual(sum(args[:3] == ['xcrun', 'simctl', 'create'] for args, _ in calls), 1)
+            self.assertEqual(result['control']['passed'], 0); self.assertTrue(result['projection']['attempted'])
+            self.assertEqual(result['projection']['passed'], 41); self.assertEqual(result['control']['failure'], 'tiny_hosted_control_not_passed')
+            self.assertEqual(sum('test-without-building' in args for args, _ in calls), 2)
+            self.assertEqual(sum(args[:3] == ['xcrun', 'simctl', 'create'] for args, _ in calls), 2)
             self.assertTrue(result['control']['cleanup_completed']); self.assertTrue(result['original_products_unchanged'])
 
     def test_control_pass_then_exact_41_single_attempt_preserves_source_and_runtime_bounds(self):
@@ -330,7 +349,7 @@ class ModernPlanTests(unittest.TestCase):
             self.assertEqual(result['projection']['passed'], 41)
             self.assertFalse(result['original_products_unchanged']); self.assertFalse(result['passed'])
 
-    def test_native_xcode_signing_is_not_a_copied_key_and_standalone_warmup_precedes_one_test_attempt(self):
+    def test_native_xcode_signing_owns_default_install_and_launch_on_two_distinct_verified_devices(self):
         for generated in ({'get-task-allow': True}, {'com.apple.security.get-task-allow': True}):
             with self.subTest(generated=generated), tempfile.TemporaryDirectory() as directory:
                 result, calls = self.execute_fixture(Path(directory).resolve(), entitlements=generated)
@@ -342,28 +361,53 @@ class ModernPlanTests(unittest.TestCase):
                 self.assertIn('CODE_SIGN_IDENTITY=-', build); self.assertIn('CODE_SIGN_INJECT_BASE_ENTITLEMENTS=YES', build)
                 self.assertIn('DEVELOPMENT_TEAM=', build); self.assertNotIn('-allowProvisioningUpdates', build)
                 actions = [args[2] for args, _ in calls if args[:2] == ['xcrun', 'simctl']]
-                self.assertLess(actions.index('install'), actions.index('launch'))
-                self.assertLess(actions.index('launch'), actions.index('terminate'))
                 self.assertLess(actions.index('boot'), actions.index('bootstatus'))
-                first_xctest = next(index for index, (args, _) in enumerate(calls) if 'test-without-building' in args)
-                self.assertTrue(any(args[:3] == ['xcrun', 'simctl', 'terminate'] for args, _ in calls[:first_xctest]))
-                self.assertTrue(result['control']['standalone']['marker_cleared_before_xctest'])
-                self.assertFalse(result['control']['standalone']['xctest_result'])
-                self.assertFalse(result['control']['standalone']['gui_assisted'])
-                self.assertTrue(result['control']['simulator_warmed_by_standalone_control'])
+                self.assertTrue(all(action not in {'install', 'launch', 'terminate'} for action in actions))
+                for role in ('control', 'projection'):
+                    self.assertTrue(result[role]['xcode_manages_install_and_launch'])
+                    self.assertFalse(result[role]['manual_prewarm_performed']); self.assertTrue(result[role]['device_identity']['identity_verified'])
+                identifiers = [args[3] for args, _ in calls if args[:3] == ['xcrun', 'simctl', 'boot']]
+                self.assertEqual(len(set(identifiers)), 2)
                 observers = [(args, options) for args, options in self.fixture_options if 'bootstrap_diagnostic' in options]
                 self.assertEqual(len(observers), 1); self.assertIn('test-without-building', observers[0][0])
 
-    def test_failed_owned_identity_byte_attestation_marker_or_termination_stops_before_any_test_and_cleans_up(self):
-        for warming in ('wrong_identity', 'wrong_bytes', 'invalid_marker', 'terminate_failure'):
-            with self.subTest(warming=warming), tempfile.TemporaryDirectory() as directory:
-                result, calls = self.execute_fixture(Path(directory).resolve(), warming=warming)
+    def test_rejected_owned_identity_stops_before_any_test_and_cleans_up(self):
+        with tempfile.TemporaryDirectory() as directory:
+            result, calls = self.execute_fixture(Path(directory).resolve(), warming='wrong_identity')
+            self.assertFalse(result['passed']); self.assertFalse(result['projection']['attempted'])
+            self.assertFalse(result['control']['xctest_command_attempted']); self.assertFalse(result['control']['tests_started'])
+            self.assertFalse(any('test-without-building' in args for args, _ in calls))
+            self.assertTrue(result['control']['cleanup_completed'])
+
+    def test_zero_case_control_timeout_still_attempts_all_41_once_after_proven_cleanup_but_cannot_qualify(self):
+        for outcome in ('passed', 'failed'):
+            with self.subTest(projection=outcome), tempfile.TemporaryDirectory() as directory:
+                result, calls = self.execute_fixture(Path(directory).resolve(), control_outcome='timeout', projection_outcome=outcome)
+                self.assertFalse(result['passed']); self.assertEqual(result['control']['started'], 0)
+                self.assertEqual(result['control']['failure'], 'tiny_hosted_control_not_passed')
+                self.assertTrue(result['control']['cleanup_completed']); self.assertEqual(result['projection']['started'], 41)
+                self.assertEqual(sum('test-without-building' in args for args, _ in calls), 2)
+                self.assertEqual(result['projection']['passed'], 41 if outcome == 'passed' else 0)
+                creates = [index for index, (args, _) in enumerate(calls) if args[:3] == ['xcrun', 'simctl', 'create']]
+                deleted = next(index for index, (args, _) in enumerate(calls) if args[:3] == ['xcrun', 'simctl', 'delete'])
+                self.assertLess(deleted, creates[1])
+
+    def test_unverified_control_cleanup_or_changed_original_never_attempts_projection(self):
+        for kind in ('cleanup', 'source'):
+            with self.subTest(kind=kind), tempfile.TemporaryDirectory() as directory:
+                result, calls = self.execute_fixture(Path(directory).resolve(), cleanup_failure=kind == 'cleanup', mutate_control=kind == 'source')
                 self.assertFalse(result['passed']); self.assertFalse(result['projection']['attempted'])
-                self.assertFalse(result['control']['xctest_command_attempted']); self.assertFalse(result['control']['tests_started'])
-                self.assertFalse(any('test-without-building' in args for args, _ in calls))
-                self.assertTrue(result['control']['cleanup_completed'])
-                self.assertNotIn('private-marker-canary', json.dumps(result))
-                self.assertNotIn('private-termination-canary', json.dumps(result))
+                self.assertEqual(sum('test-without-building' in args for args, _ in calls), 1)
+                self.assertEqual(sum(args[:3] == ['xcrun', 'simctl', 'create'] for args, _ in calls), 1)
+                self.assertEqual(result['failure'], 'tiny_control_cleanup_unverified' if kind == 'cleanup' else 'original_products_changed_before_projection')
+                if kind == 'source': self.assertFalse(result['original_products_unchanged'])
+
+    def test_reused_device_uuid_never_runs_the_second_suite_on_the_old_device(self):
+        with tempfile.TemporaryDirectory() as directory:
+            result, calls = self.execute_fixture(Path(directory).resolve(), repeat_uuid=True)
+            self.assertFalse(result['passed']); self.assertEqual(result['failure'], 'modern_owned_device_reused')
+            self.assertFalse(result['projection']['xctest_command_attempted'])
+            self.assertEqual(sum('test-without-building' in args for args, _ in calls), 1)
 
     def test_actual_signing_arguments_bind_unique_exact_products_and_explicit_input_without_filename_guessing(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -441,6 +485,74 @@ class ModernPlanTests(unittest.TestCase):
         self.assertFalse(modern.verify_owned_device(payload(correct, 'other-runtime'), IDENTIFIER, 'owned'))
         self.assertFalse(modern.verify_owned_device(b'private-json-canary', IDENTIFIER, 'owned'))
 
+    def test_owned_device_metadata_proves_only_exact_identity_and_never_plist_readiness(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve(); owned_fixture(root)
+            metadata = root / 'Library/Developer/CoreSimulator/Devices' / IDENTIFIER / 'device.plist'
+            original = plistlib.loads(metadata.read_bytes()); original['state'] = 'Shutdown'
+            metadata.write_bytes(plistlib.dumps(original))
+            with patch.object(modern.projection.subprocess, 'Popen') as popen:
+                proof = modern.owned_device_identity(IDENTIFIER, 'owned-control', home=root)
+            popen.assert_not_called(); self.assertTrue(proof['identity_verified']); self.assertFalse(proof['readiness_asserted'])
+            self.assertNotIn(str(root), json.dumps(proof)); self.assertNotIn(IDENTIFIER, json.dumps(proof))
+            for key, wrong in (('UDID', '00000000-0000-0000-0000-000000000000'), ('name', 'other'),
+                               ('deviceType', 'other'), ('runtime', 'other'), ('UDID', 1)):
+                metadata.write_bytes(plistlib.dumps({key: wrong}))
+                proof = modern.owned_device_identity(IDENTIFIER, 'owned-control', home=root)
+                self.assertEqual(proof['state'], 'rejected'); self.assertFalse(proof['identity_verified'])
+
+    def test_owned_device_metadata_rejects_unsafe_paths_and_unknown_schema_grants_no_filesystem_identity(self):
+        for kind in ('symlink', 'hardlink', 'fifo', 'owner', 'parent_link', 'unknown', 'malformed', 'oversized'):
+            with self.subTest(kind=kind), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory).resolve(); owned_fixture(root)
+                device = root / 'Library/Developer/CoreSimulator/Devices' / IDENTIFIER; metadata = device / 'device.plist'
+                if kind == 'symlink':
+                    outside = root / 'outside'; metadata.rename(outside); metadata.symlink_to(outside)
+                elif kind == 'hardlink': os.link(metadata, root / 'linked-metadata')
+                elif kind == 'fifo': metadata.unlink(); os.mkfifo(metadata)
+                elif kind == 'parent_link':
+                    outside = root / 'outside'; device.rename(outside); device.symlink_to(outside, target_is_directory=True)
+                elif kind == 'unknown': metadata.write_bytes(plistlib.dumps({'UDID': IDENTIFIER}))
+                elif kind == 'malformed': metadata.write_bytes(b'<?xml version="1.0"?><plist><dict><key>private-metadata-canary</key>')
+                elif kind == 'oversized': metadata.write_bytes(b'x' * 65537)
+                proof = modern.owned_device_identity(IDENTIFIER, 'owned-control', home=root, uid=os.getuid() + 1 if kind == 'owner' else None)
+                self.assertEqual(proof['state'], 'unavailable' if kind in {'unknown', 'malformed', 'oversized'} else 'rejected')
+                self.assertFalse(proof['identity_verified']); self.assertFalse(proof['readiness_asserted'])
+                self.assertNotIn('private-metadata-canary', json.dumps(proof))
+
+    def test_direct_verified_identity_skips_inventory_rpc_and_unknown_uses_one_bounded_fallback(self):
+        for kind in ('correct', 'unsupported', 'missing'):
+            with self.subTest(kind=kind), tempfile.TemporaryDirectory() as directory:
+                result, calls = self.execute_fixture(Path(directory).resolve(), device_metadata=kind)
+                self.assertTrue(result['passed'])
+                inventory = [(args, limit) for args, limit in calls if args[:4] == ['xcrun', 'simctl', 'list', 'devices']]
+                self.assertEqual(len(inventory), 0 if kind == 'correct' else 2)
+                self.assertTrue(all(limit == 15 for _, limit in inventory))
+                proof = result['control']['device_identity']
+                self.assertFalse(proof['readiness_asserted'])
+                if kind == 'correct': self.assertTrue(proof['identity_verified'])
+                else: self.assertTrue(result['control']['identity_fallback']['identity_verified'])
+
+    def test_known_partial_metadata_mismatch_never_falls_back_or_installs_and_unknown_timeout_stays_failed(self):
+        for kind in ('partial_mismatch', 'fallback_timeout'):
+            with self.subTest(kind=kind), tempfile.TemporaryDirectory() as directory:
+                result, calls = self.execute_fixture(Path(directory).resolve(), device_metadata=kind)
+                self.assertFalse(result['passed']); self.assertFalse(result['control']['xctest_command_attempted'])
+                self.assertFalse(result['projection']['attempted']); self.assertTrue(result['control']['cleanup_completed'])
+                self.assertFalse(any(args[:3] == ['xcrun', 'simctl', 'install'] for args, _ in calls))
+                self.assertEqual(sum(args[:4] == ['xcrun', 'simctl', 'list', 'devices'] for args, _ in calls),
+                                 0 if kind == 'partial_mismatch' else 1)
+
+    def test_bootstatus_149_still_requires_actual_fresh_booted_inventory_even_with_valid_metadata(self):
+        for warming in ('correct', 'not_booted'):
+            with self.subTest(warming=warming), tempfile.TemporaryDirectory() as directory:
+                result, calls = self.execute_fixture(Path(directory).resolve(), boot_status=149, warming=warming)
+                self.assertEqual(result['passed'], warming == 'correct')
+                self.assertTrue(any(args[:4] == ['xcrun', 'simctl', 'list', 'devices'] for args, _ in calls))
+                if warming != 'correct':
+                    self.assertFalse(result['control']['xctest_command_attempted'])
+                    self.assertFalse(any(args[:3] == ['xcrun', 'simctl', 'install'] for args, _ in calls))
+
     def test_direct_filesystem_discovery_binds_exact_owned_uuid_and_both_bundle_metadata_identities(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory).resolve(); expected = owned_fixture(root)
@@ -517,10 +629,12 @@ class ModernPlanTests(unittest.TestCase):
             self.assertFalse(result['passed']); self.assertFalse(result['control']['attempted'])
 
     def test_live_filesystem_marker_and_kernel_path_uid_proof_choose_only_exact_owned_control_process(self):
-        for failure in (None, 'path', 'uid', 'exited'):
+        for failure in (None, 'path', 'uid', 'exited', 'metadata'):
             with self.subTest(failure=failure), tempfile.TemporaryDirectory() as directory:
                 root = Path(directory).resolve(); containers = owned_fixture(root)
                 marker = containers['data'] / modern.tiny.MARKER_RELATIVE; marker.parent.mkdir(parents=True); marker.write_bytes(b'mainEntered')
+                if failure == 'metadata':
+                    (root / 'Library/Developer/CoreSimulator/Devices' / IDENTIFIER / 'device.plist').write_bytes(plistlib.dumps({'UDID': IDENTIFIER}))
                 calls = []; uid = os.getuid()
                 def command(args, secrets, timeout=3):
                     calls.append((args, timeout))
@@ -534,11 +648,15 @@ class ModernPlanTests(unittest.TestCase):
                     raise AssertionError(args)
                 alive = Mock(side_effect=[True, True, False]) if failure == 'exited' else lambda: True
                 with patch.object(modern.Path, 'home', return_value=root), patch.object(modern.bootstrap, 'command', side_effect=command):
-                    observed = modern.live_control_observation(123, 123, IDENTIFIER, modern.control_inventory(containers['app']), (), alive)
+                    observed = modern.live_control_observation(123, 123, IDENTIFIER, modern.control_inventory(containers['app']), (), alive, 'owned-control')
                 value = modern.public_live_observation(observed)
                 self.assertNotIn('private-sample-canary', json.dumps(value)); self.assertNotIn(str(root), json.dumps(value))
                 if failure == 'exited':
                     self.assertFalse(value['marker']['captured_while_child_alive']); self.assertFalse(any(modern.bootstrap.SAMPLE_EXEC_WRAPPER in args for args, _ in calls))
+                elif failure == 'metadata':
+                    self.assertFalse(value['owned_container_verified']); self.assertFalse(value['marker']['captured_while_child_alive'])
+                    self.assertEqual(value['sample']['target'], 'xcodebuild')
+                    self.assertFalse(any(args[:2] == ['xcrun', 'simctl'] for args, _ in calls))
                 else:
                     self.assertEqual(value['marker'], {'state': 'observed', 'stage': 'mainEntered', 'captured_while_child_alive': True})
                     self.assertEqual(value['sample']['target'], 'tinyControl' if failure is None else 'xcodebuild')

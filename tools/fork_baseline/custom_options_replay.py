@@ -224,7 +224,6 @@ def simctl_phase(arguments):
             identifier(arguments[3]) and arguments[4:] == [BUNDLE, 'app']): return 'getContainer'
     if arguments[:3] == ['xcrun', 'simctl', 'launch']:
         tail = arguments[3:]
-        if tail[:1] == ['--terminate-running-process']: tail = tail[1:]
         if len(tail) == 6 and identifier(tail[0]) and tail[1:] == [BUNDLE, '-AppleLanguages', '(en)', '-AppleLocale', 'en_US']: return 'launchApplication'
     if (len(arguments) == 6 and arguments[:3] == ['xcrun', 'simctl', 'io'] and identifier(arguments[3]) and
             arguments[4] == 'screenshot' and Path(arguments[5]).is_absolute()): return 'captureScreenshot'
@@ -661,25 +660,19 @@ class Recording:
                             room = 16384 - sum(len(x) for x in self.data.values())
                             self.data[key.data].extend(chunk[:room])
                             self.ready = self.ready or any(b'Recording started' in x for x in self.data.values())
+                            if self.ready and self.state == 'starting': self.state = 'ready'
                             if len(chunk) > room: self.limited = True; self.state = 'outputLimit'
                         if self.limited: self._kill(); return
         except (OSError, ValueError, RuntimeError): self.state = 'readerUnavailable'
 
-    def begin(self):
+    def start(self):
+        """Request recording without making readiness a prerequisite to launch."""
         self.state = 'starting'
         try:
             self.process = self.popen(['xcrun', 'simctl', 'io', self.identifier, 'recordVideo', '--codec=h264', '--force', str(self.video)],
                 stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=child_environment(), start_new_session=True)
             self.reader = threading.Thread(target=self._drain, name='fixed-settings-recording', daemon=True); self.reader.start()
-            deadline = time.monotonic() + 15
-            while time.monotonic() < deadline:
-                if self.limited or self.state == 'readerUnavailable': return False
-                if self.ready: self.state = 'ready'; return True
-                if self.process.poll() is not None:
-                    self.reader.join(timeout=.2)
-                    self.state = 'endedBeforeReady'; return False
-                self.pause(.1)
-            self.state = 'readinessTimedOut'; self._kill(); return False
+            return True
         except (OSError, ValueError, RuntimeError, subprocess.SubprocessError):
             self.state = 'unavailable'; self._kill(); return False
 
@@ -687,12 +680,12 @@ class Recording:
         complete = False
         if self.process is not None:
             try:
-                if self.ready and not self.limited and self.state == 'ready' and self.process.poll() is None:
+                if not self.limited and self.state in {'starting', 'ready'} and self.process.poll() is None:
                     self.process.send_signal(signal.SIGINT); self.exit_code = self.process.wait(timeout=30)
                     complete = self.exit_code == 0
                 else:
                     self.exit_code = self.process.poll()
-                    if self.state == 'ready': self.state = 'endedEarly'
+                    if self.state in {'starting', 'ready'}: self.state = 'endedEarly'
             except (OSError, ValueError, subprocess.SubprocessError): self.state = 'stopFailed'
             finally:
                 self._kill()
@@ -705,7 +698,7 @@ class Recording:
                 for name in self.data:
                     stream = getattr(self.process, name, None)
                     if stream is not None: stream.close()
-        complete = (complete and not self.limited and self.state == 'ready' and not self.video.is_symlink()
+        complete = (complete and not self.limited and self.state in {'starting', 'ready'} and not self.video.is_symlink()
                     and self.video.is_file() and 1024 <= self.video.stat().st_size <= 32 * 1024**2)
         if complete:
             self.video.chmod(0o600); self.state = 'complete'
@@ -739,6 +732,8 @@ def execute(output=OUTPUT, root=None, command=ui_native_command, pause=time.slee
               'commands': [], 'cleanup_passed': False, 'source_codesign_verified': False, 'installed_host_verified': False,
               'root_title_automatically_verified': False, 'diagnostic_root_captured': False,
               'warmup_launch_completed': False, 'recording_available': False, 'recording_started_before_launch': False,
+              'recording_readiness_observed_before_launch': False,
+              'recording_requested_before_launch': False, 'launch_command_completed': False, 'launch_rpc_failure': None,
               'cleanup_results': {'shutdown_completed': None, 'delete_command_completed': None, 'owned_uuid_absent': None}}
     identifier, recorder = None, None
     def call(label, args, timeout=30, self_test=False):
@@ -859,20 +854,30 @@ def execute(output=OUTPUT, root=None, command=ui_native_command, pause=time.slee
                     raise
                 locator.update(state='attested', reason=None)
                 report['installed_host_verified'] = True
-                # Activate this owned simulator's framebuffer with the frozen
-                # host before asking simctl to record it. This warm-up is an
-                # actual launch and is not falsely described as recorded.
-                call('warmupFrozenRoot', ['xcrun', 'simctl', 'launch', identifier, BUNDLE, '-AppleLanguages', '(en)', '-AppleLocale', 'en_US'])
-                report['warmup_launch_completed'] = True
-                pause(1)
                 video = output / 'root-light.mp4'
                 recorder = Recording(identifier, video, popen, pause)
                 report['phase'] = 'startRecording'
-                report['recording_started_before_recorded_launch'] = recorder.begin()
-                # A recorder error is diagnostic failure, never a reason to
-                # suppress the actual frozen-host launch and its screenshot.
-                call('launchRoot', ['xcrun', 'simctl', 'launch', '--terminate-running-process', identifier, BUNDLE,
-                    '-AppleLanguages', '(en)', '-AppleLocale', 'en_US'])
+                report['recording_requested_before_launch'] = recorder.start()
+                # Snapshot readiness now; a later sentinel must never rewrite
+                # the evidence about what was known before this one launch.
+                ready_before_launch = recorder.ready
+                report['recording_readiness_observed_before_launch'] = ready_before_launch
+                report['recording_started_before_launch'] = ready_before_launch
+                report['recording_started_before_recorded_launch'] = ready_before_launch
+                # Match the exercised startup ordering: recording is requested
+                # before launch, and its readiness does not gate that launch.
+                try:
+                    call('launchRoot', ['xcrun', 'simctl', 'launch', identifier, BUNDLE,
+                        '-AppleLanguages', '(en)', '-AppleLocale', 'en_US'])
+                    report['launch_command_completed'] = True
+                except ReplayError as error:
+                    # Only an already validated failure of this exact command
+                    # permits diagnostic capture. Malformed evidence and all
+                    # integrity/preflight failures still stop immediately.
+                    previous = report['commands'][-1]
+                    if (str(error) != 'settings_native_command_failed' or previous['command'] != 'launchRoot' or
+                            previous['status'] == 'completed'): raise
+                    report['launch_rpc_failure'] = dict(previous)
                 pause(2)
                 screenshot = output / 'root-light.png'
                 call('captureRoot', ['xcrun', 'simctl', 'io', identifier, 'screenshot', str(screenshot)])
@@ -889,7 +894,7 @@ def execute(output=OUTPUT, root=None, command=ui_native_command, pause=time.slee
                         type(observed.get('height')) is not int or not 2000 <= observed['height'] <= 3000):
                     raise ReplayError('settings_visible_root_not_verified')
                 report['root_observation'] = observed
-                report['root_title_automatically_verified'] = controls_passed and observed['root_title_visible']
+                report['root_title_automatically_verified'] = report['launch_command_completed'] and controls_passed and observed['root_title_visible']
                 report['diagnostic_root_captured'] = True
             finally:
                 original_phase = report['phase']
@@ -920,6 +925,9 @@ def execute(output=OUTPUT, root=None, command=ui_native_command, pause=time.slee
                 report['phase'] = 'cleanupOwnedSimulator'
                 raise ReplayError('settings_cleanup_not_verified')
             if digest(ipa) != IPA_SHA256 or host_snapshot(app) != snapshot: raise ReplayError('settings_source_host_changed')
+            if report['launch_rpc_failure'] is not None:
+                report['phase'] = 'launchFailedDiagnosticOnly'
+                raise ReplayError('settings_launch_failed_diagnostic_only')
             if not report['recording_available']:
                 report['phase'] = 'recordingFailedDiagnosticOnly'
                 raise ReplayError('settings_recording_failed_diagnostic_only')

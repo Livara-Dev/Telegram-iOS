@@ -118,11 +118,13 @@ def self_controls(kind=None):
 
 class Native:
     def __init__(self, root, kind=None, filesystem=False):
-        self.root = root; self.kind = kind; self.calls = []; self.device_name = None; self.app = None
+        self.root = root; self.kind = kind; self.calls = []; self.events = []; self.record_release = threading.Event()
+        self.device_name = None; self.app = None
         self.filesystem = filesystem; self.home = root / 'owned-home'
         self.installed = root / 'owned-installed/CustomeOptionsHost.app'
     def __call__(self, args, timeout=30):
         self.calls.append((args, timeout))
+        self.events.append(('command', tuple(args)))
         if args[0] == '/usr/bin/codesign':
             if self.kind == 'signature': return {'status': 'commandFailed', 'exit_code': 1, 'timeout': False, 'output_limit': False, 'captured_bytes': 0}, b''
             if self.kind == 'installedSignature' and args[-1] == str(self.installed): return {'status': 'commandFailed', 'exit_code': 1, 'timeout': False, 'output_limit': False, 'captured_bytes': 0}, b''
@@ -181,7 +183,17 @@ class Native:
             if self.filesystem and self.kind != 'unknownSchema': raise AssertionError('Attested owned filesystem must not wait on optional API lookup')
             if timeout != 5: raise AssertionError('API fallback must be bounded to five seconds')
             return complete(str(self.installed).encode())
-        elif args[:3] == ['xcrun', 'simctl', 'io'] and args[4] == 'screenshot': Path(args[-1]).write_bytes(b'synthetic PNG checked by mocked native Vision')
+        elif args[:3] == ['xcrun', 'simctl', 'launch']:
+            self.record_release.set()
+            if self.kind == 'launchTimeout': return {'status': 'timedOut', 'exit_code': None, 'timeout': True, 'output_limit': False, 'captured_bytes': 0}, b''
+            if self.kind == 'launchFailed': return {'status': 'commandFailed', 'exit_code': 1, 'timeout': False, 'output_limit': False, 'captured_bytes': 0}, b''
+            if self.kind == 'launchUnavailable': return {'status': 'unavailable', 'exit_code': None, 'timeout': False, 'output_limit': False, 'captured_bytes': 0}, b''
+            if self.kind == 'launchOutputLimit': return {'status': 'outputLimit', 'exit_code': None, 'timeout': False, 'output_limit': True, 'captured_bytes': 0}, b''
+            if self.kind == 'launchMalformed': return {**complete()[0], 'private': 'PRIVATE-CANARY'}, b''
+            if self.kind == 'launchRaises': raise replay.ReplayError('settings_native_command_failed')
+        elif args[:3] == ['xcrun', 'simctl', 'io'] and args[4] == 'screenshot':
+            if self.kind == 'screenshotFailed': return {'status': 'commandFailed', 'exit_code': 1, 'timeout': False, 'output_limit': False, 'captured_bytes': 0}, b''
+            Path(args[-1]).write_bytes(b'synthetic PNG checked by mocked native Vision')
         elif len(args) == 3 and args[0].endswith('visible-root-check') and args[1] == '--metadata':
             return complete(b'{"width":1179,"height":2556}')
         elif len(args) == 2 and args[0].endswith('visible-root-check'):
@@ -193,6 +205,7 @@ class Native:
             return {'status': 'commandFailed', 'exit_code': 1, 'timeout': False, 'output_limit': False, 'captured_bytes': 0}, b''
         return complete()
     def popen(self, args, **kwargs):
+        self.events.append(('record', tuple(args)))
         if set(kwargs['env']) - replay.child_environment().keys(): raise AssertionError('unbounded child environment')
         for key in ('GH_TOKEN', 'TELEGRAM_API_HASH', 'DYLD_INSERT_LIBRARIES'):
             if key in kwargs['env']: raise AssertionError('credential inherited')
@@ -202,10 +215,12 @@ class Native:
         if self.kind == 'recordSpawn': raise OSError('PRIVATE-CANARY /Users/private/recording')
         pipes = {name: os.pipe() for name in ('stdout', 'stderr')}
         data = {'stdout': b'', 'stderr': b'Recording started'}
+        if self.kind == 'recordNoReady': data = {'stdout': b'', 'stderr': b''}
         if self.kind == 'recordStdout': data = {'stdout': b'Recording started', 'stderr': b''}
         if self.kind == 'recordEarly': data = {'stdout': b'recorder failed /Users/private PRIVATE-CANARY', 'stderr': b'11111111-2222-3333-4444-555555555555'}
         if self.kind == 'recordLimit': data = {'stdout': b'x' * 32768, 'stderr': b''}
         def writer():
+            if self.kind == 'recordLateReady': self.record_release.wait(timeout=2)
             for name, (_, descriptor) in pipes.items():
                 try:
                     for start in range(0, len(data[name]), 4096): os.write(descriptor, data[name][start:start + 4096])
@@ -584,10 +599,16 @@ class RetainedSettingsReplayTests(unittest.TestCase):
             self.assertEqual(native.device_query, ['xcrun', 'simctl', 'list', '--json', 'devicetypes', 'iPhone 15 Pro'])
             commands = [a for a, _ in native.calls]
             self.assertEqual(sum(a[:3] == ['xcrun', 'simctl', 'install'] for a in commands), 1)
-            self.assertEqual(sum(a[:3] == ['xcrun', 'simctl', 'launch'] for a in commands), 2)
-            self.assertTrue(result['warmup_launch_completed'])
-            self.assertFalse(result['recording_started_before_launch'])
-            self.assertTrue(result['recording_started_before_recorded_launch'])
+            self.assertEqual(sum(a[:3] == ['xcrun', 'simctl', 'launch'] for a in commands), 1)
+            self.assertFalse(result['warmup_launch_completed'])
+            self.assertTrue(result['recording_requested_before_launch']); self.assertTrue(result['launch_command_completed'])
+            self.assertEqual(result['recording_started_before_launch'], result['recording_started_before_recorded_launch'])
+            self.assertEqual(result['recording_readiness_observed_before_launch'], result['recording_started_before_launch'])
+            record_index = next(i for i, (kind, _) in enumerate(native.events) if kind == 'record')
+            launch_index = next(i for i, (_, a) in enumerate(native.events) if a[:3] == ('xcrun', 'simctl', 'launch'))
+            installed_signature_index = next(i for i, (_, a) in enumerate(native.events) if a[:2] == ('/usr/bin/codesign', '--verify') and a[-1] == str(native.installed))
+            self.assertLess(installed_signature_index, record_index); self.assertLess(record_index, launch_index)
+            self.assertEqual([a for a in commands if a[:3] == ['xcrun', 'simctl', 'launch']], [self.launch_arguments()])
             self.assertTrue(result['recording_available'])
             self.assertEqual([a[2] for a in commands[-3:]], ['shutdown', 'delete', 'list'])
             text = (output / 'result.json').read_text()
@@ -602,6 +623,79 @@ class RetainedSettingsReplayTests(unittest.TestCase):
             self.assertEqual(result['recording_diagnostic']['stderr_bytes'], 0)
             self.assertEqual(result['recording_diagnostic']['state'], 'complete')
 
+    def test_recording_request_never_waits_for_readiness_and_late_sentinel_cannot_rewrite_early_timing(self):
+        for kind in ('recordNoReady', 'recordLateReady'):
+            with self.subTest(kind=kind), self.prepared() as (root, _, _, _), patch.object(replay.platform, 'system', return_value='Darwin'):
+                native = Native(root, kind); pauses = []
+                result = replay.execute(root=root, command=native, popen=native.popen, pause=pauses.append)
+                self.assertTrue(result['passed']); self.assertTrue(result['recording_available'])
+                self.assertTrue(result['recording_requested_before_launch']); self.assertTrue(result['launch_command_completed'])
+                self.assertFalse(result['recording_started_before_launch'])
+                self.assertFalse(result['recording_readiness_observed_before_launch'])
+                self.assertFalse(result['recording_started_before_recorded_launch'])
+                self.assertEqual(result['recording_diagnostic']['readiness_observed'], kind == 'recordLateReady')
+                self.assertEqual(pauses, [2])
+                self.assertEqual(result['recording_return_code'], 0)
+                self.assertEqual([a for a, _ in native.calls if a[:3] == ['xcrun', 'simctl', 'launch']], [self.launch_arguments()])
+
+    def test_validated_launch_failure_still_captures_owned_frame_finishes_recording_and_stays_failed(self):
+        for kind, state in (('launchTimeout', 'timedOut'), ('launchFailed', 'commandFailed'),
+                            ('launchUnavailable', 'unavailable'), ('launchOutputLimit', 'outputLimit')):
+            with self.subTest(kind=kind), self.prepared() as (root, output, _, _), patch.object(replay.platform, 'system', return_value='Darwin'):
+                native = Native(root, kind)
+                with self.assertRaisesRegex(replay.ReplayError, '^settings_launch_failed_diagnostic_only$'):
+                    replay.execute(root=root, command=native, popen=native.popen, pause=lambda _: None)
+                result = json.loads((output / 'result.json').read_text())
+                self.assertFalse(result['passed']); self.assertFalse(result['launch_command_completed'])
+                self.assertFalse(result['root_title_automatically_verified'])
+                self.assertEqual(result['launch_rpc_failure']['command'], 'launchRoot')
+                self.assertEqual(result['launch_rpc_failure']['status'], state)
+                self.assertEqual(result['phase'], 'launchFailedDiagnosticOnly')
+                self.assertTrue(result['installed_host_verified']); self.assertTrue(result['diagnostic_root_captured'])
+                self.assertTrue(result['cleanup_passed']); self.assertTrue(result['recording_available'])
+                self.assertEqual(result['recording_return_code'], 0)
+                self.assertTrue((output / 'root-light.png').is_file()); self.assertTrue((output / 'root-light.mp4').is_file())
+                self.assertEqual(len([a for a, _ in native.calls if a[:3] == ['xcrun', 'simctl', 'launch']]), 1)
+                self.assertEqual(len([a for a, _ in native.calls if a[:3] == ['xcrun', 'simctl', 'io'] and a[4] == 'screenshot']), 1)
+                self.assertEqual([a[2] for a, _ in native.calls[-3:]], ['shutdown', 'delete', 'list'])
+
+    def test_malformed_or_unrecorded_launch_evidence_never_authorizes_diagnostic_capture(self):
+        for kind, message in (('launchMalformed', 'settings_command_evidence_invalid'), ('launchRaises', 'settings_native_command_failed')):
+            with self.subTest(kind=kind), self.prepared() as (root, output, _, _), patch.object(replay.platform, 'system', return_value='Darwin'):
+                native = Native(root, kind)
+                with self.assertRaisesRegex(replay.ReplayError, '^' + message + '$'):
+                    replay.execute(root=root, command=native, popen=native.popen, pause=lambda _: None)
+                result = json.loads((output / 'result.json').read_text())
+                self.assertFalse(result['passed']); self.assertFalse(result['diagnostic_root_captured'])
+                self.assertIsNone(result['launch_rpc_failure']); self.assertTrue(result['cleanup_passed'])
+                self.assertFalse((output / 'root-light.png').exists())
+                self.assertFalse(any(a[:3] == ['xcrun', 'simctl', 'io'] and a[4] == 'screenshot' for a, _ in native.calls))
+                self.assertNotIn('PRIVATE-CANARY', (output / 'result.json').read_text())
+
+    def test_screenshot_failure_still_finalizes_recorder_and_cleans_owned_device(self):
+        with self.prepared() as (root, output, _, _), patch.object(replay.platform, 'system', return_value='Darwin'):
+            native = Native(root, 'screenshotFailed')
+            with self.assertRaisesRegex(replay.ReplayError, '^settings_native_command_failed$'):
+                replay.execute(root=root, command=native, popen=native.popen, pause=lambda _: None)
+            result = json.loads((output / 'result.json').read_text())
+            self.assertFalse(result['passed']); self.assertFalse(result['diagnostic_root_captured'])
+            self.assertEqual(result['phase'], 'captureRoot'); self.assertTrue(result['recording_available'])
+            self.assertEqual(result['recording_return_code'], 0); self.assertTrue(result['cleanup_passed'])
+
+    def test_launch_timeout_cannot_turn_into_cli_success_after_positive_title_and_diagnostic_media(self):
+        with self.prepared() as (root, output, _, _), patch.object(replay.platform, 'system', return_value='Darwin'):
+            native = Native(root, 'launchTimeout'); capture = io.StringIO(); execute = replay.execute
+            def invoke(destination):
+                return execute(destination, root=root, command=native, popen=native.popen, pause=lambda _: None)
+            with patch.object(replay, 'execute', side_effect=invoke), contextlib.redirect_stdout(capture):
+                code = replay.main(['run', '--output', str(output)])
+            result = json.loads((output / 'result.json').read_text())
+            self.assertEqual(code, 1); self.assertFalse(result['passed'])
+            self.assertFalse(result['root_title_automatically_verified'])
+            self.assertTrue(result['diagnostic_root_captured']); self.assertTrue(result['recording_available'])
+            self.assertEqual(result['launch_rpc_failure']['status'], 'timedOut')
+            self.assertEqual(json.loads(capture.getvalue())['error'], 'settings_replay_rejected')
+
     def test_recorder_spawn_early_exit_pipe_cap_and_stop_failures_never_prevent_actual_launch_or_png(self):
         for kind in ('recordSpawn', 'recordEarly', 'recordLimit', 'recordStop'):
             with self.subTest(kind=kind), self.prepared() as (root, output, _, _), \
@@ -611,11 +705,12 @@ class RetainedSettingsReplayTests(unittest.TestCase):
                     replay.execute(root=root, command=native, popen=native.popen, pause=lambda _: None)
                 result = json.loads((output / 'result.json').read_text())
                 self.assertFalse(result['passed']); self.assertFalse(result['recording_available'])
-                self.assertTrue(result['warmup_launch_completed']); self.assertTrue(result['diagnostic_root_captured'])
+                self.assertFalse(result['warmup_launch_completed']); self.assertTrue(result['launch_command_completed'])
+                self.assertTrue(result['diagnostic_root_captured'])
                 self.assertTrue(result['cleanup_passed']); self.assertTrue((output / 'root-light.png').is_file())
                 self.assertFalse((output / 'root-light.mp4').exists())
                 self.assertEqual(result['phase'], 'recordingFailedDiagnosticOnly')
-                self.assertEqual(sum(a[:3] == ['xcrun', 'simctl', 'launch'] for a, _ in native.calls), 2)
+                self.assertEqual(sum(a[:3] == ['xcrun', 'simctl', 'launch'] for a, _ in native.calls), 1)
                 diagnostic = result['recording_diagnostic']
                 self.assertLessEqual(diagnostic['stdout_bytes'] + diagnostic['stderr_bytes'], 16384)
                 self.assertLessEqual(len(json.dumps(diagnostic['output'])), 16384)

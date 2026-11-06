@@ -16,17 +16,25 @@ then builds a tiny account-free Apple UIKit/XCTest control. This compiles
 diagnostic code only. Both modern artifact jobs use freshly created devices
 without a forced service restart. The separate `retained-clean` intervention
 can refresh only the registered current-user service on an exclusive hosted
-runner; it is not the ordinary replay setup. The tiny control’s one hosted identity test and owned-device
-cleanup must pass before Xcode's actual generated plan can be rebound to the
-unchanged captured application/test code and all 41 Projection tests. Its
-independent diagnostic copy is resealed without changing that code. The control is separate
-from AyuGram feature coverage. Unsupported plan formats or failed controls do
-not become skipped passes; the job fails and records that Projection was not
-attempted. A later standalone launch cannot change test outcomes.
+runner; it is not the ordinary replay setup. Xcode owns installation and launch
+for the tiny control's one hosted identity test. A separate manual-launch
+experiment is not a prerequisite for running real tests. After the control
+XCTest attempt and verified control-device cleanup, and while source, plan,
+signature and ownership checks remain valid, all 41 retained Projection cases
+are attempted on a separate fresh device with the verified generated plan and
+private resealed copy; captured application/test code stays unchanged. A failed
+diagnostic control XCTest outcome is retained while the independent Projection
+attempt can still run. Overall success requires both complete suites and cleanup; unknown
+plan formats or unverified cleanup cannot become skipped passes. The control
+is separate from AyuGram feature coverage. Diagnostic markers and samples
+cannot manufacture XCTest outcomes.
 
 The settings job verifies the retained account-free host against five unchanged
 source files, installs it on its own disposable iPhone 15 Pro / iOS 27.0 simulator,
-and attempts a recording, explicit relaunch and screenshot. OCR and recording
+and requests recording asynchronously before one plain launch and screenshot.
+A validated launch-command timeout still permits diagnostic capture while
+retaining the failure and nonzero result; malformed command evidence cannot
+authorize that continuation. OCR and recording
 failures stay failures while preserving any actual screenshot for manual
 review. Neither this root observation nor the earlier eight controller and one
 UI test proves authenticated full-app Settings navigation.
