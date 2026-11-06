@@ -150,7 +150,9 @@ class ReplayArtifactTests(unittest.TestCase):
     def test_exact_baseline_replay_retains_real_source_build_number_and_license_guards(self):
         for licensed, number in ((True, 1), (True, None), (False, 1)):
             with self.subTest(licensed=licensed, build_number=number), tempfile.TemporaryDirectory() as directory:
-                root = Path(directory); archive = root / 'source.zip'
+                # Match replay's canonical root before forming its fixed output
+                # path; Darwin may expose /var as an alias of /private/var.
+                root = Path(directory).resolve(); archive = root / 'source.zip'
                 artifact, run, jobs = baseline_fixture(archive, licensed=licensed, build_number=number)
                 destination = root / 'build/fork-evidence/startup-replay'
                 def fetch(identifier, path):
