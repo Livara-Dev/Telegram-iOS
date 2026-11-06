@@ -1,0 +1,40 @@
+{
+  "mode": "fresh_simulator_launch",
+  "physical_device_verified": false,
+  "authentication_codes_used": false,
+  "launches": [],
+  "passed": false,
+  "storage_test_setup": "freshPinnedPrivate",
+  "phase": "installApplication",
+  "failure": {
+    "code": "commandTimedOut",
+    "phase": "installApplication",
+    "return_code": null,
+    "timeout": true,
+    "system_errors": []
+  },
+  "simulator_device_type": "com.apple.CoreSimulator.SimDeviceType.iPhone-15-Pro",
+  "simulator_runtime": "com.apple.CoreSimulator.SimRuntime.iOS-27-0",
+  "expected_storage_kind": "private",
+  "screenshot_checker": {
+    "compiled": true,
+    "self_test_passed": true,
+    "self_test_cases": 3
+  },
+  "cleanup_failures": [
+    {
+      "code": "commandTimedOut",
+      "phase": "shutdownDevice",
+      "return_code": null,
+      "timeout": true,
+      "system_errors": []
+    },
+    {
+      "code": "commandTimedOut",
+      "phase": "deleteDevice",
+      "return_code": null,
+      "timeout": true,
+      "system_errors": []
+    }
+  ]
+}

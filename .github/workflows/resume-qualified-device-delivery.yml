@@ -1,0 +1,157 @@
+# SPDX-License-Identifier: GPL-2.0-or-later
+# Created 2026-11-06. Reuse fixed compiled artifacts; never rebuild the app.
+name: Resume fixed device delivery from retained artifacts
+
+on:
+  push:
+    branches: [ci/qualified-device-startup-resume]
+    paths: [ci/qualified-device-startup-resume-request.json]
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: ayugram-startup-resume-42279866706
+  cancel-in-progress: false
+
+jobs:
+  retained-startup:
+    if: github.repository == 'Livara-Dev/Telegram-iOS' && github.event_name == 'push' && github.ref == 'refs/heads/ci/qualified-device-startup-resume'
+    runs-on: xcode-27
+    timeout-minutes: 30
+    steps:
+      - name: Check out reviewed recovery tooling without persistent credentials
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          ref: ${{ github.workflow_sha }}
+          path: tooling
+          persist-credentials: false
+          fetch-depth: 1
+      - name: Check out only the frozen startup helpers without submodules
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          ref: 5d241267735b3958c225681d173853568bab705d
+          path: source
+          persist-credentials: false
+          fetch-depth: 1
+      - name: Test fixed origins and private startup controls
+        run: python3 -W error -m unittest discover -s tooling/tools/fork_baseline/startup_resume -p 'test_*.py' -v
+      - name: Select the pinned simulator toolchain
+        run: |
+          set -euo pipefail
+          sudo xcode-select -s /Applications/Xcode_27.1.app/Contents/Developer
+          python3 - <<'PY'
+          import platform, subprocess
+          if (platform.system(), platform.machine(), platform.release().split('.')[0]) != ('Darwin', 'arm64', '27'):
+              raise SystemExit('Pinned macOS ARM64 host is required.')
+          xcode = subprocess.check_output(['xcodebuild', '-version'], text=True).splitlines()
+          sdk = subprocess.check_output(['xcrun', '--sdk', 'iphonesimulator', '--show-sdk-version'], text=True).strip()
+          if not xcode or xcode[0] != 'Xcode 27.1' or sdk != '27.1':
+              raise SystemExit('Pinned Xcode and simulator SDK are required.')
+          print('Pinned macOS ARM64, Xcode 27.1 and simulator SDK 27.1 verified.')
+          PY
+      - name: Verify original failed graph and download only its compiled simulator
+        id: retained_source
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          umask 077
+          python3 tooling/tools/fork_baseline/startup_resume/resume_startup.py prepare \
+            --request tooling/ci/qualified-device-startup-resume-request.json \
+            --output work --helper-root tooling/tools/fork_baseline
+      # Explicitly separate from the token-bearing metadata/download process.
+      # No Telegram API credentials, source build, dependency fetch or signing.
+      - name: Verify the retained application twice on a fresh owned simulator
+        run: |
+          set -euo pipefail
+          umask 077
+          TMPDIR="$(python3 - <<'PY'
+          import os, pathlib, stat
+          value = os.environ.get('RUNNER_TEMP', '')
+          if not value or any(ord(c) < 32 for c in value):
+              raise SystemExit('Runner temporary directory is unavailable.')
+          supplied = pathlib.Path(value)
+          if not supplied.is_absolute() or supplied.is_symlink():
+              raise SystemExit('Runner temporary directory must be an absolute directory.')
+          canonical = supplied.resolve(strict=True)
+          info = canonical.lstat()
+          if not stat.S_ISDIR(info.st_mode) or info.st_uid != os.getuid() or info.st_mode & 0o022:
+              raise SystemExit('Runner temporary directory must be owned and not writable by others.')
+          print(canonical)
+          PY
+          )"
+          export TMPDIR
+          # The new Python process must see this before tempfile caches its base.
+          env -i HOME="$HOME" PATH="$PATH" TMPDIR="$TMPDIR" \
+            DEVELOPER_DIR=/Applications/Xcode_27.1.app/Contents/Developer \
+            python3 tooling/tools/fork_baseline/startup_resume/isolated_startup.py \
+            --ipa work/simulator/fork-baseline-simulator/Telegram.ipa \
+            --output replay --source-root source
+      - name: Stage only bounded closed startup evidence
+        id: public_evidence
+        if: always() && steps.retained_source.outcome == 'success'
+        run: |
+          set -euo pipefail
+          umask 077
+          python3 tooling/tools/fork_baseline/startup_resume/resume_startup.py finalize \
+            --work work --replay replay --public resume-public \
+            --helper-root tooling/tools/fork_baseline
+      - name: Publish fresh startup evidence without application or private devices
+        if: always() && steps.public_evidence.outcome == 'success'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: startup-resume-5d241267-42279866706
+          path: resume-public/
+          if-no-files-found: error
+          retention-days: 7
+          include-hidden-files: false
+      - name: Require two verified launches and owned cleanup
+        if: always() && steps.public_evidence.outcome == 'success'
+        env:
+          NEW_STARTUP_VERIFIED: ${{ steps.public_evidence.outputs.new_startup_verified }}
+        run: |
+          python3 - <<'PY'
+          import os
+          if os.environ.get('NEW_STARTUP_VERIFIED') != 'true':
+              raise SystemExit('Fresh retained startup is not verified; packaging remains blocked.')
+          PY
+
+  package:
+    needs: retained-startup
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - name: Check out reviewed static packaging tooling without persistent credentials
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          ref: ${{ github.workflow_sha }}
+          path: tooling
+          persist-credentials: false
+          fetch-depth: 1
+      - name: Recheck immutable producers and package the startup-tested retained device
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          umask 077
+          python3 tooling/tools/fork_baseline/startup_resume/resume_startup.py package \
+            --output delivery --helper-root tooling/tools/fork_baseline
+      - name: Publish a new resumed unsigned device export with complete evidence
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: resumed-qualified-main-app-only-unsigned-device-5d241267-42279866706
+          path: delivery/
+          if-no-files-found: error
+          retention-days: 14
+          include-hidden-files: false
+      - name: Record retained-source and independent-signing boundaries
+        run: |
+          python3 - <<'PY'
+          import os, pathlib
+          with pathlib.Path(os.environ['GITHUB_STEP_SUMMARY']).open('a') as stream:
+              stream.write('Artifact-only resumed export of compiled source `5d241267735b3958c225681d173853568bab705d`.\n\n')
+              stream.write('The original delivery remains failed. This run separately verified fresh private simulator startup and packaged the retained unsigned ARM64 device bytes with complete evidence and SHA-256 checksums. ')
+              stream.write('No application was rebuilt. Independent Apple signing and physical-device installation remain required; authenticated behavior and release qualification remain unverified.\n')
+          PY

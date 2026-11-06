@@ -100,6 +100,18 @@ class SourceGuardTests(unittest.TestCase):
         self.write(".github/workflows/unsigned-device-delivery-extra.yml", "name: Unreviewed workflow\n")
         self.assertFailure("Addition outside audit/build scope")
 
+    def test_exact_artifact_resume_workflow_is_tooling_but_neighbor_is_not(self):
+        self.write(".github/workflows/resume-qualified-device-delivery.yml", "name: Retained startup\n")
+        self.assertEqual([], self.failures())
+        self.write(".github/workflows/resume-qualified-device-delivery-extra.yml", "name: Unreviewed workflow\n")
+        self.assertFailure("Addition outside audit/build scope")
+
+    def test_exact_artifact_resume_request_is_tooling_but_neighbor_is_not(self):
+        self.write("ci/qualified-device-startup-resume-request.json", '{"schema":1}\n')
+        self.assertEqual([], self.failures())
+        self.write("ci/qualified-device-startup-resume-request-extra.json", '{"schema":1}\n')
+        self.assertFailure("Addition outside audit/build scope")
+
     def test_exact_unsigned_delivery_request_is_tooling_but_neighbor_is_not(self):
         self.write("ci/unsigned-device-request.json", '{"schema":1}\n')
         self.assertEqual([], self.failures())

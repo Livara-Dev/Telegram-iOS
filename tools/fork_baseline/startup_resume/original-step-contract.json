@@ -1,0 +1,214 @@
+{
+  "qualification": [
+    [
+      1,
+      "Set up job",
+      "success"
+    ],
+    [
+      2,
+      "Check out the reviewed delivery tooling revision",
+      "success"
+    ],
+    [
+      3,
+      "Test delivery guards before reading qualification artifacts",
+      "success"
+    ],
+    [
+      4,
+      "Resolve the explicit delivery request",
+      "success"
+    ],
+    [
+      5,
+      "Verify completed native qualification and derive application source",
+      "success"
+    ],
+    [
+      6,
+      "Set a consistent new candidate build number",
+      "success"
+    ],
+    [
+      7,
+      "Publish verified native qualification evidence for this delivery",
+      "success"
+    ],
+    [
+      14,
+      "Post Check out the reviewed delivery tooling revision",
+      "success"
+    ],
+    [
+      15,
+      "Complete job",
+      "success"
+    ]
+  ],
+  "unsigned-device-build": [
+    [
+      1,
+      "Set up job",
+      "success"
+    ],
+    [
+      2,
+      "Check out the reviewed delivery tooling revision",
+      "success"
+    ],
+    [
+      3,
+      "Check out the unchanged qualified application revision",
+      "success"
+    ],
+    [
+      4,
+      "Download verified native qualification evidence",
+      "success"
+    ],
+    [
+      5,
+      "Initialize pinned public submodules and source guard baseline",
+      "success"
+    ],
+    [
+      6,
+      "Verify source guard and telemetry policy",
+      "success"
+    ],
+    [
+      7,
+      "Select pinned Apple toolchain and prepare verified build tools",
+      "success"
+    ],
+    [
+      8,
+      "Compile unsigned device package",
+      "success"
+    ],
+    [
+      9,
+      "Verify active fork branding in the unsigned device IPA",
+      "success"
+    ],
+    [
+      10,
+      "Record exact application and workflow build origins",
+      "success"
+    ],
+    [
+      11,
+      "Bound retained device diagnostic logs",
+      "success"
+    ],
+    [
+      12,
+      "Publish internal device build and bounded evidence",
+      "success"
+    ],
+    [
+      23,
+      "Post Check out the unchanged qualified application revision",
+      "success"
+    ],
+    [
+      24,
+      "Post Check out the reviewed delivery tooling revision",
+      "success"
+    ],
+    [
+      25,
+      "Complete job",
+      "success"
+    ]
+  ],
+  "application-build": [
+    [
+      1,
+      "Set up job",
+      "success"
+    ],
+    [
+      2,
+      "Check out the reviewed delivery tooling revision",
+      "success"
+    ],
+    [
+      3,
+      "Check out the unchanged qualified application revision",
+      "success"
+    ],
+    [
+      4,
+      "Download verified native qualification evidence",
+      "success"
+    ],
+    [
+      5,
+      "Initialize pinned public submodules and source guard baseline",
+      "success"
+    ],
+    [
+      6,
+      "Verify source guard and telemetry policy",
+      "success"
+    ],
+    [
+      7,
+      "Select pinned Apple toolchain and prepare verified build tools",
+      "success"
+    ],
+    [
+      8,
+      "Prepare the pinned simulator runtime",
+      "success"
+    ],
+    [
+      9,
+      "Build the full simulator app and run TextFormat regression tests",
+      "success"
+    ],
+    [
+      10,
+      "Verify source-matched main-app startup",
+      "failure"
+    ],
+    [
+      11,
+      "Verify active fork branding in the simulator IPA",
+      "skipped"
+    ],
+    [
+      12,
+      "Record exact application and workflow build origins",
+      "skipped"
+    ],
+    [
+      13,
+      "Bound retained simulator diagnostic logs",
+      "success"
+    ],
+    [
+      14,
+      "Publish internal simulator build and bounded startup evidence",
+      "success"
+    ],
+    [
+      27,
+      "Post Check out the unchanged qualified application revision",
+      "success"
+    ],
+    [
+      28,
+      "Post Check out the reviewed delivery tooling revision",
+      "success"
+    ],
+    [
+      29,
+      "Complete job",
+      "success"
+    ]
+  ],
+  "package": []
+}
