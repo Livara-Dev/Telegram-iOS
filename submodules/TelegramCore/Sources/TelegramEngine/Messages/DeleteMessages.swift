@@ -1,5 +1,5 @@
 // Modified for AyuGram iOS.
-// Modification dates recorded in Git history: 2026-11-05.
+// Modification dates recorded in Git history: 2026-11-05, 2026-11-06.
 // See this file's history for the corresponding changes.
 import Foundation
 import Postbox
@@ -43,6 +43,7 @@ func _internal_deleteEphemeralReplacements(transaction: Transaction, anchorIds: 
 }
 
 public func _internal_deleteMessages(transaction: Transaction, mediaBox: MediaBox, ids: [MessageId], deleteMedia: Bool = true, manualAddMessageThreadStatsDifference: ((MessageThreadKey, Int, Int) -> Void)? = nil) {
+    let deferredArchiveResources = captureExtendedLocalArchiveBeforeRemoval(transaction: transaction, ids: ids)
     var resourceIds: [MediaResourceId] = []
     if deleteMedia {
         for id in ids {
@@ -53,6 +54,7 @@ public func _internal_deleteMessages(transaction: Transaction, mediaBox: MediaBo
             }
         }
     }
+    resourceIds.removeAll(where: { deferredArchiveResources.contains($0) })
     if !resourceIds.isEmpty {
         let _ = mediaBox.removeCachedResources(Array(Set(resourceIds)), force: true).start()
     }
@@ -77,10 +79,10 @@ public func _internal_deleteMessages(transaction: Transaction, mediaBox: MediaBo
     })
 }
 
-// Only application-level cloud removals opt in. Low-level Postbox observers
-// remain nil by default, including ordinary cache and expiry maintenance.
+// Application-level removals opt in through the selected account's policy.
+// Low-level Postbox observers remain nil for unrelated cache maintenance.
 private func localArchiveHistoryRemovalCapture(transaction: Transaction, peerId: PeerId) -> LocalArchiveDeletionCapture? {
-    guard peerId.namespace == Namespaces.Peer.CloudUser || peerId.namespace == Namespaces.Peer.CloudGroup || peerId.namespace == Namespaces.Peer.CloudChannel,
+    guard peerId.namespace == Namespaces.Peer.CloudUser || peerId.namespace == Namespaces.Peer.CloudGroup || peerId.namespace == Namespaces.Peer.CloudChannel || peerId.namespace == Namespaces.Peer.SecretChat,
           let accountState = transaction.getState() as? AuthorizedAccountState else { return nil }
     return LocalArchiveDeletionCapture(transaction: transaction, accountPeerId: accountState.peerId)
 }
@@ -319,19 +321,20 @@ func _internal_clearHistory(transaction: Transaction, mediaBox: MediaBox, peerId
     let beforeRemoving: ((Message) -> Void)? = archiveCapture.map { capture in
         { message in capture.append(message) }
     }
+    var resourceIds: [MediaResourceId] = []
     if peerId.namespace == Namespaces.Peer.SecretChat {
-        var resourceIds: [MediaResourceId] = []
         transaction.withAllMessages(peerId: peerId, { message in
             addMessageMediaResourceIdsToRemove(message: message, resourceIds: &resourceIds)
             return true
         })
-        if !resourceIds.isEmpty {
-            let _ = mediaBox.removeCachedResources(Array(Set(resourceIds)), force: true).start()
-        }
     }
     transaction.clearHistory(peerId, threadId: threadId, minTimestamp: nil, maxTimestamp: nil, namespaces: namespaces, beforeRemoving: beforeRemoving, forEachMedia: { _ in
     })
-    _ = archiveCapture?.finish()
+    let deferredArchiveResources = archiveCapture?.finish() ?? []
+    resourceIds.removeAll(where: { deferredArchiveResources.contains($0) })
+    if !resourceIds.isEmpty {
+        let _ = mediaBox.removeCachedResources(Array(Set(resourceIds)), force: true).start()
+    }
 }
 
 func _internal_clearHistoryInRange(transaction: Transaction, mediaBox: MediaBox, peerId: PeerId, threadId: Int64?, minTimestamp: Int32, maxTimestamp: Int32, namespaces: MessageIdNamespaces) {
@@ -339,21 +342,22 @@ func _internal_clearHistoryInRange(transaction: Transaction, mediaBox: MediaBox,
     let beforeRemoving: ((Message) -> Void)? = archiveCapture.map { capture in
         { message in capture.append(message) }
     }
+    var resourceIds: [MediaResourceId] = []
     if peerId.namespace == Namespaces.Peer.SecretChat {
-        var resourceIds: [MediaResourceId] = []
         transaction.withAllMessages(peerId: peerId, { message in
             if message.timestamp >= minTimestamp && message.timestamp <= maxTimestamp {
                 addMessageMediaResourceIdsToRemove(message: message, resourceIds: &resourceIds)
             }
             return true
         })
-        if !resourceIds.isEmpty {
-            let _ = mediaBox.removeCachedResources(Array(Set(resourceIds)), force: true).start()
-        }
     }
     transaction.clearHistory(peerId, threadId: threadId, minTimestamp: minTimestamp, maxTimestamp: maxTimestamp, namespaces: namespaces, beforeRemoving: beforeRemoving, forEachMedia: { _ in
     })
-    _ = archiveCapture?.finish()
+    let deferredArchiveResources = archiveCapture?.finish() ?? []
+    resourceIds.removeAll(where: { deferredArchiveResources.contains($0) })
+    if !resourceIds.isEmpty {
+        let _ = mediaBox.removeCachedResources(Array(Set(resourceIds)), force: true).start()
+    }
 }
 
 public enum ClearCallHistoryError {

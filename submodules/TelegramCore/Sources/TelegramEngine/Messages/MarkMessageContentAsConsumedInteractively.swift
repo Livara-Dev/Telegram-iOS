@@ -1,3 +1,4 @@
+// Modified for AyuGram iOS on 2026-11-06: retain eligible local bytes before normal remote-consumption expiry.
 import Foundation
 import Postbox
 internal import TelegramApi
@@ -252,6 +253,10 @@ func markMessageContentAsConsumedRemotely(transaction: Transaction, messageId: M
         }
         
         if updateMessage {
+            if updatedMedia.contains(where: { $0 is TelegramMediaExpiredContent }) &&
+               !message.media.contains(where: { $0 is TelegramMediaExpiredContent }) {
+                captureExtendedLocalArchiveBeforeRemoval(transaction: transaction, ids: [message.id])
+            }
             transaction.updateMessage(message.id, update: { currentMessage in
                 var storeForwardInfo: StoreMessageForwardInfo?
                 if let forwardInfo = currentMessage.forwardInfo {

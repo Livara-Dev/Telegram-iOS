@@ -34,38 +34,33 @@ private struct LocalTimedMediaInformationRow: ItemListNodeEntry {
         case .archive:
             let arguments = arguments as! LocalTimedMediaInformationArguments
             return ItemListDisclosureItem(presentationData: presentationData, systemStyle: .glass,
-                title: "Ordinary Message Archive", label: "Saving, exclusions and storage",
+                title: "Archive and Extended Retention", label: "Saving, exclusions and storage",
                 labelStyle: .detailText, sectionId: self.section, style: .blocks,
                 action: { arguments.openArchive() })
         }
     }
 }
 
-/// A capability explanation, not a preservation switch. Timed and view-once
-/// content continues through Telegram's original consumption and expiry paths.
+/// Account-local opt-in retention. Canonical consumption and expiry are unchanged;
+/// this screen describes limits and routes to the actual persisted controls.
 public func localTimedMediaInformationController(context: AccountContext) -> ViewController {
     let arguments = LocalTimedMediaInformationArguments()
     let signal = context.sharedContext.presentationData
     |> deliverOnMainQueue
     |> map { presentationData -> (ItemListControllerState, (ItemListNodeState, Any)) in
         let entries: [LocalTimedMediaInformationRow] = [
-            LocalTimedMediaInformationRow(stableId: 0, section: 0, content: .heading("EXPIRATION REMAINS ACTIVE")),
-            LocalTimedMediaInformationRow(stableId: 1, section: 0, content: .text("This client does not preserve timed or view-once content. Opening accessible media does not make it eligible for the encrypted archive. Telegram's original consumption, expiration and cache cleanup remain active.")),
-            LocalTimedMediaInformationRow(stableId: 2, section: 1, content: .heading("SUPPORTED BEHAVIOR BY TYPE")),
-            LocalTimedMediaInformationRow(stableId: 3, section: 1, content: .text("Timed photos — not archived. Their self-destruct timer continues normally.")),
-            LocalTimedMediaInformationRow(stableId: 4, section: 1, content: .text("Timed videos — not archived. Playback does not retain an independent copy.")),
-            LocalTimedMediaInformationRow(stableId: 5, section: 1, content: .text("View-once photos — not archived. Viewing does not disable consumption or expiration.")),
-            LocalTimedMediaInformationRow(stableId: 6, section: 1, content: .text("View-once videos — not archived. No replayable copy is created.")),
-            LocalTimedMediaInformationRow(stableId: 7, section: 1, content: .text("Disappearing voice messages — not archived. This includes voice messages marked for one-time playback.")),
-            LocalTimedMediaInformationRow(stableId: 8, section: 1, content: .text("Disappearing video messages — not archived. This includes round video messages marked for one-time playback.")),
-            LocalTimedMediaInformationRow(stableId: 9, section: 1, content: .text("Chat auto-delete messages — excluded while they carry an expiration timer, including text and ordinary media in that message.")),
-            LocalTimedMediaInformationRow(stableId: 10, section: 1, content: .text("Secret Chats — excluded from the archive, including messages without a self-destruct timer.")),
-            LocalTimedMediaInformationRow(stableId: 11, section: 2, content: .heading("WHY THERE IS NO PRESERVATION SWITCH")),
-            LocalTimedMediaInformationRow(stableId: 12, section: 2, content: .text("Telegram API Terms of Service section 1.4 prohibits preventing self-destructing content from disappearing. No contractually permitted preservation mode has been established for the types above, so this app does not offer a switch that promises to save them.")),
-            LocalTimedMediaInformationRow(stableId: 13, section: 2, content: .text("An expired placeholder is not recoverable media. The archive does not bypass encryption, access restrictions or incomplete downloads, and it cannot recover content that this client never received.")),
-            LocalTimedMediaInformationRow(stableId: 14, section: 3, content: .heading("ORDINARY MESSAGES AND MEDIA")),
-            LocalTimedMediaInformationRow(stableId: 15, section: 3, content: .archive),
-            LocalTimedMediaInformationRow(stableId: 16, section: 3, content: .text("For eligible ordinary cloud messages, enable deletion and edit capture in the archive settings. Already completed local photos, videos, GIFs, voice messages and documents can be copied into encrypted storage within your limits. Missing or incomplete files are not downloaded. Enabling that archive does not change any expiration rule above."))
+            LocalTimedMediaInformationRow(stableId: 0, section: 0, content: .heading("EXPERIMENTAL · LOCAL RETENTION")),
+            LocalTimedMediaInformationRow(stableId: 1, section: 0, content: .text("The archive can retain independent copies of received content before normal deletion or expiration. Capture and extended retention are off by default. They must be enabled separately for each account.")),
+            LocalTimedMediaInformationRow(stableId: 2, section: 1, content: .heading("PHOTOS, VIDEO AND MESSAGES")),
+            LocalTimedMediaInformationRow(stableId: 3, section: 1, content: .text("The timed-content option includes timed and view-once photos, videos, voice messages and round video messages, plus messages with chat auto-delete timers. Only complete media bytes already available to this installation can be copied; no expired or unseen content is recovered.")),
+            LocalTimedMediaInformationRow(stableId: 4, section: 1, content: .text("The Secret Chat option includes messages from Secret Chats belonging to this installation. Secret content with an expiration timer requires both options. This does not import Secret Chats from another Telegram application or change Telegram's encryption keys.")),
+            LocalTimedMediaInformationRow(stableId: 5, section: 2, content: .heading("NORMAL TELEGRAM BEHAVIOR REMAINS")),
+            LocalTimedMediaInformationRow(stableId: 6, section: 2, content: .text("Read acknowledgements, timers and canonical message deletion are not disabled by these archive options. Saved copies are shown in View Deleted Messages and Archived Media, not reinserted into Telegram history. This is not an invisibility guarantee.")),
+            LocalTimedMediaInformationRow(stableId: 7, section: 2, content: .text("Keeping self-destructing content conflicts with Telegram API Terms section 1.4. Enabling an option does not make it API-compliant or establish another participant's permission.")),
+            LocalTimedMediaInformationRow(stableId: 8, section: 3, content: .heading("STORAGE AND LIMITS")),
+            LocalTimedMediaInformationRow(stableId: 9, section: 3, content: .text("The separate archive is encrypted and account-bound. Completed copies survive clearing Telegram's cache. Capture can still miss content when a download is incomplete, the device is locked, storage is exhausted, the app is terminated or the cache is removed before the copy completes. Copy-protected and unsupported structured rich content remains excluded.")),
+            LocalTimedMediaInformationRow(stableId: 10, section: 3, content: .text("Archive limits and exclusions still apply. Oldest copies may be pruned to fit the selected quota. Disabling capture or an extended option does not erase already saved copies; Clear This Account's Archive removes them.")),
+            LocalTimedMediaInformationRow(stableId: 11, section: 4, content: .archive)
         ]
         let data = ItemListPresentationData(presentationData)
         let controllerState = ItemListControllerState(presentationData: data, title: .text("Timed Media"),

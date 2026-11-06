@@ -243,7 +243,7 @@ public enum CustomeOptionsCatalog {
         case .deletedMessages:
             return "Capture starts when enabled for this account. It can preserve eligible content received by this client; it cannot recover messages already absent or files that never finished downloading."
         case .timedMedia:
-            return "Timed and view-once content is not retained by the archive. The support page explains the separate photo, video, voice and automatic-deletion cases. There is no working preservation switch for unsupported content."
+            return "Secret Chats and timed or view-once content have independent account-local archive options, off by default. The support page opens the real controls and explains completed-media, storage and API-contract limits. Canonical timers and reads remain active."
         case .mediaSaving:
             return "The encrypted archive keeps eligible media independently of Telegram’s media cache. Saving to Photos is a separate native setting and creates a copy outside the archive’s protection."
         case .localPremium:

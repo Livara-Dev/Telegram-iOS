@@ -572,4 +572,26 @@ final class ArchiveTransferTests: XCTestCase {
         } as ArchivePreparedImport) { XCTAssertEqual($0 as? ArchiveTransferError, .invalidArchive) }
         XCTAssertFalse(FileManager.default.fileExists(atPath: self.root.appendingPathComponent("account-2").path))
     }
+    func testSecretZeroIdentityAndOpaqueExtendedMetadataSurviveAuthenticatedBackup() throws {
+        let source = try self.open(1)
+        let metadata = Data("{\"version\":3,\"entities\":[],\"media\":[],\"retention\":{\"secretChat\":true,\"expiring\":true,\"viewOnce\":false}}".utf8)
+        let event = ArchiveEvent(eventKey: "extended-zero-backup",
+            message: ArchiveMessageID(accountId: 1, peerId: 42, namespace: 2, messageId: 0), kind: .deleted,
+            observedAt: 900, content: ArchiveContent(text: "owned secret backup fixture", sentAt: 800, entities: metadata))
+        let written: ArchiveWriteResult = try self.awaitResult {
+            source.record([ArchiveCapture(event: event, context: ArchiveCaptureContext(secretChat: true, expiring: true))],
+                generation: 0, policy: ArchiveCapturePolicy(enabled: true, includeSecretChats: true, includeExpiringMessages: true), completion: $0)
+        }
+        XCTAssertEqual(written.inserted, 1)
+        let destination = try self.open(2, key: 0x71)
+        let report = try self.restore(destination, url: self.export(source))
+        XCTAssertEqual(report.addedVersions, 1)
+        let records = try self.records(destination)
+        XCTAssertEqual(records.count, 1)
+        XCTAssertEqual(records.first?.event.message.messageId, 0)
+        XCTAssertEqual(records.first?.event.message.namespace, 2)
+        XCTAssertEqual(records.first?.event.message.accountId, 2)
+        XCTAssertEqual(records.first?.event.content.entities, metadata)
+    }
+
 }

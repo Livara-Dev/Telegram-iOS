@@ -1,3 +1,4 @@
+// Modified for AyuGram iOS on 2026-11-06: opt-in archive before normal media expiration.
 import Foundation
 import Postbox
 import SwiftSignalKit
@@ -35,6 +36,40 @@ private final class ManagedAutoremoveMessageOperationsHelper {
             return []
         }
     }
+}
+
+/// The exact local media-expiry transition used by the timestamp worker.
+/// The archive observes the old body; the canonical body becomes expired normally.
+func expireMessageContentLocally(transaction: Transaction, message: Message) {
+    captureExtendedLocalArchiveBeforeRemoval(transaction: transaction, ids: [message.id])
+    transaction.updateMessage(message.id, update: { currentMessage in
+        var storeForwardInfo: StoreMessageForwardInfo?
+        if let forwardInfo = currentMessage.forwardInfo {
+            storeForwardInfo = StoreMessageForwardInfo(authorId: forwardInfo.author?.id, sourceId: forwardInfo.source?.id, sourceMessageId: forwardInfo.sourceMessageId, date: forwardInfo.date, authorSignature: forwardInfo.authorSignature, psaType: forwardInfo.psaType, flags: forwardInfo.flags)
+        }
+        var updatedMedia = currentMessage.media
+        for i in 0 ..< updatedMedia.count {
+            if let _ = updatedMedia[i] as? TelegramMediaImage {
+                updatedMedia[i] = TelegramMediaExpiredContent(data: .image)
+            } else if let file = updatedMedia[i] as? TelegramMediaFile {
+                if file.isInstantVideo {
+                    updatedMedia[i] = TelegramMediaExpiredContent(data: .videoMessage)
+                } else if file.isVoice {
+                    updatedMedia[i] = TelegramMediaExpiredContent(data: .voiceMessage)
+                } else {
+                    updatedMedia[i] = TelegramMediaExpiredContent(data: .file)
+                }
+            }
+        }
+        var updatedAttributes = currentMessage.attributes
+        for i in 0 ..< updatedAttributes.count {
+            if let _ = updatedAttributes[i] as? AutoclearTimeoutMessageAttribute {
+                updatedAttributes.remove(at: i)
+                break
+            }
+        }
+        return .update(StoreMessage(id: currentMessage.id, customStableId: nil, globallyUniqueId: currentMessage.globallyUniqueId, groupingKey: currentMessage.groupingKey, threadId: currentMessage.threadId, timestamp: currentMessage.timestamp, flags: StoreMessageFlags(currentMessage.flags), tags: currentMessage.tags, globalTags: currentMessage.globalTags, localTags: currentMessage.localTags, forwardInfo: storeForwardInfo, authorId: currentMessage.author?.id, text: currentMessage.text, attributes: updatedAttributes, media: updatedMedia))
+    })
 }
 
 func managedAutoremoveMessageOperations(network: Network, postbox: Postbox, isRemove: Bool) -> Signal<Void, NoError> {
@@ -85,34 +120,7 @@ func managedAutoremoveMessageOperations(network: Network, postbox: Postbox, isRe
                         if message.id.peerId.namespace == Namespaces.Peer.SecretChat || isRemove {
                             _internal_deleteMessages(transaction: transaction, mediaBox: postbox.mediaBox, ids: [entry.messageId])
                         } else {
-                            transaction.updateMessage(message.id, update: { currentMessage in
-                                var storeForwardInfo: StoreMessageForwardInfo?
-                                if let forwardInfo = currentMessage.forwardInfo {
-                                    storeForwardInfo = StoreMessageForwardInfo(authorId: forwardInfo.author?.id, sourceId: forwardInfo.source?.id, sourceMessageId: forwardInfo.sourceMessageId, date: forwardInfo.date, authorSignature: forwardInfo.authorSignature, psaType: forwardInfo.psaType, flags: forwardInfo.flags)
-                                }
-                                var updatedMedia = currentMessage.media
-                                for i in 0 ..< updatedMedia.count {
-                                    if let _ = updatedMedia[i] as? TelegramMediaImage {
-                                        updatedMedia[i] = TelegramMediaExpiredContent(data: .image)
-                                    } else if let file = updatedMedia[i] as? TelegramMediaFile {
-                                        if file.isInstantVideo {
-                                            updatedMedia[i] = TelegramMediaExpiredContent(data: .videoMessage)
-                                        } else if file.isVoice {
-                                            updatedMedia[i] = TelegramMediaExpiredContent(data: .voiceMessage)
-                                        } else {
-                                            updatedMedia[i] = TelegramMediaExpiredContent(data: .file)
-                                        }
-                                    }
-                                }
-                                var updatedAttributes = currentMessage.attributes
-                                for i in 0 ..< updatedAttributes.count {
-                                    if let _ = updatedAttributes[i] as? AutoclearTimeoutMessageAttribute {
-                                        updatedAttributes.remove(at: i)
-                                        break
-                                    }
-                                }
-                                return .update(StoreMessage(id: currentMessage.id, customStableId: nil, globallyUniqueId: currentMessage.globallyUniqueId, groupingKey: currentMessage.groupingKey, threadId: currentMessage.threadId, timestamp: currentMessage.timestamp, flags: StoreMessageFlags(currentMessage.flags), tags: currentMessage.tags, globalTags: currentMessage.globalTags, localTags: currentMessage.localTags, forwardInfo: storeForwardInfo, authorId: currentMessage.author?.id, text: currentMessage.text, attributes: updatedAttributes, media: updatedMedia))
-                            })
+                            expireMessageContentLocally(transaction: transaction, message: message)
                         }
                     } else {
                         transaction.clearTimestampBasedAttribute(id: entry.messageId, tag: tag)

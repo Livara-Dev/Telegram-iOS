@@ -172,7 +172,8 @@ enum ArchiveTransferDatabase {
         let key = try self.text(row, 0, limit: 128)
         guard !key.isEmpty, !key.contains("\0"), sqlite3_column_int64(row, 1) == accountId,
               let namespace = Int32(exactly: sqlite3_column_int64(row, 3)),
-              let messageId = Int32(exactly: sqlite3_column_int64(row, 4)), messageId > 0,
+              let messageId = Int32(exactly: sqlite3_column_int64(row, 4)),
+              (messageId > 0 || (messageId == 0 && (namespace == 1 || namespace == 2))),
               let rawKind = Int32(exactly: sqlite3_column_int64(row, 5)),
               let kind = ArchiveEventKind(rawValue: rawKind) else { throw ArchiveTransferError.invalidArchive }
         for index in [Int32(1), 2, 3, 4, 5, 6, 10] {

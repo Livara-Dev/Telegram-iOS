@@ -23,6 +23,7 @@ ADDED_PREFIXES = (
     "submodules/TelegramUI/Components/Chat/ChatMessageLocalFilterBubbleContentNode/",
 )
 ADDED_FILES = {
+    '.github/workflows/ayu-extended-retention.yml',
     'submodules/TelegramUI/Components/Chat/ChatHistoryEntry/Sources/ChatLocalArchiveProjection.swift',
     'submodules/TelegramUI/Components/Chat/ChatMessageItemImpl/Sources/ChatLocalArchiveItem.swift',
     'submodules/TelegramUI/Components/Chat/ChatMessageItemImpl/Sources/ChatLocalArchiveRowView.swift',
@@ -119,7 +120,9 @@ REVIEWED_MODIFICATIONS = {
     "submodules/TelegramCore/Sources/State/FetchSecretFileResource.swift": "preserve secret-file fetch behavior with optional statistics collection",
     "submodules/Postbox/Sources/Postbox.swift": "optional selected-row removal and exact existing-body replacement observers; unrelated callers retain nil behavior",
     "submodules/Postbox/Sources/MessageHistoryTable.swift": "observe selected removals and real merged replacements before old bodies/media references change",
-    "submodules/TelegramCore/Sources/TelegramEngine/Messages/DeleteMessages.swift": "explicit authorized cloud-history and moderation removals feed bounded durable capture before body deletion",
+    "submodules/TelegramCore/Sources/State/ManagedAutoremoveMessageOperations.swift": "explicit opt-in archive observation before the unchanged local media-expiry transition",
+    "submodules/TelegramCore/Sources/TelegramEngine/Messages/MarkMessageContentAsConsumedInteractively.swift": "capture before remote-consumption replaces expiring media; acknowledgements and timers unchanged",
+    "submodules/TelegramCore/Sources/TelegramEngine/Messages/DeleteMessages.swift": "account-opted cloud/secret-history removals feed bounded durable capture before body deletion and defer only queued media cleanup",
     "submodules/TelegramCore/Sources/State/HistoryViewStateValidation.swift": "capture before existing validation replacements/removals without changing the upstream decisions",
     "submodules/TelegramCore/Sources/State/ForumChannelState.swift": "route ordinary forum message upserts through the opt-in existing-body observer",
     "submodules/TelegramCore/Sources/State/Holes.swift": "observe ordinary cloud history/dialog/reference fetch replacements while leaving local view refresh unchanged",

@@ -15,6 +15,8 @@ public struct LocalArchiveSettings: Codable, Equatable {
     let schemaVersion: Int32
     public var enabled: Bool
     public var excludeBots: Bool
+    public var includeSecretChats: Bool
+    public var includeExpiringMessages: Bool
     public var excludedPeerIds: Set<Int64>
     public var excludedSenderIds: Set<Int64>
     public var maxAgeSeconds: Int64
@@ -43,10 +45,13 @@ public struct LocalArchiveSettings: Codable, Equatable {
 
     public init(enabled: Bool = false, excludeBots: Bool = true,
                 excludedPeerIds: Set<Int64> = [], excludedSenderIds: Set<Int64> = [],
-                maxAgeSeconds: Int64 = Int64.max, maxPayloadBytes: Int64 = 32 * 1024 * 1024) {
+                maxAgeSeconds: Int64 = Int64.max, maxPayloadBytes: Int64 = 32 * 1024 * 1024,
+                includeSecretChats: Bool = false, includeExpiringMessages: Bool = false) {
         self.schemaVersion = 1
         self.enabled = enabled
         self.excludeBots = excludeBots
+        self.includeSecretChats = includeSecretChats
+        self.includeExpiringMessages = includeExpiringMessages
         self.excludedPeerIds = excludedPeerIds
         self.excludedSenderIds = excludedSenderIds
         self.maxAgeSeconds = maxAgeSeconds
@@ -59,6 +64,7 @@ public struct LocalArchiveSettings: Codable, Equatable {
     private enum CodingKeys: String, CodingKey {
         case schemaVersion, enabled, excludeBots, excludedPeerIds, excludedSenderIds
         case maxAgeSeconds, maxPayloadBytes, generation, pendingPurge, droppedCaptures
+        case includeSecretChats, includeExpiringMessages
     }
 
     public init(from decoder: Decoder) throws {
@@ -66,6 +72,9 @@ public struct LocalArchiveSettings: Codable, Equatable {
         self.schemaVersion = try container.decode(Int32.self, forKey: .schemaVersion)
         self.enabled = try container.decode(Bool.self, forKey: .enabled)
         self.excludeBots = try container.decode(Bool.self, forKey: .excludeBots)
+        // Missing fields are an old installation, not consent to expanded retention.
+        self.includeSecretChats = try container.decodeIfPresent(Bool.self, forKey: .includeSecretChats) ?? false
+        self.includeExpiringMessages = try container.decodeIfPresent(Bool.self, forKey: .includeExpiringMessages) ?? false
         self.excludedPeerIds = Set(try container.decode([Int64].self, forKey: .excludedPeerIds))
         self.excludedSenderIds = Set(try container.decode([Int64].self, forKey: .excludedSenderIds))
         self.maxAgeSeconds = try container.decode(Int64.self, forKey: .maxAgeSeconds)
@@ -80,6 +89,8 @@ public struct LocalArchiveSettings: Codable, Equatable {
         try container.encode(self.schemaVersion, forKey: .schemaVersion)
         try container.encode(self.enabled, forKey: .enabled)
         try container.encode(self.excludeBots, forKey: .excludeBots)
+        try container.encode(self.includeSecretChats, forKey: .includeSecretChats)
+        try container.encode(self.includeExpiringMessages, forKey: .includeExpiringMessages)
         // Sets use the same primitive-array representation as the first draft.
         // Explicit sorted arrays give deterministic bytes and use Postbox's
         // supported Int64-array codec without changing the public preference API.

@@ -519,6 +519,27 @@ public final class LocalArchiveCoordinator {
         }
     }
 
+    /// Expanded retention is opt-in per account; it never changes upstream expiry.
+    public func setIncludeSecretChats(_ included: Bool) -> Signal<Bool, NoError> {
+        return self.postbox.transaction { transaction in
+            var settings = localArchiveSettings(transaction: transaction)
+            guard settings.isSupported, !settings.pendingPurge else { return false }
+            settings.includeSecretChats = included
+            setLocalArchiveSettings(transaction: transaction, settings: settings)
+            return true
+        }
+    }
+
+    public func setIncludeExpiringMessages(_ included: Bool) -> Signal<Bool, NoError> {
+        return self.postbox.transaction { transaction in
+            var settings = localArchiveSettings(transaction: transaction)
+            guard settings.isSupported, !settings.pendingPurge else { return false }
+            settings.includeExpiringMessages = included
+            setLocalArchiveSettings(transaction: transaction, settings: settings)
+            return true
+        }
+    }
+
     public func setPeerExcluded(peerId: Int64, excluded: Bool) -> Signal<Bool, NoError> {
         return self.postbox.transaction { transaction in
             var settings = localArchiveSettings(transaction: transaction)
@@ -934,7 +955,9 @@ public final class LocalArchiveCoordinator {
                 }
                 self.statusValue.set(.writing)
                 let policy = ArchiveCapturePolicy(enabled: settings.enabled, excludedPeers: settings.excludedPeerIds,
-                                                  excludedSenders: settings.excludedSenderIds, excludeBots: settings.excludeBots)
+                                                  excludedSenders: settings.excludedSenderIds, excludeBots: settings.excludeBots,
+                                                  includeSecretChats: settings.includeSecretChats,
+                                                  includeExpiringMessages: settings.includeExpiringMessages)
                 storage.recordFromOutbox(capture, index: Int64(entry.index), generation: generation, policy: policy) { [weak self] result in
                     self?.queue.justDispatch { [weak self] in
                         guard let self, self.isCurrent(epoch) else { return }

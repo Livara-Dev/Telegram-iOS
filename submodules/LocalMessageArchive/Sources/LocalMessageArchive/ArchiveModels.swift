@@ -78,15 +78,26 @@ public struct ArchiveCapturePolicy {
     public var excludedPeers: Set<Int64>
     public var excludedSenders: Set<Int64>
     public var excludeBots: Bool
-    public init(enabled: Bool = false, excludedPeers: Set<Int64> = [], excludedSenders: Set<Int64> = [], excludeBots: Bool = true) {
+    /// Separate account opt-ins. Existing callers retain the original exclusions.
+    public var includeSecretChats: Bool
+    public var includeExpiringMessages: Bool
+    public init(enabled: Bool = false, excludedPeers: Set<Int64> = [], excludedSenders: Set<Int64> = [], excludeBots: Bool = true,
+                includeSecretChats: Bool = false, includeExpiringMessages: Bool = false) {
         self.enabled = enabled; self.excludedPeers = excludedPeers
         self.excludedSenders = excludedSenders; self.excludeBots = excludeBots
+        self.includeSecretChats = includeSecretChats
+        self.includeExpiringMessages = includeExpiringMessages
     }
     func allows(_ event: ArchiveEvent, context: ArchiveCaptureContext) -> Bool {
-        enabled && context.ordinaryCloudMessage && !context.secretChat && !context.expiring && !context.viewOnce
-        && !(excludeBots && context.botConversation) && !excludedPeers.contains(event.message.peerId)
-        && (excludedSenders.isEmpty || event.content.authorId != nil)
-        && !(event.content.authorId.map { excludedSenders.contains($0) } ?? false)
+        // A source is either an ordinary cloud chat or a secret chat, never both.
+        // A view-once claim without an expiring claim is malformed, not authority.
+        guard enabled, context.ordinaryCloudMessage != context.secretChat,
+              !context.secretChat || includeSecretChats,
+              !context.viewOnce || context.expiring,
+              !(context.expiring || context.viewOnce) || includeExpiringMessages else { return false }
+        return !(excludeBots && context.botConversation) && !excludedPeers.contains(event.message.peerId)
+            && (excludedSenders.isEmpty || event.content.authorId != nil)
+            && !(event.content.authorId.map { excludedSenders.contains($0) } ?? false)
     }
 }
 

@@ -50,7 +50,14 @@ def metadata():
 
 def fixture(root):
     for name in replay.NATIVE_SOURCES:
-        target = root / name; target.parent.mkdir(parents=True, exist_ok=True); target.write_bytes((ROOT / name).read_bytes())
+        # This is a test of the pinned historical replay, not of the current UI.
+        # Keep the production replay's source digest guard unchanged.
+        historical = Path(__file__).parent / 'fixtures/retained-c55-CustomeOptionsCatalog.swift'
+        source = historical if name == 'submodules/SettingsUI/Sources/CustomeOptionsCatalog.swift' else ROOT / name
+        data = source.read_bytes()
+        if hashlib.sha256(data).hexdigest() != replay.NATIVE_SOURCES[name]:
+            raise AssertionError('Historical replay fixture drifted; it cannot certify current sources')
+        target = root / name; target.parent.mkdir(parents=True, exist_ok=True); target.write_bytes(data)
     buffer = io.BytesIO(); prefix = 'Payload/CustomeOptionsHost.app/'
     with zipfile.ZipFile(buffer, 'w') as z:
         z.writestr(prefix, b'')

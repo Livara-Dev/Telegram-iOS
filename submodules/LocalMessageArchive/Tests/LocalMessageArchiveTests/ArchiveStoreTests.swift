@@ -1386,4 +1386,71 @@ final class ArchiveStoreTests: XCTestCase {
         let reportData = try JSONSerialization.data(withJSONObject: report, options: [.sortedKeys])
         print(String(decoding: reportData, as: UTF8.self))
     }
+    func testExplicitExtendedPolicyKeepsBothSourceAndExpiryOptInsIndependent() throws {
+        let store = try self.open()
+        let contexts = [
+            ArchiveCaptureContext(ordinaryCloudMessage: true),
+            ArchiveCaptureContext(secretChat: true),
+            ArchiveCaptureContext(ordinaryCloudMessage: true, expiring: true),
+            ArchiveCaptureContext(secretChat: true, expiring: true, viewOnce: true)
+        ]
+        let expected = [1, 2, 2, 4]
+        for (index, flags) in [(false, false), (true, false), (false, true), (true, true)].enumerated() {
+            let captures = contexts.enumerated().map { self.capture(self.event("opt-in-\(index)-\($0.offset)"), $0.element) }
+            let result: ArchiveWriteResult = try self.awaitResult {
+                store.record(captures, generation: 0,
+                    policy: ArchiveCapturePolicy(enabled: true, includeSecretChats: flags.0, includeExpiringMessages: flags.1), completion: $0)
+            }
+            XCTAssertEqual(result.inserted, expected[index])
+            XCTAssertEqual(result.excluded, 4 - expected[index])
+        }
+    }
+
+    func testExtendedPolicyNeverOverridesAccountPeerSenderOrBotExclusions() throws {
+        let store = try self.open()
+        let policy = ArchiveCapturePolicy(enabled: true, excludedPeers: [10], excludedSenders: [20], excludeBots: true,
+            includeSecretChats: true, includeExpiringMessages: true)
+        let context = ArchiveCaptureContext(secretChat: true, expiring: true, viewOnce: true)
+        let captures = [self.capture(self.event("peer-excluded", peer: 10), context),
+            self.capture(self.event("sender-excluded", author: 20), context),
+            self.capture(self.event("sender-unknown", author: nil), context),
+            self.capture(self.event("bot-excluded"), ArchiveCaptureContext(secretChat: true, expiring: true, botConversation: true))]
+        let result: ArchiveWriteResult = try self.awaitResult { store.record(captures, generation: 0, policy: policy, completion: $0) }
+        XCTAssertEqual(result.excluded, 4); XCTAssertEqual(result.inserted, 0)
+        self.assertError(.accountMismatch) {
+            try self.awaitResult { store.record([self.capture(self.event("wrong-account", account: 2), context)], generation: 0, policy: policy, completion: $0) }
+        }
+    }
+
+    func testExplicitExtendedPolicyRejectsAmbiguousSourceAndMalformedViewOnceContext() throws {
+        let store = try self.open()
+        let policy = ArchiveCapturePolicy(enabled: true, includeSecretChats: true, includeExpiringMessages: true)
+        let contexts = [ArchiveCaptureContext(), ArchiveCaptureContext(ordinaryCloudMessage: true, secretChat: true),
+            ArchiveCaptureContext(ordinaryCloudMessage: true, viewOnce: true), ArchiveCaptureContext(secretChat: true, viewOnce: true)]
+        let result: ArchiveWriteResult = try self.awaitResult {
+            store.record(contexts.enumerated().map { self.capture(self.event("invalid-extended-\($0.offset)"), $0.element) },
+                generation: 0, policy: policy, completion: $0)
+        }
+        XCTAssertEqual(result.excluded, 4)
+        XCTAssertTrue(try self.records(store).isEmpty)
+    }
+
+    func testSecretZeroMessageIdentitySurvivesEncryptedStoreReopen() throws {
+        let store = try self.open()
+        let zero = ArchiveEvent(eventKey: "secret-zero-id",
+            message: ArchiveMessageID(accountId: 1, peerId: 42, namespace: 2, messageId: 0), kind: .deleted,
+            observedAt: 900, content: ArchiveContent(text: "secret zero fixture", sentAt: 800))
+        let result: ArchiveWriteResult = try self.awaitResult {
+            store.record([self.capture(zero, ArchiveCaptureContext(secretChat: true))], generation: 0,
+                policy: ArchiveCapturePolicy(enabled: true, includeSecretChats: true), completion: $0)
+        }
+        XCTAssertEqual(result.inserted, 1)
+        self.close(store)
+        let reopened = try self.open()
+        let timeline: [ArchivedRecord] = try self.awaitResult { reopened.timeline(for: zero.message, completion: $0) }
+        XCTAssertEqual(timeline.map(\.event), [zero])
+        self.assertError(.invalidInput) { try self.write(reopened, [self.event("cloud-zero-is-invalid", message: 0)]) }
+        self.assertError(.invalidInput) { try self.write(reopened, [self.event("negative-is-invalid", message: -1)]) }
+    }
+
 }

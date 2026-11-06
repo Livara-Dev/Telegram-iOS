@@ -1216,7 +1216,8 @@ public final class ArchiveStore {
     private func validate(_ event: ArchiveEvent, now: Int64) throws {
         guard event.message.accountId == accountId else { throw ArchiveError.accountMismatch }
         guard !event.eventKey.isEmpty, event.eventKey.utf8.count <= 128, !event.eventKey.contains("\0"),
-              event.message.messageId > 0, event.observedAt >= 0, event.observedAt <= now,
+              (event.message.messageId > 0 || (event.message.messageId == 0 && (event.message.namespace == 1 || event.message.namespace == 2))),
+              event.observedAt >= 0, event.observedAt <= now,
               event.content.sentAt >= 0, event.serverEditAt.map({ $0 >= 0 }) ?? true,
               event.content.text.utf8.count <= 256 * 1024, event.content.entities.count <= 64 * 1024 else { throw ArchiveError.invalidInput }
     }

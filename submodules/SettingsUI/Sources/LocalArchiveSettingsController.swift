@@ -187,6 +187,25 @@ func localArchiveSettingsController(context: AccountContext, peerId: Int64? = ni
             apply(archive.setEnabled(enabled))
         } else if id == .fixed(15), let peerId {
             apply(archive.setPeerExcluded(peerId: peerId, excluded: enabled))
+        } else if id == .fixed(24) || id == .fixed(25) {
+            let operation = id == .fixed(24) ? archive.setIncludeSecretChats(enabled) : archive.setIncludeExpiringMessages(enabled)
+            guard enabled else { apply(operation); return }
+            let presentationData = context.sharedContext.currentPresentationData.with { $0 }
+            let sheet = ActionSheetController(presentationData: presentationData)
+            let description = id == .fixed(24)
+                ? "Keep independent local copies of Secret Chat messages received by this installation when they are deleted? Secret messages with timers also require the timed-content option. Other Telegram installations are not imported."
+                : "Keep independent local copies of received timed, view-once and auto-delete messages when they expire or are deleted? Normal read acknowledgements, timers and deletion still run. Only already completed local media can be retained. This conflicts with Telegram's self-destruct API terms."
+            sheet.setItemGroups([
+                ActionSheetItemGroup(items: [
+                    ActionSheetTextItem(title: description + " Saved copies stay until your archive retention policy or an explicit clear removes them. This is experimental and cannot guarantee every capture."),
+                    ActionSheetButtonItem(title: "Enable for This Account", color: .accent, action: { [weak sheet] in
+                        sheet?.dismissAnimated()
+                        apply(operation)
+                    })
+                ]),
+                ActionSheetItemGroup(items: [ActionSheetButtonItem(title: presentationData.strings.Common_Cancel, color: .accent, action: { [weak sheet] in sheet?.dismissAnimated() })])
+            ])
+            presentController?(sheet)
         }
     }, action: { id in
         guard let archive else { return }
@@ -249,13 +268,17 @@ func localArchiveSettingsController(context: AccountContext, peerId: Int64? = ni
             LocalArchiveRow(stableId: .fixed(18), order: 10, section: 3, content: .text(usage.map { "Archived snapshots: \($0.snapshots)\nStored payload: \(ByteCountFormatter.string(fromByteCount: $0.payloadBytes, countStyle: .file))\nDatabase and search-index overhead are additional." } ?? "Storage usage is available when an existing archive is unlocked.")),
             LocalArchiveRow(stableId: .fixed(13), order: 11, section: 3, content: .action("Clear This Account’s Archive", "Permanent local deletion", canChange)),
             LocalArchiveRow(stableId: .fixed(5), order: 12, section: 4, content: .heading("CURRENT LIMITS")),
-            LocalArchiveRow(stableId: .fixed(6), order: 13, section: 4, content: .text("This preview captures supported deletion and edit updates for messages already received while capture is enabled. It cannot recover earlier deletions and does not cover every deletion path. Completed local cloud files up to 512 MiB are attempted within the storage limit; image previews are limited to 16 MiB; missing or incomplete files are not downloaded. Structured rich messages, secret chats and disappearing content are excluded. Storage failures or a locked device can leave gaps."))
+            LocalArchiveRow(stableId: .fixed(6), order: 13, section: 4, content: .text("This preview captures supported deletion and edit updates for messages already received while capture is enabled. It cannot recover earlier deletions and does not cover every deletion path. Completed local files up to 512 MiB are attempted within the storage limit; image previews are limited to 16 MiB. Missing or incomplete files are not downloaded. Secret Chats and expiring content require the separate options below; timed Secret Chat content requires both. Structured rich and copy-protected messages remain excluded. Storage failures, cache removal before capture or a locked device can leave gaps."))
         ]
         entries.append(LocalArchiveRow(stableId: .fixed(19), order: 19, section: 6, content: .action("Archived Media", "Photos, video and files", localArchiveCanRead(status))))
         entries.append(LocalArchiveRow(stableId: .fixed(20), order: 20, section: 7, content: .action("Excluded Chats", "\(settings.excludedPeerIds.count)", canChange)))
         entries.append(LocalArchiveRow(stableId: .fixed(21), order: 21, section: 7, content: .action("Excluded Senders", "\(settings.excludedSenderIds.count)", canChange)))
         entries.append(LocalArchiveRow(stableId: .fixed(22), order: 22, section: 7, content: .text("Exclusions stop future captures for this account. Sender exclusions apply in every chat. Existing saved versions remain until you delete them or retention removes them.")))
         entries.append(LocalArchiveRow(stableId: .fixed(23), order: 23, section: 8, content: .action("Archive Labels", "Deleted and edited markers", true)))
+        entries.append(LocalArchiveRow(stableId: .fixed(27), order: 24, section: 9, content: .heading("EXTENDED RETENTION · OPT-IN")))
+        entries.append(LocalArchiveRow(stableId: .fixed(24), order: 25, section: 9, content: .toggle("Include Secret Chats", settings.includeSecretChats, canChange)))
+        entries.append(LocalArchiveRow(stableId: .fixed(25), order: 26, section: 9, content: .toggle("Include timed and view-once content", settings.includeExpiringMessages, canChange)))
+        entries.append(LocalArchiveRow(stableId: .fixed(26), order: 27, section: 9, content: .text("Enable capture above as well. Both options are required for expiring Secret Chat content. Retained copies appear in View Deleted Messages and Archived Media, separately from Telegram history. Disabling an option stops new captures; existing copies remain. No decryption keys, session credentials or content are sent to an external archive service.")))
         if actionState.1 {
             entries.append(LocalArchiveRow(stableId: .fixed(7), order: 14, section: 4, content: .text("The setting could not be changed. Unlock the device and try again.")))
         }

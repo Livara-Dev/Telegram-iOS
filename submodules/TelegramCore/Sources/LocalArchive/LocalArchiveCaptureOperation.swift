@@ -43,7 +43,7 @@ final class LocalArchiveCaptureOperation: PostboxCoding {
     init(decoder: PostboxDecoder) {
         let rawPeerId = decoder.decodeOptionalInt64ForKey("p")
         let peerId = rawPeerId.flatMap(telegramCoreDecodePeerId)
-        self.hasRequiredFields = decoder.decodeOptionalStringForKey("x") != nil && decoder.decodeOptionalBoolForKey("b") != nil && peerId != nil
+        self.hasRequiredFields = decoder.decodeOptionalStringForKey("x") != nil && decoder.decodeOptionalBoolForKey("b") != nil && decoder.decodeOptionalInt32ForKey("i") != nil && peerId != nil
         self.encodedPeerId = rawPeerId ?? 0
         self.version = decoder.decodeInt32ForKey("v", orElse: -1)
         self.eventKey = decoder.decodeStringForKey("k", orElse: "")
@@ -83,22 +83,23 @@ final class LocalArchiveCaptureOperation: PostboxCoding {
     }
 
     func makeCapture(accountId: Int64) -> ArchiveCapture? {
-        let peerNamespace = self.messageId.peerId.namespace
+        let secretChat = self.messageId.peerId.namespace == Namespaces.Peer.SecretChat
         guard self.hasRequiredFields, self.version == 1, self.generation >= 0, !self.eventKey.isEmpty, !self.eventKey.contains("\0"),
-              self.eventKey.utf8.count <= 128, self.messageId.namespace == Namespaces.Message.Cloud,
-              peerNamespace == Namespaces.Peer.CloudUser || peerNamespace == Namespaces.Peer.CloudGroup || peerNamespace == Namespaces.Peer.CloudChannel,
-              self.messageId.peerId.id._internalGetInt64Value() > 0, self.messageId.id > 0, self.sentAt >= 0, self.observedAt >= 0,
+              self.eventKey.utf8.count <= 128, localArchiveMessageIdentityIsSupported(self.messageId),
+              self.sentAt >= 0, self.observedAt >= 0,
               self.serverEditAt.map({ $0 >= 0 }) ?? true,
-              self.text.utf8.count <= 256 * 1024, localArchiveEntityMetadataIsValid(self.entities),
+              self.text.utf8.count <= 256 * 1024,
+              var context = localArchiveCaptureContext(self.entities), context.secretChat == secretChat,
               let kind = ArchiveEventKind(rawValue: self.kindRawValue) else {
             return nil
         }
+        context.botConversation = self.botConversation
         return ArchiveCapture(event: ArchiveEvent(
             eventKey: self.eventKey,
             message: ArchiveMessageID(accountId: accountId, peerId: self.messageId.peerId.toInt64(), namespace: self.messageId.namespace, messageId: self.messageId.id),
             kind: kind, observedAt: self.observedAt, serverEditAt: self.serverEditAt,
             content: ArchiveContent(text: self.text, authorId: self.authorId, sentAt: self.sentAt, entities: self.entities)
-        ), context: ArchiveCaptureContext(ordinaryCloudMessage: true, botConversation: self.botConversation))
+        ), context: context)
     }
 }
 
