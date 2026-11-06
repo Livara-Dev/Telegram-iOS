@@ -260,7 +260,9 @@ class ProjectionReplayTests(unittest.TestCase):
 
     def test_end_to_end_mocked_replay_publishes_only_bounded_diagnostics(self):
         with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory); zipped = archive(root); digest = replay.digest(zipped); run_meta, artifact = metadata(zipped.stat().st_size, digest)
+            # Match the production root before forming the fixed output path;
+            # macOS may return /var while its canonical root is /private/var.
+            root = Path(directory).resolve(); zipped = archive(root); digest = replay.digest(zipped); run_meta, artifact = metadata(zipped.stat().st_size, digest)
             run, calls = self.runner()
             def fetch(identifier, destination):
                 self.assertEqual(identifier, replay.ARTIFACT); Path(destination).write_bytes(zipped.read_bytes())
