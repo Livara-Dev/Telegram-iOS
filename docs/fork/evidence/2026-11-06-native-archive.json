@@ -155,13 +155,97 @@
     "new_extended_controls_visually_verified": false
   },
   "projection_qualification": {
-    "run_id": 42276436155,
-    "workflow_source_commit": "e3a8123a45b6c0fd883abf756dc2fecd78eee582",
+    "run_id": 42281520123,
+    "job_id": 128111434995,
+    "workflow_source_commit": "6a3ecea506adaed8654cd54db938f56684ea039f",
     "application_source_commit": "c55e19c4f5cbe0d730499035d0a0ef712f6903a9",
-    "state_at_report": "in_progress",
-    "completed_native_qualification": false,
+    "state_at_report": "completed_success",
+    "completed_native_qualification": true,
+    "qualification_scope": "experimental_retained_payload_discovery_only",
+    "artifact_id": 13535374914,
+    "artifact_sha256": "3f103236b5ac2d23d2869981374f19a6faff3d55b7b1a452e417ef59496cd4ec",
+    "artifact_bytes": 15127,
+    "inner_checksum_references_verified": 7,
     "original_payload_cases": 41,
+    "actual_payload_case_passes": 41,
+    "payload_classes": {
+      "ChatLocalArchiveProjectionTests": 12,
+      "ChatLocalArchiveRowRendererTests": 4,
+      "ChatLocalTextFilterProjectionTests": 25
+    },
     "standard_discovery_verification_cases": 1,
+    "actual_wrapper_case_passes": 1,
+    "native_xcresult_case_passes": 42,
+    "native_xcresult_missing": 0,
+    "native_xcresult_unknown": 0,
+    "native_case_identities_exact_match": true,
+    "control": {
+      "started": 1,
+      "passed": 1,
+      "expected": 1,
+      "cleanup_passed": true,
+      "xcode_exit_code": 0,
+      "whole_command_seconds": 457.433
+    },
+    "projection": {
+      "started": 41,
+      "passed": 41,
+      "failed": 0,
+      "skipped": 0,
+      "missing": 0,
+      "expected": 41,
+      "case_classes": {
+        "ChatLocalArchiveProjectionTests": 12,
+        "ChatLocalArchiveRowRendererTests": 4,
+        "ChatLocalTextFilterProjectionTests": 25
+      },
+      "expected_method_identities_exact_match": true,
+      "unknown_case_events": 0,
+      "duplicate_case_events": 0,
+      "invalid_event_order": 0,
+      "wrapper_started": true,
+      "wrapper_passed": true,
+      "native_xcresult_case_records": 42,
+      "native_xcresult_passed": 42,
+      "native_xcresult_failed": 0,
+      "native_xcresult_missing": 0,
+      "native_xcresult_unknown": 0,
+      "native_xcresult_case_accounting_verified": true,
+      "actual_run_counters_matched": true,
+      "framework_managed_execution": true,
+      "manual_suite_run_performed": false,
+      "cleanup_passed": true,
+      "installed_bundle_bytes_match": true,
+      "xcode_exit_code": 0,
+      "whole_command_seconds": 339.455
+    },
+    "cleanup_both_passed": true,
+    "installed_and_source_integrity_passed": true,
+    "strict_host_wrapper_payload_seals_verified": true,
+    "source_artifact_id": 13482555818,
+    "source_run_id": 42160468600,
+    "original_product_files_verified": 31,
+    "original_product_bytes_verified": 165736765,
+    "application_recompiled": false,
+    "projection_tests_recompiled": false,
+    "different_harness": true,
+    "experimental": true,
+    "original_bazel_host_executed": false,
+    "release_qualified": false,
+    "physical_device_verified": false,
+    "portable_preflight_cases_passed_macos": 228,
+    "deferred_plan_preflight_macos": {
+      "passed": 67,
+      "skipped": 0,
+      "exact_foundation_gate_exercised": true
+    },
+    "corresponding_deferred_plan_linux": {
+      "passed": 66,
+      "skipped": 1,
+      "foundation_gate_skipped_on_non_darwin": true
+    },
+    "current_5d_application_build_qualified_by_this_run": false,
+    "authenticated_application_verified": false,
     "earlier_nested_assertion_passes_do_not_establish_successful_xcode_qualification": true
   },
   "preserved_unsigned_device_candidate": {
@@ -187,5 +271,17 @@
   "live_telegram_authentication_verified": false,
   "live_two_client_feature_scenarios_verified": false,
   "side_sign_apple_403_resolved": false,
-  "benchmark_results_available": false
+  "benchmark_results_available": false,
+  "projection_qualification_history": [
+    {
+      "run_id": 42276436155,
+      "workflow_source_commit": "e3a8123a45b6c0fd883abf756dc2fecd78eee582",
+      "application_source_commit": "c55e19c4f5cbe0d730499035d0a0ef712f6903a9",
+      "state_at_report": "in_progress",
+      "completed_native_qualification": false,
+      "original_payload_cases": 41,
+      "standard_discovery_verification_cases": 1,
+      "earlier_nested_assertion_passes_do_not_establish_successful_xcode_qualification": true
+    }
+  ]
 }
