@@ -23,6 +23,7 @@ from artifact_licensing import MATERIAL_NAMES, validate_materials, write_materia
 
 REPOSITORY = 'Livara-Dev/Telegram-iOS'
 WORKFLOW = '.github/workflows/archive-integration.yml'
+SOURCE_SNAPSHOT_WORKFLOW = '.github/workflows/ayu-source-snapshot.yml'
 PAIRED_SOURCE = 'c55e19c4f5cbe0d730499035d0a0ef712f6903a9'
 BASELINE_SIMULATOR_RUN = 42174474046
 PAIRED_DEVICE_RUN = 42160468600
@@ -80,7 +81,8 @@ def validate_paths(paths):
     for path in paths:
         item = PurePosixPath(path)
         if (item.is_absolute() or '..' in item.parts or '\\' in path or
-                not (path.startswith('tools/fork_baseline/') or path.startswith('docs/') or path == WORKFLOW)):
+                not (path.startswith('tools/fork_baseline/') or path.startswith('docs/') or
+                     path in {WORKFLOW, SOURCE_SNAPSHOT_WORKFLOW})):
             raise ReplayError('application_source_changed')
     return len(set(paths))
 

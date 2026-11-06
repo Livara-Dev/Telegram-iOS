@@ -60,6 +60,7 @@ ADDED_FILES = {
     "submodules/PasscodeCore/Tests/PasscodeCoreTests/PrivateInstallationKeychainTests.swift",
     "submodules/TelegramUI/Sources/LocalLaunchDiagnostics.swift",
     ".github/workflows/archive-integration.yml",
+    ".github/workflows/ayu-source-snapshot.yml",
     ".github/workflows/archive-compatibility.yml",
     ".github/workflows/archive-tests.yml",
     ".github/workflows/fork-baseline.yml", "COPYING",

@@ -227,7 +227,9 @@ class ReplayArtifactTests(unittest.TestCase):
         for run, source in [('0', SOURCE), ('-1', SOURCE), ('2/x', SOURCE), ('9' * 20, SOURCE), (str(RUN), 'HEAD')]:
             with self.assertRaises(replay.ReplayError): replay.coordinates(run, source)
         self.assertEqual(replay.validate_paths(['docs/report.md', 'tools/fork_baseline/replay_artifact.py', replay.WORKFLOW]), 3)
+        self.assertEqual(replay.validate_paths([replay.SOURCE_SNAPSHOT_WORKFLOW]), 1)
         for name in ['submodules/PasscodeCore/BUILD', 'MODULE.bazel', '.gitmodules', '.github/workflows/other.yml',
+                     '.github/workflows/ayu-source-snapshot-extra.yml', '.github/workflows/ayu-source-snapshot.yml/../other.yml',
                      'docs/../Telegram/main.m', '/docs/report.md', 'docs\\report.md']:
             with self.subTest(path=name), self.assertRaises(replay.ReplayError): replay.validate_paths([name])
 

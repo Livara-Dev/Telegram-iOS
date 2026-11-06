@@ -135,6 +135,33 @@ Runner-owned planned/actual trigger timing is published as closed metadata;
 case starts, exit and the deadline suppress inappropriate observations. This
 change is prepared, not a successful native outcome or a diagnosed cause.
 
+UI-only `42250781611` at driver `69eba4c6` subsequently passed the actual full
+case and twelve PNG, twelve frame and eleven appearance proofs, unchanged installed/source
+bytes/signatures, recording completion and owned cleanup. Both manual reviewers
+covered all 2,599 original frames/226 flags and twelve native PNGs. The bounded
+public log truncates; complete-input parsing remains the outcome authority.
+The driver and inputs are unchanged at the later native-only diagnostic head.
+Do not repeat the passing UI job for a native-only tooling or documentation
+change; its account-free and visual-quality limits remain in the feature matrix.
+
+Native-only `42251953229` exercised the later probe at 480.068 seconds. Its
+control and both cleanup gates passed; Projection still started zero of 41 cases
+before 600.239 seconds. The live host’s owned path/UID/executable were verified,
+its app/data containers were unique and its marker absent. Sampling timed out;
+no stack or cause was established, and full installed-tree attestation was not
+completed. Do not label that missing attestation as tampering.
+
+The separately selected `projection-deferred-load-only` scope runs only the
+native diagnostic job and shares the fixed c55 queue without cancellation. Its
+prepare step alone receives the artifact token; execution receives none. It
+builds diagnostic control/wrapper code and preserves the compiled feature bundle.
+The wrapper loads it through public APIs after active UIKit and must provide
+41 real leaf outcomes, its own separate outcome, matching public run counters
+and Xcode result data. This is an experimental different harness, with no
+production or original-host qualification implied. The ordinary 41-case parser,
+settings success and successful device build remain preserved. No deferred
+native execution is claimed until its reviewed profile actually runs.
+
 Only bounded, explicitly selected diagnostics and visuals are uploaded. Modern
 native JSON is limited to 1 MiB per file, logs to 2 MiB and the combined selection
 to 8 MiB. Settings evidence has separate 1 MiB JSON, 2 MiB log, 16 MiB image,

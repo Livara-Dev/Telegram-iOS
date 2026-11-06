@@ -145,6 +145,30 @@ a diagnostic experiment. Partial root screenshot recovery is strictly diagnostic
 and cannot satisfy complete UI evidence. No application or captured test code,
 authentication, networking or signing policy changes with these harness updates.
 
+The four-substitution private UI driver then passed its full twelve-stage case
+in `42250781611`, with all twelve original PNGs, twelve frame and eleven
+appearance samples, unchanged installed/source bytes/signatures, and complete
+owned cleanup. Both manual reviews covered all 2,599 original video frames and
+226 flags. The root/toggle/reset/cosmetics sequence is therefore verified in its
+account-free synthetic host. The public log is bounded and truncates; the complete
+pre-truncation case parser and Xcode exit establish the native outcome. Numeric
+keyboard accessibility geometry was not retained, so no exact hidden-state
+branch is reported. Conditional dark-banner contrast and fixture-footer overlap
+remain visual limitations. This success adds no authenticated account, live
+Telegram, original Projection-host, signing or physical-device guarantee.
+
+Native-only `42251953229` kept all 41 cases unexecuted after a 600.239-second
+command; its control and both cleanup gates passed. At 480.068 seconds, a live
+host process was verified against the owned path, UID and executable bytes, but
+its marker was absent and sampling timed out. No verified stack proves a cause.
+A full installed-tree attestation was not completed; that is not a tamper finding.
+The next explicit experimental profile uses public XCTest bundle loading only
+in an account-free CI diagnostic host after UIKit becomes active. It preserves
+the complete captured bundle and all initializers/assertions. Strict leaf-event,
+run-counter, Xcode-result, byte/signature and cleanup checks must agree; nested
+manager equivalence and native results remain unverified. This adds no dynamic
+code-loading or update mechanism to the production app.
+
 The actual re-sealed control `42176767770` passed strict verification while
 preserving code, signing identity metadata and all XCTest content; it still
 started zero of 41 cases. Post-command simulator queries timed out, but those

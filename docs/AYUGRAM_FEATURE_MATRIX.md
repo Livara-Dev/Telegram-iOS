@@ -393,10 +393,50 @@ all 229 original frames were reviewed. A single explicit control-center tap with
 initial/final state and synthetic callback proofs is the next private-harness
 experiment; no application repair or passing interaction is implied.
 
+The independent [UI-only run 42250781611](https://github.com/Livara-Dev/Telegram-iOS/actions/runs/42250781611)
+passed **one complete fresh twelve-stage native interaction** on the retained
+renderer. All twelve native screenshots, twelve frame observations and eleven
+actual appearance samples were verified, with installed bytes/Info/signature,
+unchanged source and owned-simulator cleanup. The one explicit center tap
+changed the archive switch and synthetic callback ledger from off to on. The
+whole native command took 401.079 seconds; that is not the case duration. Root
+and independent reviewers inspected all **2,599 original frames and 226 flagged
+changes**, plus the twelve PNGs. Both empty-search keyboards visibly dismissed,
+reset cancellation/confirmation and cosmetics change/reset matched the test.
+The bounded public log truncates before keyboard geometry and final case events;
+complete-input case parsing and Xcode exit status establish the pass, not that
+truncated log alone. No exact keyboard AX rectangle or accepted predicate branch
+is claimed. This is synthetic account-free UI, not authenticated app behavior.
+
+Visual quality remains separate: the fixture footer partly overlaps lower rows
+and prose. The dark cosmetics banner has measured contrast 3.543:1 (Ayu) and
+4.164:1 (Ocean) against its captured background, below the 4.5:1 normal-text
+criterion. It uses Dynamic Type headline text; runtime size/classification was
+not captured, so this is a conditional contrast limitation, not an accessibility
+certification or a categorical whole-app WCAG result. The passing UI driver and
+all its inputs remain unchanged at the later diagnostic-only head.
+
+[Native-only run 42251953229](https://github.com/Livara-Dev/Telegram-iOS/actions/runs/42251953229)
+passed its hosted control and both cleanup gates, but again started zero of 41
+Projection cases before a 600.239-second timeout. Unlike the early observations,
+the single later probe actually ran at 480.068 seconds and found unique app/data
+containers plus a running host with verified path, UID and executable bytes.
+Its launch marker was absent. Sampling the verified host timed out, so no wait
+stack or startup cause is established; a complete installed-bundle attestation
+was not completed, which is not evidence of tampering.
+
+An explicit manual deferred-load profile is being prepared to load the unchanged
+captured bundle only after active UIKit in a private diagnostic host. It must
+account for all 41 real leaf outcomes, a separate wrapper, public run counters,
+Xcode result data, source/signature integrity and cleanup. Nested test-manager
+behavior is unverified; neither wrapper-only success nor a load marker can
+qualify the feature tests. The original strict 41-case path stays available.
+No Telegram application, captured feature code or device package changes.
+
 | Candidate change | Current evidence | Remaining qualification or boundary |
 | --- | --- | --- |
 | Welcome-screen startup and current unsigned device package | [42204637743](https://github.com/Livara-Dev/Telegram-iOS/actions/runs/42204637743) passed two actual full-app simulator launches with explicitly seeded private storage and stable account-store directory after restart. Both screenshots and all 390 video frames were reviewed. The main-app-only device artifact retains all 880 retained entries byte-for-byte with matching metadata | Simulator iPhone 15 Pro / iOS 27.0, not physical iOS 27.2. Automatic fallback, login, Apple HTTP 403/signing and installation remain unverified. The device IPA is unsigned; six extensions are absent. Device build 82 and simulator build 1 retain distinct origins; application code was not recompiled |
-| Prominent **Custome options**, eleven searchable categories, quick toggles | [42147021107](https://github.com/Livara-Dev/Telegram-iOS/actions/runs/42147021107) passed 8 controller tests and 1 complete twelve-stage XCUI scenario. [42239698766](https://github.com/Livara-Dev/Telegram-iOS/actions/runs/42239698766) separately passed one fresh root UI case, installed-bundle/signature/source/cleanup proofs, and manual review of all 214 frames. Production renderer sources are byte-identical at `c55e19c4`; the fresh root case does not rerun the historical nine tests | Synthetic account-free host. The full app reaches the welcome screen and has a source-wired leading Settings entry, but authenticated entry/routing remain unverified. The latest full interaction failed at its first archive toggle in `42247024748`; it did not reach the keyboard repair. The single-tap experiment remains native-unverified. No device-performance claim; dark cosmetics prose still needs a dedicated contrast review |
+| Prominent **Custome options**, eleven searchable categories, quick toggles | [42147021107](https://github.com/Livara-Dev/Telegram-iOS/actions/runs/42147021107) passed 8 controller tests and 1 complete twelve-stage XCUI scenario. [42239698766](https://github.com/Livara-Dev/Telegram-iOS/actions/runs/42239698766) separately passed one fresh root UI case, installed-bundle/signature/source/cleanup proofs, and manual review of all 214 frames. Production renderer sources are byte-identical at `c55e19c4`. [42250781611](https://github.com/Livara-Dev/Telegram-iOS/actions/runs/42250781611) passed one fresh full twelve-stage case, all twelve screenshot/frame and eleven appearance proofs and manual review of all 2,599 frames; neither fresh case reruns the historical eight controller cases | Synthetic account-free host. The full app reaches the welcome screen and has a source-wired leading Settings entry, but authenticated entry/routing remain unverified. The fresh full synthetic interaction passed; authenticated bindings remain unverified. Fixture-footer overlap and conditional dark-banner contrast limitations are documented above. No physical-device or performance claim |
 | Account-bound archive/Ghost/filter controls and disable-only reset | Core account facades passed local native cases; Settings catalog 8 and navigation-helper 10 cases passed at `c55e19c4`. Source routes use the selected `AccountContext`; the full app compiled | Actual account-bound dashboard callbacks, reset behavior and account switching in the running application remain unverified. Synthetic renderer callbacks do not verify those bindings |
 | Browse retained archives with capture disabled; chat search and profile links | At `c55e19c4`, Core inline-history classes passed 17 cases and deleted-history classes passed 19; Settings gallery 4 and navigation-helper 10 cases passed. Fixtures exercise foreground read leases and separate local destinations | Authenticated chat search, profile navigation and gallery recordings remain unverified. These are separate local destinations, not merged server search or the canonical media grid |
 | Bulk clear-history/date/thread and author/forward-author deletion capture | Production selected-row observer paths are source-wired; all 11 `LocalArchiveHistoryRemovalTests` and the 26-case replay class passed at `c55e19c4` using actual local Postbox helpers | No live two-client deletion claim. Handoff remains capped at 256 records / 8 MiB; overflow increments missed-capture count while canonical deletion proceeds. No extra full history scan; performance unmeasured |

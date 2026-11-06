@@ -292,7 +292,7 @@ class FocusedWorkflowRoutingTests(unittest.TestCase):
                 self.assertTrue(self.condition('integration-tests', 'workflow_dispatch', 'projection', device))
                 for job in ('application-build', 'unsigned-device-build', 'native-api-probe', 'startup-artifact-replay'):
                     self.assertFalse(self.condition(job, 'workflow_dispatch', 'projection', device))
-        self.assertIn('options: [full, native-only, core-only, focused, projection, projection-only, custom-options-ui, custom-options-replay, custom-options-xctest, custom-options-interaction, retained-interaction, probe, retained-clean, retained-modern, projection-plan-only, startup]', WORKFLOW.read_text())
+        self.assertIn('options: [full, native-only, core-only, focused, projection, projection-only, custom-options-ui, custom-options-replay, custom-options-xctest, custom-options-interaction, retained-interaction, probe, retained-clean, retained-modern, projection-plan-only, projection-deferred-load-only, startup]', WORKFLOW.read_text())
         self.assertIn('projection) repair_options+=(--projection-tests)', WORKFLOW.read_text())
 
     def test_projection_only_dispatch_skips_every_other_build_or_probe(self):
@@ -555,6 +555,40 @@ class FocusedWorkflowRoutingTests(unittest.TestCase):
         condition = re.search(r'^        if: (.*?)$', execute, re.M).group(1)
         for scope in ('retained-modern', 'projection-plan-only'):
             self.assertTrue(self.expression(condition, 'workflow_dispatch', scope, False))
+
+    def test_deferred_loader_is_explicit_native_only_and_keeps_token_separate_from_execution(self):
+        scope = 'projection-deferred-load-only'
+        for name in ('integration-tests', 'application-build', 'unsigned-device-build',
+                     'startup-artifact-replay', 'custom-options-artifact-replay', 'custom-options-ui'):
+            section = self.section(name)
+            condition = re.search(r'^    if: (.*?)$', section, re.M).group(1)
+            self.assertFalse(self.expression(condition, 'workflow_dispatch', scope, False), name)
+        section = self.section('native-api-probe')
+        condition = re.search(r'^    if: (.*?)$', section, re.M).group(1)
+        self.assertTrue(self.expression(condition, 'workflow_dispatch', scope, False))
+        steps = {name: body for name, body in re.findall(r'(?ms)^      - name: ([^\n]+)\n(.*?)(?=^      - name: |\Z)', section)}
+        prepare = steps['Verify the captured Projection products and prepare the tiny diagnostic project']
+        execute = steps['Test Apple-generated hosting before executing all retained Projection cases']
+        self.assertIn('GH_TOKEN:', prepare)
+        for body in (prepare, execute):
+            self.assertIn("inputs.validation_scope == 'projection-deferred-load-only'", body)
+            self.assertIn('if [ "$DEFERRED_PAYLOAD" = true ]; then', body)
+            self.assertIn('else', body)
+        self.assertIn('deferred_projection_plan.py prepare', prepare)
+        self.assertIn('modern_projection_plan.py prepare', prepare)
+        self.assertIn('deferred_projection_plan.py run', execute)
+        self.assertIn('modern_projection_plan.py run', execute)
+        self.assertNotIn('GH_TOKEN:', execute)
+        self.assertNotIn('secrets.', execute)
+        self.assertIn('-p test_deferred_projection_plan.py -v', section)
+        refresh = steps['Refresh only the registered current-user simulator service on an exclusive hosted runner']
+        self.assertFalse(self.expression(re.search(r'^        if: (.*?)$', refresh, re.M).group(1), 'workflow_dispatch', scope, False))
+        legacy = steps['Replay verified synthetic Projection products without recompilation']
+        self.assertFalse(self.expression(re.search(r'^        if: (.*?)$', legacy, re.M).group(1), 'workflow_dispatch', scope, False))
+        group = re.search(r'^  group: (.*?)$', WORKFLOW.read_text(), re.M).group(1).removeprefix('${{ ').removesuffix(' }}')
+        self.assertEqual(self.expression(group, 'workflow_dispatch', scope, False),
+                         'ayugram-projection-replay-c55e19c4f5cbe0d730499035d0a0ef712f6903a9')
+        self.assertIn('cancel-in-progress: false', WORKFLOW.read_text())
 
     def test_retained_settings_publication_hashes_only_the_explicit_safe_files(self):
         import hashlib
