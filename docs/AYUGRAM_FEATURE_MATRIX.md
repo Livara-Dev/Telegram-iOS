@@ -118,6 +118,21 @@ binary. No proprietary exteraGram components are copied.
   the disappearing-keyboard geometry query while retaining the strict hidden
   keyboard, hittable-control and actual-appearance assertions. A passing rerun
   is still required; this run does not qualify the complete application.
+- [42142928776](https://github.com/Livara-Dev/Telegram-iOS/actions/runs/42142928776)
+  at 173ca877 passed **eight controller cases and the complete XCUI case**,
+  with no failures or skips. All twelve stage records and eleven actual
+  appearance observations were present; recording exited successfully. The
+  workflow subsequently failed when Apple's attachment exporter tried to move
+  `database.sqlite3` into the read-only Bazel `test.xcresult`. This is an
+  evidence-export permission failure, not a failed app interaction. The outer
+  checksum and twenty-one inner references passed verification; the original
+  variable-rate video is retained. The follow-up makes a bounded writable
+  private copy for export without modifying Bazel's original results or
+  publishing raw result bundles. Original-frame review observed all twelve
+  states, including actual dark search/category, reset cancellation and
+  confirmation, and cosmetic changes/reset. Coarse recorded navigation steps
+  do not establish smooth device performance; the dark cosmetics accent text
+  needs a dedicated contrast review. Actual Apple export must pass in a rerun.
 
 ## Core features and native integration
 
@@ -129,7 +144,7 @@ follow-up extends that candidate. None is certified by the older 62546557 IPA.
 
 | Candidate change | Current evidence | Remaining qualification or boundary |
 | --- | --- | --- |
-| Prominent **Custome options**, eleven searchable categories, quick toggles | Actual production renderer compiled; 8 controller tests and 1 XCUI scenario passed in [42097515377](https://github.com/Livara-Dev/Telegram-iOS/actions/runs/42097515377); twelve recorded stages | Synthetic account-free host; authenticated Settings entry/routing not proven. Dark-labelled stages stayed light and do not verify dark mode; repaired scenario needs rerun. Job failed afterward during screenshot export, exit 64; recorded video retained |
+| Prominent **Custome options**, eleven searchable categories, quick toggles | Actual production renderer compiled; 8 controller tests and 1 complete XCUI scenario passed in [42142928776](https://github.com/Livara-Dev/Telegram-iOS/actions/runs/42142928776); twelve recorded stages and eleven actual appearance observations. All twelve settled states visually observed in the original recording | Synthetic account-free host; authenticated Settings entry/routing not proven. Workflow failed afterward during read-only result-bundle conversion in screenshot export; original video retained. Export repair still needs native verification; no device-performance claim |
 | Account-bound archive/Ghost/filter controls and disable-only reset | Source integrated with existing account facades | Current-candidate native suites and real account navigation pending |
 | Browse retained archives with capture disabled; chat search and profile links | Foreground read leases, chat-scoped search, separate saved-media/history destinations | New native tests pending; separate local destinations, not merged server search or canonical media grid |
 | Bulk clear-history/date/thread and author/forward-author deletion capture | Explicit cloud helpers use default-nil Postbox selected-row observers; all 13 new production-path cases passed at b492 in 42114628197 | Current later source needs qualification. Handoff remains capped at 256 records / 8 MiB; overflow increments missed-capture count while canonical deletion proceeds. No extra full history scan; performance unmeasured |

@@ -4,12 +4,14 @@ import json
 import os
 from pathlib import Path
 import re
+import sqlite3
 import stat
 import sys
 import tempfile
 import unittest
 from unittest.mock import patch
 import zipfile
+import warnings
 from types import SimpleNamespace
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
@@ -283,6 +285,121 @@ class CustomOptionsContracts(unittest.TestCase):
                 with zipfile.ZipFile(outputs / 'outputs.zip', 'w') as archive:
                     info = zipfile.ZipInfo(name); info.external_attr = mode << 16; archive.writestr(info, b'x')
                 with self.assertRaises(visual.InvalidVisualEvidence): visual.extract_result_bundle(outputs, private)
+
+    def test_readonly_direct_result_is_copied_writable_without_modifying_original_bytes_or_modes(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory); outputs = root / 'outputs'; outputs.mkdir()
+            source = outputs / 'test.xcresult'; source.mkdir()
+            data = source / 'Data'; data.mkdir()
+            database = data / 'database.sqlite3'
+            with sqlite3.connect(database) as connection:
+                connection.execute('CREATE TABLE fixture(value TEXT)')
+                connection.execute("INSERT INTO fixture VALUES ('original result')")
+            (source / 'Info.plist').write_bytes(b'synthetic result metadata')
+            for path in (database, source / 'Info.plist'): path.chmod(0o444)
+            data.chmod(0o555); source.chmod(0o555)
+            originals = {path: (path.read_bytes(), stat.S_IMODE(path.stat().st_mode)) for path in (database, source / 'Info.plist')}
+            original_modes = {path: stat.S_IMODE(path.stat().st_mode) for path in (source, data)}
+            private = root / 'private'; private.mkdir(mode=0o700)
+            old_umask = os.umask(0)
+            try: copied = visual.extract_result_bundle(outputs, private)
+            finally: os.umask(old_umask)
+            self.assertEqual(copied, private / 'test.xcresult')
+            self.assertNotEqual(copied, source)
+            renamed = copied / 'Data/moved.sqlite3'
+            (copied / 'Data/database.sqlite3').rename(renamed)
+            with sqlite3.connect(renamed) as connection:
+                connection.execute("UPDATE fixture SET value='exporter converted copy'")
+            for path in (copied, copied / 'Data'): self.assertEqual(stat.S_IMODE(path.stat().st_mode), 0o700)
+            for path in (renamed, copied / 'Info.plist'): self.assertEqual(stat.S_IMODE(path.stat().st_mode), 0o600)
+            for path, (content, mode) in originals.items():
+                self.assertEqual(path.read_bytes(), content)
+                self.assertEqual(stat.S_IMODE(path.stat().st_mode), mode)
+            for path, mode in original_modes.items(): self.assertEqual(stat.S_IMODE(path.stat().st_mode), mode)
+            self.assertFalse((source / 'Data/moved.sqlite3').exists())
+            self.assertFalse((copied / '_CodeSignature').exists(), 'only real result members are copied')
+            # Restore fixture permissions only after proving production did not.
+            source.chmod(0o700); data.chmod(0o700)
+
+    def test_direct_result_rejects_linked_nonregular_or_unsafe_members_without_following_them(self):
+        for kind in ('root_link', 'file_link', 'directory_link', 'fifo', 'backslash'):
+            with self.subTest(kind=kind), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory); outputs = root / 'outputs'; outputs.mkdir()
+                private = root / 'private'; private.mkdir()
+                external = root / 'external'; external.mkdir(); (external / 'private-data').write_bytes(b'must-not-copy')
+                source = outputs / 'test.xcresult'
+                if kind == 'root_link': source.symlink_to(external, target_is_directory=True)
+                else:
+                    source.mkdir()
+                    if kind == 'file_link': (source / 'result').symlink_to(external / 'private-data')
+                    if kind == 'directory_link': (source / 'result').symlink_to(external, target_is_directory=True)
+                    if kind == 'fifo': os.mkfifo(source / 'result')
+                    if kind == 'backslash': (source / 'unsafe\\member').write_bytes(b'bad')
+                with self.assertRaises(visual.InvalidVisualEvidence): visual.extract_result_bundle(outputs, private)
+                self.assertFalse(list(private.rglob('private-data')))
+
+    def test_direct_result_enforces_existing_member_total_and_per_file_budgets(self):
+        self.assertEqual((visual.RESULT_BUNDLE_MAX_MEMBERS, visual.RESULT_BUNDLE_MAX_BYTES, visual.RESULT_BUNDLE_MAX_FILE_BYTES),
+                         (20000, 2 * 1024**3, 512 * 1024**2))
+        cases = [('RESULT_BUNDLE_MAX_MEMBERS', 2), ('RESULT_BUNDLE_MAX_BYTES', 5), ('RESULT_BUNDLE_MAX_FILE_BYTES', 2)]
+        for limit, value in cases:
+            with self.subTest(limit=limit), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory); outputs = root / 'outputs'; source = outputs / 'test.xcresult/Data'
+                source.mkdir(parents=True); (source / 'a').write_bytes(b'aaa'); (source / 'b').write_bytes(b'bbb')
+                private = root / 'private'; private.mkdir()
+                with patch.object(visual, limit, value), self.assertRaises(visual.InvalidVisualEvidence):
+                    visual.extract_result_bundle(outputs, private)
+                self.assertEqual((source / 'a').read_bytes(), b'aaa')
+
+    def test_zip_result_is_also_private_writable_and_rejects_duplicate_or_unsafe_members(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory); outputs = root / 'outputs'; outputs.mkdir(); private = root / 'private'; private.mkdir()
+            with zipfile.ZipFile(outputs / 'outputs.zip', 'w') as archive:
+                info = zipfile.ZipInfo('test.xcresult/Data/database.sqlite3'); info.external_attr = 0o100444 << 16
+                archive.writestr(info, b'synthetic sqlite payload')
+            original = (outputs / 'outputs.zip').read_bytes()
+            old_umask = os.umask(0)
+            try: copied = visual.extract_result_bundle(outputs, private)
+            finally: os.umask(old_umask)
+            (copied / 'Data/database.sqlite3').rename(copied / 'Data/converted.sqlite3')
+            self.assertEqual(stat.S_IMODE((copied / 'Data/converted.sqlite3').stat().st_mode), 0o600)
+            self.assertEqual(stat.S_IMODE((copied / 'Data').stat().st_mode), 0o700)
+            self.assertEqual((outputs / 'outputs.zip').read_bytes(), original)
+        cases = [
+            [('test.xcresult/a', 0o100600), ('test.xcresult/a', 0o100600)],
+            [('test.xcresult/A', 0o100600), ('test.xcresult/a', 0o100600)],
+            [('test.xcresult/Data/', 0o040700), ('test.xcresult/Data/', 0o040700)],
+            [('test.xcresult/a', 0o100600), ('test.xcresult/a/child', 0o100600)],
+            [('test.xcresult//private', 0o100600)],
+            [('test.xcresult/./private', 0o100600)],
+            [('test.xcresult/../private', 0o100600)],
+            [('test.xcresult/back\\slash', 0o100600)],
+            [('test.xcresult/nonregular', 0o010600)],
+        ]
+        for members in cases:
+            with self.subTest(members=members), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory); outputs = root / 'outputs'; outputs.mkdir(); private = root / 'private'; private.mkdir()
+                with warnings.catch_warnings():
+                    warnings.simplefilter('ignore', UserWarning)
+                    with zipfile.ZipFile(outputs / 'outputs.zip', 'w') as archive:
+                        for name, mode in members:
+                            info = zipfile.ZipInfo(name); info.external_attr = mode << 16; archive.writestr(info, b'x')
+                with self.assertRaises(visual.InvalidVisualEvidence): visual.extract_result_bundle(outputs, private)
+
+    def test_zipped_result_obeys_same_limits_and_never_overwrites_existing_destination(self):
+        for limit, value in [('RESULT_BUNDLE_MAX_MEMBERS', 2), ('RESULT_BUNDLE_MAX_BYTES', 5), ('RESULT_BUNDLE_MAX_FILE_BYTES', 2)]:
+            with self.subTest(limit=limit), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory); outputs = root / 'outputs'; outputs.mkdir(); private = root / 'private'; private.mkdir()
+                with zipfile.ZipFile(outputs / 'outputs.zip', 'w') as archive:
+                    archive.writestr('test.xcresult/Data/a', b'aaa'); archive.writestr('test.xcresult/Data/b', b'bbb')
+                with patch.object(visual, limit, value), self.assertRaises(visual.InvalidVisualEvidence):
+                    visual.extract_result_bundle(outputs, private)
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory); outputs = root / 'outputs'; (outputs / 'test.xcresult').mkdir(parents=True)
+            private = root / 'private'; existing = private / 'test.xcresult'; existing.mkdir(parents=True)
+            (existing / 'keep').write_bytes(b'untouched')
+            with self.assertRaises(visual.InvalidVisualEvidence): visual.extract_result_bundle(outputs, private)
+            self.assertEqual((existing / 'keep').read_bytes(), b'untouched')
 
     def test_existing_simulator_is_not_reused_or_deleted(self):
         devices = {'devices': {visual.RUNTIME: [{'name': visual.DEVICE_NAME, 'udid': 'not-ours'}]}}

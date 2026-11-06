@@ -26,6 +26,9 @@ STAGES = ('root-light', 'search-light', 'category-light', 'root-dark', 'search-d
           'cosmetics-before', 'cosmetics-changed', 'cosmetics-reset')
 EXPORT_ENVIRONMENT_KEYS = {'PATH', 'HOME', 'TMPDIR', 'DEVELOPER_DIR', 'SDKROOT',
                            'TOOLCHAINS', 'LANG', 'LC_ALL', 'LC_CTYPE', '__CF_USER_TEXT_ENCODING'}
+RESULT_BUNDLE_MAX_MEMBERS = 20000
+RESULT_BUNDLE_MAX_BYTES = 2 * 1024**3
+RESULT_BUNDLE_MAX_FILE_BYTES = 512 * 1024**2
 
 
 class InvalidVisualEvidence(ValueError):
@@ -229,36 +232,120 @@ def attachment_mapping(value):
 
 
 def extract_result_bundle(outputs, temporary):
-    """Use only the fixed test.xcresult subtree; never publish raw diagnostics."""
+    """Copy only fixed result data into a private writable export workspace.
+
+    xcresulttool may convert/move its SQLite database even while exporting.
+    Bazel's original result tree stays byte- and permission-identical.
+    """
     outputs, temporary = Path(outputs), Path(temporary)
-    if outputs.is_symlink():
-        raise InvalidVisualEvidence('Result output root is a symlink')
+    if outputs.is_symlink() or temporary.is_symlink() or not temporary.is_dir():
+        raise InvalidVisualEvidence('Unsafe result workspace')
+    destination = temporary / 'test.xcresult'
+    if destination.exists() or destination.is_symlink():
+        raise InvalidVisualEvidence('Result copy destination must be new')
+    destination.mkdir(mode=0o700)
+    destination.chmod(0o700)
+    count = total = 0
+    created = {}
+
+    def parts_for(name):
+        parts = tuple(name.split('/')) if name else ()
+        if '\\' in name or '\0' in name or any(part in {'', '.', '..'} for part in parts):
+            raise InvalidVisualEvidence('Unsafe result bundle member')
+        return parts
+
+    def reserve(parts, kind, size=0):
+        nonlocal count, total
+        key = tuple(part.casefold() for part in parts)
+        if key in created:
+            if kind == 'directory' and created[key] == (parts, kind): return False
+            raise InvalidVisualEvidence('Duplicate or conflicting result member')
+        if not 0 <= size <= RESULT_BUNDLE_MAX_FILE_BYTES:
+            raise InvalidVisualEvidence('Result bundle entry exceeds limit')
+        count += 1; total += size
+        if count > RESULT_BUNDLE_MAX_MEMBERS or total > RESULT_BUNDLE_MAX_BYTES:
+            raise InvalidVisualEvidence('Result bundle exceeds limit')
+        created[key] = (parts, kind)
+        return True
+
+    def directories(parts):
+        for index in range(1, len(parts) + 1):
+            prefix = parts[:index]
+            if reserve(prefix, 'directory'):
+                path = destination.joinpath(*prefix)
+                path.mkdir(mode=0o700); path.chmod(0o700)
+
+    def copy_file(source, parts, size):
+        directories(parts[:-1])
+        reserve(parts, 'file', size)
+        path = destination.joinpath(*parts)
+        descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+        copied = 0
+        with os.fdopen(descriptor, 'wb') as target:
+            os.fchmod(target.fileno(), 0o600)
+            while chunk := source.read(min(1024 * 1024, size - copied + 1)):
+                copied += len(chunk)
+                if copied > size: raise InvalidVisualEvidence('Result member changed or exceeded its declared size')
+                target.write(chunk)
+        if copied != size: raise InvalidVisualEvidence('Result member changed while copying')
+
+    def direct_directory(descriptor, prefix):
+        with os.scandir(descriptor) as entries:
+            for entry in entries:
+                parts = prefix + parts_for(entry.name)
+                info = entry.stat(follow_symlinks=False)
+                if stat.S_ISDIR(info.st_mode):
+                    child = os.open(entry.name, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=descriptor)
+                    try:
+                        opened = os.fstat(child)
+                        if (opened.st_dev, opened.st_ino) != (info.st_dev, info.st_ino):
+                            raise InvalidVisualEvidence('Result directory changed while copying')
+                        directories(parts)
+                        direct_directory(child, parts)
+                    finally: os.close(child)
+                elif stat.S_ISREG(info.st_mode):
+                    source = os.open(entry.name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=descriptor)
+                    with os.fdopen(source, 'rb') as stream:
+                        opened = os.fstat(stream.fileno())
+                        if (opened.st_dev, opened.st_ino, opened.st_size) != (info.st_dev, info.st_ino, info.st_size) or not stat.S_ISREG(opened.st_mode):
+                            raise InvalidVisualEvidence('Result file changed while copying')
+                        copy_file(stream, parts, opened.st_size)
+                else:
+                    raise InvalidVisualEvidence('Nonregular or linked result member')
+
     direct = outputs / 'test.xcresult'
-    if direct.is_dir() and not direct.is_symlink():
-        return direct
+    if direct.exists() or direct.is_symlink():
+        if direct.is_symlink() or not direct.is_dir():
+            raise InvalidVisualEvidence('Unsafe direct result bundle')
+        descriptor = os.open(direct, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_NONBLOCK)
+        try: direct_directory(descriptor, ())
+        finally: os.close(descriptor)
+        return destination
+
     archive = outputs / 'outputs.zip'
     if not archive.is_file() or archive.is_symlink():
         raise InvalidVisualEvidence('Native UI result bundle unavailable')
-    destination = temporary / 'test.xcresult'
-    count = total = 0
-    with zipfile.ZipFile(archive) as zipped:
-        for entry in zipped.infolist():
-            if not entry.filename.startswith('test.xcresult/'):
-                continue
-            relative = PurePosixPath(entry.filename[len('test.xcresult/'):])
-            if relative.is_absolute() or '..' in relative.parts or '\\' in entry.filename or stat.S_IFMT(entry.external_attr >> 16) not in {0, stat.S_IFREG, stat.S_IFDIR}:
-                raise InvalidVisualEvidence('Unsafe result bundle member')
-            count += 1; total += entry.file_size
-            if count > 20000 or total > 2 * 1024**3 or entry.file_size > 512 * 1024**2:
-                raise InvalidVisualEvidence('Result bundle exceeds limit')
-            path = destination.joinpath(*relative.parts)
-            if entry.is_dir(): path.mkdir(mode=0o700, parents=True, exist_ok=True)
-            else:
-                path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
-                with zipped.open(entry) as source, path.open('xb') as target:
-                    shutil.copyfileobj(source, target, length=1024 * 1024)
-    if not destination.is_dir():
-        raise InvalidVisualEvidence('Native UI result bundle was not retained')
+    descriptor = os.open(archive, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+    with os.fdopen(descriptor, 'rb') as stream:
+        if not stat.S_ISREG(os.fstat(stream.fileno()).st_mode): raise InvalidVisualEvidence('Nonregular result archive')
+        with zipfile.ZipFile(stream) as zipped:
+            seen = set()
+            for entry in zipped.infolist():
+                if not entry.filename.startswith('test.xcresult/'): continue
+                if entry.orig_filename != entry.filename: raise InvalidVisualEvidence('Unsafe result bundle member')
+                name = entry.filename[len('test.xcresult/'):]
+                parts = parts_for(name[:-1] if entry.is_dir() else name)
+                key = tuple(part.casefold() for part in parts)
+                if key in seen: raise InvalidVisualEvidence('Duplicate result bundle member')
+                seen.add(key)
+                kind = stat.S_IFMT(entry.external_attr >> 16)
+                if kind not in ({0, stat.S_IFDIR} if entry.is_dir() else {0, stat.S_IFREG}):
+                    raise InvalidVisualEvidence('Unsafe result bundle member')
+                if entry.is_dir(): directories(parts)
+                else:
+                    if not parts: raise InvalidVisualEvidence('Missing result member name')
+                    with zipped.open(entry) as source: copy_file(source, parts, entry.file_size)
+            if not seen: raise InvalidVisualEvidence('Native UI result bundle was not retained')
     return destination
 
 
