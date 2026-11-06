@@ -23,12 +23,13 @@ SOURCE = 'c' * 40
 RUN = 42031063759
 
 
-def ipa_fixture(platform=7):
+def ipa_fixture(platform=7, build_number=None):
     data = io.BytesIO()
+    metadata = {'CFBundleIdentifier': replay.BUNDLE, 'CFBundleExecutable': 'Telegram',
+                'CFBundleSupportedPlatforms': ['iPhoneSimulator']}
+    if build_number is not None: metadata['CFBundleVersion'] = str(build_number)
     with zipfile.ZipFile(data, 'w') as archive:
-        archive.writestr('Payload/Telegram.app/Info.plist', plistlib.dumps({
-            'CFBundleIdentifier': replay.BUNDLE, 'CFBundleExecutable': 'Telegram',
-            'CFBundleSupportedPlatforms': ['iPhoneSimulator']}))
+        archive.writestr('Payload/Telegram.app/Info.plist', plistlib.dumps(metadata))
         archive.writestr('Payload/Telegram.app/Telegram', struct.pack('<8I', 0xfeedfacf, 0x0100000c, 0, 2, 1, 24, 0, 0) +
                          struct.pack('<6I', 0x32, 24, platform, 0x000f0000, 0x001b0100, 0))
     return data.getvalue()
@@ -63,6 +64,37 @@ def fixture(path, changes=None, extra=None, platform=7):
     return artifact, run, jobs
 
 
+def baseline_fixture(path, licensed=True, build_number=1):
+    artifact, run, jobs = fixture(path)
+    with zipfile.ZipFile(path) as original:
+        names = {name: original.read(name) for name in original.namelist() if not name.startswith('fork-evidence/')}
+    prefix = 'fork-baseline-simulator/'
+    names[prefix + 'Telegram.ipa'] = ipa_fixture(build_number=build_number)
+    manifest = json.loads(names[prefix + 'manifest.json'])
+    manifest['source_commit'] = replay.PAIRED_SOURCE
+    manifest['sha256'] = hashlib.sha256(names[prefix + 'Telegram.ipa']).hexdigest()
+    if build_number is not None: manifest['build_number'] = build_number
+    if licensed:
+        materials = licensing.material_bytes(Path(__file__).resolve().parents[3], replay.PAIRED_SOURCE)
+        manifest['license_materials'] = licensing.validate_materials(materials, replay.PAIRED_SOURCE)
+        names.update({prefix + name: data for name, data in materials.items()})
+    names[prefix + 'manifest.json'] = json.dumps(manifest).encode()
+    names[prefix + 'SHA256SUMS'] = ''.join(hashlib.sha256(data).hexdigest() + '  ' + name[len(prefix):] + '\n'
+        for name, data in sorted(names.items()) if name != prefix + 'SHA256SUMS').encode()
+    with zipfile.ZipFile(path, 'w') as archive:
+        for name, data in names.items(): archive.writestr(name, data)
+    artifact.update(name='fork-baseline-' + replay.PAIRED_SOURCE, size_in_bytes=path.stat().st_size,
+                    digest='sha256:' + hashlib.sha256(path.read_bytes()).hexdigest(),
+                    workflow_run={'id': replay.BASELINE_SIMULATOR_RUN, 'head_sha': replay.PAIRED_SOURCE,
+                                  'repository_id': 7, 'head_repository_id': 7})
+    run.update(id=replay.BASELINE_SIMULATOR_RUN, head_sha=replay.PAIRED_SOURCE, path=replay.BASELINE_WORKFLOW,
+               status='completed', conclusion='success', run_number=999)
+    job = jobs['jobs'][0]
+    job.update(run_id=replay.BASELINE_SIMULATOR_RUN, name='baseline', conclusion='success',
+               steps=[{'name': replay.BASELINE_COMPILE_STEP, 'status': 'completed', 'conclusion': 'success'}])
+    return artifact, run, jobs
+
+
 class API:
     def __init__(self, artifact, run, jobs):
         self.artifact, self.run, self.jobs = copy.deepcopy((artifact, run, jobs))
@@ -73,6 +105,73 @@ class API:
 
 
 class ReplayArtifactTests(unittest.TestCase):
+    def test_paired_device_mapping_changes_only_the_exact_reviewed_simulator_tuple(self):
+        self.assertEqual(replay.paired_device_run(str(replay.BASELINE_SIMULATOR_RUN), replay.PAIRED_SOURCE), replay.PAIRED_DEVICE_RUN)
+        for run, source in [(RUN, SOURCE), (replay.BASELINE_SIMULATOR_RUN + 1, replay.PAIRED_SOURCE),
+                            (replay.BASELINE_SIMULATOR_RUN, SOURCE), (replay.PAIRED_DEVICE_RUN, replay.PAIRED_SOURCE)]:
+            self.assertEqual(replay.paired_device_run(run, source), run)
+        with self.assertRaises(replay.ReplayError): replay.paired_device_run('0', replay.PAIRED_SOURCE)
+
+    def test_only_exact_baseline_simulator_origin_is_accepted_without_general_workflow_fallback(self):
+        with tempfile.TemporaryDirectory() as directory:
+            artifact, run, jobs = baseline_fixture(Path(directory) / 'source.zip')
+            selected, proof = replay.select_artifact(replay.BASELINE_SIMULATOR_RUN, replay.PAIRED_SOURCE, API(artifact, run, jobs))
+            self.assertEqual(selected['name'], 'fork-baseline-' + replay.PAIRED_SOURCE)
+            self.assertEqual(proof['source_workflow'], replay.BASELINE_WORKFLOW)
+            self.assertEqual(proof['source_build_job'], 'baseline')
+            self.assertEqual(proof['source_compile_step'], replay.BASELINE_COMPILE_STEP)
+            self.assertFalse(proof['prior_smoke_passed'])
+            for kind in ('other_run', 'other_source', 'wrong_mode', 'wrong_workflow', 'job', 'compile', 'compile_failed',
+                         'artifact', 'artifact_source', 'artifact_run', 'repository', 'head_repository', 'job_running', 'run_running', 'job_failed'):
+                api = API(artifact, run, jobs); requested_run, source, mode = replay.BASELINE_SIMULATOR_RUN, replay.PAIRED_SOURCE, 'simulator'
+                if kind == 'other_run':
+                    requested_run += 1
+                    api.run['id'] = api.jobs['jobs'][0]['run_id'] = api.artifact['workflow_run']['id'] = requested_run
+                elif kind == 'other_source':
+                    source = 'd' * 40
+                    api.run['head_sha'] = api.artifact['workflow_run']['head_sha'] = source
+                    api.artifact['name'] = 'fork-baseline-' + source
+                elif kind == 'wrong_mode': mode = 'unsigned-device'
+                elif kind == 'wrong_workflow': api.run['path'] = replay.WORKFLOW
+                elif kind == 'job': api.jobs['jobs'][0]['name'] = 'application-build'
+                elif kind == 'compile': api.jobs['jobs'][0]['steps'][0]['name'] = replay.COMPILE_STEP
+                elif kind == 'compile_failed': api.jobs['jobs'][0]['steps'][0]['conclusion'] = 'failure'
+                elif kind == 'artifact': api.artifact['name'] = 'archive-integration-' + source
+                elif kind == 'artifact_source': api.artifact['workflow_run']['head_sha'] = 'd' * 40
+                elif kind == 'artifact_run': api.artifact['workflow_run']['id'] += 1
+                elif kind == 'repository': api.artifact['workflow_run']['repository_id'] += 1
+                elif kind == 'head_repository': api.run['head_repository']['id'] += 1
+                elif kind == 'job_running': api.jobs['jobs'][0]['status'] = 'in_progress'
+                elif kind == 'run_running': api.run['status'] = 'in_progress'
+                else: api.jobs['jobs'][0]['conclusion'] = 'failure'
+                with self.subTest(kind=kind), self.assertRaises(replay.ReplayError):
+                    replay.select_artifact(requested_run, source, api, mode)
+
+    def test_exact_baseline_replay_retains_real_source_build_number_and_license_guards(self):
+        for licensed, number in ((True, 1), (True, None), (False, 1)):
+            with self.subTest(licensed=licensed, build_number=number), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory); archive = root / 'source.zip'
+                artifact, run, jobs = baseline_fixture(archive, licensed=licensed, build_number=number)
+                destination = root / 'build/fork-evidence/startup-replay'
+                def fetch(identifier, path):
+                    self.assertEqual(identifier, artifact['id']); path.write_bytes(archive.read_bytes())
+                with patch.object(replay, 'verify_checkout', return_value=('d' * 40, 2)):
+                    if not licensed:
+                        with self.assertRaisesRegex(replay.ReplayError, '^baseline_simulator_license_materials_missing$'):
+                            replay.replay(replay.BASELINE_SIMULATOR_RUN, replay.PAIRED_SOURCE, destination,
+                                          root=root, api=API(artifact, run, jobs), fetch=fetch)
+                        self.assertFalse((destination / 'verification.json').exists())
+                        continue
+                    result = replay.replay(replay.BASELINE_SIMULATOR_RUN, replay.PAIRED_SOURCE, destination,
+                                           root=root, api=API(artifact, run, jobs), fetch=fetch)
+                self.assertEqual(result['source_run'], replay.BASELINE_SIMULATOR_RUN)
+                self.assertEqual(result['source_commit'], replay.PAIRED_SOURCE)
+                self.assertEqual(result['source_build_number'], number, 'never infer the GitHub run_number')
+                self.assertEqual(result['source_job_conclusion'], 'success')
+                self.assertTrue(result['source_license_materials_present'])
+                self.assertFalse(result['prior_smoke_evidence_present'])
+                self.assertFalse(result['release_qualified']); self.assertFalse(result['physical_device_verified'])
+
     def test_all_verified_source_materials_are_retained_while_legacy_diagnostics_remain_explicit(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory); archive = root / 'source.zip'

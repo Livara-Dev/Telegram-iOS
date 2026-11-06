@@ -96,6 +96,22 @@ def evidence(device_digest='d' * 64):
     return device, simulator, proof, result
 
 
+def paired_evidence(device_digest='d' * 64):
+    device, simulator, proof, result = evidence(device_digest)
+    for report in (device, simulator):
+        report['source_commit'] = replay.PAIRED_SOURCE
+        report['source_license_materials_present'] = True
+        report['license_materials'] = artifact_licensing.validate_materials(
+            artifact_licensing.material_bytes(Path(__file__).resolve().parents[3], replay.PAIRED_SOURCE), replay.PAIRED_SOURCE)
+    device.update(source_run=replay.PAIRED_DEVICE_RUN, source_workflow=replay.WORKFLOW,
+                  source_build_job='unsigned-device-build', source_compile_step=replay.MODES['unsigned-device']['compile'],
+                  source_build_number=82, artifact_id=82)
+    simulator.update(source_run=replay.BASELINE_SIMULATOR_RUN, source_workflow=replay.BASELINE_WORKFLOW,
+                     source_build_job='baseline', source_compile_step=replay.BASELINE_COMPILE_STEP,
+                     source_job_conclusion='success', source_build_number=1, artifact_id=83)
+    return device, simulator, proof, result
+
+
 def artifact_fixture(path):
     payload = path.parent / 'device.ipa'; ipa(payload)
     data = payload.read_bytes()
@@ -121,6 +137,64 @@ def artifact_fixture(path):
 
 
 class DeviceVariantTests(unittest.TestCase):
+    def test_only_exact_reviewed_cross_run_pair_and_verified_origins_can_supply_startup_control(self):
+        reports = paired_evidence()
+        self.assertEqual(variant.validate_startup(*reports), (replay.PAIRED_SOURCE, replay.PAIRED_DEVICE_RUN, 6))
+        # Historical same-run controls are deliberately unchanged.
+        self.assertEqual(variant.validate_startup(*evidence()), (SOURCE, RUN, 6))
+        for kind in ('device_run', 'simulator_run', 'other_source', 'reverse', 'same_known_simulator_run',
+                     'device_workflow', 'simulator_workflow', 'device_job', 'simulator_job',
+                     'device_compile', 'simulator_compile', 'simulator_failed', 'device_failed',
+                     'device_licenses', 'simulator_licenses', 'simulator_unverified'):
+            device, simulator, proof, result = copy.deepcopy(reports)
+            if kind == 'device_run': device['source_run'] += 1
+            elif kind == 'simulator_run': simulator['source_run'] += 1
+            elif kind == 'other_source': device['source_commit'] = simulator['source_commit'] = 'd' * 40
+            elif kind == 'reverse': device['source_run'], simulator['source_run'] = simulator['source_run'], device['source_run']
+            elif kind == 'same_known_simulator_run': device['source_run'] = simulator['source_run']
+            elif kind == 'device_workflow': device['source_workflow'] = replay.BASELINE_WORKFLOW
+            elif kind == 'simulator_workflow': simulator['source_workflow'] = replay.WORKFLOW
+            elif kind == 'device_job': device['source_build_job'] = 'baseline'
+            elif kind == 'simulator_job': simulator['source_build_job'] = 'application-build'
+            elif kind == 'device_compile': device['source_compile_step'] = replay.BASELINE_COMPILE_STEP
+            elif kind == 'simulator_compile': simulator['source_compile_step'] = replay.COMPILE_STEP
+            elif kind == 'simulator_failed': simulator['source_job_conclusion'] = 'failure'
+            elif kind == 'device_failed': device['source_job_conclusion'] = 'failure'
+            elif kind == 'device_licenses': device['source_license_materials_present'] = False
+            elif kind == 'simulator_licenses': simulator['source_license_materials_present'] = False
+            else: simulator['source_compile_step_passed'] = False
+            with self.subTest(kind=kind), self.assertRaises(replay.ReplayError):
+                variant.validate_startup(device, simulator, proof, result)
+
+    def test_paired_package_records_both_actual_origins_and_build_numbers_without_relabelling(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            source = ipa(root / 'source.ipa', extra={'Payload/Telegram.app/Info.plist': plistlib.dumps({
+                'CFBundleIdentifier': replay.BUNDLE, 'CFBundleExecutable': 'Telegram',
+                'CFBundleSupportedPlatforms': ['iPhoneOS'], 'CFBundleVersion': '82'})})
+            reports = paired_evidence(variant.digest(source)); paths = []
+            for index, value in enumerate(reports):
+                path = root / (str(index) + '.json'); path.write_text(json.dumps(value)); paths.append(path)
+            materials = artifact_licensing.material_bytes(Path(__file__).resolve().parents[3], replay.PAIRED_SOURCE)
+            artifact_licensing.write_materials(materials, root)
+            report = variant.package(source, *paths, root / 'published')
+            self.assertEqual(report['source_run'], replay.PAIRED_DEVICE_RUN)
+            self.assertEqual(report['source_device_run'], replay.PAIRED_DEVICE_RUN)
+            self.assertEqual(report['source_simulator_run'], replay.BASELINE_SIMULATOR_RUN)
+            self.assertEqual(report['source_commit'], replay.PAIRED_SOURCE)
+            self.assertEqual(report['source_device_artifact_id'], 82); self.assertEqual(report['source_simulator_artifact_id'], 83)
+            self.assertEqual(report['source_device_build_number'], 82); self.assertEqual(report['source_simulator_build_number'], 1)
+            self.assertEqual(report['source_device_workflow'], replay.WORKFLOW)
+            self.assertEqual(report['source_simulator_workflow'], replay.BASELINE_WORKFLOW)
+            self.assertTrue(report['cross_run_startup_control'])
+            self.assertFalse(report['build_number_changed']); self.assertFalse(report['application_recompiled'])
+            self.assertFalse(report['runtime_verified']); self.assertFalse(report['physical_device_verified'])
+            self.assertFalse(report['installable_signed_ipa']); self.assertFalse(report['release_qualified'])
+            with zipfile.ZipFile(source) as before, zipfile.ZipFile(root / 'published' / report['filename']) as after:
+                self.assertEqual(before.read('Payload/Telegram.app/Info.plist'), after.read('Payload/Telegram.app/Info.plist'))
+            for name in artifact_licensing.MATERIAL_NAMES:
+                self.assertEqual((root / 'published' / name).read_bytes(), materials[name])
+
     def test_device_mode_requires_exact_successful_job_and_artifact(self):
         with tempfile.TemporaryDirectory() as d:
             artifact, run, jobs = artifact_fixture(Path(d) / 'source.zip')

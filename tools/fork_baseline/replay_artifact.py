@@ -23,6 +23,11 @@ from artifact_licensing import MATERIAL_NAMES, validate_materials, write_materia
 
 REPOSITORY = 'Livara-Dev/Telegram-iOS'
 WORKFLOW = '.github/workflows/archive-integration.yml'
+PAIRED_SOURCE = 'c55e19c4f5cbe0d730499035d0a0ef712f6903a9'
+BASELINE_SIMULATOR_RUN = 42174474046
+PAIRED_DEVICE_RUN = 42160468600
+BASELINE_WORKFLOW = '.github/workflows/fork-baseline.yml'
+BASELINE_COMPILE_STEP = 'Build simulator baseline and run the explicit iOS test target'
 BUNDLE = 'org.livara.ayugram'
 COMPILE_STEP = 'Build the full simulator app and run TextFormat regression tests'
 SMOKE_STEP = 'Launch the real simulator application twice on a fresh device'
@@ -52,6 +57,16 @@ def coordinates(run, source):
     if not isinstance(source, str) or not SHA.fullmatch(source):
         raise ReplayError('invalid_source_commit')
     return int(value), source
+
+
+def paired_device_run(simulator_run, source):
+    """One reviewed same-source pair; every other run retains its own origin."""
+    simulator_run, source = coordinates(simulator_run, source)
+    return PAIRED_DEVICE_RUN if (simulator_run, source) == (BASELINE_SIMULATOR_RUN, PAIRED_SOURCE) else simulator_run
+
+
+def _baseline_simulator(run, source, mode):
+    return (mode, run, source) == ('simulator', BASELINE_SIMULATOR_RUN, PAIRED_SOURCE)
 
 
 def git(root, *args):
@@ -115,10 +130,13 @@ def download(artifact_id, destination):
 
 def select_artifact(run, source, api, mode='simulator'):
     if mode not in MODES: raise ReplayError('invalid_artifact_mode')
-    specification = MODES[mode]
+    baseline_simulator = _baseline_simulator(run, source, mode)
+    specification = ({**MODES[mode], 'job': 'baseline', 'compile': BASELINE_COMPILE_STEP, 'artifact': 'fork-baseline-'}
+                     if baseline_simulator else MODES[mode])
+    workflow = BASELINE_WORKFLOW if baseline_simulator else WORKFLOW
     value = api(BASE + '/actions/runs/' + str(run))
     if (not isinstance(value, dict) or value.get('id') != run or value.get('head_sha') != source or
-            not isinstance(value.get('path'), str) or value['path'].split('@', 1)[0] != WORKFLOW or
+            not isinstance(value.get('path'), str) or value['path'].split('@', 1)[0] != workflow or
             not isinstance(value.get('repository'), dict) or not isinstance(value.get('head_repository'), dict) or
             value['repository'].get('full_name') != REPOSITORY or value['head_repository'].get('full_name') != REPOSITORY):
         raise ReplayError('run_source_mismatch')
@@ -144,6 +162,8 @@ def select_artifact(run, source, api, mode='simulator'):
         raise ReplayError('invalid_job_conclusion')
     if mode == 'unsigned-device' and conclusion != 'success':
         raise ReplayError('device_build_not_successful')
+    if baseline_simulator and (conclusion != 'success' or value.get('status') != 'completed' or value.get('conclusion') != 'success'):
+        raise ReplayError('baseline_simulator_not_successful')
     smoke = [step for step in job['steps'] if isinstance(step, dict) and step.get('name') == SMOKE_STEP]
     prior_smoke_passed = len(smoke) == 1 and smoke[0].get('conclusion') == 'success'
     result = api(BASE + '/actions/runs/' + str(run) + '/artifacts?per_page=100')
@@ -161,7 +181,9 @@ def select_artifact(run, source, api, mode='simulator'):
             provenance.get('repository_id') != repo_id or provenance.get('head_repository_id') != head_repo_id):
         raise ReplayError('artifact_provenance_mismatch')
     return artifact, {'application_build_job_id': job['id'], 'source_job_conclusion': conclusion,
-                      'source_compile_step_passed': True, 'prior_smoke_passed': prior_smoke_passed}
+                      'source_compile_step_passed': True, 'prior_smoke_passed': prior_smoke_passed,
+                      'source_workflow': workflow, 'source_build_job': specification['job'],
+                      'source_compile_step': specification['compile']}
 
 
 def digest_stream(source):
@@ -389,6 +411,8 @@ def verify_extract(archive_path, artifact, source, destination, mode='simulator'
                 original = prior_smoke_report(json.loads(archive.read(smoke_name)))
                 (evidence / 'prior-launch-result.json').write_text(json.dumps(original, indent=2) + '\n')
             return {'outer_sha256': outer_digest, 'ipa_sha256': manifest['sha256'],
+                    'source_build_number': manifest.get('build_number') if type(manifest.get('build_number')) is int
+                        and 0 <= manifest['build_number'] <= 2**63 - 1 else None,
                     'checksum_files_verified': len(checksums), 'inner_payloads_verified': len(verified),
                     'source_license_materials_present': bool(materials), 'license_materials': license_metadata,
                     'prior_smoke_evidence_present': smoke_present, 'main_executable': inspection}
@@ -412,6 +436,8 @@ def replay(run, source, output, root=None, api=gh_json, fetch=download, mode='si
         archive_path = Path(temporary) / 'simulator-artifact.zip'
         fetch(artifact['id'], archive_path)
         result = verify_extract(archive_path, artifact, source, output, mode)
+    if _baseline_simulator(run, source, mode) and result.get('source_license_materials_present') is not True:
+        raise ReplayError('baseline_simulator_license_materials_missing')
     report = {'schema': 1, 'mode': mode, 'repository': REPOSITORY, 'source_run': run, 'source_commit': source,
               'replay_checkout_commit': head, 'artifact_id': artifact['id'], 'allowed_tooling_changes': changed_count,
               'application_source_unchanged': True, **provenance, **result,

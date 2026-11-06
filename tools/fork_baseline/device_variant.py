@@ -14,12 +14,24 @@ import zipfile
 from artifact_licensing import read_materials, validate_materials, write_materials
 
 from replay_artifact import (BUNDLE, DIGEST, REPOSITORY, ReplayError, coordinates,
-                             digest_stream, prior_smoke_report, unsigned_device_inspection)
+                             digest_stream, prior_smoke_report, unsigned_device_inspection,
+                             paired_device_run, BASELINE_SIMULATOR_RUN, PAIRED_DEVICE_RUN, PAIRED_SOURCE,
+                             BASELINE_WORKFLOW, BASELINE_COMPILE_STEP, WORKFLOW, MODES)
 
 
 def digest(path):
     with Path(path).open('rb') as stream:
         return digest_stream(stream)
+
+
+def _build_number(report):
+    value = report.get('source_build_number')
+    return value if type(value) is int and 0 <= value <= 2**63 - 1 else None
+
+
+def _origin_name(report, key, allowed):
+    value = report.get(key)
+    return value if isinstance(value, str) and value in allowed else None
 
 
 def read_json(path):
@@ -45,9 +57,24 @@ def validate_startup(device, simulator, proof, result):
                 or type(report.get('artifact_id')) is not int or report['artifact_id'] <= 0):
             raise ReplayError('invalid_variant_provenance')
         coordinates(report.get('source_run'), report.get('source_commit'))
-    if (device['source_commit'] != simulator['source_commit'] or device['source_run'] != simulator['source_run']
+    if (device['source_commit'] != simulator['source_commit']
+            or device['source_run'] != paired_device_run(simulator['source_run'], simulator['source_commit'])
             or device.get('source_job_conclusion') != 'success'):
         raise ReplayError('variant_source_mismatch')
+    if device['source_run'] != simulator['source_run']:
+        # This is the sole reviewed cross-run control, not a general same-source
+        # exception. Both independently verified origins retain their own names.
+        if ((simulator['source_run'], device['source_run'], simulator['source_commit']) !=
+                (BASELINE_SIMULATOR_RUN, PAIRED_DEVICE_RUN, PAIRED_SOURCE)
+                or simulator.get('source_job_conclusion') != 'success'
+                or simulator.get('source_workflow') != BASELINE_WORKFLOW
+                or simulator.get('source_build_job') != 'baseline'
+                or simulator.get('source_compile_step') != BASELINE_COMPILE_STEP
+                or device.get('source_workflow') != WORKFLOW
+                or device.get('source_build_job') != MODES['unsigned-device']['job']
+                or device.get('source_compile_step') != MODES['unsigned-device']['compile']
+                or any(report.get('source_license_materials_present') is not True for report in (device, simulator))):
+            raise ReplayError('variant_paired_origin_mismatch')
     if (proof.get('mode') != 'main_app_only' or proof.get('startup_variant') != 'main-app-only'
             or proof.get('main_app_only_control_passed') is not True or proof.get('passed') is not True or proof.get('phase') != 'complete'
             or proof.get('source_codesign_verified') is not True or proof.get('main_code_unchanged') is not True
@@ -155,8 +182,22 @@ def package(ipa, verification, simulator_verification, startup_proof, startup_re
         if digest(ipa) != device['ipa_sha256']: raise ReplayError('source_package_changed')
         manifest = {'schema': 1, 'mode': 'unsigned-device', 'variant': 'main-app-only', 'bundle_id': BUNDLE,
                     'source_commit': source, 'source_run': run, 'source_artifact_id': device['artifact_id'],
+                    'source_device_run': device['source_run'], 'source_simulator_run': simulator['source_run'],
+                    'source_device_artifact_id': device['artifact_id'],
+                    'source_simulator_artifact_id': simulator['artifact_id'],
+                    'source_device_build_number': _build_number(device),
+                    'source_simulator_build_number': _build_number(simulator),
+                    'source_device_workflow': _origin_name(device, 'source_workflow', {WORKFLOW}),
+                    'source_simulator_workflow': _origin_name(simulator, 'source_workflow', {WORKFLOW, BASELINE_WORKFLOW}),
+                    'source_device_build_job': _origin_name(device, 'source_build_job', {'unsigned-device-build'}),
+                    'source_simulator_build_job': _origin_name(simulator, 'source_build_job', {'application-build', 'baseline'}),
+                    'source_device_compile_step': _origin_name(device, 'source_compile_step', {MODES['unsigned-device']['compile']}),
+                    'source_simulator_compile_step': _origin_name(simulator, 'source_compile_step', {MODES['simulator']['compile'], BASELINE_COMPILE_STEP}),
+                    'cross_run_startup_control': device['source_run'] != simulator['source_run'],
                     'source_ipa_sha256': device['ipa_sha256'], 'source_outer_sha256': device['outer_sha256'],
-                    'source_simulator_ipa_sha256': simulator['ipa_sha256'], 'startup_proof_sha256': digest(startup_proof),
+                    'source_device_ipa_sha256': device['ipa_sha256'], 'source_device_outer_sha256': device['outer_sha256'],
+                    'source_simulator_ipa_sha256': simulator['ipa_sha256'], 'source_simulator_outer_sha256': simulator['outer_sha256'],
+                    'startup_proof_sha256': digest(startup_proof),
                     'startup_result_sha256': digest(startup_result), 'sha256': digest(staging / filename),
                     'filename': filename, 'signing': 'disabled', 'installable_signed_ipa': False,
                     'signature_verified': False, 'runtime_verified': False, 'physical_device_verified': False,
