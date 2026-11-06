@@ -691,6 +691,100 @@ def wrapper_product(path):
     return path
 
 
+def create_build_host(control, control_test, base_products, derived):
+    """Move only an independent host copy into Xcode's required product root."""
+    name = modern.CONTROL_TEST + '.xctest'
+    if control.parent != base_products / 'Debug-iphonesimulator':
+        raise DeferredError('deferred_baseline_host_layout_invalid')
+    if control_test not in {control / 'PlugIns' / name, control.parent / name}:
+        raise DeferredError('deferred_baseline_test_layout_invalid')
+    products = derived / 'Build/Products'
+    clone = products / control.relative_to(base_products)
+    clone.parent.mkdir(mode=0o700, parents=True)
+    modern._copy_bundle(control, clone)
+    original = projection.snapshot_tree(control)
+    plugin = clone / 'PlugIns' / name
+    removed = False
+    if plugin.exists() or plugin.is_symlink():
+        if plugin.is_symlink() or not plugin.is_dir():
+            raise DeferredError('deferred_old_control_plugin_mismatch')
+        info = plistlib.loads(modern.private_bytes(plugin / 'Info.plist'))
+        if (not isinstance(info, dict) or info.get('CFBundleIdentifier') != modern.CONTROL_TEST_ID
+                or info.get('CFBundleExecutable') != modern.CONTROL_TEST
+                or projection.snapshot_tree(plugin) != projection.snapshot_tree(control_test)):
+            raise DeferredError('deferred_old_control_plugin_mismatch')
+        shutil.rmtree(plugin); removed = True
+    plugins = clone / 'PlugIns'
+    if plugins.exists() or plugins.is_symlink():
+        if plugins.is_symlink() or not plugins.is_dir() or list(plugins.iterdir()):
+            raise DeferredError('deferred_build_extra_plugin')
+    else: plugins.mkdir(mode=0o700)
+    return {'host': clone, 'source': control, 'source_snapshot': original,
+        'before': projection.snapshot_tree(clone), 'code': projection.main_code_digest(control),
+        'products': products, 'old_plugin_removed': removed,
+        'baseline_test_layout': 'hostedPlugIns' if control_test.parent == control / 'PlugIns' else 'sibling'}
+
+
+def wrapper_location(raw, context):
+    """Use actual Xcode settings, while accepting only the two fixed layouts."""
+    try: value, _ = _bounded_xcresult_json(raw)
+    except (ValueError, UnicodeError, RecursionError, OverflowError):
+        raise DeferredError('deferred_wrapper_settings_json_invalid') from None
+    if not isinstance(value, list) or len(value) != 1 or not isinstance(value[0], dict):
+        raise DeferredError('deferred_wrapper_settings_shape_invalid')
+    value = value[0]
+    if value.get('target') != modern.CONTROL_TEST or not isinstance(value.get('buildSettings'), dict):
+        raise DeferredError('deferred_wrapper_settings_target_invalid')
+    settings = value['buildSettings']; host = context['host']; executable = str(host / modern.CONTROL_APP)
+    if (settings.get('TEST_HOST') != executable or settings.get('BUNDLE_LOADER') != executable
+            or settings.get('FULL_PRODUCT_NAME') != modern.CONTROL_TEST + '.xctest'):
+        raise DeferredError('deferred_wrapper_settings_identity_invalid')
+    directory = settings.get('TARGET_BUILD_DIR')
+    if (type(directory) is not str or not directory or '\0' in directory or '\\' in directory
+            or '..' in Path(directory).parts or not Path(directory).is_absolute()
+            or str(Path(directory)) != directory):
+        raise DeferredError('deferred_wrapper_settings_path_invalid')
+    product = Path(directory) / settings['FULL_PRODUCT_NAME']
+    possible = {host / 'PlugIns' / (modern.CONTROL_TEST + '.xctest'), host.parent / (modern.CONTROL_TEST + '.xctest')}
+    if product not in possible or any(path.is_symlink() for path in (product, *product.parents)):
+        raise DeferredError('deferred_wrapper_settings_path_invalid')
+    if 'CODESIGNING_FOLDER_PATH' in settings and settings['CODESIGNING_FOLDER_PATH'] != str(product):
+        raise DeferredError('deferred_wrapper_settings_signing_path_invalid')
+    if any(path.exists() or path.is_symlink() for path in possible):
+        raise DeferredError('deferred_wrapper_product_not_fresh')
+    context['product'] = product
+    return product
+
+
+def verify_build_host(context, product=None, require_product=False):
+    host, before = context['host'], context['before']
+    if product is None: product = context.get('product')
+    after = projection.snapshot_tree(host)
+    name = modern.CONTROL_TEST + '.xctest'; prefix = 'PlugIns/' + name
+    def protected(tree):
+        return {key: value for key, value in tree.items() if key not in
+            {modern.CONTROL_APP, '_CodeSignature', '_CodeSignature/CodeResources'}
+            and key != prefix and not key.startswith(prefix + '/')}
+    if (protected(after) != protected(before) or after.get(modern.CONTROL_APP, ())[:2] != before[modern.CONTROL_APP][:2]
+            or any(after.get(key, ())[:2] != before[key][:2]
+                for key in ('_CodeSignature', '_CodeSignature/CodeResources') if key in before)
+            or projection.main_code_digest(host) != context['code']
+            or projection.snapshot_tree(context['source']) != context['source_snapshot']):
+        raise DeferredError('deferred_build_host_changed')
+    plugins = host / 'PlugIns'
+    if plugins.is_symlink() or not plugins.is_dir() or any(path.name != name for path in plugins.iterdir()):
+        raise DeferredError('deferred_build_extra_plugin')
+    present = [path for path in (host / 'PlugIns' / name, host.parent / name) if path.exists() or path.is_symlink()]
+    if any(path.is_symlink() or not path.is_dir() for path in present): raise DeferredError('deferred_build_wrapper_unsafe')
+    if require_product and (product is None or product not in present): raise DeferredError('deferred_built_wrapper_missing')
+    if product is not None and product in present:
+        if any(byte_tree(path) != byte_tree(product) for path in present): raise DeferredError('deferred_duplicate_wrapper_mismatch')
+    return {'state': 'verified', 'independent_host_copy_verified': True,
+        'old_control_plugin_removed': context['old_plugin_removed'], 'baseline_test_layout': context['baseline_test_layout'],
+        'nonplugin_files_and_modes_unchanged': True, 'normalized_host_code_unchanged': True,
+        'root_seal_bytes_may_change': True, 'original_control_unchanged': True, 'wrapper_product_copies': len(present)}
+
+
 def verify_wrapper_signing(derived, wrapper, raw, call):
     """Validate this role against its own actual Xcode intermediates root."""
     if not isinstance(raw, bytes) or not 0 < len(raw) <= projection.MAX_OUTPUT:
@@ -793,6 +887,7 @@ def run(output=OUTPUT, root=None, command=projection.native_command):
         re.search(r'TOKEN|SECRET|AUTH|PASSWORD|API_ID|API_HASH|SESSION|PRIVATE_KEY', key, re.I))
     compiler = []
     immutable = []
+    build_host = None
     used = set()
     def call(label, args, timeout=30, required=True, groups=False, observer=None, late=False):
         options = {}
@@ -934,19 +1029,32 @@ def run(output=OUTPUT, root=None, command=projection.native_command):
         report['phase'] = 'buildWrapperOnly'
         project = output / 'private-wrapper-project'; create_wrapper_project(project, wrapper_source)
         wrapper_derived = output / 'private-wrapper-derived'
-        host_executable = str(control / modern.CONTROL_APP)
+        build_host = create_build_host(control, control_test, plans[0].parent, wrapper_derived)
+        host_executable = str(build_host['host'] / modern.CONTROL_APP)
         # Compile this target only. build-for-testing resolves the scheme's
         # test host as a project target, but this diagnostic deliberately uses
         # the separately built, validated host without another app target.
-        status, wrapper_log = call('build_wrapper', ['xcodebuild', 'build', '-project', str(project / 'DeferredProjection.xcodeproj'),
+        wrapper_args = ['-project', str(project / 'DeferredProjection.xcodeproj'),
             '-target', modern.CONTROL_TEST, '-configuration', 'Debug', '-sdk', 'iphonesimulator',
             'SYMROOT=' + str(wrapper_derived / 'Build/Products'),
             'OBJROOT=' + str(wrapper_derived / 'Build/Intermediates.noindex'),
-            'TEST_HOST=' + host_executable, 'BUNDLE_LOADER=' + host_executable, *signing], 180, False)
+            'TEST_HOST=' + host_executable, 'BUNDLE_LOADER=' + host_executable, *signing]
+        with tempfile.TemporaryDirectory(prefix='ayu-deferred-build-settings-') as temporary:
+            private = Path(temporary).resolve(); private.chmod(0o700); path = private / 'settings.json'
+            status, settings_log = call('wrapper_build_settings', [sys.executable, '-c', JSON_WRAPPER, str(path),
+                'xcodebuild', '-showBuildSettings', '-json', *wrapper_args], 20, False)
+            compiler.append(settings_log)
+            if status['status'] != 'completed' or status['exit_code'] != 0:
+                raise DeferredError('deferred_wrapper_build_settings_failed')
+            wrapper_path = wrapper_location(modern.private_bytes(path, MAX_XCRESULT_JSON_BYTES), build_host)
+        report['wrapper_product_layout'] = 'hostedPlugIns' if wrapper_path.parent == build_host['host'] / 'PlugIns' else 'sibling'
+        status, wrapper_log = call('build_wrapper', ['xcodebuild', 'build', *wrapper_args], 180, False)
         compiler.append(wrapper_log)
+        report['wrapper_build_host'] = verify_build_host(build_host, wrapper_path,
+            require_product=status['status'] == 'completed' and status['exit_code'] == 0)
         if status['status'] != 'completed' or status['exit_code'] != 0: raise DeferredError('deferred_wrapper_compile_failed')
         report['wrapper_compiled'] = True
-        wrapper = wrapper_product(wrapper_derived / 'Build/Products/Debug-iphonesimulator' / (modern.CONTROL_TEST + '.xctest'))
+        wrapper = wrapper_product(wrapper_path)
         immutable.append((wrapper, projection.snapshot_tree(wrapper)))
         report['wrapper_signing'] = verify_wrapper_signing(wrapper_derived, wrapper, wrapper_log, call)
         if any(projection.snapshot_tree(path) != snapshot for path, snapshot in immutable): raise DeferredError('deferred_original_products_changed')
@@ -972,6 +1080,11 @@ def run(output=OUTPUT, root=None, command=projection.native_command):
         report['passed'] = False
         report['failure'] = str(error) if isinstance(error, DeferredError) else 'deferred_harness_unavailable'
     finally:
+        if build_host is not None:
+            try: report['wrapper_build_host'] = verify_build_host(build_host)
+            except Exception:
+                report['wrapper_build_host'] = {'state': 'unavailable', 'integrity_verified': False}
+                report['passed'] = False
         try: report['original_products_unchanged'] = projection.snapshot_tree(original) == original_snapshot
         except Exception: report['original_products_unchanged'] = False
         try: report['original_built_products_unchanged'] = all(projection.snapshot_tree(path) == snapshot for path, snapshot in immutable)

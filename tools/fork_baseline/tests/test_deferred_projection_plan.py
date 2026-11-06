@@ -200,7 +200,7 @@ def completed_summary():
 
 class DeferredRunnerTests(unittest.TestCase):
     def execute(self, root, mutation=None, control='passed', payload='passed', xc='complete', counter=None,
-                cleanup=False, identity=False, repeated=False):
+                cleanup=False, identity=False, repeated=False, baseline_layout='hostedPlugIns', wrapper_layout='sibling'):
         output = root / parser.OUTPUT; output.mkdir(parents=True)
         original = captured.captured(root, current=True)
         app = original / 'TEST_ROOT' / parser.modern.products.APP
@@ -218,9 +218,11 @@ class DeferredRunnerTests(unittest.TestCase):
         for relative in ('Developer/Library/Frameworks/XCTest.framework/XCTest', 'Developer/usr/lib/libXCTestSwiftSupport.dylib'):
             path = platform / relative; path.parent.mkdir(parents=True, exist_ok=True); path.write_bytes(b'first-party-SDK')
         calls, options, identifiers = [], [], []
+        selected_wrapper = None
         self.last_options = options
         def signed_line(path): return shlex.join(['/usr/bin/codesign', '--force', '--sign', '-', str(path)])
         def command(args, timeout=30, **extra):
+            nonlocal selected_wrapper
             calls.append((args, timeout)); options.append((args, extra))
             if args == ['xcodebuild', '-version']: return base.complete(b'Xcode 27.1\nBuild version 27A9275\n')
             if '--show-sdk-version' in args: return base.complete(b'27.1')
@@ -230,7 +232,9 @@ class DeferredRunnerTests(unittest.TestCase):
                     self.assertEqual(args[args.index('-scheme') + 1], parser.modern.CONTROL_APP)
                     derived = Path(args[args.index('-derivedDataPath') + 1]); products = derived / 'Build/Products'
                     if mutation == 'control_compile': return base.complete(b'private-compiler-failure-canary', 65)
-                    plan, host, test = base.apple_fixture(products, 1, False)
+                    plan, host, test = base.apple_fixture(products, 1, False, sibling=baseline_layout != 'hostedPlugIns')
+                    if baseline_layout == 'both':
+                        shutil.copytree(test, host / 'PlugIns' / test.name)
                     (products / 'control.xctestrun').write_bytes(plistlib.dumps(plan))
                     return base.complete((signed_line(host) + '\n' + signed_line(test) + '\n').encode())
                 self.assertEqual(args[args.index('-target') + 1], parser.modern.CONTROL_TEST)
@@ -239,15 +243,20 @@ class DeferredRunnerTests(unittest.TestCase):
                 derived = output / 'private-wrapper-derived'; products = derived / 'Build/Products'
                 self.assertIn('SYMROOT=' + str(products), args)
                 self.assertIn('OBJROOT=' + str(derived / 'Build/Intermediates.noindex'), args)
-                host_executable = output / 'private-derived/Build/Products/Debug-iphonesimulator' / (parser.modern.CONTROL_APP + '.app') / parser.modern.CONTROL_APP
+                host_executable = products / 'Debug-iphonesimulator' / (parser.modern.CONTROL_APP + '.app') / parser.modern.CONTROL_APP
                 self.assertTrue(host_executable.is_file())
                 self.assertIn('TEST_HOST=' + str(host_executable), args)
                 self.assertIn('BUNDLE_LOADER=' + str(host_executable), args)
+                if mutation in {'clone_failed_resource', 'clone_failed_code'}:
+                    path = host_executable.parent / 'Info.plist' if mutation == 'clone_failed_resource' else host_executable
+                    value = bytearray(path.read_bytes()); value[min(256, len(value) - 1)] ^= 1; path.write_bytes(value)
+                    return base.complete(b'private-compiler-failure-canary', 65)
                 if mutation == 'wrapper_compile': return base.complete(b'private-compiler-failure-canary', 65)
                 self.assertTrue(any(value.startswith('TEST_HOST=') for value in args))
                 project = Path(args[args.index('-project') + 1]).parent
                 self.assertNotIn('com.apple.product-type.application', (project / 'DeferredProjection.xcodeproj/project.pbxproj').read_text())
-                test = base.bundle(products / 'Debug-iphonesimulator' / (parser.modern.CONTROL_TEST + '.xctest'),
+                self.assertIsNotNone(selected_wrapper)
+                test = base.bundle(selected_wrapper,
                     parser.modern.CONTROL_TEST_ID, parser.modern.CONTROL_TEST, 8)
                 info = plistlib.loads((test / 'Info.plist').read_bytes()); info['CFBundleSupportedPlatforms'] = ['iPhoneSimulator']
                 if mutation == 'wrapper_identity': info['CFBundleIdentifier'] = 'foreign-private-canary'
@@ -306,8 +315,17 @@ class DeferredRunnerTests(unittest.TestCase):
                 if payload == 'timeout': return {'status': 'timedOut', 'exit_code': None, 'timeout': True, 'output_limit': False, 'captured_bytes': 0}, b''
                 return base.complete(native_log(payload), 0 if payload == 'passed' else 65)
             if parser.JSON_WRAPPER in args:
-                value = invocation() if '--id' not in args else summaries([case(parser.WRAPPER)] if xc == 'wrapperOnly' else None)
-                if xc == 'malformed': value = {'private-canary': 'raw'}
+                if '-showBuildSettings' in args:
+                    if mutation == 'settings_failure': return base.complete(b'private-settings-failure-canary', 65)
+                    host_executable = next(value.split('=', 1)[1] for value in args if value.startswith('TEST_HOST='))
+                    host = Path(host_executable).parent
+                    selected_wrapper = (host / 'PlugIns' if wrapper_layout == 'hostedPlugIns' else host.parent) / (parser.modern.CONTROL_TEST + '.xctest')
+                    value = [{'target': parser.modern.CONTROL_TEST, 'buildSettings': {'TEST_HOST': host_executable,
+                        'BUNDLE_LOADER': host_executable, 'FULL_PRODUCT_NAME': parser.modern.CONTROL_TEST + '.xctest',
+                        'TARGET_BUILD_DIR': str(selected_wrapper.parent), 'CODESIGNING_FOLDER_PATH': str(selected_wrapper)}}]
+                else:
+                    value = invocation() if '--id' not in args else summaries([case(parser.WRAPPER)] if xc == 'wrapperOnly' else None)
+                    if xc == 'malformed': value = {'private-canary': 'raw'}
                 Path(args[3]).write_text(json.dumps(value)); Path(args[3]).chmod(0o600)
                 return base.complete()
             return base.complete()
@@ -344,6 +362,22 @@ class DeferredRunnerTests(unittest.TestCase):
             seals = [i for i, (args, _) in enumerate(calls) if '--verify' in args]
             self.assertTrue(seals); self.assertTrue(all(i < first_device for i in seals))
 
+    def test_actual_settings_and_build_use_identical_clone_args_for_both_product_layouts(self):
+        for baseline in ('hostedPlugIns', 'sibling', 'both'):
+            for layout in ('hostedPlugIns', 'sibling'):
+                with self.subTest(baseline=baseline, layout=layout), tempfile.TemporaryDirectory() as temporary:
+                    report, calls = self.execute(Path(temporary).resolve(), baseline_layout=baseline, wrapper_layout=layout)
+                    self.assertTrue(report['passed'], report.get('failure'))
+                    self.assertEqual(report['wrapper_product_layout'], layout)
+                    self.assertTrue(report['wrapper_build_host']['independent_host_copy_verified'])
+                    self.assertEqual(report['wrapper_build_host']['old_control_plugin_removed'], baseline != 'sibling')
+                    self.assertTrue(report['original_built_products_unchanged'])
+                    query = next(args for args, _ in calls if '-showBuildSettings' in args)
+                    build = next(args for args, _ in calls if args[:2] == ['xcodebuild', 'build'])
+                    self.assertEqual(query[query.index('-json') + 1:], build[2:])
+                    self.assertEqual(query[1:3], ['-c', parser.JSON_WRAPPER])
+                    self.assertTrue(Path(next(value.split('=', 1)[1] for value in build if value.startswith('TEST_HOST='))).is_file())
+
     def test_control_outcome_failure_does_not_suppress_independent_payload_after_safe_cleanup(self):
         for control in ('failed', 'timeout'):
             with self.subTest(control=control), tempfile.TemporaryDirectory() as temporary:
@@ -377,7 +411,7 @@ class DeferredRunnerTests(unittest.TestCase):
             self.assertEqual(len(report['projection']['missing']), 41); self.assertTrue(report['projection']['cleanup_completed'])
 
     def test_compile_identity_platform_rights_payload_host_or_installed_mutations_never_qualify(self):
-        for mutation in ('control_compile', 'wrapper_compile', 'wrapper_identity', 'wrapper_platform', 'control_mutated',
+        for mutation in ('control_compile', 'settings_failure', 'wrapper_compile', 'wrapper_identity', 'wrapper_platform', 'control_mutated',
                          'payload_bytes', 'resource_bytes', 'host_code', 'rights', 'installed_bytes'):
             with self.subTest(mutation=mutation), tempfile.TemporaryDirectory() as temporary:
                 report, calls = self.execute(Path(temporary).resolve(), mutation=mutation)
@@ -521,11 +555,25 @@ class DeferredRunnerTests(unittest.TestCase):
             self.assertEqual(value['deferred_progress']['phase'], 'completed'); self.assertEqual(value['sample']['state'], 'notAttempted')
 
     def test_compiler_failure_retains_redacted_log_before_any_device_is_created(self):
-        with tempfile.TemporaryDirectory() as temporary, patch.dict(os.environ, {'AYU_TEST_SECRET': 'private-compiler-failure-canary'}):
-            root = Path(temporary).resolve(); report, calls = self.execute(root, mutation='wrapper_compile')
-            self.assertFalse(report['passed']); self.assertFalse(any(args[:3] == ['xcrun', 'simctl', 'create'] for args, _ in calls))
-            log = (root / parser.OUTPUT / 'control-build.log').read_text()
-            self.assertNotIn('private-compiler-failure-canary', log); self.assertIn('REDACTED', log)
+        for mutation, canary in (('wrapper_compile', 'private-compiler-failure-canary'),
+                                 ('settings_failure', 'private-settings-failure-canary')):
+            with self.subTest(mutation=mutation), tempfile.TemporaryDirectory() as temporary, patch.dict(os.environ, {'AYU_TEST_SECRET': canary}):
+                root = Path(temporary).resolve(); report, calls = self.execute(root, mutation=mutation)
+                self.assertFalse(report['passed']); self.assertFalse(any(args[:3] == ['xcrun', 'simctl', 'create'] for args, _ in calls))
+                log = (root / parser.OUTPUT / 'control-build.log').read_text()
+                self.assertNotIn(canary, log); self.assertIn('REDACTED', log)
+                if mutation == 'settings_failure':
+                    self.assertEqual(report['failure'], 'deferred_wrapper_build_settings_failed')
+                    self.assertFalse(any(args[:2] == ['xcodebuild', 'build'] for args, _ in calls))
+
+    def test_failed_build_still_checks_clone_integrity_and_preserves_original_baseline(self):
+        for mutation in ('clone_failed_resource', 'clone_failed_code'):
+            with self.subTest(mutation=mutation), tempfile.TemporaryDirectory() as temporary:
+                report, calls = self.execute(Path(temporary).resolve(), mutation=mutation)
+                self.assertFalse(report['passed']); self.assertEqual(report['failure'], 'deferred_build_host_changed')
+                self.assertFalse(report['wrapper_build_host']['integrity_verified'])
+                self.assertTrue(report['original_built_products_unchanged']); self.assertTrue(report['original_products_unchanged'])
+                self.assertFalse(any(args[:3] == ['xcrun', 'simctl', 'create'] for args, _ in calls))
 
     def test_explicit_wrapper_entitlements_use_the_actual_wrapper_root_and_exact_typed_readback(self):
         with tempfile.TemporaryDirectory() as temporary:
@@ -631,6 +679,143 @@ class DeferredRunnerTests(unittest.TestCase):
             self.assertEqual(json.loads((old_output / 'result.json').read_text())['failure'], 'application_source_changed')
             for descriptor in opened:
                 with self.assertRaises(OSError): os.fstat(descriptor)
+
+
+class DeferredBuildLayoutTests(unittest.TestCase):
+    def context(self, root, sibling=False, both=False):
+        products = root / 'baseline/Build/Products'
+        _plan, host, test = base.apple_fixture(products, sibling=sibling)
+        (host / 'preserved-resource').write_bytes(b'private-resource-canary')
+        (host / '_CodeSignature').mkdir()
+        (host / '_CodeSignature/CodeResources').write_bytes(b'original-seal')
+        if both: shutil.copytree(test, host / 'PlugIns' / test.name)
+        original = parser.projection.snapshot_tree(host)
+        context = parser.create_build_host(host, test, products, root / 'wrapper')
+        self.assertEqual(parser.projection.snapshot_tree(host), original)
+        return context
+
+    def settings(self, context, hosted=False):
+        host = context['host']; executable = str(host / parser.modern.CONTROL_APP)
+        product = (host / 'PlugIns' if hosted else host.parent) / (parser.modern.CONTROL_TEST + '.xctest')
+        return [{'target': parser.modern.CONTROL_TEST, 'buildSettings': {'TEST_HOST': executable,
+            'BUNDLE_LOADER': executable, 'FULL_PRODUCT_NAME': product.name,
+            'TARGET_BUILD_DIR': str(product.parent), 'CODESIGNING_FOLDER_PATH': str(product)}}]
+
+    def product(self, path):
+        return base.bundle(path, parser.modern.CONTROL_TEST_ID, parser.modern.CONTROL_TEST, 8)
+
+    def test_clone_removes_only_matching_old_plugin_and_preserves_original_bytes_modes_and_inodes(self):
+        for sibling, both in ((False, False), (True, False), (True, True)):
+            with self.subTest(sibling=sibling, both=both), tempfile.TemporaryDirectory() as temporary:
+                context = self.context(Path(temporary).resolve(), sibling, both)
+                self.assertEqual(context['old_plugin_removed'], not sibling or both)
+                self.assertEqual(list((context['host'] / 'PlugIns').iterdir()), [])
+                self.assertEqual(parser.projection.snapshot_tree(context['source']), context['source_snapshot'])
+                for relative, value in context['before'].items():
+                    if value[0] == 'file':
+                        self.assertNotEqual((context['host'] / relative).stat().st_ino, (context['source'] / relative).stat().st_ino)
+                self.assertTrue(parser.verify_build_host(context)['original_control_unchanged'])
+
+    def test_foreign_or_changed_old_plugin_and_extra_plugins_are_never_deleted_or_exempted(self):
+        for mutation in ('bytes', 'identity', 'extraPlugin'):
+            with self.subTest(mutation=mutation), tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary).resolve(); products = root / 'baseline'
+                _plan, host, test = base.apple_fixture(products, sibling=True)
+                plugin = host / 'PlugIns' / test.name; shutil.copytree(test, plugin)
+                if mutation == 'bytes': (plugin / parser.modern.CONTROL_TEST).write_bytes(b'foreign-code')
+                elif mutation == 'identity':
+                    info = plistlib.loads((plugin / 'Info.plist').read_bytes()); info['CFBundleIdentifier'] = 'foreign'
+                    (plugin / 'Info.plist').write_bytes(plistlib.dumps(info))
+                else: (host / 'PlugIns' / 'Foreign.xctest').mkdir()
+                original = parser.projection.snapshot_tree(host)
+                with self.assertRaises(parser.DeferredError): parser.create_build_host(host, test, products, root / 'wrapper')
+                self.assertEqual(parser.projection.snapshot_tree(host), original)
+                self.assertTrue(plugin.is_dir())
+
+    def test_settings_are_actual_target_authority_for_only_hosted_or_sibling_product(self):
+        for hosted in (False, True):
+            with self.subTest(hosted=hosted), tempfile.TemporaryDirectory() as temporary:
+                context = self.context(Path(temporary).resolve()); value = self.settings(context, hosted)
+                product = parser.wrapper_location(encoded(value), context)
+                self.assertEqual(product, Path(value[0]['buildSettings']['CODESIGNING_FOLDER_PATH']))
+                self.product(product)
+                self.assertEqual(parser.verify_build_host(context, require_product=True)['wrapper_product_copies'], 1)
+
+    def test_settings_wrong_target_host_loader_product_path_or_signing_authority_fail_closed(self):
+        for mutation in ('noTarget', 'duplicateTarget', 'wrongTarget', 'noSettings', 'host', 'loader', 'name',
+                         'escape', 'relative', 'dot', 'privateCanary', 'signingPath'):
+            with self.subTest(mutation=mutation), tempfile.TemporaryDirectory() as temporary:
+                context = self.context(Path(temporary).resolve()); value = self.settings(context); settings = value[0]['buildSettings']
+                if mutation == 'noTarget': value = []
+                elif mutation == 'duplicateTarget': value *= 2
+                elif mutation == 'wrongTarget': value[0]['target'] = 'WrongTarget'
+                elif mutation == 'noSettings': value[0]['buildSettings'] = []
+                elif mutation == 'host': settings['TEST_HOST'] = '/private/private-canary'
+                elif mutation == 'loader': settings['BUNDLE_LOADER'] = '$(TEST_HOST)'
+                elif mutation == 'name': settings['FULL_PRODUCT_NAME'] = 'Other.xctest'
+                elif mutation == 'escape': settings['TARGET_BUILD_DIR'] += '/../Debug-iphonesimulator'
+                elif mutation == 'relative': settings['TARGET_BUILD_DIR'] = 'Debug-iphonesimulator'
+                elif mutation == 'dot': settings['TARGET_BUILD_DIR'] += '/.'
+                elif mutation == 'privateCanary': settings['TARGET_BUILD_DIR'] = '/private/private-canary'
+                else: settings['CODESIGNING_FOLDER_PATH'] = '/private/private-canary'
+                with self.assertRaises(parser.DeferredError) as caught: parser.wrapper_location(encoded(value), context)
+                self.assertNotIn('private-canary', str(caught.exception))
+                self.assertNotIn('product', context)
+
+    def test_settings_private_json_is_bounded_duplicate_free_and_never_publishes_parse_source(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            context = self.context(Path(temporary).resolve())
+            for raw in (b'{"private-canary":', b'[{"a":1,"a":2}]', b'[{"a":NaN}]',
+                        b' ' * (parser.MAX_XCRESULT_JSON_BYTES + 1), encoded([{'x': [0] * 4100}])):
+                with self.subTest(size=len(raw)), self.assertRaisesRegex(parser.DeferredError, '^deferred_wrapper_settings_json_invalid$'):
+                    parser.wrapper_location(raw, context)
+
+    def test_stale_product_in_either_layout_and_symlink_paths_reject_before_build(self):
+        for kind in ('hosted', 'sibling', 'symlink'):
+            with self.subTest(kind=kind), tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary).resolve(); context = self.context(root); host = context['host']
+                path = (host / 'PlugIns' if kind == 'hosted' else host.parent) / (parser.modern.CONTROL_TEST + '.xctest')
+                if kind == 'symlink': path.symlink_to(root / 'private-canary')
+                else: self.product(path)
+                with self.assertRaises(parser.DeferredError): parser.wrapper_location(encoded(self.settings(context)), context)
+
+    def test_clone_resource_keyset_modes_and_normalized_code_are_checked_even_without_product(self):
+        for mutation in ('resource', 'extraFile', 'removedFile', 'mode', 'code', 'exeMode', 'extraPlugin', 'original',
+                         'sealRemoved', 'sealMode', 'sealDirectoryMode'):
+            with self.subTest(mutation=mutation), tempfile.TemporaryDirectory() as temporary:
+                context = self.context(Path(temporary).resolve()); host = context['host']
+                if mutation == 'resource': (host / 'preserved-resource').write_bytes(b'changed')
+                elif mutation == 'extraFile': (host / 'unapproved').write_bytes(b'changed')
+                elif mutation == 'removedFile': (host / 'preserved-resource').unlink()
+                elif mutation == 'mode': (host / 'preserved-resource').chmod(0o700)
+                elif mutation == 'code':
+                    executable = host / parser.modern.CONTROL_APP; value = bytearray(executable.read_bytes()); value[256] ^= 1
+                    executable.write_bytes(value)
+                elif mutation == 'exeMode': (host / parser.modern.CONTROL_APP).chmod(0o600)
+                elif mutation == 'extraPlugin': (host / 'PlugIns' / 'Foreign.xctest').mkdir()
+                elif mutation == 'sealRemoved': (host / '_CodeSignature/CodeResources').unlink()
+                elif mutation == 'sealMode': (host / '_CodeSignature/CodeResources').chmod(0o700)
+                elif mutation == 'sealDirectoryMode':
+                    directory = host / '_CodeSignature'; directory.chmod((directory.stat().st_mode & 0o777) ^ 0o040)
+                else: (context['source'] / 'preserved-resource').write_bytes(b'changed')
+                with self.assertRaises(parser.DeferredError): parser.verify_build_host(context)
+
+    def test_only_original_root_seal_bytes_may_change_in_build_clone(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            context = self.context(Path(temporary).resolve())
+            (context['host'] / '_CodeSignature/CodeResources').write_bytes(b'updated-seal')
+            self.assertTrue(parser.verify_build_host(context)['root_seal_bytes_may_change'])
+            self.assertEqual((context['source'] / '_CodeSignature/CodeResources').read_bytes(), b'original-seal')
+
+    def test_final_verification_remains_bound_to_selected_product_and_rejects_divergent_second_copy(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            context = self.context(Path(temporary).resolve()); selected = parser.wrapper_location(encoded(self.settings(context)), context)
+            self.product(selected); duplicate = context['host'] / 'PlugIns' / selected.name
+            shutil.copytree(selected, duplicate)
+            self.assertEqual(parser.verify_build_host(context, require_product=True)['wrapper_product_copies'], 2)
+            (duplicate / parser.modern.CONTROL_TEST).write_bytes(b'changed')
+            with self.assertRaisesRegex(parser.DeferredError, '^deferred_duplicate_wrapper_mismatch$'):
+                parser.verify_build_host(context)
 
 
 if __name__ == '__main__': unittest.main()

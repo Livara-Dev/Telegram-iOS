@@ -52,6 +52,23 @@ write failures, confirmed absence with existing databases, 32-byte key migration
 and metadata recovery. These risks remain open. No production recovery behavior
 was changed to obtain the startup pass or IPA.
 
+## Current media handoff limitation, 2026-11-06
+
+At retained source `c55e19c4`, the account coordinator passes a completed-cache
+URL to `ArchiveStore.recordMediaFile`, which opens it later on its storage
+worker. Cache removal in that interval can lose the only attachment copy; an
+equal-size replacement at the same path can change the bytes the worker opens.
+`MediaBox.keepResource` does not prevent an explicit `force: true` cache clear.
+The existing native cache-clear/reopen cases clear only after media commit and
+do not close this earlier gap. No new race regression or production fix is
+claimed by this source audit.
+
+Pinning an owned descriptor before the queue boundary would protect a living
+process against a later unlink, but not termination before the SQLCipher media
+commit. That stronger guarantee needs durable encrypted capture. Already committed
+copies are independent of Telegram's media cache; do not extend that tested
+boundary into a promise of lossless or permanent preservation.
+
 ## Artifact upload review, 2026-11-06
 
 A separate source review found ninety modified upstream text files lacking

@@ -184,6 +184,16 @@ fixed private product/intermediates paths and the same validated external
 app-hosted execution plan, captured payload or Swift source. Actual macOS
 compilation and the 41 feature outcomes remain required.
 
+Run `42263827970` at `a9bede96` also passed preparation and all 198 preflight
+cases. Its ordinary wrapper build reached a more specific Xcode constraint:
+the host's PlugIns directory was outside the wrapper's target build directory.
+The wrapper still did not compile, and no simulator or native case started.
+The layout repair uses a private copy of the validated baseline host in the
+wrapper product root and Apple's bounded private build-settings output to
+identify the actual test product. Original baseline and captured products remain
+immutable; final execution still stages from the untouched baseline host.
+This repair requires actual macOS validation before claiming the 41 outcomes.
+
 The retained c55 diagnostic continues on `diagnostics/c55-projection-deferred`.
 Concurrent source-publication/build workflow additions on `integration/ayu-current`
 are preserved on that branch. The isolated diagnostic avoids changing their

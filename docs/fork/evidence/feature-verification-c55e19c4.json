@@ -927,20 +927,20 @@
   ],
   "latest_deferred_native_build": {
     "application_recompiled": false,
-    "artifact": 13525039212,
-    "build_action_repair": "explicit_wrapper_target_build_with_same_external_test_host_and_bundle_loader",
+    "artifact": 13527045171,
+    "build_action_repair": "reviewing_private_validated_host_clone_in_wrapper_product_directory",
     "build_action_repair_macos_verified": false,
     "control": {
       "attempted": false,
       "expected": 1
     },
-    "driver_commit": "b3fe7c2fd7f1cf864348bae7213fb9519c0e78e6",
+    "driver_commit": "a9bede960737b99e7779d0c0de5e0304dd58f1c7",
     "failure": "deferred_wrapper_compile_failed",
     "inner_references_verified": 3,
-    "job": 128046890669,
+    "job": 128050398596,
     "original_built_products_unchanged": true,
     "original_products_unchanged": true,
-    "outer_sha256": "8d66e9e032af561739e9425bab2c0f6d4456c69fce1e4d6fe77217a14f503cef",
+    "outer_sha256": "bffe6b847a99fac170c8ecc2e905a00def3fa9c55e50adc7ce382ce1d9eaf85e",
     "phase": "buildWrapperOnly",
     "physical_device_verified": false,
     "portable_preflight_cases_passed": 198,
@@ -951,13 +951,13 @@
     },
     "projection_tests_recompiled": false,
     "release_qualified": false,
-    "run": 42262815237,
+    "run": 42263827970,
     "simulator_created": false,
     "swift_compilation_started": false,
     "tiny_control_compiled": true,
     "tiny_control_signing_verified": true,
     "wrapper_compiled": false,
-    "xcode_failure": "external_test_host_not_resolved_by_build_for_testing"
+    "xcode_failure": "test_host_plugins_not_descendant_of_target_build_directory"
   },
   "latest_deferred_profile_preparation": {
     "actual_checkout_guard_after_fix": "passed",
@@ -1103,6 +1103,16 @@
     "xctest_destination_timeout_seconds": 600,
     "xctest_timed_out": true,
     "xctest_timeout_seconds": 600
+  },
+  "media_handoff_source_audit": {
+    "application_source_commit": "c55e19c4f5cbe0d730499035d0a0ef712f6903a9",
+    "cache_url_opened_later_on_worker": true,
+    "committed_media_independent_of_telegram_cache": true,
+    "existing_cache_clear_tests_begin_after_media_commit": true,
+    "lossless_preservation_verified": false,
+    "native_race_regression_executed": false,
+    "owned_descriptor_alone_survives_termination_before_commit": false,
+    "preopen_cache_purge_or_path_replacement_gap_resolved": false
   },
   "media_scope": {
     "capture": "Real local encrypted capture/durability fixtures include completed photos and synthetic typed video, round-video, voice, GIF and document bytes, including a 20 MiB streamed document.",
@@ -1383,6 +1393,42 @@
     "source": "Actual XCTest started/terminal markers in published test.log files, including markers preceded by concurrent console output; Bazel test.xml wrapper counts are not native method counts.",
     "unique_started_equal_unique_passed": true
   },
+  "past_deferred_native_builds": [
+    {
+      "application_recompiled": false,
+      "artifact": 13525039212,
+      "build_action_repair": "explicit_wrapper_target_build_with_same_external_test_host_and_bundle_loader",
+      "build_action_repair_macos_verified": false,
+      "control": {
+        "attempted": false,
+        "expected": 1
+      },
+      "driver_commit": "b3fe7c2fd7f1cf864348bae7213fb9519c0e78e6",
+      "failure": "deferred_wrapper_compile_failed",
+      "inner_references_verified": 3,
+      "job": 128046890669,
+      "original_built_products_unchanged": true,
+      "original_products_unchanged": true,
+      "outer_sha256": "8d66e9e032af561739e9425bab2c0f6d4456c69fce1e4d6fe77217a14f503cef",
+      "phase": "buildWrapperOnly",
+      "physical_device_verified": false,
+      "portable_preflight_cases_passed": 198,
+      "prepare_passed": true,
+      "projection": {
+        "attempted": false,
+        "expected": 41
+      },
+      "projection_tests_recompiled": false,
+      "release_qualified": false,
+      "run": 42262815237,
+      "simulator_created": false,
+      "swift_compilation_started": false,
+      "tiny_control_compiled": true,
+      "tiny_control_signing_verified": true,
+      "wrapper_compiled": false,
+      "xcode_failure": "external_test_host_not_resolved_by_build_for_testing"
+    }
+  ],
   "pending_diagnostic_repair_verification": {
     "deferred_projection_payload_profile": {
       "application_source_unchanged": true,
