@@ -1,47 +1,47 @@
 # Windows build download and iPhone installation
 
-The current compiled **unsigned ARM64 device candidate** is build **82**, source
-`c55e19c4f5cbe0d730499035d0a0ef712f6903a9`, from
-[run 42160468600](https://github.com/Livara-Dev/Telegram-iOS/actions/runs/42160468600).
-Download [artifact 13479087810](https://github.com/Livara-Dev/Telegram-iOS/actions/runs/42160468600/artifacts/13479087810)
-and extract `fork-baseline-unsigned-device/Telegram.ipa`. Its IPA SHA-256 is:
+The current SideStore candidate is the **main-app-only unsigned ARM64 device IPA**
+from [run 42204637743](https://github.com/Livara-Dev/Telegram-iOS/actions/runs/42204637743),
+[artifact 13495848146](https://github.com/Livara-Dev/Telegram-iOS/actions/runs/42204637743/artifacts/13495848146).
+Extract `AyuGram-c55e19c4-main-app-only-unsigned-device.ipa`. Its IPA SHA-256 is:
 
-`addaaf68000d010b84cea0d9798b9a234f43bfabc62845cdbf18fc5f14c4605e`
+`2cb541e76eb632b5b66c24a5e1937b6042cc230551c418948d75291f69e45cc8`
 
-All twelve unsigned ARM64 iPhoneOS images, five frameworks and 113 bundled
-load-command dependencies were checked. The matching source compiled as a full
-simulator app in [42174474046](https://github.com/Livara-Dev/Telegram-iOS/actions/runs/42174474046),
-build **1**; that separate run repeated all 270 TextFormat cases successfully.
-The original qualification passed **1,473 actual native cases** across seven
-suites, including all sixteen Passcode and eighteen encrypted-playback cases.
-Projection started zero of its 41 cases, so full qualification remains failed.
-The repeated TextFormat suite is not additional unique coverage.
+It retains application source `c55e19c4f5cbe0d730499035d0a0ef712f6903a9`, device
+build **82** and bundle `org.livara.ayugram`. Exactly six extensions were removed;
+all 880 retained ZIP entries match the original device package's bytes and
+metadata. All six remaining images are unsigned ARM64 iPhoneOS; five frameworks
+and all nineteen bundled dependency edges were verified. The artifact includes
+checksums and the three exact-source/GPLv2 materials. It needs valid signing.
 
-[Current startup replay 42191212317](https://github.com/Livara-Dev/Telegram-iOS/actions/runs/42191212317)
-passed source/signature/resource checks but timed out in `simctl install` after
-120 seconds, before any application launch. No current-source startup pass,
-main-app-only device package or physical-device repair is established by that
-run. This original full candidate includes six extensions and still requires
-valid signing before installation. Artifact ZIP and IPA checksums differ.
+The matching retained main-app-only simulator application reached the actual
+AyuGram authorization screen twice on a fresh **iPhone 15 Pro / iOS 27.0** device.
+Both screenshots and the complete 390-frame variable-rate recording were
+visually reviewed. The app created its private account-store directory and kept
+the same identity after restart. Private storage was explicitly selected before
+launch; this does **not** prove automatic fallback, Telegram login, authenticated
+Settings navigation, SideStore signing, iOS 27.2 behavior or a physical-device
+black-screen repair. No Telegram login codes or existing account session material
+were used during replay. The app retains its registered API configuration.
 
-[Controlled comparison 42194046857](https://github.com/Livara-Dev/Telegram-iOS/actions/runs/42194046857)
-then attempted the older `62546557`/build54 package that had previously launched.
-It also exceeded the 120-second installation limit before any app launch; its
-owned-simulator shutdown and deletion each exceeded 30 seconds. The safety check
-rejected that control and skipped the current arm. Neither app launched in this
-comparison, and no new extension-free device variant was published. Both outer
-artifact hashes and all six historical plus two current checksum references
-were verified. Hosted installation/cleanup therefore remains a verification
-blocker. The underlying cause and the physical black-screen repair are unresolved;
-this is not proof of a global deadlock or a current application defect.
+The device and simulator retain separate origins: device82 from `42160468600`,
+simulator1 from `42174474046`, at the same source. Native verification has 1,473
+passing cases across seven suites; Projection still started zero of 41 cases in
+`42204637743`. The original full qualification remains failed. The
+[feature evidence](fork/evidence/feature-verification-c55e19c4.json) records the
+fixture coverage and remaining gates; a current service diagnostic is not a
+claim of successful Projection execution or a fully qualified release.
 
-[Machine-readable build and test evidence](fork/evidence/qualification-c55e19c4.json)
-records the exact sources, artifact checksums and remaining gates.
+Sign the candidate using the same app/team identity as the existing installation;
+**do not uninstall the app to update it**. An unsigned package is not installable
+until a valid signer succeeds. The original full build82 remains available in
+[artifact 13479087810](https://github.com/Livara-Dev/Telegram-iOS/actions/runs/42160468600/artifacts/13479087810)
+with IPA SHA-256 `addaaf68000d010b84cea0d9798b9a234f43bfabc62845cdbf18fc5f14c4605e`.
 
-Verify the current full candidate with Windows PowerShell:
+Verify the current IPA in Windows PowerShell:
 
 ```powershell
-Get-FileHash .\Telegram.ipa -Algorithm SHA256
+Get-FileHash .\AyuGram-c55e19c4-main-app-only-unsigned-device.ipa -Algorithm SHA256
 ```
 
 ## Historical build 54
@@ -86,7 +86,7 @@ removed. The new startup repair has not been physically verified on the owner's
 iPhone. The older `9a040579` installation was reported to remain black at launch;
 it is not the current recommended candidate. See [SideStore startup evidence and
 update precautions](SIDESTORE_INSTALL.md) for that historical main-app-only control
-and any separately published extension-free package. This is not a qualified
+and the current extension-free package listed above. This is not a qualified
 release or a claim of feature parity.
 
 ## Current build and signing workflow

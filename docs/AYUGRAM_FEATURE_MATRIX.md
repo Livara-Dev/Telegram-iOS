@@ -226,8 +226,9 @@ binary. No proprietary exteraGram components are copied.
   This repeats a suite already counted in the 1,473 native passes; it does not
   execute Projection's 41 cases or supply full native qualification. Any later
   startup/device pairing must retain this simulator origin and the distinct
-  device-build-82 origin at the same source. Current c55 authorization startup
-  and physical-device behavior remain unverified.
+  device-build-82 origin at the same source. This build alone did not verify
+  authorization startup; the later replay below supplies that bounded simulator
+  evidence. Physical-device behavior remains unverified.
 - The live synthetic-host diagnostic
   [42181777928](https://github.com/Livara-Dev/Telegram-iOS/actions/runs/42181777928)
   verified the owned Xcode PID during its bounded observation. The 3-second app
@@ -253,8 +254,44 @@ binary. No proprietary exteraGram components are copied.
   at 30 seconds. The safety gate correctly skipped the current arm. Both artifact
   digests and six historical plus two current checksum references were verified.
   No app launched, no recording exists and no new extension-free device variant
-  was published. Hosted installation/cleanup blocks verification; no application
-  cause, global deadlock, physical repair or successful current startup is proven.
+  was published. That comparison was blocked by hosted installation/cleanup;
+  it did not prove an application cause, global deadlock, physical repair or
+  successful current startup.
+- Current-source [iPhone 15 Pro startup replay 42204637743](https://github.com/Livara-Dev/Telegram-iOS/actions/runs/42204637743)
+  passed both launches on the iOS 27.0 simulator without recompiling application
+  code. The main-app-only control explicitly seeded fresh **private storage**;
+  `authorizationVisible` was reached after **5.97 and 4.99 seconds**, with the
+  same private account-store directory retained after restart. Both 1179×2556
+  screenshots and all 390 original variable-timestamp video frames were reviewed:
+  the AyuGram welcome screen, Settings → Custome options guidance and complete
+  Start Messaging control are visible on both launches. White launch intervals,
+  SpringBoard transitions and Dynamic Island changes are documented; no persistent
+  black app screen or diagnostic overlay appears. Startup
+  [artifact 13495439062](https://github.com/Livara-Dev/Telegram-iOS/actions/runs/42204637743/artifacts/13495439062)
+  has nine verified checksum references. This verifies the explicitly pinned
+  private-storage simulator control, not automatic App Group fallback, Telegram
+  login, SideStore signing, Apple HTTP 403 resolution or physical-iPhone behavior.
+- The same replay published the current-source
+  [main-app-only unsigned device artifact 13495848146](https://github.com/Livara-Dev/Telegram-iOS/actions/runs/42204637743/artifacts/13495848146),
+  IPA SHA-256
+  `2cb541e76eb632b5b66c24a5e1937b6042cc230551c418948d75291f69e45cc8`.
+  It derives from device build 82 / run 42160468600, paired with simulator build
+  1 / run 42174474046 at the identical `c55e19c4` application source. Six
+  extensions were removed; all **880 retained entries match both bytes and ZIP
+  metadata**. The six unsigned ARM64 iPhoneOS images comprise one executable and
+  five frameworks; all nineteen bundled dependency edges resolve. Five checksum
+  references and all three exact source/license materials were verified. This is
+  a new unsigned package of existing application code, not a new device compile,
+  signed installable IPA or physical-device startup proof. The full build-82
+  package remains available separately.
+- The paired [iPhone 15 Pro Projection replay 42204637743](https://github.com/Livara-Dev/Telegram-iOS/actions/runs/42204637743)
+  retained the exact c55 test products and strictly resealed a private host copy,
+  but XCTest timed out at the unchanged **300-second** limit with **zero starts
+  and zero outcomes among all 41 expected cases**. There were no assertion
+  retries; installed-host attestation was unavailable, and cleanup completed.
+  [Artifact 13496167308](https://github.com/Livara-Dev/Telegram-iOS/actions/runs/42204637743/artifacts/13496167308)
+  has four verified checksum references. This replay does not establish a fixed
+  test host, passing presentation assertions or a signing/root-cause diagnosis.
   The [bounded evidence record](fork/evidence/qualification-c55e19c4.json) includes
   the completed full unsigned device candidate and all remaining qualification gates.
 
@@ -262,40 +299,49 @@ binary. No proprietary exteraGram components are copied.
 
 ### Current candidate overlay
 
-The baseline rows below remain historical evidence. The following changes were
-published in `b24d868867d7217b540f95bcbcd5b3b1cda17cd9`; the subsequent bulk-removal
-follow-up extends that candidate. None is certified by the older 62546557 IPA.
+The overlay below records the compiled `c55e19c4` candidate. Its original native
+qualification executed **1,473 passing cases across seven suites**, while all
+**41 Projection cases remained unexecuted**. The separate simulator build and
+unsigned device build 82 establish compilation. The later two-launch iPhone 15
+Pro simulator replay verifies the welcome screen using explicitly seeded private
+storage; authenticated application behavior remains unverified. The
+[feature evidence record](fork/evidence/feature-verification-c55e19c4.json)
+maps features to exact passing test classes, counts, representative methods and
+published-log hashes. Feature groups overlap; their counts must not be added to
+the suite total. Historical checkpoints and the older 62546557 IPA do not verify
+later features. New diagnostic results retain their own origins in the
+checkpoints above.
 
 | Candidate change | Current evidence | Remaining qualification or boundary |
 | --- | --- | --- |
-| Prominent **Custome options**, eleven searchable categories, quick toggles | Complete renderer workflow passed in [42147021107](https://github.com/Livara-Dev/Telegram-iOS/actions/runs/42147021107): 8 controller tests, 1 complete XCUI scenario, twelve recorded stages, eleven actual appearance observations and twelve exported native PNG attachments. All twelve unchanged settled states visually observed in the earlier original recording | Synthetic account-free host; authenticated Settings entry/routing and full application startup remain unproven. No device-performance claim; dark cosmetics prose still needs a dedicated contrast review |
-| Account-bound archive/Ghost/filter controls and disable-only reset | Source integrated with existing account facades | Current-candidate native suites and real account navigation pending |
-| Browse retained archives with capture disabled; chat search and profile links | Foreground read leases, chat-scoped search, separate saved-media/history destinations | New native tests pending; separate local destinations, not merged server search or canonical media grid |
-| Bulk clear-history/date/thread and author/forward-author deletion capture | Explicit cloud helpers use default-nil Postbox selected-row observers; all 13 new production-path cases passed at b492 in 42114628197 | Current later source needs qualification. Handoff remains capped at 256 records / 8 MiB; overflow increments missed-capture count while canonical deletion proceeds. No extra full history scan; performance unmeasured |
-| Reconnect/history-fetch replacements, validation removals and media-reference refreshes | Precise Postbox replacement observer, ordinary cloud-load wrappers, cached channel minimum-ID handling and original-request namespace guards; all 28 additional cases passed at b492 in 42114628197 | Current later source needs qualification. Same-second repeated content uses persisted UUIDs and SQLite sequence ordering. One pending-outbox budget scan per upsert batch; no measured latency. Validation removal includes upstream RPC-error fallback and is not proof of remote sender deletion |
-| Legacy group, broadcast and supergroup edit/delete replay | New actual replay fixtures and acknowledged channel-edit coverage | Native execution pending; no live two-client server claim |
-| Deleted/Edited label preferences and current live-version preview | Account-local editor and archive timeline/gallery bindings; later saved-edit marker candidate described below | New native tests pending. The older IPA does not contain the inline marker candidate |
-| Encrypted import/export | Native picker, strict owner/environment binding, authenticated envelope, live-row reconstruction and transactional merge; all 24 library transfer cases and all 12 Core facade cases passed at `c55e19c4`, including seven pending-transfer authority/cancellation regressions | Native Core source is verified; real account picker/navigation remains unverified. Capture must be explicitly paused, with warned capture gap. Policy/lock/lease/disposal changes revoke pending transfers; authentication remains before destination creation. No AyuSync/network transport |
-| Ordinary GIF, PDF and typed encrypted media playback | All 18 encrypted-playback cases passed at 17033, including real Ogg/Opus PCM, video frames and the PDF fixture; SettingsUI compiled and its eight media-preview cases passed | Complete-app gallery recordings and physical-device playback remain unverified; generated native fixtures do not prove live incoming-media capture |
-| Ordinary read/presence controls, story-opening warning, read after confirmed send | Account-scoped production hooks, bounded acknowledged-send intent, central story gate | New native tests pending; server behavior and other-client interactions unverified, mandatory expiry receipts preserved |
-| Text, bounded-expression, media-type and cached blocked-author filters | Background projection, temporary reveal and native rule editor | New native tests pending; unknown metadata/albums/rich/secret/timed content stays visible |
-| Explicit local sender hiding and inverse rules | [Account-local sender management and proven non-match predicates](fork/LOCAL-MESSAGE-FILTERS.md), source commit `b39cf89f`; fifteen Core and three projection cases authored | Native execution and real chat/editor recordings pending. Unknown/empty/oversized/work-limited text stays visible to inverse text rules; independent sender/media predicates may apply. No server block request or notification/preview filtering |
-| Hide sponsored messages | Account-local projection and stale visible-ad guards | New native tests pending; no Premium entitlement or server-request suppression; Telegram API-policy conflict documented |
-| Local palette, motion preference and explicit bundled-icon permission | Real account preferences; actual renderer controls exercised in the 8+1 passing UI cases | Account persistence tests/native OS icon operation pending; no server Premium entitlement bypass |
-| Local folder colors and tags | [Account-local native tab/list projection and editor](fork/LOCAL-FOLDER-APPEARANCE.md), source commit `694d8b1e`; sixteen real Postbox/projection/request-invariance cases authored | Native execution, full application compilation and recordings pending. Canonical folder requests/order/Premium limits stay unchanged. Removed IDs are pruned; stale editors reject changed canonical filters; byte-identical replacement without an observed removal is indistinguishable |
-| Inline saved-edit history in text/caption bubbles | [Read-only visible-cell marker and date action](AYUGRAM_INLINE_HISTORY.md), source commit `2b9f003d`; twenty-five new native cases authored and three transfer cases extended | Native execution and conversation recordings pending. Archive mutation notifications invalidate committed deletions/pruning without manufacturing a Telegram message. Media-only/album status nodes remain pending; no physical-device or scrolling benchmark claim |
-| Inline deleted-message cards | [Distinct local row, encrypted window query and revocable production renderer](fork/LOCAL-DELETED-ROWS-VERIFICATION.md), source commit `dafe9004`; forty-three native cases authored. Store cases and the actual Postbox edit/delete/cache-cleanup/reopen integration fixture passed at 17033; later Core cases were blocked by the next test's expectation abort. Current SQL also executed against vendored plain SQLite, including 4,096 author exclusions and interruption recovery | Remaining native cases, full application placement and recordings pending. At most forty excerpts in the loaded ordinary-chat window; no forum/thread/filter-enabled inline projection, shared date header or media thumbnail. Existing local timeline/gallery remains the media destination. Canonical reads, pagination, selection and server actions exclude this row type |
-| Malformed archive/filter identity handling | [Safe persisted-peer boundary](fork/PEER-ID-BOUNDARIES.md), source commit `f3a12c6f`; ten new native cases authored | Native execution pending. Unknown imported identities remain browsable locally without native peer/message lookups. Invalid outbox entries stay unacknowledged instead of being silently discarded; incompatible preferences remain read-only |
-| Timed, self-destructing and view-once retention | Separate native capability information; explicit exclusions remain enforced | Post-expiry retention unsupported under reviewed API terms. No misleading preservation switch; new exclusion tests pending |
+| Welcome-screen startup and current unsigned device package | [42204637743](https://github.com/Livara-Dev/Telegram-iOS/actions/runs/42204637743) passed two actual full-app simulator launches with explicitly seeded private storage and stable account-store directory after restart. Both screenshots and all 390 video frames were reviewed. The main-app-only device artifact retains all 880 retained entries byte-for-byte with matching metadata | Simulator iPhone 15 Pro / iOS 27.0, not physical iOS 27.2. Automatic fallback, login, Apple HTTP 403/signing and installation remain unverified. The device IPA is unsigned; six extensions are absent. Device build 82 and simulator build 1 retain distinct origins; application code was not recompiled |
+| Prominent **Custome options**, eleven searchable categories, quick toggles | [42147021107](https://github.com/Livara-Dev/Telegram-iOS/actions/runs/42147021107) passed 8 controller tests and 1 complete XCUI scenario, with twelve recorded stages, eleven appearance observations and twelve exported PNGs. All three production renderer files are byte-identical at `c55e19c4`; this is reuse of that identified evidence, not a fresh nine-test run | Synthetic account-free host. The current full app reaches the welcome screen and has a source-wired leading Settings entry, but authenticated entry/routing remain unverified. The retained host IPA has no XCTest bundles or test plan. No device-performance claim; dark cosmetics prose still needs a dedicated contrast review |
+| Account-bound archive/Ghost/filter controls and disable-only reset | Core account facades passed local native cases; Settings catalog 8 and navigation-helper 10 cases passed at `c55e19c4`. Source routes use the selected `AccountContext`; the full app compiled | Actual account-bound dashboard callbacks, reset behavior and account switching in the running application remain unverified. Synthetic renderer callbacks do not verify those bindings |
+| Browse retained archives with capture disabled; chat search and profile links | At `c55e19c4`, Core inline-history classes passed 17 cases and deleted-history classes passed 19; Settings gallery 4 and navigation-helper 10 cases passed. Fixtures exercise foreground read leases and separate local destinations | Authenticated chat search, profile navigation and gallery recordings remain unverified. These are separate local destinations, not merged server search or the canonical media grid |
+| Bulk clear-history/date/thread and author/forward-author deletion capture | Production selected-row observer paths are source-wired; all 11 `LocalArchiveHistoryRemovalTests` and the 26-case replay class passed at `c55e19c4` using actual local Postbox helpers | No live two-client deletion claim. Handoff remains capped at 256 records / 8 MiB; overflow increments missed-capture count while canonical deletion proceeds. No extra full history scan; performance unmeasured |
+| Reconnect/history-fetch replacements, validation removals and media-reference refreshes | At `c55e19c4`, remote reconciliation 7, server reconciliation 15 and feed reconciliation 4 cases passed, alongside capture/replay fixtures using production replacement hooks | Real reconnect/server behavior remains unverified. Same-second content uses persisted UUIDs and SQLite ordering; batch latency is unmeasured. Validation removal includes upstream RPC-error fallback and is not proof of remote sender deletion |
+| Legacy group, broadcast and supergroup edit/delete replay | All 26 replay and 5 acknowledged-edit cases passed at `c55e19c4`, including locally invoked legacy-group, broadcast and supergroup replay | These production-path fixtures do not establish live Telegram delivery, sender deletion or another-client behavior |
+| Deleted/Edited label preferences and current live-version preview | At `c55e19c4`, Core presentation 8, Settings presentation 8 and inline-status 3 cases passed; account-local editor/timeline/gallery bindings are source-wired and compiled | Actual account editor, live-version preview and conversation recordings remain unverified. The older 62546557 IPA does not verify the current inline marker |
+| Encrypted import/export | Native picker, strict owner/environment binding, authenticated envelope, live-row reconstruction and transactional merge; all 24 library transfer cases and all 12 Core facade cases passed at `c55e19c4`, including seven pending-transfer authority/cancellation regressions | Local native transfer fixtures pass; real account picker/navigation remains unverified. Capture must be explicitly paused, with warned capture gap. Policy/lock/lease/disposal changes revoke pending transfers; authentication remains before destination creation. No AyuSync/network transport |
+| Ordinary GIF, PDF and typed encrypted media playback | All 18 encrypted-playback cases passed at `c55e19c4`: 11 loader/player and 7 format cases, including PNG/JPEG, true GIF, PDF, AAC, Ogg/Opus PCM and H264/audio after encrypted reopen. Settings media-preview 8 cases passed | Capture fixtures separately preserve synthetic typed media bytes; decoder passes do not prove live incoming-media capture. Complete-app gallery recordings and physical-device playback remain unverified |
+| Ordinary read/presence controls, story-opening warning, read after confirmed send | All 99 Core Ghost/story-warning cases passed at `c55e19c4`, exercising account policies and production workers with final typed RPC recorders | No live server, perfect-invisibility or other-client claim. Mandatory expiry behavior remains preserved; actual account controls and interaction scenarios need application verification |
+| Text, bounded-expression, media-type and cached blocked-author filters | All 54 Core filter cases passed at `c55e19c4`, covering persisted preferences, bounded matchers and classification. The native rule editor is source-wired and compiled | The 25 text/filter Projection cases did not execute in either the original qualification or the later iPhone 15 Pro replay. Actual chat hide/reveal and editor recordings remain unverified; unknown metadata/albums/rich/secret/timed content stays visible |
+| Explicit local sender hiding and inverse rules | [Account-local sender management and non-match predicates](fork/LOCAL-MESSAGE-FILTERS.md): all 15 Core sender/inverse cases passed at `c55e19c4` | Its 3 new presentation cases are among the 25 unexecuted text/filter Projection cases. Real chat/editor recordings remain pending. Unknown/empty/oversized/work-limited text stays visible to inverse text rules; no server block request or notification/preview filtering |
+| Hide sponsored messages | All 5 `LocalPrivacyAdsTests` passed at `c55e19c4`, covering local consumer projection, restoration and account policy | Real sponsored-message display remains unverified. No Premium entitlement or server-request suppression; Telegram API-policy conflict remains documented |
+| Local palette, motion preference and explicit bundled-icon permission | All 8 Core cosmetics cases passed at `c55e19c4`, including real preference reopen and entitlement boundaries. The byte-identical production renderer has the separately identified 8+1 synthetic UI evidence | Native OS icon switching, authenticated preferences UI and physical appearance remain unverified. No server Premium entitlement bypass |
+| Local folder colors and tags | [Account-local tab/list projection and editor](fork/LOCAL-FOLDER-APPEARANCE.md): all 21 `LocalFolderAppearanceTests` passed at `c55e19c4`, covering real Postbox/schema/isolation and serialized-request invariance; the full app compiled | Actual account editor/tab recordings remain pending. Canonical requests/order/Premium limits stay unchanged. Removed IDs are pruned and stale editors rejected; byte-identical replacement without an observed removal is indistinguishable |
+| Inline saved-edit history in text/caption bubbles | [Visible-cell marker and date action](AYUGRAM_INLINE_HISTORY.md): Core inline-history 17 cases, including 3 real Postbox integration cases, and Settings inline-status 3 cases passed at `c55e19c4`; app integration compiled | Actual conversation placement, date interaction and recordings remain unverified. Archive notifications invalidate committed deletion/pruning without manufacturing a Telegram message. Media-only/album status nodes remain pending; no physical-device or scrolling benchmark claim |
+| Inline deleted-message cards | [Distinct local row and encrypted window query](fork/LOCAL-DELETED-ROWS-VERIFICATION.md): Core deleted-history 19 cases, including actual Postbox edit/delete/cache-cleanup/reopen integration, and relevant store cases passed at `c55e19c4` | The 12 archived-row projection and 4 real row-renderer cases did not execute in either the original qualification or the later iPhone 15 Pro replay. Full conversation placement/recordings remain unverified. At most forty excerpts in the loaded ordinary-chat window; no forum/thread/filter-enabled inline projection, shared date header or media thumbnail. Canonical reads, pagination, selection and server actions exclude local rows |
+| Malformed archive/filter identity handling | [Safe persisted-peer boundary](fork/PEER-ID-BOUNDARIES.md): Core archive peer-ID 5 and Settings peer-reference 2 cases passed at `c55e19c4`, alongside filter identity/codec cases | Unknown imported identities remain locally browsable without native peer/message lookups; actual app navigation is unverified. Invalid outbox entries stay unacknowledged and incompatible preferences read-only |
+| Timed, self-destructing and view-once retention | All 11 `LocalArchiveTimedMediaExclusionTests` passed at `c55e19c4`, proving deliberate exclusion and normal consumption/expiry behavior | **Retention is unsupported in this candidate.** These are exclusion tests, not preservation evidence. No misleading preservation switch or post-expiry recovery claim |
 
-Full native qualification [42098718967](https://github.com/Livara-Dev/Telegram-iOS/actions/runs/42098718967)
-targeted b24d8688 and exposed the build failures recorded above. Later source
-requires exact-revision native qualification before release. The full workflow
-runs all eight native suites before compiling the simulator application in the
-same private Bazel root; it also compiles the device package independently. A
-passing historical run cannot certify the additional source in this table. Physical-device,
-authenticated multi-client, low-storage and actual OS-kill tests are not implied
-by close/reopen database fixtures or the synthetic renderer recording.
+Historical qualification [42098718967](https://github.com/Livara-Dev/Telegram-iOS/actions/runs/42098718967)
+targeted b24d8688 and exposed the build failures recorded above. The later c55
+native passes and full builds now supply the bounded evidence listed here; its
+original full qualification still failed at the unexecuted Projection gate.
+Compilation and local native passes do not establish authenticated multi-client,
+physical-device, low-storage or actual OS-kill behavior. Close/reopen database
+fixtures and the synthetic renderer recording do not replace those checks.
 
 Reference column abbreviates the pinned public sources documented in the
 [Android](fork/AYUGRAM-REFERENCE.md), [Desktop](fork/DESKTOP-REFERENCE.md) and
@@ -309,7 +355,7 @@ itself establish the authenticated running-app experience.
 | Edits and all observed previous versions | Android `MessagesStorage`/edited DAO; Desktop edition hook | Capture before server replay/own-edit acknowledgement; version timeline | Native local integration passes; unsupported rich content and unseen history are not recovered |
 | Deletion/edit timestamps | Both reference databases record revisions/deletion metadata | Observed deletion time and server edit time stored separately | Native storage/integration tests pass; observation time is not proof of server deletion time |
 | Photos | Android saved attachments; Desktop persistent archive is text-only | Encrypted archive-owned completed bytes and metadata | Generated JPEG exercised through local capture/cache cleanup; source supports completed cloud images |
-| Videos | Android saved attachments; Desktop persistent archive is text-only | Encrypted archive-owned completed bytes and metadata | Local byte-pipeline fixtures plus 11 real encrypted H264 loader cases; live incoming-video capture unverified |
+| Videos | Android saved attachments; Desktop persistent archive is text-only | Encrypted archive-owned completed bytes and metadata | Typed local byte-capture fixtures and separate encrypted H264/audio decoding cases pass; live incoming-video capture unverified |
 | GIFs/animations | Android saved attachments; Desktop persistent archive is text-only | Encrypted archive-owned completed bytes and metadata | Classified separately as animation; byte-path fixtures do not prove every GIF decoder |
 | Voice messages | Android saved attachments; Desktop persistent archive is text-only | Encrypted archive-owned completed bytes and metadata | Voice metadata and completed cached bytes supported; live voice playback/capture unverified |
 | Round/video messages | Android saved attachments; Desktop persistent archive is text-only | Encrypted archive-owned completed bytes and metadata | Separate videoMessage classification; real view-once round/voice content excluded |

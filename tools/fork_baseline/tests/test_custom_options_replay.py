@@ -12,6 +12,7 @@ import shutil
 import struct
 import sys
 import tempfile
+import threading
 import unittest
 from unittest.mock import Mock, patch
 import zipfile
@@ -85,7 +86,8 @@ def self_controls(kind=None):
         return {'state': 'completed', 'expected_title_seen': expected,
             'expected_title_in_navigation_region': any(x['kind'] == 'expected' and x['rect'][1] + x['rect'][3] / 2 > .8 for x in regions),
             'known_variant_seen': any(x['kind'] == 'variant' for x in regions),
-            'recognized_observations': len(regions), 'known_title_regions': regions, 'passed': False}
+            'recognized_observations': len(regions), 'known_title_regions': regions, 'passed': False,
+            'cpu_compute_selected': True, 'error': None}
     expected = {'kind': 'expected', 'rect': [.2, .86, .35, .06]}
     controls = {'positive': observation([expected]),
         'wrong': observation([{'kind': 'negative', 'rect': [.2, .86, .35, .06]}]), 'blank': observation([])}
@@ -94,7 +96,7 @@ def self_controls(kind=None):
     if kind == 'selfWrong': controls['wrong'] = observation([expected])
     if kind == 'selfBlank': controls['blank'] = observation([expected])
     if kind == 'selfVision': controls['positive'].update(state='visionUnavailable', expected_title_seen=False,
-        expected_title_in_navigation_region=False, recognized_observations=0, known_title_regions=[])
+        expected_title_in_navigation_region=False, recognized_observations=0, known_title_regions=[], error={'domain': 'Vision', 'code': 9})
     for name, control in controls.items():
         control['passed'] = control['state'] == 'completed' and (control['expected_title_in_navigation_region'] if name == 'positive' else not control['expected_title_seen'])
     return {'self_test_passed': all(x['passed'] for x in controls.values()), 'cases': 3, 'controls': controls}
@@ -160,16 +162,39 @@ class Native:
         for key in ('GH_TOKEN', 'TELEGRAM_API_HASH', 'DYLD_INSERT_LIBRARIES'):
             if key in kwargs['env']: raise AssertionError('credential inherited')
         if not kwargs.get('start_new_session'): raise AssertionError('unowned recorder')
-        kwargs['stderr'].write(b'Recording started'); kwargs['stderr'].flush()
+        self.asserted_pipe_capture = kwargs['stdout'] == replay.subprocess.PIPE and kwargs['stderr'] == replay.subprocess.PIPE
+        if not self.asserted_pipe_capture: raise AssertionError('both recorder pipes must be private bounded readers')
+        if self.kind == 'recordSpawn': raise OSError('PRIVATE-CANARY /Users/private/recording')
+        pipes = {name: os.pipe() for name in ('stdout', 'stderr')}
+        data = {'stdout': b'', 'stderr': b'Recording started'}
+        if self.kind == 'recordStdout': data = {'stdout': b'Recording started', 'stderr': b''}
+        if self.kind == 'recordEarly': data = {'stdout': b'recorder failed /Users/private PRIVATE-CANARY', 'stderr': b'11111111-2222-3333-4444-555555555555'}
+        if self.kind == 'recordLimit': data = {'stdout': b'x' * 32768, 'stderr': b''}
+        def writer():
+            for name, (_, descriptor) in pipes.items():
+                try:
+                    for start in range(0, len(data[name]), 4096): os.write(descriptor, data[name][start:start + 4096])
+                except OSError: pass
+                finally: os.close(descriptor)
+        threading.Thread(target=writer, daemon=True).start()
         Path(args[-1]).write_bytes(b'x' * 2048)
         if self.kind == 'largeVideo':
             with Path(args[-1]).open('ab') as file: file.truncate(32 * 1024**2 + 1)
         class Recorder:
             pid = 987654321
-            def poll(self): return None
-            def send_signal(self, value): pass
-            def wait(self, timeout): return 0
-        return Recorder()
+            def __init__(self, kind):
+                self.kind = kind; self.code = 1 if kind == 'recordEarly' else None
+                self.stdout = os.fdopen(pipes['stdout'][0], 'rb', buffering=0)
+                self.stderr = os.fdopen(pipes['stderr'][0], 'rb', buffering=0)
+            def poll(self): return self.code
+            def send_signal(self, value):
+                if self.kind != 'recordStop': self.code = 0
+            def kill(self): self.code = -9
+            def wait(self, timeout):
+                if self.kind == 'recordStop' and self.code is None: raise replay.subprocess.TimeoutExpired('synthetic', timeout)
+                self.code = 0 if self.code is None else self.code
+                return self.code
+        return Recorder(self.kind)
 
 
 class RetainedSettingsReplayTests(unittest.TestCase):
@@ -208,7 +233,10 @@ class RetainedSettingsReplayTests(unittest.TestCase):
             lambda v: v['controls']['positive']['known_title_regions'][0].update(rect=[.2, float('nan'), .3, .1]),
             lambda v: v['controls']['positive']['known_title_regions'][0].update(rect=[.2, .9, .3, .2]),
             lambda v: v['controls']['positive'].update(recognized_observations=0),
-            lambda v: v['controls']['positive'].update(state='visionUnavailable')]
+            lambda v: v['controls']['positive'].update(state='visionUnavailable'),
+            lambda v: v['controls']['positive'].update(error={'domain': 'PRIVATE-CANARY', 'code': 9}),
+            lambda v: v['controls']['positive'].update(error={'domain': 'Vision', 'code': 2**40}),
+            lambda v: v['controls']['positive'].update(cpu_compute_selected=False)]
         for index, change in enumerate(changes):
             with self.subTest(index=index):
                 value = self_controls(); change(value)
@@ -295,10 +323,58 @@ class RetainedSettingsReplayTests(unittest.TestCase):
             self.assertEqual(native.device_query, ['xcrun', 'simctl', 'list', '--json', 'devicetypes', 'iPhone 15 Pro'])
             commands = [a for a, _ in native.calls]
             self.assertEqual(sum(a[:3] == ['xcrun', 'simctl', 'install'] for a in commands), 1)
-            self.assertEqual(sum(a[:3] == ['xcrun', 'simctl', 'launch'] for a in commands), 1)
+            self.assertEqual(sum(a[:3] == ['xcrun', 'simctl', 'launch'] for a in commands), 2)
+            self.assertTrue(result['warmup_launch_completed'])
+            self.assertFalse(result['recording_started_before_launch'])
+            self.assertTrue(result['recording_started_before_recorded_launch'])
+            self.assertTrue(result['recording_available'])
             self.assertEqual([a[2] for a in commands[-2:]], ['shutdown', 'delete'])
             text = (output / 'result.json').read_text()
             for private in ('PRIVATE-CANARY', str(root), IDENTIFIER): self.assertNotIn(private, text)
+
+    def test_recording_readiness_is_accepted_from_stdout_as_well_as_stderr(self):
+        with self.prepared() as (root, _, _, _), patch.object(replay.platform, 'system', return_value='Darwin'):
+            native = Native(root, 'recordStdout')
+            result = replay.execute(root=root, command=native, popen=native.popen, pause=lambda _: None)
+            self.assertTrue(result['passed']); self.assertTrue(result['recording_available'])
+            self.assertGreater(result['recording_diagnostic']['stdout_bytes'], 0)
+            self.assertEqual(result['recording_diagnostic']['stderr_bytes'], 0)
+            self.assertEqual(result['recording_diagnostic']['state'], 'complete')
+
+    def test_recorder_spawn_early_exit_pipe_cap_and_stop_failures_never_prevent_actual_launch_or_png(self):
+        for kind in ('recordSpawn', 'recordEarly', 'recordLimit', 'recordStop'):
+            with self.subTest(kind=kind), self.prepared() as (root, output, _, _), \
+                 patch.object(replay.platform, 'system', return_value='Darwin'), patch.dict(os.environ, {'GH_TOKEN': 'PRIVATE-CANARY'}):
+                native = Native(root, kind)
+                with self.assertRaisesRegex(replay.ReplayError, '^settings_recording_failed_diagnostic_only$'):
+                    replay.execute(root=root, command=native, popen=native.popen, pause=lambda _: None)
+                result = json.loads((output / 'result.json').read_text())
+                self.assertFalse(result['passed']); self.assertFalse(result['recording_available'])
+                self.assertTrue(result['warmup_launch_completed']); self.assertTrue(result['diagnostic_root_captured'])
+                self.assertTrue(result['cleanup_passed']); self.assertTrue((output / 'root-light.png').is_file())
+                self.assertFalse((output / 'root-light.mp4').exists())
+                self.assertEqual(result['phase'], 'recordingFailedDiagnosticOnly')
+                self.assertEqual(sum(a[:3] == ['xcrun', 'simctl', 'launch'] for a, _ in native.calls), 2)
+                diagnostic = result['recording_diagnostic']
+                self.assertLessEqual(diagnostic['stdout_bytes'] + diagnostic['stderr_bytes'], 16384)
+                self.assertLessEqual(len(json.dumps(diagnostic['output'])), 16384)
+                for private in ('PRIVATE-CANARY', '/Users/private', IDENTIFIER):
+                    self.assertNotIn(private, (output / 'result.json').read_text())
+                if kind == 'recordEarly': self.assertIn('recorder failed', diagnostic['output'])
+                if kind == 'recordLimit': self.assertTrue(diagnostic['output_limit'])
+
+    def test_combined_vision_and_recorder_failure_still_preserves_a_failed_actual_root_observation(self):
+        with self.prepared() as (root, output, _, _), patch.object(replay.platform, 'system', return_value='Darwin'):
+            native = Native(root, 'selfVision')
+            def unavailable(*args, **kwargs): raise OSError('PRIVATE-CANARY')
+            with self.assertRaisesRegex(replay.ReplayError, '^settings_recording_failed_diagnostic_only$'):
+                replay.execute(root=root, command=native, popen=unavailable, pause=lambda _: None)
+            result = json.loads((output / 'result.json').read_text())
+            self.assertFalse(result['passed']); self.assertFalse(result['root_title_automatically_verified'])
+            self.assertTrue(result['diagnostic_root_captured']); self.assertTrue(result['cleanup_passed'])
+            self.assertEqual(result['title_checker_self_test']['controls']['positive']['error'], {'domain': 'Vision', 'code': 9})
+            self.assertEqual(result['root_observation'], {'width': 1179, 'height': 2556})
+            self.assertTrue((output / 'root-light.png').exists()); self.assertNotIn('PRIVATE-CANARY', (output / 'result.json').read_text())
 
     def test_failed_validated_self_controls_record_real_root_diagnostics_but_never_pass(self):
         for kind in ('selfSpelling', 'selfOrientation', 'selfWrong', 'selfBlank', 'selfVision'):

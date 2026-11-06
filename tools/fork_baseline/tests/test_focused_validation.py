@@ -291,7 +291,7 @@ class FocusedWorkflowRoutingTests(unittest.TestCase):
                 self.assertTrue(self.condition('integration-tests', 'workflow_dispatch', 'projection', device))
                 for job in ('application-build', 'unsigned-device-build', 'native-api-probe', 'startup-artifact-replay'):
                     self.assertFalse(self.condition(job, 'workflow_dispatch', 'projection', device))
-        self.assertIn('options: [full, native-only, core-only, focused, projection, projection-only, custom-options-ui, custom-options-replay, probe, retained-clean, startup]', WORKFLOW.read_text())
+        self.assertIn('options: [full, native-only, core-only, focused, projection, projection-only, custom-options-ui, custom-options-replay, probe, retained-clean, retained-modern, startup]', WORKFLOW.read_text())
         self.assertIn('projection) repair_options+=(--projection-tests)', WORKFLOW.read_text())
 
     def test_projection_only_dispatch_skips_every_other_build_or_probe(self):
@@ -411,6 +411,102 @@ class FocusedWorkflowRoutingTests(unittest.TestCase):
         self.assertEqual(self.expression(expression, 'workflow_dispatch', 'retained-clean', False,
                                         replay_source='b' * 40, replay_run=''),
                          'ayugram-projection-replay-c55e19c4f5cbe0d730499035d0a0ef712f6903a9')
+
+    def test_modern_retained_scope_has_only_two_artifact_jobs_and_the_fixed_queue(self):
+        for job in ('native-api-probe', 'custom-options-artifact-replay'):
+            self.assertTrue(self.condition(job, 'workflow_dispatch', 'retained-modern', False), job)
+            self.assertFalse(self.condition(job, 'push', 'retained-modern', False), job)
+        for job in ('integration-tests', 'application-build', 'unsigned-device-build', 'custom-options-ui', 'startup-artifact-replay'):
+            self.assertFalse(self.condition(job, 'workflow_dispatch', 'retained-modern', False), job)
+        group = re.search(r'^  group: \$\{\{ (.*?) \}\}$', WORKFLOW.read_text(), re.M).group(1)
+        self.assertEqual(self.expression(group, 'workflow_dispatch', 'retained-modern', False, replay_source='b' * 40),
+                         'ayugram-projection-replay-c55e19c4f5cbe0d730499035d0a0ef712f6903a9')
+        source = self.section('native-api-probe')
+        for name, expected in (('REPLAY_RUN', '42160468600'), ('REPLAY_SOURCE', 'c55e19c4f5cbe0d730499035d0a0ef712f6903a9')):
+            expression = re.search(r'^          ' + name + r': \$\{\{ (.*?) \}\}$', source, re.M).group(1)
+            self.assertEqual(self.expression(expression, 'workflow_dispatch', 'retained-modern', False, replay_source='b' * 40, replay_run='1'), expected)
+        for title in ('Replay verified synthetic Projection products without recompilation', 'Prepare only the verified synthetic movie fixture', 'Compile the production loader with the host API probe'):
+            step = source.split('      - name: ' + title + '\n', 1)[1].split('      - name: ', 1)[0]
+            condition = re.search(r'^        if: (.*?)$', step, re.M).group(1)
+            for run in ('', '42160468600'):
+                self.assertFalse(self.expression(condition, 'workflow_dispatch', 'retained-modern', False, replay_run=run))
+        prepare = source.split('      - name: Verify the captured Projection products and prepare the tiny diagnostic project\n', 1)[1].split('      - name: ', 1)[0]
+        execute = source.split('      - name: Test Apple-generated hosting before executing all retained Projection cases\n', 1)[1].split('      - name: ', 1)[0]
+        self.assertIn('GH_TOKEN: ${{ github.token }}', prepare)
+        self.assertNotIn('GH_TOKEN', execute)
+        self.assertNotIn('TELEGRAM_API_', source)
+        self.assertLess(source.index('Refresh only the registered current-user'), source.index('modern_projection_plan.py prepare'))
+        self.assertLess(source.index('modern_projection_plan.py prepare'), source.index('modern_projection_plan.py run'))
+
+    def test_modern_plan_publication_excludes_raw_plans_products_and_private_logs(self):
+        import hashlib
+        stage = self.section('native-api-probe').split('      - name: Stage only bounded modern XCTest plan evidence', 1)[1]
+        code = textwrap.dedent(stage.split("python3 - <<'PYTHON'\n", 1)[1].split('          PYTHON', 1)[0])
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve(); evidence = root / 'build/fork-evidence'; source = evidence / 'modern-projection-plan'
+            source.mkdir(parents=True)
+            allowed = {'verification.json', 'result.json', 'control-build.log', 'control-test.log', 'control-cases.json', 'projection-test.log', 'projection-cases.json'}
+            for name in allowed: (source / name).write_bytes(('allowed-' + name).encode())
+            (evidence / 'clean-simulator-service.json').write_text('{"passed": true}')
+            for name in ('modern.xctestrun', 'ProjectionTestHost.app', 'raw-environment.json', 'private-build.log'):
+                (source / name).write_text('PRIVATE_PUBLICATION_CANARY')
+            previous = Path.cwd()
+            try:
+                os.chdir(root); exec(compile(code, '<checked-in-modern-publication>', 'exec'), {})
+            finally: os.chdir(previous)
+            public = evidence / 'modern-projection-public'
+            self.assertEqual({p.name for p in public.iterdir()}, allowed | {'SHA256SUMS', 'clean-simulator-service.json'})
+            rows = (public / 'SHA256SUMS').read_text().splitlines()
+            self.assertEqual(len(rows), 8)
+            for row in rows:
+                digest, name = row.split('  ', 1)
+                self.assertEqual(hashlib.sha256((public / name).read_bytes()).hexdigest(), digest)
+                self.assertNotIn(b'PRIVATE_PUBLICATION_CANARY', (public / name).read_bytes())
+
+    def test_modern_plan_publication_rejects_oversize_and_aliases(self):
+        stage = self.section('native-api-probe').split('      - name: Stage only bounded modern XCTest plan evidence', 1)[1]
+        code = textwrap.dedent(stage.split("python3 - <<'PYTHON'\n", 1)[1].split('          PYTHON', 1)[0])
+        for kind in ('largeLog', 'largeJSON', 'fileAlias', 'parentAlias', 'notRegular', 'aggregateLimit'):
+            with self.subTest(kind=kind), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory).resolve(); evidence = root / 'build/fork-evidence'; source = evidence / 'modern-projection-plan'
+                source.mkdir(parents=True)
+                if kind == 'largeLog': (source / 'control-build.log').write_bytes(b'x' * (2 * 1024**2 + 1))
+                elif kind == 'largeJSON': (source / 'result.json').write_bytes(b'x' * (1024**2 + 1))
+                elif kind == 'fileAlias': (source / 'result.json').symlink_to(root / 'private.json')
+                elif kind == 'parentAlias':
+                    source.rmdir(); (root / 'private').mkdir(); source.symlink_to(root / 'private', target_is_directory=True)
+                elif kind == 'notRegular': (source / 'result.json').mkdir()
+                else:
+                    for name in ('control-build.log', 'control-test.log', 'projection-test.log'): (source / name).write_bytes(b'x' * (2 * 1024**2))
+                    for name in ('result.json', 'verification.json', 'control-cases.json'): (source / name).write_bytes(b'x' * 1024**2)
+                previous = Path.cwd()
+                try:
+                    os.chdir(root)
+                    with self.assertRaisesRegex(SystemExit, '^Invalid bounded modern diagnostic evidence$'):
+                        exec(compile(code, '<checked-in-modern-publication>', 'exec'), {})
+                finally: os.chdir(previous)
+                public = evidence / 'modern-projection-public'
+                self.assertEqual(list(public.iterdir()), [])
+
+    def test_existing_public_directory_cannot_be_uploaded_after_staging_rejects(self):
+        source = self.section('native-api-probe')
+        stage = source.split('      - name: Stage only bounded modern XCTest plan evidence', 1)[1]
+        code = textwrap.dedent(stage.split("python3 - <<'PYTHON'\n", 1)[1].split('          PYTHON', 1)[0])
+        self.assertIn('        id: modern_evidence\n', stage)
+        upload = source.split('      - name: Publish modern hosting diagnostics without projects or test products', 1)[1].split('      - name: ', 1)[0]
+        self.assertIn("steps.modern_evidence.outcome == 'success'", upload)
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve(); public = root / 'build/fork-evidence/modern-projection-public'
+            public.mkdir(parents=True); (public / 'raw-environment.json').write_text('PRIVATE_PUBLICATION_CANARY')
+            previous = Path.cwd()
+            try:
+                os.chdir(root)
+                with self.assertRaises(FileExistsError): exec(compile(code, '<checked-in-modern-publication>', 'exec'), {})
+            finally: os.chdir(previous)
+        settings = self.section('custom-options-artifact-replay')
+        self.assertIn('        id: settings_evidence\n', settings)
+        upload = settings.split('      - name: Upload retained native settings evidence without its simulator IPA', 1)[1]
+        self.assertIn("if: always() && steps.settings_evidence.outcome == 'success'", upload)
 
     def test_retained_settings_publication_hashes_only_the_explicit_safe_files(self):
         import hashlib

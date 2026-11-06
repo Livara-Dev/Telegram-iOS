@@ -1,0 +1,1056 @@
+{
+  "application_source_commit": "c55e19c4f5cbe0d730499035d0a0ef712f6903a9",
+  "compiled_artifacts": {
+    "current_application_startup": "two_recorded_iphone15pro_ios27_simulator_authorization_launches_pass_with_explicit_fresh_pinned_private_storage",
+    "full_application_compilation_verified": true,
+    "physical_device_verified": false,
+    "simulator": {
+      "additional_unique_native_coverage": false,
+      "application_source_commit": "c55e19c4f5cbe0d730499035d0a0ef712f6903a9",
+      "artifact_id": 13490005243,
+      "build_number": 1,
+      "ipa_sha256": "df7a313e263440d92f2ab503e7ee1c1afb328774f6d631b3d052169f2f2e8e10",
+      "outer_sha256": "f6df42768a6c9875a1227015ac6b1080ea5517ea77dff3ac34c54750dd8246ad",
+      "repeated_textformat_cases": 270,
+      "run": 42174474046,
+      "same_application_source": true
+    },
+    "unsigned_device": {
+      "application_source_commit": "c55e19c4f5cbe0d730499035d0a0ef712f6903a9",
+      "artifact_id": 13479087810,
+      "build_number": 82,
+      "ipa_sha256": "addaaf68000d010b84cea0d9798b9a234f43bfabc62845cdbf18fc5f14c4605e",
+      "outer_sha256": "3c34fa1eaeb260bddd4f16ba12b90ec07b0eec4b62feea8bc1ee3e991f75a4c6",
+      "run": 42160468600,
+      "signed_installable": false
+    },
+    "unsigned_device_main_app_only": {
+      "application_source_commit": "c55e19c4f5cbe0d730499035d0a0ef712f6903a9",
+      "artifact_id": 13495848146,
+      "artifact_url": "https://github.com/Livara-Dev/Telegram-iOS/actions/runs/42204637743/artifacts/13495848146",
+      "automatic_fallback_verified": false,
+      "device_runtime_verified": false,
+      "inner_references_verified": 5,
+      "inspection": {
+        "all_bundled_dependencies_resolved": true,
+        "all_macho_platforms": 2,
+        "bundle_executables_checked": 6,
+        "bundle_id_verified": true,
+        "bundled_load_edges_checked": 19,
+        "cpu": "arm64",
+        "dynamic_loading_verified": false,
+        "executables_checked": 1,
+        "framework_count": 5,
+        "mach_o_platform": 2,
+        "physical_device_verified": false,
+        "runtime_verified": false,
+        "signature_verified": false,
+        "signing": "disabled",
+        "supported_platform": "iPhoneOS",
+        "system_library_availability_verified": false,
+        "unsigned_macho_count": 6
+      },
+      "ipa_bytes": 75144266,
+      "ipa_sha256": "2cb541e76eb632b5b66c24a5e1937b6042cc230551c418948d75291f69e45cc8",
+      "license_materials": {
+        "COPYING": {
+          "hash_verified": true,
+          "sha256": "b409e426c009da876fc30b51ac3d9d6fcb965fcad27b53710d549b290331a853",
+          "size_bytes": 18062
+        },
+        "CORRESPONDING-SOURCE.md": {
+          "hash_verified": true,
+          "sha256": "a00e3b85ae22ec1a15e1c5ec11032e68bc0bb6782c43f1aa4c8d159c599e71ef",
+          "size_bytes": 2497
+        },
+        "LICENSE-NOTICE.md": {
+          "hash_verified": true,
+          "sha256": "6f1d0a294da126b98b2c188f8893d9e8c0fa4f63785754b6628b604254d53dfb",
+          "size_bytes": 1315
+        }
+      },
+      "manifest": {
+        "application_recompiled": false,
+        "automatic_private_fallback_verified": false,
+        "build_number_changed": false,
+        "bundle_id": "org.livara.ayugram",
+        "cross_run_startup_control": true,
+        "extensions_available": false,
+        "extensions_removed": 6,
+        "filename": "AyuGram-c55e19c4-main-app-only-unsigned-device.ipa",
+        "framework_files_unchanged": true,
+        "installable_signed_ipa": false,
+        "license_materials": {
+          "COPYING": {
+            "sha256": "b409e426c009da876fc30b51ac3d9d6fcb965fcad27b53710d549b290331a853",
+            "size_bytes": 18062
+          },
+          "CORRESPONDING-SOURCE.md": {
+            "sha256": "a00e3b85ae22ec1a15e1c5ec11032e68bc0bb6782c43f1aa4c8d159c599e71ef",
+            "size_bytes": 2497
+          },
+          "LICENSE-NOTICE.md": {
+            "sha256": "6f1d0a294da126b98b2c188f8893d9e8c0fa4f63785754b6628b604254d53dfb",
+            "size_bytes": 1315
+          }
+        },
+        "main_code_unchanged": true,
+        "main_executable": {
+          "all_bundled_dependencies_resolved": true,
+          "all_macho_platforms": 2,
+          "bundle_executables_checked": 6,
+          "bundle_id_verified": true,
+          "bundled_load_edges_checked": 19,
+          "cpu": "arm64",
+          "dynamic_loading_verified": false,
+          "executables_checked": 1,
+          "framework_count": 5,
+          "mach_o_platform": 2,
+          "physical_device_verified": false,
+          "runtime_verified": false,
+          "signature_verified": false,
+          "signing": "disabled",
+          "supported_platform": "iPhoneOS",
+          "system_library_availability_verified": false,
+          "unsigned_macho_count": 6
+        },
+        "mode": "unsigned-device",
+        "physical_device_verified": false,
+        "release_qualified": false,
+        "retained_entries": 880,
+        "retained_member_bytes_unchanged": true,
+        "retained_metadata_unchanged": true,
+        "runtime_verified": false,
+        "schema": 1,
+        "sha256": "2cb541e76eb632b5b66c24a5e1937b6042cc230551c418948d75291f69e45cc8",
+        "signature_verified": false,
+        "signing": "disabled",
+        "simulator_automatic_control_run": false,
+        "simulator_automatic_group_selection_observed": false,
+        "simulator_device_type": "com.apple.CoreSimulator.SimDeviceType.iPhone-15-Pro",
+        "simulator_private_account_store_stable_after_restart": true,
+        "simulator_private_mode_control": "explicitFreshPinnedSelection",
+        "simulator_private_selection_seeded": true,
+        "simulator_runtime": "com.apple.CoreSimulator.SimRuntime.iOS-27-0",
+        "simulator_variant_startup_verified": true,
+        "source_artifact_id": 13479087810,
+        "source_commit": "c55e19c4f5cbe0d730499035d0a0ef712f6903a9",
+        "source_device_artifact_id": 13479087810,
+        "source_device_build_job": "unsigned-device-build",
+        "source_device_build_number": 82,
+        "source_device_compile_step": "Compile unsigned device package",
+        "source_device_ipa_sha256": "addaaf68000d010b84cea0d9798b9a234f43bfabc62845cdbf18fc5f14c4605e",
+        "source_device_outer_sha256": "3c34fa1eaeb260bddd4f16ba12b90ec07b0eec4b62feea8bc1ee3e991f75a4c6",
+        "source_device_run": 42160468600,
+        "source_device_workflow": ".github/workflows/archive-integration.yml",
+        "source_ipa_sha256": "addaaf68000d010b84cea0d9798b9a234f43bfabc62845cdbf18fc5f14c4605e",
+        "source_ipa_unchanged": true,
+        "source_outer_sha256": "3c34fa1eaeb260bddd4f16ba12b90ec07b0eec4b62feea8bc1ee3e991f75a4c6",
+        "source_run": 42160468600,
+        "source_simulator_artifact_id": 13490005243,
+        "source_simulator_build_job": "baseline",
+        "source_simulator_build_number": 1,
+        "source_simulator_compile_step": "Build simulator baseline and run the explicit iOS test target",
+        "source_simulator_ipa_sha256": "df7a313e263440d92f2ab503e7ee1c1afb328774f6d631b3d052169f2f2e8e10",
+        "source_simulator_outer_sha256": "f6df42768a6c9875a1227015ac6b1080ea5517ea77dff3ac34c54750dd8246ad",
+        "source_simulator_run": 42174474046,
+        "source_simulator_workflow": ".github/workflows/fork-baseline.yml",
+        "startup_proof_sha256": "baa24592c7d25ff3471f4c48e32e5d1ee9a61f197caa72d8f674aa7eaef85cd2",
+        "startup_result_sha256": "6e3a44f2f8b4222ed4164d4d590163cb38be1d4592c5b383ac0ca6d4700173d7",
+        "variant": "main-app-only"
+      },
+      "outer_sha256": "b905cf25f01376a1051a99252f00fd0d7e2d862bbda29a64afe088a1ddd716f5",
+      "physical_device_verified": false,
+      "release_qualified": false,
+      "removed_extension_count": 6,
+      "retained_entries_byte_verified": 880,
+      "retained_entries_metadata_verified": 880,
+      "retained_framework_files_verified": 72,
+      "run": 42204637743,
+      "signed_installable": false,
+      "simulator_startup_control_only": true,
+      "source_device_build": 82,
+      "source_simulator_build": 1,
+      "startup_proof_hashes_verified": true,
+      "unsigned": true
+    }
+  },
+  "current_startup_replay": {
+    "apple_http_403_resolution_verified": false,
+    "application_recompiled": false,
+    "artifact_id": 13495439062,
+    "authenticated_telegram_session_verified": false,
+    "automatic_fallback_verified": false,
+    "controls": {
+      "app_group_entitlement_absent_after": true,
+      "app_group_entitlement_present_before": false,
+      "application_recompiled": false,
+      "automatic_control_run": false,
+      "automatic_fallback_verified": false,
+      "automatic_group_selection_observed": false,
+      "automatic_storage_kind": "notObserved",
+      "extensions_removed": 6,
+      "framework_files_unchanged": 77,
+      "main_app_only_control_passed": true,
+      "main_bundle_resigned_ad_hoc": true,
+      "main_code_unchanged": true,
+      "mode": "main_app_only",
+      "no_app_groups_control_attempted": false,
+      "normal_control_passed": false,
+      "other_entitlements_preserved": true,
+      "passed": true,
+      "phase": "complete",
+      "physical_device_verified": false,
+      "pinned_private_control_attempted": true,
+      "private_control_only": true,
+      "private_mode_control": "explicitFreshPinnedSelection",
+      "retained_resource_files_unchanged": 855,
+      "simulator_device_type": "com.apple.CoreSimulator.SimDeviceType.iPhone-15-Pro",
+      "simulator_runtime": "com.apple.CoreSimulator.SimRuntime.iOS-27-0",
+      "source_codesign_verified": true,
+      "source_ipa_unchanged": true,
+      "source_simulator_ipa_sha256": "df7a313e263440d92f2ab503e7ee1c1afb328774f6d631b3d052169f2f2e8e10",
+      "startup_variant": "main-app-only"
+    },
+    "driver": "5def97361de4f2e238ea8473b1f6997d6de1081c",
+    "inner_references_verified": 9,
+    "job": 127848100056,
+    "launch_result": {
+      "authentication_codes_used": false,
+      "expected_storage_kind": "private",
+      "failure": null,
+      "launches": [
+        {
+          "attempt": 1,
+          "marker": {
+            "failure": null,
+            "stage": "authorizationVisible"
+          },
+          "private_account_store_present": true,
+          "screenshot": {
+            "height": 2556,
+            "nonblank": true,
+            "width": 1179
+          },
+          "seconds_to_marker": 5.97,
+          "storage_kind": "private"
+        },
+        {
+          "attempt": 2,
+          "marker": {
+            "failure": null,
+            "stage": "authorizationVisible"
+          },
+          "private_account_store_present": true,
+          "private_account_store_stable_after_restart": true,
+          "screenshot": {
+            "height": 2556,
+            "nonblank": true,
+            "width": 1179
+          },
+          "seconds_to_marker": 4.99,
+          "storage_kind": "private"
+        }
+      ],
+      "mode": "fresh_simulator_launch",
+      "passed": true,
+      "phase": "complete",
+      "physical_device_verified": false,
+      "private_account_store_absent_before_launch": true,
+      "private_selection_seeded_before_launch": true,
+      "recording_return_code": 0,
+      "screenshot_checker": {
+        "compiled": true,
+        "self_test_cases": 3,
+        "self_test_passed": true
+      },
+      "simulator_device_type": "com.apple.CoreSimulator.SimDeviceType.iPhone-15-Pro",
+      "simulator_runtime": "com.apple.CoreSimulator.SimRuntime.iOS-27-0",
+      "storage_test_setup": "freshPinnedPrivate"
+    },
+    "new_native_xctest_case_passes": 0,
+    "outer_sha256": "aefdac1cb0edc2dff994129577da44490a44045a8e5bcb0ec432fc5eac14aa79",
+    "physical_device_verified": false,
+    "run": 42204637743,
+    "sidestore_signing_verified": false,
+    "source": "c55e19c4f5cbe0d730499035d0a0ef712f6903a9",
+    "source_simulator_origin": {
+      "artifact_id": 13490005243,
+      "ipa_sha256": "df7a313e263440d92f2ab503e7ee1c1afb328774f6d631b3d052169f2f2e8e10",
+      "outer_sha256": "f6df42768a6c9875a1227015ac6b1080ea5517ea77dff3ac34c54750dd8246ad",
+      "source_build_number": 1,
+      "source_commit": "c55e19c4f5cbe0d730499035d0a0ef712f6903a9",
+      "source_run": 42174474046
+    },
+    "visual_review": {
+      "accepted_by_root": true,
+      "all_contact_sheet_pages_reviewed": 10,
+      "all_original_video_frames_reviewed": 390,
+      "authentication_or_settings_navigation_shown": false,
+      "clipped_welcome_controls_observed": false,
+      "completed": true,
+      "custome_options_settings_guidance_visible": true,
+      "diagnostic_overlay_covering_application_observed": false,
+      "flag_interpretation": "SpringBoard/app-window launch and inter-launch transitions, plus changes confined to Dynamic Island/status pixels; no timing or device-performance claim.",
+      "flagged_frame_ids_reviewed": [
+        2,
+        3,
+        4,
+        8,
+        158,
+        161,
+        200,
+        223,
+        224,
+        225,
+        228,
+        249,
+        381,
+        387
+      ],
+      "original_screenshots_reviewed": 2,
+      "original_variable_presentation_timestamps": true,
+      "persistent_black_application_screen_observed": false,
+      "physical_device_verification": false,
+      "private_store_stability_is_separate_machine_proof_not_visual": true,
+      "review_date": "2026-11-06",
+      "screenshot_sha256": {
+        "launch-1.png": "15f20b7da4a1d59b51a491c9916e5f58fb65c4a4f9bb7ab3f9adb0723c5f2aa6",
+        "launch-2.png": "fcfd98b83f3e4886ed7732e40a9a26d0d026c5c61a670372553b265a493cbb70"
+      },
+      "video_duration_seconds": 24.763333,
+      "video_sha256": "fbf8bc158781981264ef54cb5dee25200bc75dec72f41f1bf2fe8f9f99749ced",
+      "welcome_title_and_start_messaging_visible_both_launches": true,
+      "white_launch_intervals_preserved_in_evidence": true
+    }
+  },
+  "feature_group_counts_are_additive": false,
+  "feature_groups": {
+    "archive_pipeline_and_history": {
+      "authenticated_application_verified": false,
+      "class_pass_counts": {
+        "LocalArchiveAcknowledgedEditTests": 5,
+        "LocalArchiveCaptureTests": 28,
+        "LocalArchiveCoordinatorTests": 41,
+        "LocalArchiveDeletedHistoryIntegrationTests": 2,
+        "LocalArchiveDeletedHistoryTests": 17,
+        "LocalArchiveFeedReconciliationTests": 4,
+        "LocalArchiveHistoryRemovalTests": 11,
+        "LocalArchiveInlineHistoryIntegrationTests": 3,
+        "LocalArchiveInlineHistoryTests": 14,
+        "LocalArchivePeerIdSafetyTests": 5,
+        "LocalArchivePresentationTests": 8,
+        "LocalArchiveRemoteReconciliationTests": 7,
+        "LocalArchiveReplayTests": 26,
+        "LocalArchiveServerReconciliationTests": 15,
+        "LocalArchiveTimedMediaExclusionTests": 11,
+        "LocalArchiveTransferTests": 12
+      },
+      "evidence_level": "native_local_fixture_pass",
+      "fixture_boundary": "Production encrypted Postbox, durable capture outbox, SQLCipher/account facade and loader fixtures with synthetic keys and locally invoked replay/deletion helpers; no live Telegram account, server RPC or actual conversation placement. Includes the separately identified timed-media exclusion and transfer classes.",
+      "passed_cases": 209,
+      "physical_device_verified": false,
+      "representative_passed_cases": [
+        "LocalArchiveDeletedHistoryIntegrationTests.testAutomaticDeleteAndEditCaptureReachRowsAfterCacheCleanupAndRestart",
+        "LocalArchiveReplayTests.testLegacyGroupBroadcastAndSupergroupReplayCaptureIndividualEditAndDeletion",
+        "LocalArchiveCoordinatorTests.testTypedCloudFileBytesSurviveDeletionCacheClearAndRestart",
+        "LocalArchiveCoordinatorTests.testRestartAfterArchiveCommitBeforeAcknowledgementDoesNotDuplicate"
+      ],
+      "suite": "prebuild-telegram-core"
+    },
+    "archive_settings_and_navigation_helpers": {
+      "authenticated_application_verified": false,
+      "class_pass_counts": {
+        "CustomeOptionsCatalogTests": 8,
+        "LocalArchiveGalleryTests": 4,
+        "LocalArchiveInlineHistoryStatusTests": 3,
+        "LocalArchiveMediaPreviewTests": 8,
+        "LocalArchivePeerReferenceTests": 2,
+        "LocalArchivePresentationTests": 8,
+        "LocalArchiveTransferLifecycleTests": 3,
+        "LocalClientNavigationTests": 10
+      },
+      "evidence_level": "native_local_fixture_pass",
+      "fixture_boundary": "Catalog, routing/identity helpers, status nodes, serialized thumbnail reads, preview classification and transfer-file lifecycle fixtures; no authenticated full-screen Settings/gallery navigation or full-app visual proof.",
+      "passed_cases": 46,
+      "physical_device_verified": false,
+      "representative_passed_cases": [
+        "CustomeOptionsCatalogTests.testAllRequestedCategoriesHaveStableIdentifiersAndActionableDestinations",
+        "LocalClientNavigationTests.testArchiveRoutePreservesExactCloudConversationAndQuery",
+        "LocalArchiveGalleryTests.testThumbnailReadsAreSerialEvenWhenMultipleCellsSubscribe",
+        "LocalArchiveInlineHistoryStatusTests.testDateOnlyExposesLocalHistoryCustomActionAndClearsOnReuse"
+      ],
+      "suite": "prebuild-settings-ui"
+    },
+    "archive_storage_transfer_and_key_queries": {
+      "authenticated_application_verified": false,
+      "class_pass_counts": {
+        "ArchiveStoreTests": 79,
+        "ArchiveTransferTests": 24,
+        "KeychainArchiveKeyStoreTests": 11
+      },
+      "evidence_level": "native_local_fixture_pass",
+      "fixture_boundary": "Real SQLCipher/archive file fixtures cover account isolation, quotas, retention, migration rollback and authenticated backup. KeychainArchiveKeyStoreTests inject fake Keychain operations; they do not verify physical-device Keychain unlock, biometric UI or SideStore provisioning.",
+      "passed_cases": 114,
+      "physical_device_verified": false,
+      "representative_passed_cases": [
+        "ArchiveStoreTests.testAccountAndPeerIsolation",
+        "ArchiveStoreTests.testMigrationFailureRollsBackSchemaAndData",
+        "ArchiveStoreTests.testOutboxReplayAfterQuotaAndAgeRetentionDoesNotResurrectMessages",
+        "ArchiveTransferTests.testPreparedImportChecksOwnershipBeforeAnyDestinationStoreIsCreated"
+      ],
+      "suite": "prebuild-local-message-archive"
+    },
+    "disappearing_timed_view_once_exclusions": {
+      "authenticated_application_verified": false,
+      "class_pass_counts": {
+        "LocalArchiveTimedMediaExclusionTests": 11
+      },
+      "evidence_level": "native_local_fixture_pass",
+      "fixture_boundary": "These eleven cases verify deliberate archive exclusion and preservation of normal consumption/expiry behavior. They do not verify retention of disappearing, timed or view-once content. Such retention is unsupported in this candidate.",
+      "passed_cases": 11,
+      "physical_device_verified": false,
+      "representative_passed_cases": [
+        "LocalArchiveTimedMediaExclusionTests.testViewOncePhotoExclusionAndCanonicalConsumptionSurviveRestart",
+        "LocalArchiveTimedMediaExclusionTests.testDisappearingVoiceExclusionAndCanonicalConsumptionSurviveRestart",
+        "LocalArchiveTimedMediaExclusionTests.testChatAutoDeleteTextAndPhotoTimersRemainArmedWithoutArchiveCapture"
+      ],
+      "suite": "prebuild-telegram-core"
+    },
+    "encrypted_import_export_account_facade": {
+      "authenticated_application_verified": false,
+      "class_pass_counts": {
+        "LocalArchiveTransferTests": 12
+      },
+      "evidence_level": "native_local_fixture_pass",
+      "fixture_boundary": "Real Postbox/account coordinator and SQLCipher with synthetic keys; validates authenticated owner/environment binding, paused capture, open/close ordering and seven deferred-transfer authority/cancellation cases. Native document picker and authenticated account navigation remain unverified.",
+      "passed_cases": 12,
+      "physical_device_verified": false,
+      "representative_passed_cases": [
+        "LocalArchiveTransferTests.testPendingImportWaitsForRealCloseAcknowledgementBeforeAuthenticationAndReopen",
+        "LocalArchiveTransferTests.testWrongPasswordAndMalformedFileNeverCreateDestinationOrRequestKey"
+      ],
+      "suite": "prebuild-telegram-core"
+    },
+    "encrypted_media_playback": {
+      "authenticated_application_verified": false,
+      "class_pass_counts": {
+        "ArchiveMediaFormatTests": 7,
+        "ArchivePlaybackTests": 11
+      },
+      "evidence_level": "native_local_fixture_pass",
+      "fixture_boundary": "Native generated fixtures decode PNG/JPEG, true GIF, PDF, AAC, Ogg/Opus and H264/audio through reopened encrypted storage. Separate capture fixtures use synthetic typed bytes; neither demonstrates every format arriving through live Telegram or actual gallery playback.",
+      "passed_cases": 18,
+      "physical_device_verified": false,
+      "representative_passed_cases": [
+        "ArchivePlaybackTests.testMovieDecodesFromEncryptedArchiveAfterCacheFileRemovalAndRestart",
+        "ArchiveMediaFormatTests.testOGGOpusVoiceDecodesPCMFromEncryptedRangesAfterReopen",
+        "ArchiveMediaFormatTests.testTrueGIFRetainsAndDecodesBothFramesAfterEncryptedReopen",
+        "ArchiveMediaFormatTests.testPDFDocumentRemainsReadableInMemoryAfterEncryptedReopen"
+      ],
+      "suite": "prebuild-local-archive-playback"
+    },
+    "ghost_and_story_warning": {
+      "authenticated_application_verified": false,
+      "class_pass_counts": {
+        "LocalGhostActivityTests": 15,
+        "LocalGhostMessagePrivacyTests": 15,
+        "LocalGhostPresenceTests": 9,
+        "LocalGhostReadAfterSendTests": 24,
+        "LocalGhostStoryTests": 26,
+        "LocalStoryOpeningWarningTests": 10
+      },
+      "evidence_level": "native_local_fixture_pass",
+      "fixture_boundary": "Production privacy workers and account preferences use final typed RPC recorders rather than live network calls. Request suppression/cancellation, independent policy and required expiry behavior are tested; server behavior, perfect invisibility and another client are not.",
+      "passed_cases": 99,
+      "physical_device_verified": false,
+      "representative_passed_cases": [
+        "LocalGhostActivityTests.testEachSuppressionSwitchIsIndependentAtTheRequestBoundary",
+        "LocalGhostMessagePrivacyTests.testEnabledReadSuppressionNeverConstructsRequestOrInventsAResult",
+        "LocalGhostPresenceTests.testGhostSuppressesOnlineAndIssuesOnlyAnActualOfflineRequest",
+        "LocalGhostReadAfterSendTests.testTwoEncryptedAccountStoresCannotShareIntent"
+      ],
+      "suite": "prebuild-telegram-core"
+    },
+    "local_cosmetic_preferences": {
+      "authenticated_application_verified": false,
+      "class_pass_counts": {
+        "LocalClientCosmeticsTests": 8
+      },
+      "evidence_level": "native_local_fixture_pass",
+      "fixture_boundary": "Real local preference persistence/reopen and entitlement boundary tests; native OS icon switching and physical-device appearance remain unverified.",
+      "passed_cases": 8,
+      "physical_device_verified": false,
+      "representative_passed_cases": [
+        "LocalClientCosmeticsTests.testPaletteMotionAndLocalIconPermissionPersistAcrossReopen",
+        "LocalClientCosmeticsTests.testLocalIconOptInNeverAuthorizesUnbundledAssetsOrChangesServerPremiumInput"
+      ],
+      "suite": "prebuild-telegram-core"
+    },
+    "local_folder_appearance": {
+      "authenticated_application_verified": false,
+      "class_pass_counts": {
+        "LocalFolderAppearanceTests": 21
+      },
+      "evidence_level": "native_local_fixture_pass",
+      "fixture_boundary": "Real Postbox preference/schema/projection and serialized-request invariance tests; native account editor/tab recordings remain unverified. No server Premium entitlement is granted.",
+      "passed_cases": 21,
+      "physical_device_verified": false,
+      "representative_passed_cases": [
+        "LocalFolderAppearanceTests.testLocalChangesDoNotRewriteCanonicalFiltersOrSerializedTelegramRequests",
+        "LocalFolderAppearanceTests.testSameFolderIdInTwoAccountsCannotShareOverlays",
+        "LocalFolderAppearanceTests.testStaleEditorCannotSaveChangedOrRecreatedFolderWithSameId"
+      ],
+      "suite": "prebuild-telegram-core"
+    },
+    "local_sponsored_message_policy": {
+      "authenticated_application_verified": false,
+      "class_pass_counts": {
+        "LocalPrivacyAdsTests": 5
+      },
+      "evidence_level": "native_local_fixture_pass",
+      "fixture_boundary": "Local consumer projection and account policy fixtures; no server entitlement, live sponsored-message behavior or Telegram API-policy clearance.",
+      "passed_cases": 5,
+      "physical_device_verified": false,
+      "representative_passed_cases": [
+        "LocalPrivacyAdsTests.testConsumerProjectionHidesAndRestoresWithoutDeletingStoredMessages",
+        "LocalPrivacyAdsTests.testTwoAccountsDoNotShareSponsoredMessagePolicy"
+      ],
+      "suite": "prebuild-telegram-core"
+    },
+    "message_filters_core": {
+      "authenticated_application_verified": false,
+      "class_pass_counts": {
+        "LocalMessageFilterCodableTests": 3,
+        "LocalMessageFilterMediaTests": 9,
+        "LocalMessageFilterRegularExpressionTests": 9,
+        "LocalMessageFilterSenderAndInverseTests": 15,
+        "LocalMessageFilterTests": 18
+      },
+      "evidence_level": "native_local_fixture_pass",
+      "fixture_boundary": "Production account preferences, bounded matchers and metadata classification are tested. Actual chat hide/reveal presentation is covered by the separate twenty-five unexecuted Projection cases, not these Core passes.",
+      "passed_cases": 54,
+      "physical_device_verified": false,
+      "representative_passed_cases": [
+        "LocalMessageFilterRegularExpressionTests.testProductionEvaluatorKeepsCompleteMessageVisibleWhenWorkIsExhausted",
+        "LocalMessageFilterMediaTests.testEveryTypedMediaRuleUsesProductionClassificationAndPreservesPostbox",
+        "LocalMessageFilterSenderAndInverseTests.testSenderHidingDoesNotMutateMessageOrServerBlockMetadataAndIsAccountIsolated",
+        "LocalMessageFilterTests.testGlobalExclusionDoesNotDisableExplicitPerChatRules"
+      ],
+      "suite": "prebuild-telegram-core"
+    },
+    "reviewed_local_telemetry_paths": {
+      "authenticated_application_verified": false,
+      "class_pass_counts": {
+        "LocalTelemetryTests": 3
+      },
+      "evidence_level": "native_local_fixture_pass",
+      "fixture_boundary": "Selected producer/persistence cleanup tests; not a runtime proof of no telemetry or all network connections.",
+      "passed_cases": 3,
+      "physical_device_verified": false,
+      "representative_passed_cases": [
+        "LocalTelemetryTests.testBothProducersAndSyncTriggerDoNotPersistTelemetry",
+        "LocalTelemetryTests.testCleanupIsIsolatedToTheOwningAccount"
+      ],
+      "suite": "prebuild-telegram-core"
+    },
+    "startup_storage_and_keychain_scoping": {
+      "authenticated_application_verified": false,
+      "class_pass_counts": {
+        "ApplicationStorageTests": 8,
+        "PrivateInstallationKeychainTests": 8
+      },
+      "evidence_level": "native_local_fixture_pass",
+      "fixture_boundary": "Storage choice and Keychain query scoping fixtures include noninteractive LAContext/host metadata checks. They do not verify an installed physical device, real unlock/biometric prompts or independent provisioning.",
+      "passed_cases": 16,
+      "physical_device_verified": false,
+      "representative_passed_cases": [
+        "ApplicationStorageTests.testSelectedGroupLosingEntitlementNeverFallsBackToFreshDatabase",
+        "PrivateInstallationKeychainTests.testStartupProbePreventsAuthenticationUIWithoutChangingCredentialScope"
+      ],
+      "suite": "prebuild-passcode-core"
+    }
+  },
+  "latest_projection_replay": {
+    "all_expected_case_ids_missing": true,
+    "artifact_id": 13496167308,
+    "assertion_retries": 0,
+    "case_counts": {
+      "all_expected_passed": false,
+      "crashed": 0,
+      "expected": 41,
+      "failed": 0,
+      "passed": 0,
+      "skipped": 0,
+      "started": 0
+    },
+    "device_type": "com.apple.CoreSimulator.SimDeviceType.iPhone-15-Pro",
+    "driver": "5def97361de4f2e238ea8473b1f6997d6de1081c",
+    "host_control_attestation": {
+      "entitlements_preserved": true,
+      "host_code_unchanged": true,
+      "identifier_and_flags_preserved": true,
+      "independent_private_copy": true,
+      "mode": "resealed-host",
+      "requirements_preserved": true,
+      "signing_modified_for_diagnostic": true,
+      "source_products_unchanged": true,
+      "strict_seal_verified": true,
+      "test_tree_unchanged": true
+    },
+    "inner_references_verified": 4,
+    "installed_control_attestation": {
+      "state": "unavailable"
+    },
+    "job": 127848100517,
+    "later_recovery_or_retained_ui_run_result_included": false,
+    "outer_sha256": "a1dddfdd453fd99d6e81e93e70726cc2a27c6c22b6aba8d1574f5202c0c5347f",
+    "owned_device_cleanup_completed": true,
+    "passed": false,
+    "physical_device_verified": false,
+    "release_qualified": false,
+    "root_cause_established": false,
+    "run": 42204637743,
+    "runtime": "com.apple.CoreSimulator.SimRuntime.iOS-27-0",
+    "source": "c55e19c4f5cbe0d730499035d0a0ef712f6903a9",
+    "source_native_origin": {
+      "artifact_id": 13482555818,
+      "artifact_sha256": "b1994fd195dc85097d8984c0eeb97508ccc60747f847de883636f137ce409f29",
+      "source_commit": "c55e19c4f5cbe0d730499035d0a0ef712f6903a9",
+      "source_run": 42160468600
+    },
+    "source_products_unchanged": true,
+    "xctest_command_attempted": true,
+    "xctest_timed_out": true,
+    "xctest_timeout_seconds": 300
+  },
+  "media_scope": {
+    "capture": "Real local encrypted capture/durability fixtures include completed photos and synthetic typed video, round-video, voice, GIF and document bytes, including a 20 MiB streamed document.",
+    "decoder": "The separate eighteen-case encrypted-playback suite includes native decoding of generated real media formats; loader, cancellation and boundary cases are not all decoding tests.",
+    "unsupported": "Timed, self-destructing and view-once retention is not implemented; eleven cases confirm exclusion and normal consumption."
+  },
+  "native_suites": {
+    "prebuild-local-archive-playback": {
+      "class_pass_counts": {
+        "ArchiveMediaFormatTests": 7,
+        "ArchivePlaybackTests": 11
+      },
+      "crashed": 0,
+      "duplicate_events": false,
+      "failed": 0,
+      "log_sha256": "e94f0dcae4b5c986fb30be5e603fb3cc73851041c3ccaa4d81b46e7f279c3460",
+      "outcomes_without_start": false,
+      "passed": 18,
+      "published_log": "fork-evidence/prebuild-local-archive-playback/test.log",
+      "result": "passed_local_native_cases",
+      "skipped": 0,
+      "started": 18
+    },
+    "prebuild-local-message-archive": {
+      "class_pass_counts": {
+        "ArchiveStoreTests": 79,
+        "ArchiveTransferTests": 24,
+        "KeychainArchiveKeyStoreTests": 11
+      },
+      "crashed": 0,
+      "duplicate_events": false,
+      "failed": 0,
+      "log_sha256": "8d27d31c838edf5feb642e8eea56f414ff73daba98c36cb6c97ddde430001b28",
+      "outcomes_without_start": false,
+      "passed": 114,
+      "published_log": "fork-evidence/prebuild-local-message-archive/test.log",
+      "result": "passed_local_native_cases",
+      "skipped": 0,
+      "started": 114
+    },
+    "prebuild-local-text-filter-projection": {
+      "class_pass_counts": {},
+      "crashed": 0,
+      "duplicate_events": false,
+      "failed": 0,
+      "log_sha256": "758d95ecf68cf9886836b5dcbcf76c0fa615ae19914d7b227e2c406ee7d2d859",
+      "outcomes_without_start": false,
+      "passed": 0,
+      "published_log": "fork-evidence/prebuild-local-text-filter-projection/test.log",
+      "result": "unexecuted_host_gate_failed",
+      "skipped": 0,
+      "started": 0
+    },
+    "prebuild-passcode-core": {
+      "class_pass_counts": {
+        "ApplicationStorageTests": 8,
+        "PrivateInstallationKeychainTests": 8
+      },
+      "crashed": 0,
+      "duplicate_events": false,
+      "failed": 0,
+      "log_sha256": "967c70a98a9a572bff94381f104ce9469d67b45231546b8a20978e96378f0009",
+      "outcomes_without_start": false,
+      "passed": 16,
+      "published_log": "fork-evidence/prebuild-passcode-core/test.log",
+      "result": "passed_local_native_cases",
+      "skipped": 0,
+      "started": 16
+    },
+    "prebuild-postbox": {
+      "class_pass_counts": {
+        "AdaptedPostboxDecoderArrayTests": 3,
+        "AdaptedPostboxDecoderRawArrayTests": 13,
+        "ChatListFilteredViewPinnedReaddTests": 2,
+        "ForumReadCountersViewTests": 6,
+        "MediaBoxFileContextV2IsolationTests": 2,
+        "MediaBoxFileContextV2MovedFileTests": 6,
+        "MediaBoxFileContextV2ReopenTests": 3,
+        "MediaBoxFileContextV2RetryTests": 3,
+        "MediaBoxFileContextV2ShortWriteTests": 1,
+        "MediaBoxFileMapReadTests": 5,
+        "MediaBoxStalePartialFilesTests": 16,
+        "MessageHistoryReadStateTableTests": 4,
+        "MessageHistorySynchronizeReadStateTableTests": 2,
+        "MessageHistoryTableGlobalTagsTests": 7,
+        "MessageHistoryTableMediaReferenceTests": 8,
+        "MessageHistoryViewAdditionalDataTests": 5,
+        "MessageHistoryViewAnchorWhileLoadingTests": 13,
+        "MessageHistoryViewCombinedLocationTests": 6,
+        "MessageHistoryViewLateAssociatedMessageTests": 2,
+        "MessageOfInterestHolesViewTests": 6,
+        "MessageViewMediaUpdateTests": 7,
+        "NonMemberChannelReadStateTests": 6,
+        "PostboxCodingArrayTests": 6,
+        "SecretChatReadPushTests": 4,
+        "SimpleDictionaryTests": 4,
+        "SqliteValueBoxInt64RangeTests": 6,
+        "SqliteValueBoxRecoveryPolicyTests": 13,
+        "SqliteValueBoxUnavailableDatabaseTests": 1,
+        "StorageBoxPeerStatsTests": 4,
+        "TempBoxFileNameTests": 6,
+        "TimeBasedCleanupScanTests": 7,
+        "TimeBasedCleanupTests": 24
+      },
+      "crashed": 0,
+      "duplicate_events": false,
+      "failed": 0,
+      "log_sha256": "b66edfb2b9dfd1a71608730b4685ba400742de5474ba29d6b539203026b4ca0b",
+      "outcomes_without_start": false,
+      "passed": 201,
+      "published_log": "fork-evidence/prebuild-postbox/test.log",
+      "result": "passed_local_native_cases",
+      "skipped": 0,
+      "started": 201
+    },
+    "prebuild-settings-ui": {
+      "class_pass_counts": {
+        "CustomeOptionsCatalogTests": 8,
+        "LocalArchiveGalleryTests": 4,
+        "LocalArchiveInlineHistoryStatusTests": 3,
+        "LocalArchiveMediaPreviewTests": 8,
+        "LocalArchivePeerReferenceTests": 2,
+        "LocalArchivePresentationTests": 8,
+        "LocalArchiveTransferLifecycleTests": 3,
+        "LocalClientNavigationTests": 10,
+        "ProxyServerSettingsControllerTests": 12
+      },
+      "crashed": 0,
+      "duplicate_events": false,
+      "failed": 0,
+      "log_sha256": "2bf9e14ebb79e8c5a74d5eb40a3c8fa84766714756cc1a90b5b4a9655413f712",
+      "outcomes_without_start": false,
+      "passed": 58,
+      "published_log": "fork-evidence/prebuild-settings-ui/test.log",
+      "result": "passed_local_native_cases",
+      "skipped": 0,
+      "started": 58
+    },
+    "prebuild-telegram-core": {
+      "class_pass_counts": {
+        "AppConfigurationFetchTests": 5,
+        "AroundHoleFillRangeTests": 12,
+        "B3FinalLivenessTests": 3,
+        "BotStorageTests": 3,
+        "CachedPinnedMessageIdTests": 10,
+        "CdnPartValidationTests": 5,
+        "ChannelInNewsFlagTests": 6,
+        "ChannelInNewsLocalChangeTests": 7,
+        "ChannelMigratedFromGroupTests": 4,
+        "CustomEmojiPackTests": 5,
+        "EngineMessageReplyQuoteTests": 6,
+        "FeedEntryGroupingTests": 23,
+        "FeedReadStateTests": 5,
+        "ForumThreadResolutionGuardTests": 3,
+        "InstantPageBlockQuoteCollapsedWireTests": 5,
+        "InstantPageButtonLinkStyleTests": 9,
+        "InstantPageCustomEmojiTests": 2,
+        "LocalArchiveAcknowledgedEditTests": 5,
+        "LocalArchiveCaptureTests": 28,
+        "LocalArchiveCoordinatorTests": 41,
+        "LocalArchiveDeletedHistoryIntegrationTests": 2,
+        "LocalArchiveDeletedHistoryTests": 17,
+        "LocalArchiveFeedReconciliationTests": 4,
+        "LocalArchiveHistoryRemovalTests": 11,
+        "LocalArchiveInlineHistoryIntegrationTests": 3,
+        "LocalArchiveInlineHistoryTests": 14,
+        "LocalArchivePeerIdSafetyTests": 5,
+        "LocalArchivePresentationTests": 8,
+        "LocalArchiveRemoteReconciliationTests": 7,
+        "LocalArchiveReplayTests": 26,
+        "LocalArchiveServerReconciliationTests": 15,
+        "LocalArchiveTimedMediaExclusionTests": 11,
+        "LocalArchiveTransferTests": 12,
+        "LocalClientCosmeticsTests": 8,
+        "LocalFolderAppearanceTests": 21,
+        "LocalGhostActivityTests": 15,
+        "LocalGhostMessagePrivacyTests": 15,
+        "LocalGhostPresenceTests": 9,
+        "LocalGhostReadAfterSendTests": 24,
+        "LocalGhostStoryTests": 26,
+        "LocalMessageFilterCodableTests": 3,
+        "LocalMessageFilterMediaTests": 9,
+        "LocalMessageFilterRegularExpressionTests": 9,
+        "LocalMessageFilterSenderAndInverseTests": 15,
+        "LocalMessageFilterTests": 18,
+        "LocalPrivacyAdsTests": 5,
+        "LocalRequirementToContactTests": 7,
+        "LocalStoryOpeningWarningTests": 10,
+        "LocalTelemetryTests": 3,
+        "MediaResourceDebugInfoTests": 2,
+        "MultipartUploadTests": 1,
+        "NetworkEngineDrainTests": 6,
+        "NetworkEngineStateStoreTests": 4,
+        "NetworkEngineStateTests": 22,
+        "NetworkLivenessMonitorTests": 13,
+        "NetworkTelemetryTests": 60,
+        "NonMemberChannelReadStateTests": 23,
+        "ParkedNewsFeedApiTests": 2,
+        "ProxySettingsTests": 12,
+        "ReenqueuedMessageAttributesTests": 17,
+        "ReplyMarkupButtonActionTests": 26,
+        "ReplyQuoteApiTests": 5,
+        "RichReplyQuoteModelTests": 7,
+        "RichReplyQuoteTests": 21,
+        "ServerMessageMergeTests": 3,
+        "SparseCalendarPagingTests": 8,
+        "SparseMessageListLayoutTests": 7,
+        "SparseMessageListMergeTests": 18,
+        "SparseMessageListWiringTests": 14,
+        "SwitchingNetworkEngineActivationTests": 1,
+        "WebpageUpdateEventsTests": 5
+      },
+      "crashed": 0,
+      "duplicate_events": false,
+      "failed": 0,
+      "log_sha256": "05ca4286b77c010160d3e733d03cfba18ed088a640b13ae1678ba33467db3a01",
+      "outcomes_without_start": false,
+      "passed": 796,
+      "published_log": "fork-evidence/prebuild-telegram-core/test.log",
+      "result": "passed_local_native_cases",
+      "skipped": 0,
+      "started": 796
+    },
+    "prebuild-textformat": {
+      "class_pass_counts": {
+        "AdjustedEntityRangesTests": 4,
+        "ChatInputContentConversionTests": 24,
+        "ChatInputContentCrossBlockReplaceTests": 6,
+        "ChatInputContentCustomEmojiTests": 8,
+        "ChatInputContentInsertIntoQuoteTests": 1,
+        "ChatInputContentInstantPageTests": 50,
+        "ChatInputContentModelTests": 48,
+        "ChatInputContentSameBlockReplaceTests": 9,
+        "ChatInputQuoteInlineAttributeTests": 7,
+        "ChatInputRunPrimitiveTests": 7,
+        "ChatInputRunsFromAttributedStringTests": 6,
+        "ChatListPreviewTextTests": 2,
+        "CodeBlockMarkersTests": 4,
+        "InstantPageBlockNewCasesTests": 21,
+        "InstantPageButtonModelTests": 7,
+        "InstantPageSyntaxHighlightSpecsTests": 4,
+        "MentionDateMarkersTests": 8,
+        "PastedMarkdownGateTests": 6,
+        "RichTextButtonTests": 7,
+        "SelfReferentialLinkTests": 19,
+        "SpoilerStrikethroughLayoutTests": 4,
+        "StringWithAppliedCustomEmojiEntitiesTests": 6,
+        "StringWithAppliedEntitiesCustomEmojiTests": 3,
+        "SynchronizeableChatInputStateTests": 6,
+        "SyntaxHighlightLanguageCasingTests": 3
+      },
+      "crashed": 0,
+      "duplicate_events": false,
+      "failed": 0,
+      "log_sha256": "9dd6ac6ab71932c0b8d68539f9afba871271251c2453a67583d1d6d2dcba6c59",
+      "outcomes_without_start": false,
+      "passed": 270,
+      "published_log": "fork-evidence/prebuild-textformat/test.log",
+      "result": "passed_local_native_cases",
+      "skipped": 0,
+      "started": 270
+    }
+  },
+  "original_native_origin": {
+    "artifact_id": 13482555818,
+    "completed_suite_count": 7,
+    "inner_references_verified": 96,
+    "original_full_qualification": "failed",
+    "outer_sha256": "b1994fd195dc85097d8984c0eeb97508ccc60747f847de883636f137ce409f29",
+    "passed_native_cases": 1473,
+    "projection_cases_unexecuted": 41,
+    "repository": "Livara-Dev/Telegram-iOS",
+    "run": 42160468600
+  },
+  "parsing": {
+    "duplicate_terminal_events": false,
+    "failed_skipped_or_crashed_executed_cases": 0,
+    "source": "Actual XCTest started/terminal markers in published test.log files, including markers preceded by concurrent console output; Bazel test.xml wrapper counts are not native method counts.",
+    "unique_started_equal_unique_passed": true
+  },
+  "production_ready": false,
+  "projection_cases": {
+    "ChatLocalArchiveProjectionTests": {
+      "case_ids": [
+        "ChatLocalArchiveProjectionTests.testLocalRowsSortBetweenUnmodifiedCanonicalObjects",
+        "ChatLocalArchiveProjectionTests.testCanonicalAndAlbumIdentitiesWinOverArchiveDuplicates",
+        "ChatLocalArchiveProjectionTests.testRepeatedDeletedIdHasOneStableIdentityAndNewVersionUpdatesEquality",
+        "ChatLocalArchiveProjectionTests.testArchiveIdentityCannotCollideWithCanonicalOrArbitraryAlbumBits",
+        "ChatLocalArchiveProjectionTests.testOtherAccountChatPeerCannotAppear",
+        "ChatLocalArchiveProjectionTests.testUnsafeIdentifiersAndTimestampsFailClosed",
+        "ChatLocalArchiveProjectionTests.testRevokedBodyNeverReentersAReplayedTransition",
+        "ChatLocalArchiveProjectionTests.testProtectedSelectionPreviewOrFilterGateDoesNotInsertAnyLocalRows",
+        "ChatLocalArchiveProjectionTests.testOutputBoundDoesNotExpandWithLargeArchivePage",
+        "ChatLocalArchiveProjectionTests.testTruncationNoticeSurvivesDeduplicationOfItsOriginalRow",
+        "ChatLocalArchiveProjectionTests.testReverseHistoryMaintainsComparatorOrder",
+        "ChatLocalArchiveProjectionTests.testOnlyCanonicalRowsCanSupplyNetworkPaginationAndReadAnchors"
+      ],
+      "expected_cases": 12,
+      "latest_replay_status": "unexecuted_again_in_run_42204637743",
+      "passed": 0,
+      "started": 0,
+      "status": "unexecuted_in_original_c55_qualification"
+    },
+    "ChatLocalArchiveRowRendererTests": {
+      "case_ids": [
+        "ChatLocalArchiveRowRendererTests.testActualRendererExposesLocalMarkerTimestampAndMediaAvailabilityWithoutServerActions",
+        "ChatLocalArchiveRowRendererTests.testReusedRendererCannotRestoreRevokedPreviousBody",
+        "ChatLocalArchiveRowRendererTests.testLongAndMediaOnlyRowsHaveBoundedNonoverlappingLayoutOnPhoneWidths",
+        "ChatLocalArchiveRowRendererTests.testRendererUsesRealLightAndDarkThemeColorsAndAlwaysClearsBoth"
+      ],
+      "expected_cases": 4,
+      "latest_replay_status": "unexecuted_again_in_run_42204637743",
+      "passed": 0,
+      "started": 0,
+      "status": "unexecuted_in_original_c55_qualification"
+    },
+    "ChatLocalTextFilterProjectionTests": {
+      "case_ids": [
+        "ChatLocalTextFilterProjectionTests.testProjectionRunsInIsolatedIOSHostWithPresentationResources",
+        "ChatLocalTextFilterProjectionTests.testSingleOrdinaryPhotoCanHideAndRevealWithoutChangingItsMedia",
+        "ChatLocalTextFilterProjectionTests.testSingleOrdinaryVideoCanHideAndRevealWithoutChangingItsMedia",
+        "ChatLocalTextFilterProjectionTests.testSingleOrdinaryGIFCanHideAndRevealWithoutChangingItsMedia",
+        "ChatLocalTextFilterProjectionTests.testSingleOrdinaryVoiceCanHideAndRevealWithoutConsumingIt",
+        "ChatLocalTextFilterProjectionTests.testSingleOrdinaryRoundVideoCanHideAndRevealWithoutConsumingIt",
+        "ChatLocalTextFilterProjectionTests.testSingleOrdinaryDocumentCanHideAndRevealWithoutChangingItsMedia",
+        "ChatLocalTextFilterProjectionTests.testMediaExpiryProtectionGroupingAndUnknownMetadataStayVisible",
+        "ChatLocalTextFilterProjectionTests.testChangingAuthorOrMediaClassificationInvalidatesAQueuedDecision",
+        "ChatLocalTextFilterProjectionTests.testProductionSnapshotBridgeAppliesLocalSenderIdentityAndAllowsReveal",
+        "ChatLocalTextFilterProjectionTests.testInverseRulesAndSenderMatchesCannotHideIneligibleMetadata",
+        "ChatLocalTextFilterProjectionTests.testInverseMediaProjectionUsesKnownTypesAndKeepsTextAndAllowedMediaVisible",
+        "ChatLocalTextFilterProjectionTests.testStickerAndCustomEmojiNodesCannotBePromotedIntoFilterBubbles",
+        "ChatLocalTextFilterProjectionTests.testOrdinaryIncomingCloudTextAndAllowedMetadataRemainEligible",
+        "ChatLocalTextFilterProjectionTests.testUnsupportedContentIsNotHiddenEvenWhenSnapshotMatches",
+        "ChatLocalTextFilterProjectionTests.testAllMatchedRowsKeepCountOrderIdentityAndIndexes",
+        "ChatLocalTextFilterProjectionTests.testOnlyMatchedMessageChangesPresentation",
+        "ChatLocalTextFilterProjectionTests.testRevealAndRehidePreserveCanonicalMessageAndPriorRows",
+        "ChatLocalTextFilterProjectionTests.testRemovingMatchesClearsBothHiddenAndRevealedState",
+        "ChatLocalTextFilterProjectionTests.testSelectionModeRevealsAllMatchesAndClearingSelectionAllowsRehide",
+        "ChatLocalTextFilterProjectionTests.testSelectedMessageStaysVisibleEvenWithInconsistentSelectionModeFlag",
+        "ChatLocalTextFilterProjectionTests.testStaleMessageVersionOrTextNeverInheritsPreviousMatch",
+        "ChatLocalTextFilterProjectionTests.testSnapshotIdentityRejectsOtherPeerMessageAndNamespace",
+        "ChatLocalTextFilterProjectionTests.testLargeAndAnimatedEmojiKeepTheirOriginalNodeClassification",
+        "ChatLocalTextFilterProjectionTests.testAlbumAndNonMessageEntriesPassThroughInTheirOriginalOrder"
+      ],
+      "expected_cases": 25,
+      "latest_replay_status": "unexecuted_again_in_run_42204637743",
+      "passed": 0,
+      "started": 0,
+      "status": "unexecuted_in_original_c55_qualification"
+    }
+  },
+  "projection_source_delta": {
+    "added_case_count": 19,
+    "added_case_ids_by_class": {
+      "ChatLocalArchiveProjectionTests": [
+        "ChatLocalArchiveProjectionTests.testLocalRowsSortBetweenUnmodifiedCanonicalObjects",
+        "ChatLocalArchiveProjectionTests.testCanonicalAndAlbumIdentitiesWinOverArchiveDuplicates",
+        "ChatLocalArchiveProjectionTests.testRepeatedDeletedIdHasOneStableIdentityAndNewVersionUpdatesEquality",
+        "ChatLocalArchiveProjectionTests.testArchiveIdentityCannotCollideWithCanonicalOrArbitraryAlbumBits",
+        "ChatLocalArchiveProjectionTests.testOtherAccountChatPeerCannotAppear",
+        "ChatLocalArchiveProjectionTests.testUnsafeIdentifiersAndTimestampsFailClosed",
+        "ChatLocalArchiveProjectionTests.testRevokedBodyNeverReentersAReplayedTransition",
+        "ChatLocalArchiveProjectionTests.testProtectedSelectionPreviewOrFilterGateDoesNotInsertAnyLocalRows",
+        "ChatLocalArchiveProjectionTests.testOutputBoundDoesNotExpandWithLargeArchivePage",
+        "ChatLocalArchiveProjectionTests.testTruncationNoticeSurvivesDeduplicationOfItsOriginalRow",
+        "ChatLocalArchiveProjectionTests.testReverseHistoryMaintainsComparatorOrder",
+        "ChatLocalArchiveProjectionTests.testOnlyCanonicalRowsCanSupplyNetworkPaginationAndReadAnchors"
+      ],
+      "ChatLocalArchiveRowRendererTests": [
+        "ChatLocalArchiveRowRendererTests.testActualRendererExposesLocalMarkerTimestampAndMediaAvailabilityWithoutServerActions",
+        "ChatLocalArchiveRowRendererTests.testReusedRendererCannotRestoreRevokedPreviousBody",
+        "ChatLocalArchiveRowRendererTests.testLongAndMediaOnlyRowsHaveBoundedNonoverlappingLayoutOnPhoneWidths",
+        "ChatLocalArchiveRowRendererTests.testRendererUsesRealLightAndDarkThemeColorsAndAlwaysClearsBoth"
+      ],
+      "ChatLocalTextFilterProjectionTests": [
+        "ChatLocalTextFilterProjectionTests.testProductionSnapshotBridgeAppliesLocalSenderIdentityAndAllowsReveal",
+        "ChatLocalTextFilterProjectionTests.testInverseRulesAndSenderMatchesCannotHideIneligibleMetadata",
+        "ChatLocalTextFilterProjectionTests.testInverseMediaProjectionUsesKnownTypesAndKeepsTextAndAllowedMediaVisible"
+      ]
+    },
+    "baseline_commit": "fd7be3a0fb1dbdc9d31eec9d1f8a71959f087d53",
+    "candidate_commit": "c55e19c4f5cbe0d730499035d0a0ef712f6903a9",
+    "native_tests_executed_for_delta_inventory": false,
+    "status": "source_inventory_only_unexecuted_in_original_c55_qualification"
+  },
+  "recorded_date": "2026-11-06",
+  "remaining_application_verification": [
+    "Authenticated Settings entry, account-bound destinations, persistence controls and switching accounts in the complete app.",
+    "Actual conversation placement, filter hide/reveal, archived-row projection and gallery/search playback.",
+    "Live incoming media and sender-deletion/edit interactions with another Telegram client.",
+    "Physical lock/unlock, actual OS termination, low-storage behavior, network privacy and device performance.",
+    "The original qualification and later iPhone 15 Pro replay have not executed the forty-one Projection assertions.",
+    "Automatic App Group/private-storage fallback, Apple HTTP 403 resolution, independent signing, SideStore installation and the reported physical iOS 27.2 behavior; the passing simulator control explicitly seeds fresh private storage."
+  ],
+  "renderer_origin": {
+    "account_or_network_client_created": false,
+    "artifact_id": 13471537351,
+    "authenticated_settings_verified": false,
+    "controller_tests_passed": 8,
+    "fresh_nine_test_rerun_for_this_report": false,
+    "host_ipa_sha256": "1c295da5e2acbdd6d8eb974ab862547f7f5300633d5d95ddf87be862dde5ce0d",
+    "interaction_scenarios_passed": 1,
+    "outer_sha256": "3d69f82fd9bce9ce6f4e206cb689075a44cbeb0b1c239518cc3d0b87241fdb0b",
+    "recorded_stages": 12,
+    "renderer_sources": [
+      {
+        "identical_to_c55": true,
+        "path": "submodules/SettingsUI/Sources/CustomeOptionsCatalog.swift",
+        "sha256": "109f346466e10b7f50cf519d78dfdca115093e3ba66c4c969a951c1fad12909d"
+      },
+      {
+        "identical_to_c55": true,
+        "path": "submodules/SettingsUI/Sources/CustomeOptionsController.swift",
+        "sha256": "337a95cc5a9fbd57128853f1b335f6024c4ed63f1a889f0e23dc7f4db502d0fa"
+      },
+      {
+        "identical_to_c55": true,
+        "path": "submodules/SettingsUI/Sources/LocalClientCosmeticsController.swift",
+        "sha256": "4f25c21ab8931ceb40ed714e30ebc47383aae16c884086b895e56157a366eb32"
+      }
+    ],
+    "retained_host_ipa_only_does_not_allow_nine_test_reexecution": true,
+    "retained_xctest_or_xctestrun_products": false,
+    "run": 42147021107,
+    "source_commit": "c5eafa23fa4aff7e05d588a9b2cd49cd539dcd1c",
+    "synthetic_account_free": true
+  },
+  "report_generation_ran_native_tests": false,
+  "schema": 1,
+  "scope": "Feature evidence from the original c55 native qualification, a separately identified older synthetic renderer run, and the later exact-source iPhone 15 Pro startup/device-variant and unexecuted Projection replay. Each diagnostic retains its own run and artifact origin."
+}

@@ -16,9 +16,11 @@ import platform
 import plistlib
 import re
 import signal
+import selectors
 import stat
 import subprocess
 import tempfile
+import threading
 import time
 import uuid
 import zipfile
@@ -26,6 +28,7 @@ from xml.parsers.expat import ExpatError
 
 import replay_artifact as artifacts
 from custom_options_smoke import BUNDLE, DEVICE_TYPE, RUNTIME
+from simulator_probe import redact_probe_text
 from installer_control import read_json, write_json
 from ipa_inspect import inspect_ipa
 from projection_replay import child_environment, native_command
@@ -63,11 +66,21 @@ import CoreGraphics
 import CoreText
 import ImageIO
 import Vision
-enum CheckError: Error { case invalid }
+import CoreML
+enum CheckError: Error { case invalid, cpuUnavailable }
+func closedError(_ error: Error) -> [String: Any] {
+    if let local = error as? CheckError {
+        switch local { case .invalid: return ["domain": "checker", "code": 0]
+        case .cpuUnavailable: return ["domain": "checker", "code": 1] }
+    }
+    let value = error as NSError
+    let domain = value.domain == VNErrorDomain ? "Vision" : value.domain == MLModelErrorDomain ? "CoreML" : "other"
+    return ["domain": domain, "code": domain != "other" && value.code >= Int(Int32.min) && value.code <= Int(Int32.max) ? value.code as Any : NSNull()]
+}
 func normalized(_ text: String) -> String {
     text.lowercased().filter { $0.isLetter || $0.isNumber }
 }
-func recognize(_ image: CGImage) throws -> [VNRecognizedTextObservation] {
+func recognize(_ image: CGImage, cpuConfigured: inout Bool) throws -> [VNRecognizedTextObservation] {
     let request = VNRecognizeTextRequest()
     request.recognitionLevel = .accurate
     // Apple's customWords contract requires language correction to be enabled.
@@ -76,11 +89,21 @@ func recognize(_ image: CGImage) throws -> [VNRecognizedTextObservation] {
     request.recognitionLanguages = ["en-US"]
     // Guide the model toward the actual spelling; acceptance remains exact.
     request.customWords = ["Custome"]
+    // Public macOS 14+ API; usesCPUOnly is deprecated. Select only a CPU that
+    // Vision itself lists as supported, rather than assuming a VM has Metal.
+    let supported = try request.supportedComputeStageDevices
+    guard !supported.isEmpty else { throw CheckError.cpuUnavailable }
+    for (stage, devices) in supported {
+        guard let cpu = devices.first(where: { if case .cpu = $0 { return true }; return false }) else { throw CheckError.cpuUnavailable }
+        request.setComputeDevice(cpu, for: stage)
+    }
+    cpuConfigured = true
     try VNImageRequestHandler(cgImage: image, options: [:]).perform([request])
     return request.results ?? []
 }
 func titleVisible(_ image: CGImage) throws -> Bool {
-    return try recognize(image).contains { observation in
+    var cpuConfigured = false
+    return try recognize(image, cpuConfigured: &cpuConfigured).contains { observation in
         guard observation.boundingBox.midY > 0.80,
               let text = observation.topCandidates(1).first?.string else { return false }
         return normalized(text) == "customeoptions"
@@ -111,12 +134,14 @@ func writeSynthetic(_ image: CGImage, path: String) throws {
 func syntheticControl(_ text: String, positive: Bool, imagePath: String?) -> [String: Any] {
     var result: [String: Any] = ["state": "imageUnavailable", "expected_title_seen": false,
         "expected_title_in_navigation_region": false, "known_variant_seen": false,
-        "recognized_observations": 0, "known_title_regions": [[String: Any]](), "passed": false]
+        "recognized_observations": 0, "known_title_regions": [[String: Any]](), "passed": false,
+        "cpu_compute_selected": false, "error": NSNull()]
+    var cpuConfigured = false
     do {
         let image = try synthetic(text)
         if let imagePath { try writeSynthetic(image, path: imagePath) }
         result["state"] = "visionUnavailable"
-        let observations = try recognize(image)
+        let observations = try recognize(image, cpuConfigured: &cpuConfigured)
         guard observations.count <= 128 else { throw CheckError.invalid }
         var expected = false, navigation = false, variant = false
         var regions: [[String: Any]] = []
@@ -137,8 +162,8 @@ func syntheticControl(_ text: String, positive: Bool, imagePath: String?) -> [St
         result = ["state": "completed", "expected_title_seen": expected,
             "expected_title_in_navigation_region": navigation, "known_variant_seen": variant,
             "recognized_observations": observations.count, "known_title_regions": regions,
-            "passed": positive ? navigation : !expected]
-    } catch { /* Only the fixed state and zero/false fields survive model errors. */ }
+            "passed": positive ? navigation : !expected, "cpu_compute_selected": cpuConfigured, "error": NSNull()]
+    } catch { result["cpu_compute_selected"] = cpuConfigured; result["error"] = closedError(error) }
     return result
 }
 do {
@@ -197,13 +222,19 @@ def self_control_report(data):
             not isinstance(value.get('controls'), dict) or set(value['controls']) != {'positive', 'wrong', 'blank'}):
         raise ReplayError('settings_checker_invalid')
     fields = {'state', 'expected_title_seen', 'expected_title_in_navigation_region', 'known_variant_seen',
-              'recognized_observations', 'known_title_regions', 'passed'}
+              'recognized_observations', 'known_title_regions', 'passed', 'cpu_compute_selected', 'error'}
     for name, control in value['controls'].items():
         if (not isinstance(control, dict) or set(control) != fields or
                 not isinstance(control.get('state'), str) or control['state'] not in {'completed', 'imageUnavailable', 'visionUnavailable'} or
-                any(type(control.get(k)) is not bool for k in ('expected_title_seen', 'expected_title_in_navigation_region', 'known_variant_seen', 'passed')) or
+                any(type(control.get(k)) is not bool for k in ('expected_title_seen', 'expected_title_in_navigation_region', 'known_variant_seen', 'passed', 'cpu_compute_selected')) or
                 type(control.get('recognized_observations')) is not int or not 0 <= control['recognized_observations'] <= 128 or
                 not isinstance(control.get('known_title_regions'), list) or len(control['known_title_regions']) > 16):
+            raise ReplayError('settings_checker_invalid')
+        error = control['error']
+        if error is not None and (not isinstance(error, dict) or set(error) != {'domain', 'code'} or
+                error.get('domain') not in ('Vision', 'CoreML', 'checker', 'other') or
+                (error.get('domain') == 'other' and error.get('code') is not None) or
+                (error.get('domain') != 'other' and (type(error.get('code')) is not int or not -(2**31) <= error['code'] < 2**31))):
             raise ReplayError('settings_checker_invalid')
         expected = navigation = variant = False
         for region in control['known_title_regions']:
@@ -221,7 +252,8 @@ def self_control_report(data):
         if (control['expected_title_seen'] != expected or control['expected_title_in_navigation_region'] != navigation or
                 control['known_variant_seen'] != variant or control['recognized_observations'] < len(control['known_title_regions']) or
                 control['passed'] != (completed and (navigation if name == 'positive' else not expected)) or
-                (not completed and (control['recognized_observations'] or control['known_title_regions']))):
+                (completed and (error is not None or control['cpu_compute_selected'] is not True)) or
+                (not completed and (error is None or control['recognized_observations'] or control['known_title_regions']))):
             raise ReplayError('settings_checker_invalid')
     if value['self_test_passed'] != all(c['passed'] for c in value['controls'].values()):
         raise ReplayError('settings_checker_invalid')
@@ -420,6 +452,97 @@ def host_snapshot(app):
     return result
 
 
+class Recording:
+    """The one fixed simctl recorder, with bounded private copies of both pipes."""
+    def __init__(self, identifier, video, popen, pause):
+        self.identifier, self.video, self.popen, self.pause = identifier, Path(video), popen, pause
+        self.process = self.reader = None
+        self.stop = threading.Event(); self.lock = threading.Lock()
+        self.data = {'stdout': bytearray(), 'stderr': bytearray()}
+        self.state, self.ready, self.limited = 'notAttempted', False, False
+        self.exit_code = None
+
+    def _kill(self):
+        if self.process is None: return
+        try: os.killpg(self.process.pid, signal.SIGKILL)
+        except OSError:
+            if self.process.poll() is None:
+                try: self.process.kill()
+                except OSError: pass
+
+    def _drain(self):
+        try:
+            with selectors.DefaultSelector() as selector:
+                for name in self.data: selector.register(getattr(self.process, name), selectors.EVENT_READ, name)
+                while selector.get_map() and not self.stop.is_set():
+                    for key, _ in selector.select(.05):
+                        chunk = os.read(key.fileobj.fileno(), 4096)
+                        if not chunk: selector.unregister(key.fileobj); continue
+                        with self.lock:
+                            room = 16384 - sum(len(x) for x in self.data.values())
+                            self.data[key.data].extend(chunk[:room])
+                            self.ready = self.ready or any(b'Recording started' in x for x in self.data.values())
+                            if len(chunk) > room: self.limited = True; self.state = 'outputLimit'
+                        if self.limited: self._kill(); return
+        except (OSError, ValueError, RuntimeError): self.state = 'readerUnavailable'
+
+    def begin(self):
+        self.state = 'starting'
+        try:
+            self.process = self.popen(['xcrun', 'simctl', 'io', self.identifier, 'recordVideo', '--codec=h264', '--force', str(self.video)],
+                stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=child_environment(), start_new_session=True)
+            self.reader = threading.Thread(target=self._drain, name='fixed-settings-recording', daemon=True); self.reader.start()
+            deadline = time.monotonic() + 15
+            while time.monotonic() < deadline:
+                if self.limited or self.state == 'readerUnavailable': return False
+                if self.ready: self.state = 'ready'; return True
+                if self.process.poll() is not None:
+                    self.reader.join(timeout=.2)
+                    self.state = 'endedBeforeReady'; return False
+                self.pause(.1)
+            self.state = 'readinessTimedOut'; self._kill(); return False
+        except (OSError, ValueError, RuntimeError, subprocess.SubprocessError):
+            self.state = 'unavailable'; self._kill(); return False
+
+    def finish(self):
+        complete = False
+        if self.process is not None:
+            try:
+                if self.ready and not self.limited and self.state == 'ready' and self.process.poll() is None:
+                    self.process.send_signal(signal.SIGINT); self.exit_code = self.process.wait(timeout=30)
+                    complete = self.exit_code == 0
+                else:
+                    self.exit_code = self.process.poll()
+                    if self.state == 'ready': self.state = 'endedEarly'
+            except (OSError, ValueError, subprocess.SubprocessError): self.state = 'stopFailed'
+            finally:
+                self._kill()
+                try: self.process.wait(timeout=2)
+                except (OSError, subprocess.SubprocessError): pass
+                if self.reader is not None:
+                    self.reader.join(timeout=1)
+                    self.stop.set(); self.reader.join(timeout=1)
+                    if self.reader.is_alive(): complete = False; self.state = 'readerUnavailable'
+                for name in self.data:
+                    stream = getattr(self.process, name, None)
+                    if stream is not None: stream.close()
+        complete = (complete and not self.limited and self.state == 'ready' and not self.video.is_symlink()
+                    and self.video.is_file() and 1024 <= self.video.stat().st_size <= 32 * 1024**2)
+        if complete:
+            self.video.chmod(0o600); self.state = 'complete'
+        else:
+            if self.state == 'ready': self.state = 'invalidVideo'
+            self.video.unlink(missing_ok=True)
+        return complete
+
+    def diagnostic(self):
+        with self.lock:
+            raw = b'\n'.join(name.encode() + b':\n' + bytes(value) for name, value in self.data.items())
+            counts = {name + '_bytes': len(value) for name, value in self.data.items()}
+        return {'state': self.state, 'readiness_observed': self.ready, 'output_limit': self.limited,
+                'exit_code': self.exit_code, **counts, 'output': redact_probe_text(raw, [])}
+
+
 def execute(output=OUTPUT, root=None, command=native_command, pause=time.sleep, popen=subprocess.Popen):
     root, output = location(output, root); head, count = checkout(root)
     validate_proof(read_json(output / 'verification.json'), head, count)
@@ -435,7 +558,8 @@ def execute(output=OUTPUT, root=None, command=native_command, pause=time.sleep, 
               'application_recompiled': False, 'renderer_recompiled': False, 'logged_in_settings_verified': False,
               'physical_device_verified': False, 'release_qualified': False, 'visual_review_required': True,
               'commands': [], 'cleanup_passed': False, 'source_codesign_verified': False, 'installed_host_verified': False,
-              'root_title_automatically_verified': False, 'diagnostic_root_captured': False}
+              'root_title_automatically_verified': False, 'diagnostic_root_captured': False,
+              'warmup_launch_completed': False, 'recording_available': False, 'recording_started_before_launch': False}
     identifier, recorder = None, None
     def call(label, args, timeout=30, self_test=False):
         report['phase'] = label
@@ -471,7 +595,8 @@ def execute(output=OUTPUT, root=None, command=native_command, pause=time.sleep, 
             if call('verifyXcode', ['xcodebuild', '-version']).decode().strip() != 'Xcode 27.1\nBuild version 27A9275': raise ReplayError('settings_xcode_mismatch')
             source = private / 'visible-root.swift'; source.write_text(VISION_SOURCE)
             checker = private / 'visible-root-check'
-            call('compileTitleChecker', ['xcrun', 'swiftc', '-O', '-warnings-as-errors', '-framework', 'Vision', '-framework', 'CoreText',
+            call('compileTitleChecker', ['xcrun', 'swiftc', '-O', '-warnings-as-errors', '-target', 'arm64-apple-macos14.0',
+                '-framework', 'CoreML', '-framework', 'Vision', '-framework', 'CoreText',
                 '-framework', 'ImageIO', str(source), '-o', str(checker)], timeout=120)
             if checker.is_symlink() or not checker.is_file() or not 0 < checker.stat().st_size <= 20 * 1024**2: raise ReplayError('settings_checker_invalid')
             call('testTitleChecker', [str(checker), '--self-test', str(output / 'title-check-positive.png')], self_test=True)
@@ -521,52 +646,49 @@ def execute(output=OUTPUT, root=None, command=native_command, pause=time.sleep, 
                 checked_metadata(installed)
                 if host_snapshot(installed) != snapshot: raise ReplayError('settings_installed_host_invalid')
                 report['installed_host_verified'] = True
+                # Activate this owned simulator's framebuffer with the frozen
+                # host before asking simctl to record it. This warm-up is an
+                # actual launch and is not falsely described as recorded.
+                call('warmupFrozenRoot', ['xcrun', 'simctl', 'launch', identifier, BUNDLE, '-AppleLanguages', '(en)', '-AppleLocale', 'en_US'])
+                report['warmup_launch_completed'] = True
+                pause(1)
                 video = output / 'root-light.mp4'
-                with tempfile.TemporaryFile() as recording_log:
-                    recorder = popen(['xcrun', 'simctl', 'io', identifier, 'recordVideo', '--codec=h264', '--force', str(video)],
-                        stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=recording_log, env=child_environment(), start_new_session=True)
-                    started = time.monotonic()
-                    while recorder.poll() is None and time.monotonic() - started < 15:
-                        if b'Recording started' in os.pread(recording_log.fileno(), 8192, 0): break
-                        pause(.1)
-                    else: raise ReplayError('settings_recording_unavailable')
-                    report['recording_started_before_launch'] = True
-                    call('launchRoot', ['xcrun', 'simctl', 'launch', identifier, BUNDLE, '-AppleLanguages', '(en)', '-AppleLocale', 'en_US'])
-                    pause(2)
-                    screenshot = output / 'root-light.png'
-                    call('captureRoot', ['xcrun', 'simctl', 'io', identifier, 'screenshot', str(screenshot)])
-                    if screenshot.is_symlink() or not screenshot.is_file() or not 0 < screenshot.stat().st_size <= 16 * 1024**2: raise ReplayError('settings_screenshot_invalid')
-                    screenshot.chmod(0o600)
-                    if controls_passed:
-                        observed = json.loads(call('recognizeRoot', [str(checker), str(screenshot)]))
-                    else:
-                        # Preserve real UI evidence for manual review, while a
-                        # failed checker remains unable to qualify the run.
-                        observed = json.loads(call('inspectDiagnosticRoot', [str(checker), '--metadata', str(screenshot)]))
-                    fields = {'width', 'height'} | ({'root_title_visible'} if controls_passed else set())
-                    if (not isinstance(observed, dict) or set(observed) != fields or
-                            (controls_passed and observed.get('root_title_visible') is not True) or
-                            type(observed.get('width')) is not int or not 1000 <= observed['width'] <= 1500 or
-                            type(observed.get('height')) is not int or not 2000 <= observed['height'] <= 3000):
-                        raise ReplayError('settings_visible_root_not_verified')
-                    report['root_observation'] = observed
-                    report['root_title_automatically_verified'] = controls_passed
-                    report['diagnostic_root_captured'] = True
-                    recorder.send_signal(signal.SIGINT)
-                    code = recorder.wait(timeout=30)
-                    try: os.killpg(recorder.pid, signal.SIGKILL)
-                    except OSError: pass
-                    recorder = None
-                    if code != 0 or video.is_symlink() or not video.is_file() or not 1024 <= video.stat().st_size <= 32 * 1024**2:
-                        raise ReplayError('settings_recording_invalid')
-                    video.chmod(0o600); report['recording_return_code'] = 0
+                recorder = Recording(identifier, video, popen, pause)
+                report['phase'] = 'startRecording'
+                report['recording_started_before_recorded_launch'] = recorder.begin()
+                # A recorder error is diagnostic failure, never a reason to
+                # suppress the actual frozen-host launch and its screenshot.
+                call('launchRoot', ['xcrun', 'simctl', 'launch', '--terminate-running-process', identifier, BUNDLE,
+                    '-AppleLanguages', '(en)', '-AppleLocale', 'en_US'])
+                pause(2)
+                screenshot = output / 'root-light.png'
+                call('captureRoot', ['xcrun', 'simctl', 'io', identifier, 'screenshot', str(screenshot)])
+                if screenshot.is_symlink() or not screenshot.is_file() or not 0 < screenshot.stat().st_size <= 16 * 1024**2: raise ReplayError('settings_screenshot_invalid')
+                screenshot.chmod(0o600)
+                if controls_passed:
+                    observed = json.loads(call('recognizeRoot', [str(checker), str(screenshot)]))
+                else:
+                    observed = json.loads(call('inspectDiagnosticRoot', [str(checker), '--metadata', str(screenshot)]))
+                fields = {'width', 'height'} | ({'root_title_visible'} if controls_passed else set())
+                if (not isinstance(observed, dict) or set(observed) != fields or
+                        (controls_passed and type(observed.get('root_title_visible')) is not bool) or
+                        type(observed.get('width')) is not int or not 1000 <= observed['width'] <= 1500 or
+                        type(observed.get('height')) is not int or not 2000 <= observed['height'] <= 3000):
+                    raise ReplayError('settings_visible_root_not_verified')
+                report['root_observation'] = observed
+                report['root_title_automatically_verified'] = controls_passed and observed['root_title_visible']
+                report['diagnostic_root_captured'] = True
             finally:
                 original_phase = report['phase']
                 if recorder is not None:
-                    try: os.killpg(recorder.pid, signal.SIGKILL)
-                    except OSError: pass
-                    try: recorder.wait(timeout=2)
-                    except subprocess.SubprocessError: pass
+                    report['phase'] = 'stopRecording'
+                    try: report['recording_available'] = recorder.finish()
+                    except (OSError, ValueError, RuntimeError, subprocess.SubprocessError):
+                        report['recording_available'] = False
+                        recorder.state = 'stopFailed'; recorder._kill()
+                    report['recording_return_code'] = recorder.exit_code
+                    report['recording_diagnostic'] = recorder.diagnostic()
+                    recorder = None
                 cleaned = True
                 for action in ('shutdown', 'delete'):
                     try: call(action + 'OwnedSimulator', ['xcrun', 'simctl', action, identifier], timeout=30)
@@ -577,9 +699,15 @@ def execute(output=OUTPUT, root=None, command=native_command, pause=time.sleep, 
                 report['phase'] = 'cleanupOwnedSimulator'
                 raise ReplayError('settings_cleanup_not_verified')
             if digest(ipa) != IPA_SHA256 or host_snapshot(app) != snapshot: raise ReplayError('settings_source_host_changed')
+            if not report['recording_available']:
+                report['phase'] = 'recordingFailedDiagnosticOnly'
+                raise ReplayError('settings_recording_failed_diagnostic_only')
             if not controls_passed:
                 report['phase'] = 'selfTestFailedDiagnosticOnly'
                 raise ReplayError('settings_self_test_failed_diagnostic_only')
+            if not report['root_title_automatically_verified']:
+                report['phase'] = 'visibleRootNotVerified'
+                raise ReplayError('settings_visible_root_not_verified')
             report.update(passed=True, phase='complete')
     except (OSError, ValueError, RuntimeError, TypeError, KeyError, subprocess.SubprocessError):
         report['passed'] = False
