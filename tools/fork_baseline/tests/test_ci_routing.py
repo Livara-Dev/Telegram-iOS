@@ -44,10 +44,11 @@ class CIRoutingTests(unittest.TestCase):
         self.assertIn("  push:\n    branches: [ci/verify-latest]\n", events)
         self.assertEqual(re.findall(r"^  ([a-z_]+):", events, re.M), ["push", "workflow_dispatch"])
 
-    def test_one_global_queue_preserves_the_active_qualification(self):
+    def test_primary_queue_preserves_active_qualification_with_separate_diagnostics(self):
         source = (WORKFLOWS / "archive-integration.yml").read_text()
         self.assertIn("concurrency:\n  group: ${{", source)
         self.assertIn("format('ayugram-startup-replay-{0}', inputs.replay_source)", source)
+        self.assertIn("inputs.validation_scope == 'custom-options-ui' && 'ayugram-ui-qualification'", source)
         self.assertIn("|| 'ayugram-qualification' }}\n  cancel-in-progress: false\n", source)
         self.assertEqual(len(re.findall(r"^\s*concurrency:", source, re.M)), 1)
         self.assertNotIn("cancel-in-progress: true", source)

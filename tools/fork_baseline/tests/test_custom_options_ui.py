@@ -293,7 +293,7 @@ class CustomOptionsContracts(unittest.TestCase):
 
     def test_disposable_lifecycle_only_shuts_down_and_deletes_created_identity(self):
         identifier = '11111111-2222-3333-4444-555555555555'
-        replies = iter([json.dumps({'devices': {visual.RUNTIME: []}}), identifier, '', '', '', ''])
+        replies = iter([json.dumps({'devices': {visual.RUNTIME: []}}), identifier, '', '', ''])
         with tempfile.TemporaryDirectory() as directory, patch.object(visual, 'command', side_effect=lambda *args, **kwargs: next(replies)) as command:
             with visual.DisposableRendererSimulator(Path(directory)) as simulator:
                 self.assertEqual(simulator.identifier, identifier)
@@ -343,7 +343,7 @@ class CustomOptionsContracts(unittest.TestCase):
                 self.assertEqual([attempt['status'] for attempt in report['attempts']], ['failed', 'ready'])
             calls = [call.args[0] for call in command.call_args_list]
             operations = [call[2] for call in calls]
-            self.assertEqual(operations, ['list', 'create', 'boot', 'bootstatus', 'shutdown', 'boot', 'bootstatus', 'shutdown', 'delete'])
+            self.assertEqual(operations, ['list', 'create', 'bootstatus', 'shutdown', 'bootstatus', 'shutdown', 'delete'])
             self.assertTrue(all(call[3] == identifier for call in calls if call[2] in {'boot', 'bootstatus', 'shutdown', 'delete'}))
             self.assertNotIn(personal, json.dumps(calls))
             self.assertEqual(operations.count('create'), 1)
@@ -351,10 +351,10 @@ class CustomOptionsContracts(unittest.TestCase):
 
     def test_failed_restart_or_second_wait_preserves_original_failure_and_cleans_only_owned_device(self):
         identifier = '11111111-2222-3333-4444-555555555555'
-        for failing_operation in ('shutdown', 'boot', 'bootstatus'):
+        for failing_operation in ('shutdown', 'bootstatus'):
             with self.subTest(failing_operation=failing_operation), tempfile.TemporaryDirectory() as directory:
                 original = launch_smoke.SmokeError('commandTimedOut', 'waitForBoot', timeout=True)
-                second = launch_smoke.SmokeError('commandFailed', {'shutdown': 'shutdownDevice', 'boot': 'bootDevice', 'bootstatus': 'waitForBoot'}[failing_operation], return_code=7)
+                second = launch_smoke.SmokeError('commandFailed', {'shutdown': 'shutdownDevice', 'bootstatus': 'waitForBoot'}[failing_operation], return_code=7)
                 counts = {}
                 def execute(arguments, **kwargs):
                     operation = arguments[2]; counts[operation] = counts.get(operation, 0) + 1
@@ -368,14 +368,14 @@ class CustomOptionsContracts(unittest.TestCase):
                         with visual.DisposableRendererSimulator(Path(directory)): self.fail('tests must not start')
                 self.assertIs(raised.exception, original)
                 self.assertLessEqual(counts.get('bootstatus', 0), 2)
-                self.assertLessEqual(counts.get('boot', 0), 2)
+                self.assertEqual(counts.get('boot', 0), 0)
                 report = json.loads((Path(directory) / 'boot-attempts.json').read_text())
                 self.assertFalse(report['ready']); self.assertFalse(report['recovered_on_retry'])
                 self.assertEqual([attempt['failure'] for attempt in report['attempts']], [original.evidence(), second.evidence()])
                 calls = [call.args[0] for call in command.call_args_list]
                 self.assertEqual(calls[-2:], [['xcrun', 'simctl', 'shutdown', identifier], ['xcrun', 'simctl', 'delete', identifier]])
 
-    def test_initial_boot_failure_and_test_assertion_failure_are_never_retried(self):
+    def test_non_wait_boot_failure_and_test_assertion_failure_are_never_retried(self):
         identifier = '11111111-2222-3333-4444-555555555555'
         for fail_before_wait in (False, True):
             with self.subTest(fail_before_wait=fail_before_wait), tempfile.TemporaryDirectory() as directory:
@@ -383,7 +383,7 @@ class CustomOptionsContracts(unittest.TestCase):
                 def execute(arguments, **kwargs):
                     if arguments[2] == 'list': return json.dumps({'devices': {visual.RUNTIME: []}})
                     if arguments[2] == 'create': return identifier
-                    if arguments[2] == 'boot' and fail_before_wait: raise original
+                    if arguments[2] == 'bootstatus' and fail_before_wait: raise original
                     return ''
                 with patch.object(visual, 'command', side_effect=execute) as command:
                     with self.assertRaises(type(original)) as raised:
@@ -391,8 +391,8 @@ class CustomOptionsContracts(unittest.TestCase):
                             raise original
                 self.assertIs(raised.exception, original)
                 operations = [call.args[0][2] for call in command.call_args_list]
-                self.assertEqual(operations.count('boot'), 1)
-                self.assertEqual(operations.count('bootstatus'), 0 if fail_before_wait else 1)
+                self.assertEqual(operations.count('boot'), 0)
+                self.assertEqual(operations.count('bootstatus'), 1)
                 self.assertEqual(operations[-2:], ['shutdown', 'delete'])
 
     def test_boot_evidence_write_failure_cannot_replace_original_wait_failure_or_overwrite_existing_file(self):
@@ -410,7 +410,9 @@ class CustomOptionsContracts(unittest.TestCase):
                     with visual.DisposableRendererSimulator(Path(directory)): pass
             self.assertIs(raised.exception, original)
             self.assertEqual(path.read_text(), 'keep existing private report')
-            self.assertEqual([call.args[0][2] for call in command.call_args_list].count('boot'), 1)
+            operations = [call.args[0][2] for call in command.call_args_list]
+            self.assertEqual(operations.count('boot'), 0)
+            self.assertEqual(operations.count('bootstatus'), 1)
 
     def test_boot_evidence_is_closed_and_cannot_store_exception_text_identifiers_or_secrets(self):
         identifier = '11111111-2222-3333-4444-555555555555'
@@ -434,6 +436,119 @@ class CustomOptionsContracts(unittest.TestCase):
             self.assertEqual(path.stat().st_mode & 0o777, 0o600)
             self.assertFalse(list(Path(directory).glob('.renderer-boot-*')))
 
+    def test_bootstatus_149_requires_fresh_exact_owned_booted_state_and_retains_original_command_failure(self):
+        identifier = '11111111-2222-3333-4444-555555555555'
+        original = launch_smoke.SmokeError('commandFailed', 'waitForBoot', return_code=149)
+        inventory_count = 0
+        def execute(arguments, **kwargs):
+            nonlocal inventory_count
+            if arguments[2] == 'list':
+                inventory_count += 1
+                if inventory_count == 1: return json.dumps({'devices': {visual.RUNTIME: []}})
+                self.assertEqual(kwargs, {'timeout': 15, 'phase': 'waitForBoot'})
+                return json.dumps({'devices': {visual.RUNTIME: [{'udid': identifier, 'name': visual.DEVICE_NAME, 'state': 'Booted'}]}})
+            if arguments[2] == 'create': return identifier
+            if arguments[2] == 'bootstatus': raise original
+            return ''
+        with tempfile.TemporaryDirectory() as directory, patch.object(visual, 'command', side_effect=execute) as command:
+            with visual.DisposableRendererSimulator(Path(directory)):
+                report = json.loads((Path(directory) / 'boot-attempts.json').read_text())
+                self.assertTrue(report['ready'])
+                self.assertFalse(report['first_attempt_successful'])
+                self.assertFalse(report['recovered_on_retry'])
+                self.assertTrue(report['attempts'][0]['accepted_already_booted'])
+                self.assertTrue(report['attempts'][0]['owned_booted_state_verified'])
+                self.assertEqual(report['attempts'][0]['bootstatus_failure'], original.evidence())
+            operations = [call.args[0][2] for call in command.call_args_list]
+            self.assertEqual(operations, ['list', 'create', 'bootstatus', 'list', 'shutdown', 'delete'])
+            self.assertNotIn('boot', operations)
+
+    def test_bootstatus_149_does_not_accept_other_wrong_runtime_nonbooted_or_malformed_device_states(self):
+        identifier = '11111111-2222-3333-4444-555555555555'
+        other = '99999999-2222-3333-4444-555555555555'
+        owned = {'udid': identifier, 'name': visual.DEVICE_NAME, 'state': 'Booted'}
+        inventories = [
+            {'devices': {visual.RUNTIME: [dict(owned, udid=other)]}},
+            {'devices': {visual.RUNTIME + '-other': [owned]}},
+            {'devices': {visual.RUNTIME: [dict(owned, state='Booting')]}},
+            {'devices': {visual.RUNTIME: [dict(owned, name='Personal simulator')]}},
+            {'devices': {visual.RUNTIME: [owned, dict(owned, state='Shutdown')]}},
+            {'devices': {visual.RUNTIME: []}},
+            {'devices': {visual.RUNTIME: 'malformed collection'}},
+            'unparsed private payload',
+        ]
+        for inventory in inventories:
+            with self.subTest(inventory=inventory), tempfile.TemporaryDirectory() as directory:
+                original = launch_smoke.SmokeError('commandFailed', 'waitForBoot', return_code=149)
+                count = 0
+                def execute(arguments, **kwargs):
+                    nonlocal count
+                    if arguments[2] == 'list':
+                        count += 1
+                        if count == 1: return json.dumps({'devices': {visual.RUNTIME: []}})
+                        return json.dumps(inventory) if isinstance(inventory, dict) else inventory
+                    if arguments[2] == 'create': return identifier
+                    if arguments[2] == 'bootstatus': raise original
+                    return ''
+                with patch.object(visual, 'command', side_effect=execute) as command:
+                    with self.assertRaises(launch_smoke.SmokeError) as raised:
+                        with visual.DisposableRendererSimulator(Path(directory)): self.fail('unproven device must not be accepted')
+                self.assertIs(raised.exception, original)
+                report = json.loads((Path(directory) / 'boot-attempts.json').read_text())
+                self.assertFalse(report['ready']); self.assertEqual(len(report['attempts']), 2)
+                self.assertTrue(all(not attempt.get('accepted_already_booted', False) for attempt in report['attempts']))
+                for call in command.call_args_list:
+                    arguments = call.args[0]
+                    if arguments[2] in {'bootstatus', 'shutdown', 'delete'}: self.assertEqual(arguments[3], identifier)
+                self.assertNotIn(other, (Path(directory) / 'boot-attempts.json').read_text())
+                self.assertNotIn('unparsed private payload', (Path(directory) / 'boot-attempts.json').read_text())
+
+    def test_bootstatus_149_state_query_timeout_is_not_substituted_for_original_failure(self):
+        identifier = '11111111-2222-3333-4444-555555555555'
+        original = launch_smoke.SmokeError('commandFailed', 'waitForBoot', return_code=149)
+        query_error = launch_smoke.SmokeError('commandTimedOut', 'waitForBoot', timeout=True)
+        count = 0
+        def execute(arguments, **kwargs):
+            nonlocal count
+            if arguments[2] == 'list':
+                count += 1
+                if count == 1: return json.dumps({'devices': {visual.RUNTIME: []}})
+                raise query_error
+            if arguments[2] == 'create': return identifier
+            if arguments[2] == 'bootstatus': raise original
+            return ''
+        with tempfile.TemporaryDirectory() as directory, patch.object(visual, 'command', side_effect=execute):
+            with self.assertRaises(launch_smoke.SmokeError) as raised:
+                with visual.DisposableRendererSimulator(Path(directory)): pass
+            self.assertIs(raised.exception, original)
+            report = json.loads((Path(directory) / 'boot-attempts.json').read_text())
+            self.assertFalse(report['ready'])
+            self.assertTrue(all(attempt['state_query_failure'] == query_error.evidence() for attempt in report['attempts']))
+
+    def test_bootstatus_timeout_never_uses_a_booted_state_fallback(self):
+        identifier = '11111111-2222-3333-4444-555555555555'
+        original = launch_smoke.SmokeError('commandTimedOut', 'waitForBoot', timeout=True)
+        inventory_count = 0
+        def execute(arguments, **kwargs):
+            nonlocal inventory_count
+            if arguments[2] == 'list':
+                inventory_count += 1
+                self.assertEqual(inventory_count, 1, 'timeouts must not ask for a permissive Booted fallback')
+                return json.dumps({'devices': {visual.RUNTIME: []}})
+            if arguments[2] == 'create': return identifier
+            if arguments[2] == 'bootstatus': raise original
+            return ''
+        with tempfile.TemporaryDirectory() as directory, patch.object(visual, 'command', side_effect=execute) as command:
+            with self.assertRaises(launch_smoke.SmokeError) as raised:
+                with visual.DisposableRendererSimulator(Path(directory)): pass
+            self.assertIs(raised.exception, original)
+            report = json.loads((Path(directory) / 'boot-attempts.json').read_text())
+            self.assertFalse(report['ready'])
+            self.assertTrue(all('owned_booted_state_verified' not in attempt for attempt in report['attempts']))
+            waits = [call for call in command.call_args_list if call.args[0][2] == 'bootstatus']
+            self.assertEqual(len(waits), 2)
+            self.assertTrue(all(call.kwargs['timeout'] == 240 for call in waits))
+
     def test_fixed_native_execution_evidence_requires_actual_cases_and_redacts_text(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory); logs = root / 'logs'; logs.mkdir(); out = root / 'out'
@@ -456,12 +571,14 @@ class CustomOptionsContracts(unittest.TestCase):
                 source = root / name; source.parent.mkdir(parents=True, exist_ok=True); source.write_text('synthetic fixture source')
             original = root / 'bazel-bin/Tests/CustomeOptionsHost/CustomeOptionsHost.ipa'
             calls = []
+            order = []
             def execute(args, env, secrets):
+                self.assertEqual(order[0], 'bootReady', 'simulator must warm before any Bazel compilation')
                 self.assertNotIn('TELEGRAM_API_ID', env)
                 self.assertNotIn('TELEGRAM_API_HASH', env)
                 self.assertNotIn('GH_TOKEN', env)
                 self.assertNotIn('ACTIONS_RUNTIME_TOKEN', env)
-                target = next(arg.split('=', 1)[1] for arg in args if arg.startswith('--target=')); calls.append(target)
+                target = next(arg.split('=', 1)[1] for arg in args if arg.startswith('--target=')); calls.append(target); order.append(target)
                 if target == profile.APP_TARGET:
                     original.parent.mkdir(parents=True); original.write_bytes(b'exact renderer IPA')
                 else:
@@ -470,7 +587,9 @@ class CustomOptionsContracts(unittest.TestCase):
                     original.write_bytes(b'stale repointed Bazel product')
             simulator = SimpleNamespace(identifier='11111111-2222-3333-4444-555555555555',
                 start_recording=lambda: None, stop_recording=lambda: None, recording_started=True, recording_return_code=0)
-            context = unittest.mock.MagicMock(); context.__enter__.return_value = simulator
+            context = unittest.mock.MagicMock()
+            def entered(): order.append('bootReady'); return simulator
+            context.__enter__.side_effect = entered
             def retained(bazel, label, destination, secrets, identifier):
                 self.assertEqual(identifier, simulator.identifier)
                 destination.mkdir(parents=True)
@@ -509,13 +628,37 @@ class CustomOptionsContracts(unittest.TestCase):
                         profile.run(env)
                 self.assertIs(raised.exception, original if runtime_available else validation_error)
                 validate.assert_called_once_with()
-                self.assertEqual(build.call_count, 1 if runtime_available else 0)
+                self.assertEqual(build.call_count, 0, 'a failed boot cannot waste a host compilation')
                 self.assertEqual(simulator.call_count, 1 if runtime_available else 0)
                 report = json.loads((root / 'build/fork-evidence/custom-options-ui/result.json').read_text())
                 self.assertEqual(report['phase'], 'bootSimulator' if runtime_available else 'validateRendererRuntime')
                 self.assertFalse(report['passed']); self.assertEqual(report['tests'], [])
                 self.assertFalse(report['logged_in_settings_verified']); self.assertFalse(report['physical_device_verified'])
                 if runtime_available: self.assertEqual(report['command_failure'], original.evidence())
+
+    def test_wrapper_build_failure_after_successful_boot_cleans_simulator_and_keeps_build_phase(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            for name in profile.RENDERER_SOURCES:
+                source = root / name; source.parent.mkdir(parents=True, exist_ok=True); source.write_text('synthetic renderer source')
+            simulator = SimpleNamespace(identifier='11111111-2222-3333-4444-555555555555')
+            context = unittest.mock.MagicMock()
+            order = []
+            def entered(): order.append('bootReady'); return simulator
+            context.__enter__.side_effect = entered
+            context.__exit__.side_effect = lambda *args: order.append('simulatorCleanup') or False
+            original = profile.baseline.InvalidSetup('synthetic compiler failure')
+            def execute(arguments, env, secrets):
+                self.assertEqual(order, ['bootReady']); order.append('buildHost'); raise original
+            env = {'TELEGRAM_API_ID': '1234567', 'TELEGRAM_API_HASH': 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', 'IOS_BUNDLE_ID': 'org.livara.ayugram'}
+            with patch.object(profile, 'ROOT', root), patch.object(profile.baseline, 'ROOT', root), patch.object(profile.baseline, 'preflight', return_value=Path('/bazel')), patch.object(profile.baseline, 'output', return_value='c' * 40), patch.object(profile, 'validate_runtime'), patch.object(profile.baseline, 'run_redacted', side_effect=execute) as build, patch.object(profile, 'DisposableRendererSimulator', return_value=context), patch.object(profile.subprocess, 'run', side_effect=lambda *args, **kwargs: order.append('bazelShutdown')):
+                with self.assertRaises(profile.baseline.InvalidSetup) as raised: profile.run(env)
+            self.assertIs(raised.exception, original)
+            self.assertEqual(build.call_count, 1)
+            self.assertEqual(order, ['bootReady', 'buildHost', 'simulatorCleanup', 'bazelShutdown'])
+            report = json.loads((root / 'build/fork-evidence/custom-options-ui/result.json').read_text())
+            self.assertEqual(report['phase'], 'buildHost')
+            self.assertFalse(report['passed']); self.assertEqual(report['tests'], [])
 
 
 if __name__ == '__main__': unittest.main()

@@ -40,6 +40,10 @@ standalone `custom-options-ui` scope remains available for renderer diagnostics.
 The run-level concurrency policy preserves an active qualification and keeps
 only its latest pending successor. Submit one consolidated source revision;
 do not dispatch a second identical scope while it is active or queued.
+Explicit `custom-options-ui` diagnostics use a separate queue so a failed
+renderer job can be investigated without stopping healthy native suites.
+Use that scope only for a distinct diagnostic or repair; do not duplicate an
+already-running renderer check. Its queue also preserves the active job.
 
 After qualification passes, advancing `ci/verify-latest` starts the full
 application/device workflow automatically. The simulator application job first

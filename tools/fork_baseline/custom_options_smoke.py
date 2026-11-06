@@ -318,7 +318,8 @@ class DisposableRendererSimulator:
         value = {'boot_evidence_only': True, 'native_tests_started': False,
                  'device_model': 'iPhone 15 Pro', 'runtime': RUNTIME,
                  'restart_retry_limit': 1, 'boot_status_timeout_seconds': 240,
-                 'first_attempt_successful': bool(self.boot_attempts and self.boot_attempts[0]['status'] == 'ready'),
+                 'first_attempt_successful': bool(self.boot_attempts and self.boot_attempts[0]['status'] == 'ready'
+                                                  and not self.boot_attempts[0].get('accepted_already_booted', False)),
                  'recovered_on_retry': len(self.boot_attempts) == 2 and self.boot_attempts[-1]['status'] == 'ready',
                  'ready': bool(self.boot_attempts and self.boot_attempts[-1]['status'] == 'ready'),
                  'attempts': self.boot_attempts}
@@ -340,17 +341,42 @@ class DisposableRendererSimulator:
             if temporary is not None:
                 temporary.unlink(missing_ok=True)
 
+    def _owned_device_is_booted(self, attempt):
+        """149 alone is not readiness; prove the fresh owned identity again."""
+        attempt['owned_booted_state_verified'] = False
+        try:
+            current = json.loads(command(['xcrun', 'simctl', 'list', 'devices', 'available', '--json'],
+                                         timeout=15, phase='waitForBoot'))
+            entries = current['devices'][RUNTIME]
+            if not isinstance(entries, list): return False
+            matches = [item for item in entries if isinstance(item, dict) and item.get('udid') == self.identifier]
+            verified = len(matches) == 1 and matches[0].get('name') == DEVICE_NAME and matches[0].get('state') == 'Booted'
+            attempt['owned_booted_state_verified'] = verified
+            return verified
+        except SmokeError as error:
+            attempt['state_query_failure'] = error.evidence()
+        except (KeyError, ValueError, TypeError, RecursionError):
+            attempt['state_query_unavailable'] = True
+        return False
+
     def _boot_attempt(self, restarting):
         attempt = {'attempt': len(self.boot_attempts) + 1, 'restart': restarting,
-                   'status': 'starting', 'phase': 'shutdownDevice' if restarting else 'bootDevice'}
+                   'status': 'starting', 'phase': 'shutdownDevice' if restarting else 'waitForBoot'}
         self.boot_attempts.append(attempt)
         try:
             if restarting:
                 command(['xcrun', 'simctl', 'shutdown', self.identifier], timeout=30, phase='shutdownDevice')
-                attempt['phase'] = 'bootDevice'
-            command(['xcrun', 'simctl', 'boot', self.identifier], phase='bootDevice')
             attempt['phase'] = 'waitForBoot'
-            command(['xcrun', 'simctl', 'bootstatus', self.identifier, '-b'], timeout=240, phase='waitForBoot')
+            # Match the known-working native warm-up path. -b both boots and
+            # monitors this new device; no separate boot request is needed.
+            try:
+                command(['xcrun', 'simctl', 'bootstatus', self.identifier, '-b'], timeout=240, phase='waitForBoot')
+            except SmokeError as error:
+                if error.code != 'commandFailed' or error.phase != 'waitForBoot' or error.return_code != 149 or error.timeout:
+                    raise
+                attempt['bootstatus_failure'] = error.evidence()
+                if not self._owned_device_is_booted(attempt): raise
+                attempt['accepted_already_booted'] = True
             attempt['status'] = 'ready'
         except SmokeError as error:
             attempt['status'] = 'failed'

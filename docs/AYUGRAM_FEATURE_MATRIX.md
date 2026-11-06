@@ -96,6 +96,15 @@ binary. No proprietary exteraGram components are copied.
   were not exercised. The follow-up keeps the existing boot timeout and permits
   one restart of that run's new empty simulator, retaining both attempts and
   the original failure; this is not a first-attempt reliability claim.
+- The UI job in [42134690056](https://github.com/Livara-Dev/Telegram-iOS/actions/runs/42134690056)
+  also compiled the host, then timed out during boot and during the owned
+  simulator's shutdown retry. It ran zero tests and recorded no video. Both
+  direct command processes remained alive at their deadlines; the old pipe-EOF
+  defect is not the recorded cause. Its outer checksum and nine inner references
+  passed verification. The native job in that run continues independently.
+  A tooling-only follow-up moves boot before compilation and uses the same
+  combined `bootstatus -b` preparation as native preflight. This removes known
+  ordering differences; the underlying host cause and recovery remain unproven.
 
 ## Core features and native integration
 

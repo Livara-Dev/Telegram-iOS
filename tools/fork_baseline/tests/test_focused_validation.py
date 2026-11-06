@@ -247,8 +247,9 @@ class FocusedWorkflowRoutingTests(unittest.TestCase):
     def test_replay_concurrency_is_source_scoped_without_replacing_full_qualification(self):
         block = WORKFLOW.read_text().split('concurrency:\n', 1)[1].split('\njobs:', 1)[0]
         expression = re.search(r'^  group: \$\{\{ (.+) \}\}$', block, re.M).group(1)
-        for event, scope in [('push', 'startup'), ('push', ''), ('workflow_dispatch', 'full'), ('workflow_dispatch', 'focused'), ('workflow_dispatch', 'projection'), ('workflow_dispatch', 'projection-only'), ('workflow_dispatch', 'probe')]:
+        for event, scope in [('push', 'startup'), ('push', ''), ('push', 'custom-options-ui'), ('workflow_dispatch', 'full'), ('workflow_dispatch', 'native-only'), ('workflow_dispatch', 'focused'), ('workflow_dispatch', 'projection'), ('workflow_dispatch', 'projection-only'), ('workflow_dispatch', 'probe')]:
             self.assertEqual(self.expression(expression, event, scope, True), 'ayugram-qualification')
+        self.assertEqual(self.expression(expression, 'workflow_dispatch', 'custom-options-ui', False), 'ayugram-ui-qualification')
         self.assertEqual(self.expression(expression, 'workflow_dispatch', 'startup', False), 'ayugram-startup-replay-' + 'c' * 40)
         self.assertEqual(self.expression(expression, 'workflow_dispatch', 'startup', False, 'd' * 40), 'ayugram-startup-replay-' + 'd' * 40)
         self.assertIn('cancel-in-progress: false', block)

@@ -35,12 +35,14 @@ on:
 permissions:
   contents: read
 
-# One qualification run at a time across every branch. GitHub keeps the active
-# run and replaces only its pending successor when a newer batch is submitted.
+# One main qualification run at a time across every branch. Explicit renderer
+# diagnostics have their own queue so a failed UI host can be investigated while
+# native suites continue. Each queue preserves its active run and keeps only
+# its latest pending successor.
 # Development branches do not start macOS jobs; advance ci/verify-latest once
 # the next reviewed batch is ready. Existing runs retain their original policy.
 concurrency:
-  group: ${{ github.event_name == 'workflow_dispatch' && inputs.validation_scope == 'startup' && format('ayugram-startup-replay-{0}', inputs.replay_source) || 'ayugram-qualification' }}
+  group: ${{ github.event_name == 'workflow_dispatch' && inputs.validation_scope == 'startup' && format('ayugram-startup-replay-{0}', inputs.replay_source) || github.event_name == 'workflow_dispatch' && inputs.validation_scope == 'custom-options-ui' && 'ayugram-ui-qualification' || 'ayugram-qualification' }}
   cancel-in-progress: false
 
 jobs:
