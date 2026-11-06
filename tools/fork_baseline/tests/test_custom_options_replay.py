@@ -9,10 +9,13 @@ import os
 from pathlib import Path
 import plistlib
 import shutil
+import signal
 import struct
+import subprocess
 import sys
 import tempfile
 import threading
+import time
 import unittest
 from unittest.mock import Mock, patch
 import zipfile
@@ -226,6 +229,120 @@ class Native:
 
 
 class RetainedSettingsReplayTests(unittest.TestCase):
+    def launch_arguments(self):
+        return ['xcrun', 'simctl', 'launch', IDENTIFIER, replay.BUNDLE,
+                '-AppleLanguages', '(en)', '-AppleLocale', 'en_US']
+
+    def test_simctl_adapter_strips_and_restores_environment_without_routing_other_commands(self):
+        variables = {'PATH': os.environ.get('PATH', ''), 'HOME': os.environ.get('HOME', ''),
+                     'GH_' + 'TOKEN': 'test-only', 'TELEGRAM_' + 'API_HASH': 'test-only',
+                     'DYLD_INSERT_LIBRARIES': 'PRIVATE-CANARY', 'UNRELATED_PRIVATE_VALUE': 'PRIVATE-CANARY'}
+        with patch.dict(os.environ, variables, clear=True):
+            original = dict(os.environ)
+            for fails in (False, True):
+                def observed(arguments, timeout, phase):
+                    self.assertEqual(arguments, self.launch_arguments()); self.assertEqual(timeout, 7)
+                    self.assertEqual(phase, 'launchApplication')
+                    self.assertEqual(dict(os.environ), replay.child_environment())
+                    self.assertFalse(any(k in os.environ for k in variables if k not in ('PATH', 'HOME')))
+                    if fails: raise replay.launch_smoke.SmokeError('commandTimedOut', phase, timeout=True)
+                    return 'retained stdout'
+                with patch.object(replay.launch_smoke, 'command', side_effect=observed):
+                    status, data = replay.ui_native_command(self.launch_arguments(), timeout=7)
+                self.assertEqual(dict(os.environ), original)
+                self.assertEqual(status['captured_bytes_scope'], 'returnedStdoutPayloadBytes')
+                self.assertEqual(status['supervisor'], 'launchSmokeCommand')
+                self.assertEqual(data, b'' if fails else b'retained stdout')
+            sentinel = ({'status': 'commandFailed'}, b'{"self_test_passed":false}')
+            with patch.object(replay, 'native_command', return_value=sentinel) as native, \
+                    patch.object(replay.launch_smoke, 'command') as startup:
+                self.assertEqual(replay.ui_native_command(['/private/fixed-checker', '--self-test'], timeout=9), sentinel)
+                native.assert_called_once_with(['/private/fixed-checker', '--self-test'], timeout=9); startup.assert_not_called()
+
+    def test_simctl_adapter_preserves_closed_failure_categories_without_false_output_counts(self):
+        for code, state, result, timeout in (('commandTimedOut', 'timedOut', None, True),
+                                            ('commandFailed', 'commandFailed', 149, False),
+                                            ('commandOutputLimit', 'outputLimit', 0, False),
+                                            ('commandUnavailable', 'unavailable', None, False)):
+            with self.subTest(code=code):
+                error = replay.launch_smoke.SmokeError(code, 'launchApplication', result, timeout,
+                    [{'domain': 'FBSOpenApplicationServiceErrorDomain', 'code': 3}])
+                with patch.object(replay.launch_smoke, 'command', side_effect=error):
+                    status, data = replay.ui_native_command(self.launch_arguments())
+                self.assertEqual(status['status'], state); self.assertEqual(status['failure'], error.evidence())
+                self.assertEqual(status['exit_code'], result); self.assertEqual(status['timeout'], timeout)
+                self.assertEqual(status['output_limit'], code == 'commandOutputLimit')
+                self.assertEqual(status['captured_bytes'], 0); self.assertEqual(data, b'')
+                replay.validate_simctl_status(status, self.launch_arguments())
+        for error in (OSError('PRIVATE-CANARY'), ValueError('PRIVATE-CANARY'),
+                      UnicodeDecodeError('utf-8', b'PRIVATE-CANARY\xff', 14, 15, 'PRIVATE-CANARY')):
+            with self.subTest(error=type(error).__name__), patch.object(replay.launch_smoke, 'command', side_effect=error):
+                status, data = replay.ui_native_command(self.launch_arguments())
+                self.assertEqual(status['status'], 'unavailable'); self.assertEqual(data, b'')
+                replay.validate_simctl_status(status, self.launch_arguments())
+                self.assertNotIn('PRIVATE-CANARY', json.dumps(status))
+
+    def test_simctl_adapter_rejects_unexpected_operations_and_failure_metadata(self):
+        for arguments in (['xcrun', 'simctl', 'erase', 'all'], ['xcrun', 'simctl', 'shutdown', 'booted'],
+                          ['xcrun', 'simctl', 'launch', IDENTIFIER, 'unrelated.bundle'],
+                          ['xcrun', 'simctl', 'io', IDENTIFIER, 'recordVideo', '/private/output.mp4']):
+            with self.subTest(arguments=arguments), patch.object(replay.launch_smoke, 'command') as startup:
+                with self.assertRaisesRegex(replay.ReplayError, '^settings_simulator_command_not_allowed$'):
+                    replay.ui_native_command(arguments)
+                startup.assert_not_called()
+        error = replay.launch_smoke.SmokeError('commandFailed', 'launchApplication', 1)
+        with patch.object(replay.launch_smoke, 'command', side_effect=error):
+            status, _ = replay.ui_native_command(self.launch_arguments())
+        for key, value in (('captured_bytes_scope', 'PRIVATE-CANARY'), ('failure', {**error.evidence(), 'private': 'PRIVATE-CANARY'})):
+            with self.subTest(key=key), self.assertRaisesRegex(replay.ReplayError, '^settings_command_evidence_invalid$'):
+                replay.validate_simctl_status({**status, key: value}, self.launch_arguments())
+
+    def test_simctl_adapter_reuses_bounded_post_exit_drain_without_killing_live_descendant(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve(); heartbeat = root / 'heartbeat'
+            worker = ('import pathlib,sys,time; p=pathlib.Path(sys.argv[1]); '
+                      'exec("while True:\\n p.write_text(str(time.monotonic_ns()))\\n time.sleep(0.01)")')
+            leader = ('import os,pathlib,subprocess,sys,time; p=pathlib.Path(sys.argv[1]); '
+                      'subprocess.Popen([sys.executable,"-c",' + repr(worker) + ',str(p)]); '
+                      'exec("for _ in range(200):\\n if p.exists(): break\\n time.sleep(0.01)"); '
+                      'sys.stdout.write("parent-output"); sys.stdout.flush(); os._exit(0)')
+            original_popen, owned = subprocess.Popen, []
+            def isolated(arguments, **options):
+                self.assertEqual(arguments, self.launch_arguments())
+                child = original_popen([sys.executable, '-c', leader, str(heartbeat)], start_new_session=True, **options)
+                owned.append(child); return child
+            try:
+                with patch.object(replay.launch_smoke.subprocess, 'Popen', side_effect=isolated):
+                    started = time.monotonic(); status, data = replay.ui_native_command(self.launch_arguments(), timeout=2)
+                self.assertEqual(status['status'], 'completed'); self.assertEqual(data, b'parent-output')
+                self.assertLess(time.monotonic() - started, 1.5)
+                before = heartbeat.read_text(); deadline = time.monotonic() + .5
+                while heartbeat.read_text() == before and time.monotonic() < deadline: time.sleep(.01)
+                self.assertNotEqual(heartbeat.read_text(), before)
+                replay.validate_simctl_status(status, self.launch_arguments())
+            finally:
+                for child in owned:
+                    try: os.killpg(child.pid, signal.SIGKILL)
+                    except ProcessLookupError: pass
+                    child.wait(timeout=2)
+
+    def test_complete_replay_accepts_only_closed_simctl_supervisor_evidence(self):
+        with self.prepared() as (root, _, _, _), patch.object(replay.platform, 'system', return_value='Darwin'):
+            native = Native(root)
+            def startup(arguments, timeout, phase):
+                status, data = native(arguments, timeout=timeout)
+                self.assertEqual(status['status'], 'completed')
+                self.assertEqual(phase, replay.simctl_phase(arguments))
+                return data.decode().strip()
+            with patch.object(replay.launch_smoke, 'command', side_effect=startup), patch.object(replay, 'native_command', side_effect=native):
+                report = replay.execute(root=root, command=replay.ui_native_command, popen=native.popen, pause=lambda _: None)
+            self.assertTrue(report['passed'])
+            for entry in report['commands']:
+                if 'supervisor' in entry:
+                    self.assertEqual(entry['captured_bytes_scope'], 'returnedStdoutPayloadBytes')
+                    self.assertIsNone(entry['failure'])
+            self.assertTrue(any('supervisor' in entry for entry in report['commands']))
+
     @contextlib.contextmanager
     def prepared(self):
         with tempfile.TemporaryDirectory() as directory:

@@ -15,6 +15,7 @@ import plistlib
 import re
 import shutil
 import stat
+import sys
 import tempfile
 import time
 import uuid
@@ -24,6 +25,7 @@ import replay_artifact as artifacts
 import simulator_probe
 import test_product_capture as products
 import tiny_xcode_project as tiny
+import bootstrap_sample as bootstrap
 from installer_control import read_json
 
 OUTPUT = 'build/fork-evidence/modern-projection-plan'
@@ -36,7 +38,17 @@ CONTROL_TEST = 'AyuProjectionControlTests'
 CONTROL_APP_ID = 'org.livara.ayugram.tests.modern-projection-control'
 CONTROL_TEST_ID = CONTROL_APP_ID + 'Tests'
 CONTROL_CASE = CONTROL_TEST + '.testRunsInApplicationHost'
-CONTROL_DEBUG_ENTITLEMENT = 'com.apple.security.get-task-allow'
+MAX_PRIVATE = 65536
+GROUP_ROLES = ('CoreSimulatorService', 'SimulatorTrampoline', 'simctl', 'launchd_sim', 'xcodebuild', CONTROL_APP, 'other')
+KERNEL_PATH = (
+    "import ctypes,os,sys;"
+    "lib=ctypes.CDLL('/usr/lib/libproc.dylib',use_errno=True);"
+    "lib.proc_pidpath.argtypes=[ctypes.c_int,ctypes.c_void_p,ctypes.c_uint32];"
+    "lib.proc_pidpath.restype=ctypes.c_int;"
+    "buf=ctypes.create_string_buffer(4096);"
+    "size=lib.proc_pidpath(int(sys.argv[1]),buf,4096);"
+    "os.write(1,buf.value if 0<size<4096 else b'')"
+)
 MANIFEST_SHA256 = '6c8b70b9f78dedb309f4b48ee69cc9ca5112b63712e9fad71cfac716bc6dc965'
 CAPTURE_SHA256 = 'fc9b625a66995db1f0219b49db657992e06c62491f54f62f8917be0778dbaaf8'
 
@@ -220,46 +232,324 @@ def control_cases(data):
             'all_expected_passed': passed, 'unexpected_or_duplicate_events': invalid or len(starts) > 1 or len(outcomes) > 1}
 
 
-def _control_debug_entitlement_status(encoded):
-    """Check only XML read from codesign's private --xml output file."""
-    try:
-        if not isinstance(encoded, bytes) or not 0 < len(encoded) <= 65536 or b'\0' in encoded:
-            return 'nonXML'
-        if encoded.count(b'<?xml') != 1 or encoded.count(b'</plist>') != 1:
-            return 'nonXML'
-        value = plistlib.loads(encoded)
-        if isinstance(value, dict) and set(value) == {CONTROL_DEBUG_ENTITLEMENT} and value[CONTROL_DEBUG_ENTITLEMENT] is True:
-            return 'verified'
-        return 'unexpectedEntitlements'
-    except Exception:
-        return 'nonXML'
-
-
-def control_debug_entitlements(encoded):
-    return _control_debug_entitlement_status(encoded) == 'verified'
-
-
-def read_control_debug_entitlement_status(path):
-    """Read the newly extracted signature evidence, never the signing input."""
+def private_bytes(path, maximum=MAX_PRIVATE, allow_empty=False):
+    """Read a bounded, owned regular file without following its final link."""
     descriptor = None
     try:
         descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
         info = os.fstat(descriptor)
         if (not stat.S_ISREG(info.st_mode) or info.st_nlink != 1 or info.st_uid != os.getuid()
-                or not 0 < info.st_size <= 65536):
-            return 'unsafeFile'
-        # The enclosing fresh temporary directory is 0700 throughout extraction.
-        os.fchmod(descriptor, 0o600)
-        encoded = os.read(descriptor, 65537)
-        if len(encoded) != info.st_size: return 'unsafeFile'
-        return _control_debug_entitlement_status(encoded)
-    except FileNotFoundError:
-        return 'missingFile'
-    except Exception:
-        return 'unsafeFile'
+                or not (0 if allow_empty else 1) <= info.st_size <= maximum): raise PlanError('unsafe_private_file')
+        data = os.read(descriptor, maximum + 1)
+        if len(data) != info.st_size: raise PlanError('private_file_changed')
+        return data
+    except (OSError, ValueError):
+        raise PlanError('private_file_unavailable') from None
     finally:
-        if descriptor is not None:
-            os.close(descriptor)
+        if descriptor is not None: os.close(descriptor)
+
+
+def entitlement_document(data):
+    # The authoritative generated signed .xcent is kept distinct from the
+    # *-Simulated.xcent section. No debugger key is copied from a failing host.
+    try:
+        if (not isinstance(data, bytes) or not 0 < len(data) <= MAX_PRIVATE or b'\0' in data
+                or data.count(b'<?xml') != 1 or data.count(b'</plist>') != 1):
+            raise ValueError()
+        value = plistlib.loads(data)
+        count = 0
+        def valid(item, depth=0):
+            nonlocal count
+            count += 1
+            if count > 512 or depth > 8: return False
+            if type(item) is dict:
+                return len(item) <= 128 and all(type(key) is str and len(key) <= 1024 and valid(child, depth + 1) for key, child in item.items())
+            if type(item) is list: return len(item) <= 128 and all(valid(child, depth + 1) for child in item)
+            if type(item) is str: return len(item) <= 4096
+            if type(item) is bytes: return len(item) <= 4096
+            if type(item) is int: return -(2**63) <= item < 2**64
+            return type(item) is bool
+        if type(value) is not dict or not valid(value): raise ValueError()
+        return value
+    except Exception:
+        raise PlanError('invalid_private_entitlements') from None
+
+
+def typed_equal(first, second):
+    if type(first) is not type(second): return False
+    if type(first) is dict:
+        return set(first) == set(second) and all(typed_equal(first[key], second[key]) for key in first)
+    if type(first) is list:
+        return len(first) == len(second) and all(typed_equal(left, right) for left, right in zip(first, second))
+    return first == second
+
+
+def signed_xcent(derived, product, required):
+    root = derived / 'Build/Intermediates.noindex'
+    if root.is_symlink() or not root.is_dir(): raise PlanError('generated_entitlements_unavailable')
+    matches, count, pending = [], 0, [root]
+    while pending:
+        with os.scandir(pending.pop()) as entries:
+            for entry in entries:
+                count += 1
+                if count > 2048: raise PlanError('generated_entitlements_inventory_limit')
+                if entry.is_dir(follow_symlinks=False): pending.append(Path(entry.path))
+                elif entry.name == product.name + '.xcent': matches.append(Path(entry.path))
+    if len(matches) > 1 or (required and not matches): raise PlanError('generated_entitlements_not_unique')
+    return entitlement_document(private_bytes(matches[0])) if matches else None
+
+
+def verify_xcode_signing(derived, app, bundle, call, report):
+    report['tiny_signing'] = {'mode': 'xcodeAdhocGeneratedEntitlements', 'host': {'verified': False}, 'test': {'verified': False}}
+    for role, product, expected_id in (('host', app, CONTROL_APP_ID), ('test', bundle, CONTROL_TEST_ID)):
+        expected = signed_xcent(derived, product, required=role == 'host')
+        state = report['tiny_signing'][role]
+        state['generated_signed_entitlements_present'] = expected is not None
+        # Verify Xcode's real identity as well as the resource/code seal.
+        _, raw = call('verify_' + role + '_adhoc', ['/usr/bin/codesign', '--display', '--verbose=4', str(product)])
+        lines = raw.decode('utf-8', errors='replace').splitlines()
+        if (lines.count('Signature=adhoc') != 1 or lines.count('Identifier=' + expected_id) != 1
+                or lines.count('TeamIdentifier=not set') != 1): raise PlanError('tiny_xcode_adhoc_identity_unverified')
+        with tempfile.TemporaryDirectory(prefix='ayu-modern-entitlement-readback-') as directory:
+            private = Path(directory).resolve(); private.chmod(0o700)
+            readback = private / 'extracted-signature-entitlements.plist'
+            state['readback'] = 'commandAttempted'
+            status, _ = call('verify_' + role + '_entitlements', ['/usr/bin/codesign', '--display', '--entitlements',
+                str(readback), '--xml', str(product)], required=False)
+            if status.get('status') != 'completed' or status.get('exit_code') != 0:
+                state['readback'] = 'commandFailed'; raise PlanError('tiny_xcode_entitlement_display_failed')
+            if not readback.exists() and not readback.is_symlink():
+                actual = None; state['readback'] = 'missingFile'
+            else:
+                try:
+                    data = private_bytes(readback, allow_empty=role == 'test' and expected in (None, {}))
+                    actual = entitlement_document(data) if data else None
+                    state['readback'] = 'parsedPrivateXML' if data else 'emptyRegularFile'
+                except PlanError:
+                    state['readback'] = 'unsafeOrInvalidFile'; raise
+            if role == 'test' and expected in (None, {}):
+                if actual not in (None, {}): raise PlanError('tiny_unsigned_entitlement_input_unverified')
+            elif actual is None or not typed_equal(expected, actual):
+                state['readback'] = 'generatedSignatureMismatch'; raise PlanError('tiny_generated_signature_entitlements_mismatch')
+            state['readback'] = 'verified'
+        call('verify_' + role + '_signature', ['/usr/bin/codesign', '--verify', '--deep', '--strict', str(product)])
+        state['verified'] = True
+
+
+def control_inventory(root):
+    root = Path(root)
+    if root.is_symlink() or not root.is_dir(): raise PlanError('unsafe_control_inventory')
+    result, total = {}, 0
+    for path in root.rglob('*'):
+        info = path.lstat(); name = path.relative_to(root).as_posix()
+        if stat.S_ISDIR(info.st_mode): result[name] = ('directory', None)
+        elif stat.S_ISREG(info.st_mode) and info.st_nlink == 1 and info.st_uid == os.getuid():
+            total += info.st_size
+            if not 0 <= info.st_size <= 32 * 1024**2 or total > 64 * 1024**2: raise PlanError('control_inventory_limit')
+            result[name] = ('file', projection.digest(path))
+        else: raise PlanError('unsafe_control_inventory')
+        if len(result) > 256: raise PlanError('control_inventory_limit')
+    return result
+
+
+def owned_data_root(identifier):
+    if not isinstance(identifier, str) or str(uuid.UUID(identifier)).casefold() != identifier.casefold():
+        raise PlanError('invalid_owned_control_uuid')
+    base = (Path.home().resolve(strict=True) / 'Library/Developer/CoreSimulator/Devices').resolve(strict=True)
+    device = base / identifier
+    data = device / 'data'
+    for path in (device, data):
+        info = path.lstat()
+        if not stat.S_ISDIR(info.st_mode) or info.st_uid != os.getuid(): raise PlanError('unsafe_owned_control_device')
+    return data
+
+
+def verify_owned_device(raw, identifier, name):
+    try:
+        if not isinstance(raw, bytes) or not 0 < len(raw) <= MAX_PRIVATE: return False
+        value = json.loads(raw)
+        rows = [(runtime, row) for runtime, devices in value['devices'].items() for row in devices
+                if isinstance(row, dict) and isinstance(row.get('udid'), str) and row['udid'].casefold() == identifier.casefold()]
+        return (len(rows) == 1 and rows[0][0] == RUNTIME and rows[0][1].get('name') == name
+                and rows[0][1].get('deviceTypeIdentifier') == DEVICE_TYPE and rows[0][1].get('state') == 'Booted'
+                and rows[0][1].get('isAvailable') is True)
+    except Exception:
+        return False
+
+
+def control_containers(identifier):
+    """Read only metadata inside this invocation's freshly owned simulator."""
+    data_root = owned_data_root(identifier)
+    found = {}
+    for role, relative in (('data', 'Containers/Data/Application'), ('app', 'Containers/Bundle/Application')):
+        root = data_root / relative
+        if any(path.is_symlink() for path in (root, *list(root.parents)[:3])) or not root.is_dir():
+            raise PlanError('unsafe_owned_control_containers')
+        candidates = []
+        with os.scandir(root) as entries:
+            for entry in entries:
+                if len(candidates) == 128: raise PlanError('owned_control_container_limit')
+                candidates.append(Path(entry.path))
+        matches = []
+        for candidate in candidates:
+            info = candidate.lstat()
+            if not stat.S_ISDIR(info.st_mode) or info.st_uid != os.getuid(): raise PlanError('unsafe_owned_control_container')
+            metadata = candidate / '.com.apple.mobile_container_manager.metadata.plist'
+            if not metadata.exists() and not metadata.is_symlink(): continue
+            value = plistlib.loads(private_bytes(metadata, 16384))
+            if not isinstance(value, dict): raise PlanError('invalid_owned_container_metadata')
+            if value.get('MCMMetadataIdentifier') != CONTROL_APP_ID: continue
+            selected = candidate if role == 'data' else candidate / (CONTROL_APP + '.app')
+            if selected.is_symlink() or not selected.is_dir(): raise PlanError('unsafe_owned_control_container')
+            if role == 'app':
+                info = plistlib.loads(private_bytes(selected / 'Info.plist'))
+                if (not isinstance(info, dict) or info.get('CFBundleIdentifier') != CONTROL_APP_ID
+                        or info.get('CFBundleExecutable') != CONTROL_APP): raise PlanError('installed_control_identity_mismatch')
+            matches.append(selected)
+        if len(matches) != 1: raise PlanError('owned_control_container_not_unique')
+        found[role] = matches[0]
+    return found
+
+
+def control_marker(container, clear=False):
+    try:
+        container = Path(container)
+        path = container / tiny.MARKER_RELATIVE
+        for part in path.relative_to(container).parents:
+            if (container / part).is_symlink(): return {'state': 'unsafe'}
+        if not path.exists() and not path.is_symlink(): return {'state': 'absent'}
+        data = private_bytes(path, 128)
+        stage = data.decode('ascii')
+        if stage not in tiny.STAGES or data != stage.encode(): return {'state': 'invalid'}
+        if clear:
+            path.unlink()
+            return {'state': 'cleared'} if not path.exists() and not path.is_symlink() else {'state': 'unsafe'}
+        return {'state': 'observed', 'stage': stage}
+    except Exception:
+        return {'state': 'unavailable'}
+
+
+def group_observation(pid, group, secrets):
+    result = {'state': 'unavailable', 'group_verified': False, 'same_uid': None, 'counts': {role: 0 for role in GROUP_ROLES}}
+    try:
+        if type(pid) is not int or group != pid or not 0 < pid < 2**31: return result
+        result['group_verified'] = True
+        status, raw = simulator_probe.diagnostic_command(['/bin/ps', '-g', str(group), '-o',
+            'pid=,ppid=,pgid=,uid=,ucomm='], secrets, timeout=.7)
+        empty_evidence_known = (isinstance(status, dict) and type(status.get('stdout_bytes')) is int and
+            status['stdout_bytes'] == 0 and type(status.get('stderr_bytes')) is int and status['stderr_bytes'] == 0)
+        status = bootstrap._metadata(status)
+        if status['status'] == 'commandFailed' and status['exit_code'] == 1 and raw == b'' and empty_evidence_known:
+            result.update(state='observed', same_uid=True); return result
+        if not bootstrap._completed(status) or not isinstance(raw, bytes) or len(raw) > 16384: return result
+        rows = raw.decode('ascii').splitlines()
+        if len(rows) > 128: return result
+        counts, seen = dict(result['counts']), set()
+        for row in rows:
+            fields = row.split()
+            if len(fields) != 5 or any(re.fullmatch(r'[0-9]{1,10}', value) is None for value in fields[:4]): return result
+            current, parent, observed_group, owner = map(int, fields[:4])
+            if not 0 < current < 2**31 or not 0 <= parent < 2**31 or current in seen: return result
+            if observed_group != group or owner != os.getuid():
+                result.update(state='ownershipUnverified', same_uid=False); return result
+            seen.add(current); role = fields[4] if fields[4] in counts else 'other'; counts[role] += 1
+        result.update(state='observed', same_uid=True, counts=counts)
+    except Exception:
+        pass
+    return result
+
+
+def live_control_observation(pid, group, identifier, expected, secrets, is_alive):
+    """Inspect the exact owned control without relying on live simctl IPC."""
+    report = {'diagnostic_only': True, 'state': 'unavailable', 'xcode_identity_verified': False,
+              'owned_container_verified': False, 'installed_bytes_match': False,
+              'marker': {'state': 'unavailable', 'captured_while_child_alive': False},
+              'host_process': {'state': 'notMeasured'}, 'sample': {'target': 'none', 'state': 'notAttempted'}}
+    try:
+        deadline = time.monotonic() + 18
+        if not bootstrap._alive(is_alive): return report
+        status, raw = bootstrap._run(['/bin/ps', '-p', str(pid), '-o', 'pid=,ppid=,pgid=,uid=,ucomm='], secrets, 2, deadline)
+        proof = bootstrap._process_snapshot(raw, pid, group, os.getuid()) if bootstrap._completed(status) else {}
+        report['xcode_identity_verified'] = proof.get('owned_xcodebuild_verified') is True
+        if not report['xcode_identity_verified'] or not bootstrap._alive(is_alive): return report
+        selected_pid, target = pid, 'xcodebuild'
+        try:
+            containers = control_containers(identifier)
+            report['owned_container_verified'] = True
+            report['installed_bytes_match'] = control_inventory(containers['app']) == expected
+            marker = control_marker(containers['data'])
+            if not bootstrap._alive(is_alive): return report
+            report['marker'] = {**marker, 'captured_while_child_alive': True}
+            if report['installed_bytes_match']:
+                status, raw = bootstrap._run(['/usr/bin/pgrep', '-x', '-u', str(os.getuid()), CONTROL_APP], secrets, 1, deadline)
+                report['host_process'] = {'state': 'unavailable'}
+                if bootstrap._completed(status) and re.fullmatch(rb'[0-9]{1,10}\n?', raw):
+                    candidate = int(raw)
+                    if 0 < candidate < 2**31:
+                        path_status, path = bootstrap._run([sys.executable, '-c', KERNEL_PATH, str(candidate)], secrets, 1, deadline)
+                        uid_status, uid = bootstrap._run(['/bin/ps', '-p', str(candidate), '-o', 'pid=,uid='], secrets, 1, deadline)
+                        if (bootstrap._completed(path_status) and bootstrap._completed(uid_status)
+                                and path == str(containers['app'] / CONTROL_APP).encode()
+                                and uid.split() == [str(candidate).encode(), str(os.getuid()).encode()]):
+                            selected_pid, target = candidate, 'tinyControl'
+                            report['host_process'] = {'state': 'verifiedOwnedPathAndUID'}
+        except Exception:
+            pass
+        if not bootstrap._alive(is_alive): return report
+        with tempfile.TemporaryDirectory(prefix='ayu-modern-live-sample-') as directory:
+            root = Path(directory).resolve(); root.chmod(0o700); path = root / 'sample.txt'
+            descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600); os.close(descriptor)
+            status, _ = bootstrap._run([sys.executable, '-c', bootstrap.SAMPLE_EXEC_WRAPPER, str(selected_pid), str(path)], secrets, 10, deadline)
+            selection = {'state': 'unavailable', 'wait_categories': {key: 0 for key in bootstrap.WAIT_CATEGORIES},
+                         'main_thread_observed': False, 'complete_stacks_verified': False}
+            if bootstrap._completed(status):
+                data = bootstrap._sample_file(path, os.getuid())
+                if data is not None: selection = bootstrap.parse_sample(data, secrets)
+            if not bootstrap._alive(is_alive): return report
+            report['sample'] = {'target': target, 'state': 'observed' if selection['state'] == 'parsed' else 'unavailable',
+                                'command': status, 'selection': selection}
+        report['state'] = 'observed'
+    except Exception:
+        pass
+    return report
+
+
+def public_live_observation(value):
+    """Never export arbitrary callback strings, process IDs or filesystem paths."""
+    value = value if isinstance(value, dict) else {}
+    def choice(item, choices, fallback):
+        return item if type(item) is str and item in choices else fallback
+    result = {'diagnostic_only': True, 'state': choice(value.get('state'),
+        {'unavailable', 'observed', 'partial', 'notTriggered'}, 'unavailable')}
+    for key in ('xcode_identity_verified', 'owned_container_verified', 'installed_bytes_match'):
+        result[key] = value.get(key) is True
+    marker = value.get('marker', {}); marker = marker if isinstance(marker, dict) else {}
+    state = choice(marker.get('state'), {'absent', 'observed', 'unsafe', 'invalid', 'unavailable'}, 'unavailable')
+    result['marker'] = {'state': state, 'captured_while_child_alive': marker.get('captured_while_child_alive') is True}
+    if state == 'observed' and marker.get('stage') in tiny.STAGES: result['marker']['stage'] = marker['stage']
+    elif state == 'observed': result['marker']['state'] = 'unavailable'
+    host = value.get('host_process', {}); host = host if isinstance(host, dict) else {}
+    result['host_process'] = {'state': choice(host.get('state'),
+        {'notMeasured', 'unavailable', 'notObserved', 'verifiedOwnedPathAndUID'}, 'unavailable')}
+    sample = value.get('sample', {}); sample = sample if isinstance(sample, dict) else {}
+    result['sample'] = {'target': choice(sample.get('target'), {'none', 'xcodebuild', 'tinyControl'}, 'none'),
+                        'state': choice(sample.get('state'), {'notAttempted', 'observed', 'unavailable'}, 'unavailable')}
+    if isinstance(sample.get('command'), dict): result['sample']['command'] = bootstrap._metadata(sample['command'])
+    selection = sample.get('selection', {}); selection = selection if isinstance(selection, dict) else {}
+    counts = selection.get('wait_categories', {}); counts = counts if isinstance(counts, dict) else {}
+    result['sample']['selection'] = {'main_thread_observed': selection.get('main_thread_observed') is True,
+        'complete_stacks_verified': False, 'wait_categories': {key: counts.get(key) if type(counts.get(key)) is int and
+            0 <= counts[key] <= 100000 else 0 for key in bootstrap.WAIT_CATEGORIES}}
+    return result
+
+
+def public_group_observation(value):
+    try:
+        if not isinstance(value, dict) or value.get('received_before_retirement') is not True: raise ValueError()
+        content = {key: child for key, child in value.items() if key != 'received_before_retirement'}
+        return {**projection._closed_post_exit_diagnostic(content), 'received_before_retirement': True}
+    except Exception:
+        return {'state': 'unavailable', 'received_before_retirement': False}
 
 
 def location(output, root):
@@ -314,10 +604,17 @@ def run(output=OUTPUT, root=None, command=projection.native_command, signing=sim
               'original_products_unchanged': False,
               'release_qualified': False, 'physical_device_verified': False, 'passed': False,
               'control': {'attempted': False, 'expected': 1}, 'projection': {'attempted': False, 'expected': 41},
-              'commands': {}, 'phase': 'preflight'}
+              'commands': {}, 'post_exit_group_observations': {}, 'phase': 'preflight'}
     secrets = tuple(value for key, value in os.environ.items() if value and re.search(r'TOKEN|SECRET|AUTH|PASSWORD|API_ID|API_HASH|SESSION|PRIVATE_KEY', key, re.I))
-    def call(label, args, timeout=30, required=True):
-        status, data = command(args, timeout=timeout)
+    def call(label, args, timeout=30, required=True, groups=False, observer=None):
+        options = {}
+        if groups: options['post_exit_diagnostic'] = lambda pid, group: group_observation(pid, group, secrets)
+        if observer is not None: options['bootstrap_diagnostic'] = observer
+        status, data = command(args, timeout=timeout, **options)
+        if isinstance(status, dict):
+            status = dict(status)
+            if groups: report['post_exit_group_observations'][label] = public_group_observation(status.pop('post_exit_diagnostic', None))
+            observation = status.pop('bootstrap_diagnostic', None) if observer is not None else None
         if (not isinstance(status, dict) or set(status) != {'status', 'exit_code', 'timeout', 'output_limit', 'captured_bytes'} or
                 status.get('status') not in {'completed', 'commandFailed', 'timedOut', 'outputLimit', 'unavailable'} or
                 type(status.get('timeout')) is not bool or type(status.get('output_limit')) is not bool or
@@ -328,17 +625,18 @@ def run(output=OUTPUT, root=None, command=projection.native_command, signing=sim
         report['commands'][label] = status
         if required and (status.get('status') != 'completed' or status.get('exit_code') != 0):
             raise PlanError('modern_' + label + '_failed')
-        return status, data
+        return ({**status, 'bootstrap_diagnostic': public_live_observation(observation)} if observer is not None else status), data
     def suite(label, plan, expected):
-        identifier = None; owned = {'attempted': True, 'expected': expected, 'cleanup_completed': False}
+        identifier = None; owned = {'attempted': True, 'expected': expected, 'cleanup_completed': False,
+            'xctest_command_attempted': False, 'tests_started': False, 'started': 0, 'passed': 0}
         report[label] = owned
         try:
             name = projection.DEVICE_NAME if label == 'projection' else 'AYU_MODERN_CONTROL_' + uuid.uuid4().hex
-            _, raw = call(label + '_create', ['xcrun', 'simctl', 'create', name, DEVICE_TYPE, RUNTIME])
+            _, raw = call(label + '_create', ['xcrun', 'simctl', 'create', name, DEVICE_TYPE, RUNTIME], groups=True)
             candidate = raw.decode().strip()
             if str(uuid.UUID(candidate)).casefold() != candidate.casefold(): raise PlanError('modern_device_invalid')
             identifier = candidate
-            status, _ = call(label + '_boot', ['xcrun', 'simctl', 'bootstatus', identifier, '-b'], 240, False)
+            status, _ = call(label + '_boot', ['xcrun', 'simctl', 'bootstatus', identifier, '-b'], 240, False, groups=True)
             if status.get('status') != 'completed' or status.get('exit_code') != 0:
                 if (status.get('status') != 'commandFailed' or status.get('exit_code') != 149 or
                         status.get('timeout') or status.get('output_limit')): raise PlanError('modern_boot_failed')
@@ -348,14 +646,53 @@ def run(output=OUTPUT, root=None, command=projection.native_command, signing=sim
                 if (len(rows) != 1 or rows[0][0] != RUNTIME or rows[0][1].get('name') != name or
                         rows[0][1].get('deviceTypeIdentifier') != DEVICE_TYPE or rows[0][1].get('state') != 'Booted'):
                     raise PlanError('modern_owned_boot_unverified')
+            observer = None
+            if label == 'control':
+                owned['standalone'] = warm = {'attempted': True, 'passed': False, 'xctest_result': False}
+                warm['gui_assisted'] = False
+                _, raw = call('control_owned_identity', ['xcrun', 'simctl', 'list', 'devices', 'available', '--json'], 15)
+                if not verify_owned_device(raw, identifier, name): raise PlanError('tiny_owned_simulator_identity_unverified')
+                warm['owned_simulator_identity_verified'] = True
+                # The only warmed device is the UUID created by this suite.
+                call('control_install', ['xcrun', 'simctl', 'install', identifier, str(control_app)], 120, groups=True)
+                containers = control_containers(identifier)
+                if control_inventory(containers['app']) != control_expected: raise PlanError('tiny_installed_bytes_changed')
+                warm['installed_bytes_match'] = True
+                before = control_marker(containers['data'])
+                if before.get('state') == 'observed': control_marker(containers['data'], clear=True)
+                if control_marker(containers['data']) != {'state': 'absent'}: raise PlanError('tiny_initial_marker_not_absent')
+                launched = False
+                try:
+                    call('control_standalone_launch', ['xcrun', 'simctl', 'launch', identifier, CONTROL_APP_ID], 30, groups=True)
+                    launched = True; deadline = time.monotonic() + 15
+                    marker = control_marker(containers['data'])
+                    while marker != {'state': 'observed', 'stage': 'sceneVisible'} and time.monotonic() < deadline:
+                        if marker.get('state') not in {'absent', 'observed'}: break
+                        time.sleep(.1); marker = control_marker(containers['data'])
+                    warm['marker'] = marker
+                    if marker != {'state': 'observed', 'stage': 'sceneVisible'}: raise PlanError('tiny_standalone_scene_unverified')
+                finally:
+                    if launched: call('control_standalone_terminate', ['xcrun', 'simctl', 'terminate', identifier, CONTROL_APP_ID], 30, groups=True)
+                # Rediscover exact metadata after lifecycle calls, never reset a
+                # stale/foreign path supplied by a previous simulator command.
+                current = control_containers(identifier)
+                if current != containers: raise PlanError('tiny_standalone_container_changed')
+                if control_marker(current['data'], clear=True) != {'state': 'cleared'} or control_marker(current['data']) != {'state': 'absent'}:
+                    raise PlanError('tiny_pretest_marker_not_absent')
+                warm.update(passed=True, marker_cleared_before_xctest=True)
+                owned['simulator_warmed_by_standalone_control'] = True
+                observer = lambda pid, group, alive: live_control_observation(pid, group, identifier, control_expected, secrets, alive)
             with tempfile.TemporaryDirectory(prefix='ayu-modern-xcresult-') as temporary:
                 started_at = time.time()
+                owned['xctest_command_attempted'] = True
                 status, raw = call(label + '_xctest', ['xcodebuild', 'test-without-building', '-xctestrun', str(plan),
                     '-destination', 'id=' + identifier, '-destination-timeout', '30', '-parallel-testing-enabled', 'NO',
                     '-derivedDataPath', str(Path(temporary) / 'derived'), '-resultBundlePath', str(Path(temporary) / 'result.xcresult'),
-                    '-collect-test-diagnostics=never'], 300, False)
+                    '-collect-test-diagnostics=never'], 300, False, observer=observer)
+                if observer is not None: owned['live_bootstrap'] = status.pop('bootstrap_diagnostic')
                 counts = control_cases(raw) if expected == 1 else projection.cases(raw)
                 owned.update(counts)
+                owned['tests_started'] = counts.get('started', 0) > 0
                 owned['passed_own_cases'] = status.get('status') == 'completed' and status.get('exit_code') == 0 and counts['all_expected_passed']
                 projection.write(output / (label + '-test.log'), simulator_probe.redact_probe_text(raw, secrets), text=True)
                 projection.write(output / (label + '-cases.json'), counts)
@@ -396,7 +733,9 @@ def run(output=OUTPUT, root=None, command=projection.native_command, signing=sim
         status, raw = call('build_control', ['xcodebuild', 'build-for-testing', '-project',
             str(output / 'private-project/AyuProjectionControl.xcodeproj'), '-scheme', CONTROL_APP,
             '-configuration', 'Debug', '-sdk', 'iphonesimulator', '-destination', 'generic/platform=iOS Simulator',
-            '-derivedDataPath', str(derived), 'CODE_SIGNING_ALLOWED=NO', 'CODE_SIGNING_REQUIRED=NO'], 180, False)
+            '-derivedDataPath', str(derived), 'CODE_SIGNING_ALLOWED=YES', 'CODE_SIGN_IDENTITY=-',
+            'CODE_SIGN_STYLE=Manual', 'CODE_SIGN_INJECT_BASE_ENTITLEMENTS=YES',
+            'DEVELOPMENT_TEAM=', 'PROVISIONING_PROFILE=', 'PROVISIONING_PROFILE_SPECIFIER='], 180, False)
         projection.write(output / 'control-build.log', simulator_probe.redact_probe_text(raw, secrets), text=True)
         if status.get('status') != 'completed' or status.get('exit_code') != 0: raise PlanError('tiny_control_compile_failed')
         report['tiny_control_compiled'] = True
@@ -405,32 +744,10 @@ def run(output=OUTPUT, root=None, command=projection.native_command, signing=sim
         generated = _read_plan(plans[0]); _, _, app, bundle, kind = generated_products(generated, plans[0].parent)
         report['apple_plan'] = {'host_path_kind': kind, 'format_version': target(generated)[0],
                                 'host_bundle_identifier_present': 'TestHostBundleIdentifier' in target(generated)[1]}
-        # Simulator hosted tests need the ordinary debug attach entitlement.
-        # This exact key is present in the captured synthetic Projection host;
-        # it is applied only to our newly compiled, account-free control app.
-        entitlements = output / 'private-derived/control-debug-entitlements.plist'
-        entitlements.write_bytes(plistlib.dumps({CONTROL_DEBUG_ENTITLEMENT: True})); entitlements.chmod(0o600)
-        call('sign_control_test', ['/usr/bin/codesign', '--force', '--sign', '-', '--timestamp=none', str(bundle)])
-        call('sign_control_app', ['/usr/bin/codesign', '--force', '--sign', '-', '--timestamp=none',
-            '--entitlements', str(entitlements), str(app)])
-        # codesign's default display is an abstract representation, not XML.
-        # Its documented file destination and --xml keep signature data apart
-        # from Executable=.../warning diagnostics on merged stderr/stdout.
-        with tempfile.TemporaryDirectory(prefix='ayu-modern-entitlement-readback-') as directory:
-            private = Path(directory).resolve(); private.chmod(0o700)
-            readback = private / 'extracted-signature-entitlements.plist'
-            if readback.exists() or readback.is_symlink(): raise PlanError('unsafe_control_entitlement_readback')
-            report['tiny_control_debug_entitlement_readback'] = 'commandAttempted'
-            status, _ = call('verify_control_entitlements', ['/usr/bin/codesign', '--display', '--entitlements',
-                str(readback), '--xml', str(app)], required=False)
-            if status.get('status') != 'completed' or status.get('exit_code') != 0:
-                report['tiny_control_debug_entitlement_readback'] = 'commandFailed'
-                raise PlanError('modern_verify_control_entitlements_failed')
-            report['tiny_control_debug_entitlement_readback'] = read_control_debug_entitlement_status(readback)
-            if report['tiny_control_debug_entitlement_readback'] != 'verified':
-                raise PlanError('tiny_control_debug_entitlement_unverified')
+        verify_xcode_signing(derived, app, bundle, call, report)
+        report['tiny_control_debug_entitlement_readback'] = 'matchedXcodeGeneratedSignedEntitlements'
         report['tiny_control_debug_entitlement_verified'] = True
-        call('verify_control_signature', ['/usr/bin/codesign', '--verify', '--deep', '--strict', str(app)])
+        control_app, control_expected = app, control_inventory(app)
         report['phase'] = 'testTinyControl'
         if not suite('control', plans[0], 1): raise PlanError('tiny_hosted_control_not_passed')
         report['phase'] = 'bindModernPlan'

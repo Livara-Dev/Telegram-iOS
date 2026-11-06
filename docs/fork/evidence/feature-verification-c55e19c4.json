@@ -1051,6 +1051,177 @@
     "synthetic_account_free": true
   },
   "report_generation_ran_native_tests": false,
+  "retained_diagnostic_attempt_inventory_scope": "Selected audited retained replays; not an exhaustive list of all workflow jobs.",
+  "retained_diagnostic_attempts": [
+    {
+      "application_recompiled": false,
+      "artifact_id": 13497459293,
+      "driver_commit": "61606903f5d3109bad1bcd1840991b71347a2ea0",
+      "expected_projection_cases": 41,
+      "inner_references_verified": 5,
+      "job": 127859842163,
+      "outer_sha256": "29983038cf5b365c707083f10514cb60c61fea6c3731e90509a2c56ac66623f7",
+      "passed": false,
+      "passed_projection_cases": 0,
+      "projection_tests_recompiled": false,
+      "role": "retained_projection",
+      "run": 42208145345,
+      "started_projection_cases": 0
+    },
+    {
+      "application_recompiled": false,
+      "artifact_id": 13500130699,
+      "driver_commit": "96dd066de36ba6cc4d6ae39f499387266ec59661",
+      "expected_projection_cases": 41,
+      "inner_references_verified": 5,
+      "job": 127870422441,
+      "outer_sha256": "2b5748ca997e490a60e568efb5c2239ec481793856ee81888196a4a3075b57d4",
+      "passed": false,
+      "passed_projection_cases": 0,
+      "projection_tests_recompiled": false,
+      "role": "retained_projection",
+      "run": 42211333956,
+      "started_projection_cases": 0
+    },
+    {
+      "apple_plan": {
+        "format_version": 1,
+        "host_bundle_identifier_present": true,
+        "host_path_kind": "bundle"
+      },
+      "application_recompiled": false,
+      "artifact_id": 13500776748,
+      "control": {
+        "attempted": false,
+        "expected": 1
+      },
+      "driver_commit": "cee94344d6b7bd165fc86a7e3eea1e7c14467a20",
+      "failure": "tiny_control_debug_entitlement_unverified",
+      "inner_references_verified": 4,
+      "job": 127881804858,
+      "original_products_unchanged": true,
+      "outer_sha256": "fa836cc43a33847d6ee1eb519d10efba622cb19a6707c186e0b3b7a9764d7d50",
+      "passed": false,
+      "projection": {
+        "attempted": false,
+        "expected": 41
+      },
+      "projection_tests_recompiled": false,
+      "role": "apple_generated_plan_control",
+      "run": 42214732568,
+      "tiny_control_compiled": true
+    },
+    {
+      "actual_renderer_launch": false,
+      "actual_root_visuals_present": false,
+      "application_recompiled": false,
+      "artifact_id": 13500130300,
+      "cleanup_passed": true,
+      "driver_commit": "96dd066de36ba6cc4d6ae39f499387266ec59661",
+      "inner_references_verified": 4,
+      "installed_host_verified": true,
+      "job": 127870422951,
+      "new_xctest_cases": 0,
+      "outer_sha256": "949ddde9634c266cd047172fe4ab15fcfe8469b6667418045b38593eb535cab5",
+      "passed": false,
+      "phase": "locateInstalledHost",
+      "renderer_recompiled": false,
+      "role": "retained_settings_root",
+      "root_title_automatically_verified": false,
+      "run": 42211333956
+    },
+    {
+      "actual_renderer_launch": false,
+      "actual_root_visuals_present": false,
+      "application_recompiled": false,
+      "artifact_id": 13501280860,
+      "cleanup_passed": false,
+      "driver_commit": "cee94344d6b7bd165fc86a7e3eea1e7c14467a20",
+      "inner_references_verified": 4,
+      "installed_host_verified": false,
+      "job": 127881805288,
+      "new_xctest_cases": 0,
+      "outer_sha256": "c7cd5a2fb960daa1ff355f299f1d83cdfbb552c14ad8322a710776bc3ebec85c",
+      "passed": false,
+      "phase": "locateInstalledHost",
+      "renderer_recompiled": false,
+      "role": "retained_settings_root",
+      "root_title_automatically_verified": false,
+      "run": 42214732568
+    },
+    {
+      "apple_plan": {
+        "format_version": 1,
+        "host_bundle_identifier_present": true,
+        "host_path_kind": "bundle"
+      },
+      "application_recompiled": false,
+      "artifact_id": 13502320541,
+      "control": {
+        "all_expected_passed": false,
+        "attempted": true,
+        "cleanup_completed": true,
+        "expected": 1,
+        "passed": 0,
+        "passed_own_cases": false,
+        "started": 0,
+        "unexpected_or_duplicate_events": false
+      },
+      "driver_commit": "2c5d41cd7058ee8d8cb8b28f64e9147a71d3de54",
+      "entitlement_readback_verified": true,
+      "failure": "tiny_hosted_control_not_passed",
+      "inner_references_verified": 6,
+      "job": 127886338516,
+      "original_products_unchanged": true,
+      "outer_sha256": "00de678f33054de689d392a8508a84e42989b6cce27bf45a12680b2993b88b91",
+      "passed": false,
+      "projection": {
+        "attempted": false,
+        "expected": 41
+      },
+      "projection_tests_recompiled": false,
+      "role": "apple_generated_plan_control",
+      "run": 42216084535,
+      "signing_control_limit": "Tiny control used manual ad-hoc signing with the captured host debug entitlement; this is not independent proof of Xcode default signing behavior.",
+      "tiny_control_compiled": true
+    },
+    {
+      "actual_renderer_visibility_verified": false,
+      "actual_root_visuals_present": false,
+      "application_recompiled": false,
+      "artifact_id": 13502730506,
+      "cleanup_passed": false,
+      "cleanup_results": {
+        "delete_command_completed": false,
+        "owned_uuid_absent": null,
+        "shutdown_completed": false
+      },
+      "driver_commit": "2f9dc22d11b62820478c0fe6f3890c75c0c3d8d6",
+      "inner_references_verified": 4,
+      "installed_host_locator": {
+        "filesystem": {
+          "device_identity_verified": true,
+          "reason": null,
+          "state": "candidateLocated",
+          "unique_candidate_verified": true
+        },
+        "origin": "ownedDeviceFilesystem",
+        "reason": null,
+        "state": "attested"
+      },
+      "installed_host_verified": true,
+      "job": 127890505882,
+      "new_xctest_cases": 0,
+      "outer_sha256": "26991463034bd4adb455d9353ab2b3ee4b0589010f5a8888d566126344af80f1",
+      "passed": false,
+      "phase": "warmupFrozenRoot",
+      "renderer_recompiled": false,
+      "renderer_warmup_launch_completed": false,
+      "role": "retained_settings_root",
+      "root_title_automatically_verified": false,
+      "run": 42217329564
+    }
+  ],
   "schema": 1,
   "scope": "Feature evidence from the original c55 native qualification, a separately identified older synthetic renderer run, and the later exact-source iPhone 15 Pro startup/device-variant and unexecuted Projection replay. Each diagnostic retains its own run and artifact origin."
 }

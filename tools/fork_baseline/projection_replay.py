@@ -52,6 +52,10 @@ MAX_OUTPUT = 1024 * 1024
 BOOTSTRAP_SAMPLE_AFTER_SECONDS = 90
 BOOTSTRAP_SAMPLE_JOIN_SECONDS = 20
 BOOTSTRAP_SAMPLE_OUTPUT_LIMIT = 64 * 1024
+POST_EXIT_DIAGNOSTIC_SECONDS = 3
+POST_EXIT_DIAGNOSTIC_OUTPUT_LIMIT = 8 * 1024
+POST_EXIT_GROUP_ROLES = ('CoreSimulatorService', 'SimulatorTrampoline', 'simctl',
+                         'launchd_sim', 'xcodebuild', 'AyuProjectionControl', 'other')
 HOST_LOG_PROCESSES = frozenset({'xcodebuild', 'CoreSimulatorService', 'testmanagerd',
                                 'runningboardd', 'xctest', 'launchd_sim'})
 HOST_LOG_IDENTITIES = simulator_probe.BOOTSTRAP_IDENTITIES
@@ -443,11 +447,36 @@ def clean_environment():
         os.environ.clear(); os.environ.update(original)
 
 
-def native_command(arguments, timeout=30, bootstrap_diagnostic=None):
+def _closed_post_exit_diagnostic(value):
+    """Accept only role counts; process identities and arbitrary text stay private."""
+    if not isinstance(value, dict) or set(value) != {'state', 'group_verified', 'same_uid', 'counts'}:
+        raise ValueError('Invalid post-exit diagnostic selection')
+    if (value['state'] not in {'observed', 'unavailable', 'ownershipUnverified'} or
+            type(value['group_verified']) is not bool or
+            (value['same_uid'] is not None and type(value['same_uid']) is not bool) or
+            not isinstance(value['counts'], dict) or set(value['counts']) != set(POST_EXIT_GROUP_ROLES) or
+            any(type(count) is not int or not 0 <= count <= 128 for count in value['counts'].values()) or
+            sum(value['counts'].values()) > 128):
+        raise ValueError('Invalid post-exit diagnostic selection')
+    if value['state'] == 'observed':
+        if value['group_verified'] is not True or value['same_uid'] is not True:
+            raise ValueError('Unverified post-exit diagnostic selection')
+    elif any(value['counts'].values()):
+        raise ValueError('Unverified post-exit diagnostic counts')
+    encoded = json.dumps(value, ensure_ascii=True, allow_nan=False).encode('ascii')
+    if len(encoded) > POST_EXIT_DIAGNOSTIC_OUTPUT_LIMIT:
+        raise ValueError('Post-exit diagnostic output limit')
+    return json.loads(encoded)
+
+
+def native_command(arguments, timeout=30, bootstrap_diagnostic=None, post_exit_diagnostic=None):
     """Bound subprocess lifetime/output, including inherited pipes after exit."""
     process = None; data = bytearray(); code = None; state = 'unavailable'
     started = time.monotonic(); deadline = started + timeout
     observer = None; observation = []; observation_decided = False
+    verified_initial_group = None
+    post_exit_observation = {'state': 'notTriggered', 'reason': 'commandDidNotSucceed',
+                             'received_before_retirement': False}
     not_observed = {'state': 'notTriggered', 'reason': 'commandEndedBeforeTrigger'}
     def begin_observation():
         nonlocal observer, not_observed
@@ -491,6 +520,14 @@ def native_command(arguments, timeout=30, bootstrap_diagnostic=None):
     try:
         process = subprocess.Popen(arguments, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                                    env=child_environment(), start_new_session=True)
+        if post_exit_diagnostic is not None:
+            # Record ownership before poll()/wait() can reap a short-lived
+            # leader. Never infer ownership from a group number after exit.
+            try:
+                candidate_group = os.getpgid(process.pid)
+                if candidate_group == process.pid: verified_initial_group = candidate_group
+            except (OSError, ValueError):
+                pass
         with selectors.DefaultSelector() as selector:
             selector.register(process.stdout, selectors.EVENT_READ); drain = None
             while selector.get_map():
@@ -529,6 +566,34 @@ def native_command(arguments, timeout=30, bootstrap_diagnostic=None):
                 # Diagnostics run while pipes drain. Waiting for their bounded
                 # completion must never extend the original XCTest deadline.
                 observer.join(timeout=min(BOOTSTRAP_SAMPLE_JOIN_SECONDS, max(0, deadline - time.monotonic())))
+            if post_exit_diagnostic is not None and state == 'completed' and code == 0:
+                if verified_initial_group is None:
+                    post_exit_observation = {'state': 'unavailable', 'reason': 'ownedProcessGroupUnverified',
+                                             'received_before_retirement': False}
+                elif time.monotonic() >= deadline:
+                    post_exit_observation = {'state': 'unavailable', 'reason': 'commandDeadlineReached',
+                                             'received_before_retirement': False}
+                else:
+                    selected = []
+                    def observe_retired_leader():
+                        try:
+                            value = _closed_post_exit_diagnostic(post_exit_diagnostic(process.pid, verified_initial_group))
+                        except Exception:
+                            value = {'state': 'unavailable', 'reason': 'diagnosticPayloadInvalid'}
+                        selected.append(value)
+                    try:
+                        retired_observer = threading.Thread(target=observe_retired_leader,
+                            name='projection-post-exit-observer', daemon=True)
+                        retired_observer.start()
+                        retired_observer.join(timeout=min(POST_EXIT_DIAGNOSTIC_SECONDS, max(0, deadline - time.monotonic())))
+                        if selected and not retired_observer.is_alive():
+                            post_exit_observation = {**selected[0], 'received_before_retirement': True}
+                        else:
+                            post_exit_observation = {'state': 'unavailable', 'reason': 'diagnosticDidNotFinishBeforeDeadline',
+                                                     'received_before_retirement': False}
+                    except RuntimeError:
+                        post_exit_observation = {'state': 'unavailable', 'reason': 'diagnosticWorkerUnavailable',
+                                                 'received_before_retirement': False}
             # A leader can exit while a descendant still owns its stdout pipe.
             # start_new_session gives this invocation its own group: retire that
             # group after the bounded drain even when the leader already exited.
@@ -545,6 +610,8 @@ def native_command(arguments, timeout=30, bootstrap_diagnostic=None):
     if bootstrap_diagnostic is not None:
         status['bootstrap_diagnostic'] = (observation[0] if observation else
             {'state': 'unavailable', 'reason': 'diagnosticDidNotFinishBeforeDeadline'} if observer is not None else not_observed)
+    if post_exit_diagnostic is not None:
+        status['post_exit_diagnostic'] = post_exit_observation
     return status, bytes(data)
 
 

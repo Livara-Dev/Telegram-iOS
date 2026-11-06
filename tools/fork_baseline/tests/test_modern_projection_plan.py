@@ -18,6 +18,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import modern_projection_plan as modern
 import test_projection_replay as fixtures
 
+EXPECTED_ENTITLEMENTS = {'get-task-allow': True}
+
 
 def binary(kind):
     return fixtures.macho(b'private-synthetic-machine-code', kind=kind)
@@ -60,6 +62,21 @@ def complete(data=b'', code=0):
 def control_log(outcome='passed'):
     key = modern.CONTROL_CASE.replace('.', ' ')
     return ("Test Case '-[" + key + "]' started.\nTest Case '-[" + key + "]' " + outcome + ' (0.001 seconds).\n').encode()
+
+
+IDENTIFIER = '11111111-2222-3333-4444-555555555555'
+
+
+def owned_fixture(home):
+    data = home / 'Library/Developer/CoreSimulator/Devices' / IDENTIFIER / 'data'
+    result = {}
+    for role, relative in (('data', 'Containers/Data/Application'), ('app', 'Containers/Bundle/Application')):
+        parent = data / relative / 'AAAAAAAA-BBBB-CCCC-DDDD-EEEEEEEEEEEE'; parent.mkdir(parents=True)
+        (parent / '.com.apple.mobile_container_manager.metadata.plist').write_bytes(
+            plistlib.dumps({'MCMMetadataIdentifier': modern.CONTROL_APP_ID}))
+        result[role] = parent if role == 'data' else bundle(parent / (modern.CONTROL_APP + '.app'),
+            modern.CONTROL_APP_ID, modern.CONTROL_APP, 2)
+    return result
 
 
 class ModernPlanTests(unittest.TestCase):
@@ -152,32 +169,33 @@ class ModernPlanTests(unittest.TestCase):
             api.assert_not_called(); fetch.assert_not_called()
 
     def test_only_private_xml_content_is_accepted_not_merged_codesign_diagnostics(self):
-        xml = plistlib.dumps({modern.CONTROL_DEBUG_ENTITLEMENT: True})
+        xml = plistlib.dumps(EXPECTED_ENTITLEMENTS)
         prefix = (b'Executable=/private/control-private-canary/AyuProjectionControl\n'
                   b"Warning: Specifying ':' in the path is deprecated and will not work in a future release\n")
-        self.assertTrue(modern.control_debug_entitlements(xml))
+        self.assertEqual(modern.entitlement_document(xml), EXPECTED_ENTITLEMENTS)
         for data in (prefix + xml, prefix + xml + xml, b'private-unrecognized-prefix\n' + xml, xml + b'private-tail',
                      b'<?xml version="1.0"?><plist><dict><key>private-canary</key>',
-                     plistlib.dumps({modern.CONTROL_DEBUG_ENTITLEMENT: 1}),
-                     plistlib.dumps({modern.CONTROL_DEBUG_ENTITLEMENT: False}),
-                     plistlib.dumps({modern.CONTROL_DEBUG_ENTITLEMENT: True, 'extra': True}), b'x' * 65537):
-            self.assertFalse(modern.control_debug_entitlements(data))
+                     b'x' * 65537):
+            with self.assertRaises(modern.PlanError): modern.entitlement_document(data)
+        for value in ({'get-task-allow': 1}, {'get-task-allow': False}, {'get-task-allow': True, 'extra': True}):
+            self.assertFalse(modern.typed_equal(EXPECTED_ENTITLEMENTS, modern.entitlement_document(plistlib.dumps(value))))
+        self.assertFalse(modern.typed_equal({'nested': [True]}, {'nested': [1]}))
 
     def test_signature_readback_requires_bounded_regular_independent_file_and_sets_private_mode(self):
         with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory).resolve(); xml = plistlib.dumps({modern.CONTROL_DEBUG_ENTITLEMENT: True})
+            root = Path(directory).resolve(); xml = plistlib.dumps(EXPECTED_ENTITLEMENTS)
             good = root / 'readback.plist'; good.write_bytes(xml); good.chmod(0o644)
-            self.assertEqual(modern.read_control_debug_entitlement_status(good), 'verified'); self.assertEqual(good.stat().st_mode & 0o777, 0o600)
+            self.assertEqual(modern.private_bytes(good), xml)
             link = root / 'link'; link.symlink_to(good)
             hardlink = root / 'hardlink'; os.link(good, hardlink)
             empty = root / 'empty'; empty.write_bytes(b'')
             oversized = root / 'oversized'; oversized.write_bytes(b'x' * 65537)
             fifo = root / 'fifo'; os.mkfifo(fifo)
-            self.assertEqual(modern.read_control_debug_entitlement_status(root / 'missing'), 'missingFile')
-            for path in (root, link, hardlink, empty, oversized, fifo):
-                self.assertEqual(modern.read_control_debug_entitlement_status(path), 'unsafeFile')
+            for path in (root / 'missing', root, link, hardlink, empty, oversized, fifo):
+                with self.assertRaises(modern.PlanError): modern.private_bytes(path)
 
-    def execute_fixture(self, root, control_outcome='passed', mutate=False, readback='correct'):
+    def execute_fixture(self, root, control_outcome='passed', mutate=False, readback='correct', entitlements=None, warming='correct',
+                        test_entitlements=None, test_readback='missing'):
         output = root / modern.OUTPUT; output.mkdir(parents=True)
         capture = fixtures.captured(root, current=True)
         info = capture / 'TEST_ROOT' / modern.products.APP / 'PlugIns' / modern.products.TEST / 'Info.plist'
@@ -185,20 +203,29 @@ class ModernPlanTests(unittest.TestCase):
         value['CFBundleIdentifier'] = 'org.livara.ayugram.tests.native-security.projectionTests'
         info.write_bytes(plistlib.dumps(value)); fixtures.ProjectionReplayTests.refresh(capture)
         shutil.copytree(capture, output / 'private-products')
-        calls = []
-        def command(args, timeout=30):
+        calls = []; self.fixture_options = []; entitlements = entitlements or EXPECTED_ENTITLEMENTS
+        installed, data_root = root / 'owned-device/installed.app', root / 'owned-device/data-container'
+        data_root.mkdir(parents=True)
+        def command(args, timeout=30, **options):
             calls.append((args, timeout))
+            self.fixture_options.append((args, options))
             if args == ['xcodebuild', '-version']: return complete(b'Xcode 27.1\nBuild version 27A9275\n')
             if '--show-sdk-version' in args: return complete(b'27.1')
+            if args[:3] == ['/usr/bin/codesign', '--display', '--verbose=4']:
+                identifier = modern.CONTROL_APP_ID if Path(args[-1]).suffix == '.app' else modern.CONTROL_TEST_ID
+                return complete(('Identifier=' + identifier + '\nSignature=adhoc\nTeamIdentifier=not set\n').encode())
             if args[:3] == ['/usr/bin/codesign', '--display', '--entitlements']:
                 path = Path(args[3]); self.assertFalse(path.exists()); self.assertEqual(args[4], '--xml')
                 self.assertEqual(path.parent.stat().st_mode & 0o777, 0o700)
-                self.assertNotEqual(path, output / 'private-derived/control-debug-entitlements.plist')
-                xml = plistlib.dumps({modern.CONTROL_DEBUG_ENTITLEMENT: True})
+                xml = plistlib.dumps(entitlements)
+                if Path(args[-1]).suffix != '.app':
+                    if test_readback == 'empty': path.write_bytes(b'')
+                    elif test_readback == 'xml': path.write_bytes(plistlib.dumps(test_entitlements or {}))
+                    return complete()
                 if readback == 'correct': path.write_bytes(xml)
-                elif readback == 'wrong': path.write_bytes(plistlib.dumps({modern.CONTROL_DEBUG_ENTITLEMENT: False}))
+                elif readback == 'wrong': path.write_bytes(plistlib.dumps({'get-task-allow': False}))
                 elif readback == 'malformed': path.write_bytes(b'<?xml version="1.0"?><plist><dict><key>private-canary</key>')
-                elif readback == 'symlink': path.symlink_to(output / 'private-derived/control-debug-entitlements.plist')
+                elif readback == 'symlink': path.symlink_to(output / 'private-derived/Build/Intermediates.noindex/control.app.xcent')
                 elif readback == 'missing': pass
                 elif readback == 'command_failed': return complete(b'private-command-canary', 1)
                 elif readback == 'timed_out': return {'status': 'timedOut', 'exit_code': None, 'timeout': True,
@@ -211,7 +238,25 @@ class ModernPlanTests(unittest.TestCase):
                 products = Path(args[args.index('-derivedDataPath') + 1]) / 'Build/Products'
                 plan, _, _ = apple_fixture(products, 2)
                 (products / 'control.xctestrun').write_bytes(plistlib.dumps(plan))
+                intermediates = products.parent / 'Intermediates.noindex'; intermediates.mkdir()
+                (intermediates / (modern.CONTROL_APP + '.app.xcent')).write_bytes(plistlib.dumps(entitlements))
+                (intermediates / (modern.CONTROL_APP + '.app-Simulated.xcent')).write_bytes(plistlib.dumps({'different-variant': True}))
+                if test_entitlements is not None:
+                    (intermediates / (modern.CONTROL_TEST + '.xctest.xcent')).write_bytes(plistlib.dumps(test_entitlements))
             elif args[:3] == ['xcrun', 'simctl', 'create']: return complete(b'11111111-2222-3333-4444-555555555555')
+            elif args[:4] == ['xcrun', 'simctl', 'list', 'devices']:
+                name = next(value[0][3] for value in calls if value[0][:3] == ['xcrun', 'simctl', 'create'])
+                return complete(json.dumps({'devices': {modern.RUNTIME: [{'udid': IDENTIFIER,
+                    'name': name if warming != 'wrong_identity' else 'other', 'state': 'Booted', 'isAvailable': True,
+                    'deviceTypeIdentifier': modern.DEVICE_TYPE}]}}).encode())
+            elif args[:3] == ['xcrun', 'simctl', 'install']:
+                shutil.copytree(Path(args[-1]), installed)
+                if warming == 'wrong_bytes': (installed / modern.CONTROL_APP).write_bytes(b'changed')
+            elif args[:3] == ['xcrun', 'simctl', 'launch']:
+                path = data_root / modern.tiny.MARKER_RELATIVE; path.parent.mkdir(parents=True)
+                path.write_bytes(b'sceneVisible' if warming != 'invalid_marker' else b'private-marker-canary')
+            elif args[:3] == ['xcrun', 'simctl', 'terminate'] and warming == 'terminate_failure':
+                return complete(b'private-termination-canary', 1)
             elif 'test-without-building' in args:
                 if sum('test-without-building' in args for args, _ in calls) == 1:
                     return complete(control_log(control_outcome), 0 if control_outcome == 'passed' else 65)
@@ -224,7 +269,8 @@ class ModernPlanTests(unittest.TestCase):
         original = output / 'private-products'
         with patch.object(modern, 'MANIFEST_SHA256', modern.projection.digest(original / 'manifest.json')), \
              patch.object(modern, 'CAPTURE_SHA256', modern.projection.digest(original / 'capture.json')), \
-             patch.object(modern.projection, 'verify_current_checkout'), patch.object(modern.projection, 'prepare_control', side_effect=reseal):
+             patch.object(modern.projection, 'verify_current_checkout'), patch.object(modern.projection, 'prepare_control', side_effect=reseal), \
+             patch.object(modern, 'control_containers', return_value={'app': installed, 'data': data_root}):
             proof = modern.verification(original, modern.projection.validate_products(original, modern.SOURCE))
             modern.projection.write(output / 'verification.json', proof)
             report = modern.run(root=root, command=command)
@@ -243,7 +289,7 @@ class ModernPlanTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             result, calls = self.execute_fixture(Path(directory).resolve())
             self.assertTrue(result['passed']); self.assertEqual(result['control']['passed'], 1)
-            self.assertEqual(result['tiny_control_debug_entitlement_readback'], 'verified')
+            self.assertEqual(result['tiny_control_debug_entitlement_readback'], 'matchedXcodeGeneratedSignedEntitlements')
             self.assertEqual(result['projection']['started'], 41); self.assertEqual(result['projection']['passed'], 41)
             self.assertTrue(result['original_products_unchanged']); self.assertTrue(result['projection']['cleanup_completed'])
             self.assertEqual([timeout for args, timeout in calls if 'test-without-building' in args], [300, 300])
@@ -257,11 +303,9 @@ class ModernPlanTests(unittest.TestCase):
             with self.subTest(readback=readback), tempfile.TemporaryDirectory() as directory:
                 root = Path(directory).resolve(); result, calls = self.execute_fixture(root, readback=readback)
                 self.assertFalse(result['passed']); self.assertFalse(result['tiny_control_debug_entitlement_verified'])
-                self.assertEqual(result['failure'], 'modern_verify_control_entitlements_failed'
-                    if readback in {'command_failed', 'timed_out'} else 'tiny_control_debug_entitlement_unverified')
-                self.assertEqual(result['tiny_control_debug_entitlement_readback'], {
-                    'missing': 'missingFile', 'symlink': 'unsafeFile', 'wrong': 'unexpectedEntitlements',
-                    'malformed': 'nonXML', 'command_failed': 'commandFailed', 'timed_out': 'commandFailed'}[readback])
+                self.assertEqual(result['tiny_signing']['host']['readback'], {
+                    'missing': 'generatedSignatureMismatch', 'symlink': 'unsafeOrInvalidFile', 'wrong': 'generatedSignatureMismatch',
+                    'malformed': 'unsafeOrInvalidFile', 'command_failed': 'commandFailed', 'timed_out': 'commandFailed'}[readback])
                 self.assertFalse(result['control']['attempted']); self.assertFalse(result['projection']['attempted'])
                 self.assertFalse(any('test-without-building' in args for args, _ in calls))
                 self.assertFalse(any(args[:3] == ['xcrun', 'simctl', 'create'] for args, _ in calls))
@@ -273,6 +317,168 @@ class ModernPlanTests(unittest.TestCase):
             result, _ = self.execute_fixture(Path(directory).resolve(), mutate=True)
             self.assertEqual(result['projection']['passed'], 41)
             self.assertFalse(result['original_products_unchanged']); self.assertFalse(result['passed'])
+
+    def test_native_xcode_signing_is_not_a_copied_key_and_standalone_warmup_precedes_one_test_attempt(self):
+        for generated in ({'get-task-allow': True}, {'com.apple.security.get-task-allow': True}):
+            with self.subTest(generated=generated), tempfile.TemporaryDirectory() as directory:
+                result, calls = self.execute_fixture(Path(directory).resolve(), entitlements=generated)
+                self.assertTrue(result['passed']); self.assertTrue(result['tiny_signing']['host']['verified'])
+                self.assertTrue(result['tiny_signing']['test']['verified'])
+                self.assertFalse(result['tiny_signing']['test']['generated_signed_entitlements_present'])
+                self.assertFalse(any('--sign' in args or 'sign_control' in args for args, _ in calls))
+                build = next(args for args, _ in calls if 'build-for-testing' in args)
+                self.assertIn('CODE_SIGN_IDENTITY=-', build); self.assertIn('CODE_SIGN_INJECT_BASE_ENTITLEMENTS=YES', build)
+                self.assertIn('DEVELOPMENT_TEAM=', build); self.assertNotIn('-allowProvisioningUpdates', build)
+                actions = [args[2] for args, _ in calls if args[:2] == ['xcrun', 'simctl']]
+                self.assertLess(actions.index('install'), actions.index('launch'))
+                self.assertLess(actions.index('launch'), actions.index('terminate'))
+                first_xctest = next(index for index, (args, _) in enumerate(calls) if 'test-without-building' in args)
+                self.assertTrue(any(args[:3] == ['xcrun', 'simctl', 'terminate'] for args, _ in calls[:first_xctest]))
+                self.assertTrue(result['control']['standalone']['marker_cleared_before_xctest'])
+                self.assertFalse(result['control']['standalone']['xctest_result'])
+                self.assertFalse(result['control']['standalone']['gui_assisted'])
+                self.assertTrue(result['control']['simulator_warmed_by_standalone_control'])
+                observers = [(args, options) for args, options in self.fixture_options if 'bootstrap_diagnostic' in options]
+                self.assertEqual(len(observers), 1); self.assertIn('test-without-building', observers[0][0])
+
+    def test_failed_owned_identity_byte_attestation_marker_or_termination_stops_before_any_test_and_cleans_up(self):
+        for warming in ('wrong_identity', 'wrong_bytes', 'invalid_marker', 'terminate_failure'):
+            with self.subTest(warming=warming), tempfile.TemporaryDirectory() as directory:
+                result, calls = self.execute_fixture(Path(directory).resolve(), warming=warming)
+                self.assertFalse(result['passed']); self.assertFalse(result['projection']['attempted'])
+                self.assertFalse(result['control']['xctest_command_attempted']); self.assertFalse(result['control']['tests_started'])
+                self.assertFalse(any('test-without-building' in args for args, _ in calls))
+                self.assertTrue(result['control']['cleanup_completed'])
+                self.assertNotIn('private-marker-canary', json.dumps(result))
+                self.assertNotIn('private-termination-canary', json.dumps(result))
+
+    def test_signed_xcent_requires_unique_host_file_and_excludes_simulated_variant(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve(); derived = root / 'derived'; intermediate = derived / 'Build/Intermediates.noindex'
+            intermediate.mkdir(parents=True); product = root / (modern.CONTROL_APP + '.app')
+            simulated = intermediate / (product.name.replace('.app', '.app-Simulated') + '.xcent')
+            simulated.write_bytes(plistlib.dumps({'wrong-variant': True}))
+            with self.assertRaises(modern.PlanError): modern.signed_xcent(derived, product, True)
+            source = intermediate / (product.name + '.xcent'); source.write_bytes(plistlib.dumps(EXPECTED_ENTITLEMENTS))
+            self.assertEqual(modern.signed_xcent(derived, product, True), EXPECTED_ENTITLEMENTS)
+            duplicate = intermediate / 'duplicate'; duplicate.mkdir(); shutil.copyfile(source, duplicate / source.name)
+            with self.assertRaises(modern.PlanError): modern.signed_xcent(derived, product, True)
+
+    def test_exact_owned_uuid_model_runtime_name_and_booted_state_are_all_required(self):
+        correct = {'udid': IDENTIFIER, 'name': 'owned', 'state': 'Booted', 'isAvailable': True,
+                   'deviceTypeIdentifier': modern.DEVICE_TYPE}
+        def payload(row, runtime=modern.RUNTIME): return json.dumps({'devices': {runtime: [row]}}).encode()
+        self.assertTrue(modern.verify_owned_device(payload(correct), IDENTIFIER, 'owned'))
+        for key, value in (('udid', '00000000-0000-0000-0000-000000000000'), ('name', 'other'),
+                           ('state', 'Shutdown'), ('isAvailable', 1), ('deviceTypeIdentifier', 'other')):
+            row = {**correct, key: value}
+            self.assertFalse(modern.verify_owned_device(payload(row), IDENTIFIER, 'owned'))
+        self.assertFalse(modern.verify_owned_device(payload(correct, 'other-runtime'), IDENTIFIER, 'owned'))
+        self.assertFalse(modern.verify_owned_device(b'private-json-canary', IDENTIFIER, 'owned'))
+
+    def test_direct_filesystem_discovery_binds_exact_owned_uuid_and_both_bundle_metadata_identities(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve(); expected = owned_fixture(root)
+            with patch.object(modern.Path, 'home', return_value=root):
+                self.assertEqual(modern.control_containers(IDENTIFIER), expected)
+                with self.assertRaises(Exception): modern.control_containers('00000000-0000-0000-0000-000000000000')
+                metadata = expected['data'] / '.com.apple.mobile_container_manager.metadata.plist'
+                metadata.write_bytes(plistlib.dumps({'MCMMetadataIdentifier': 'other-private-canary'}))
+                with self.assertRaises(modern.PlanError): modern.control_containers(IDENTIFIER)
+
+    def test_direct_discovery_rejects_foreign_metadata_symlinks_duplicate_containers_and_changed_app_identity(self):
+        for kind in ('duplicate', 'symlink', 'identity'):
+            with self.subTest(kind=kind), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory).resolve(); expected = owned_fixture(root)
+                if kind == 'duplicate': shutil.copytree(expected['data'], expected['data'].with_name('duplicate'))
+                elif kind == 'symlink':
+                    metadata = expected['data'] / '.com.apple.mobile_container_manager.metadata.plist'
+                    outside = root / 'outside'; shutil.move(metadata, outside); metadata.symlink_to(outside)
+                else: (expected['app'] / 'Info.plist').write_bytes(plistlib.dumps({'CFBundleIdentifier': 'other', 'CFBundleExecutable': modern.CONTROL_APP}))
+                with patch.object(modern.Path, 'home', return_value=root), self.assertRaises(modern.PlanError):
+                    modern.control_containers(IDENTIFIER)
+
+    def test_marker_reads_exact_frozen_c_writer_bytes_and_clear_never_follows_links(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve(); path = root / modern.tiny.MARKER_RELATIVE; path.parent.mkdir(parents=True)
+            self.assertEqual(modern.control_marker(root), {'state': 'absent'})
+            for stage in modern.tiny.STAGES:
+                path.write_bytes(stage.encode()); self.assertEqual(modern.control_marker(root), {'state': 'observed', 'stage': stage})
+            self.assertEqual(modern.control_marker(root, clear=True), {'state': 'cleared'})
+            outside = root / 'private-outside'; outside.write_bytes(b'sceneVisible'); path.symlink_to(outside)
+            self.assertNotEqual(modern.control_marker(root, clear=True), {'state': 'cleared'})
+            self.assertEqual(outside.read_bytes(), b'sceneVisible')
+
+    def test_post_exit_group_selection_is_only_same_uid_verified_group_counts_with_no_private_names(self):
+        uid = os.getuid(); secret = 'private-process-canary'
+        raw = ('124 1 123 ' + str(uid) + ' CoreSimulatorService\n125 1 123 ' + str(uid) + ' ' + secret + '\n').encode()
+        with patch.object(modern.simulator_probe, 'diagnostic_command', return_value=complete(raw)) as command:
+            value = modern.group_observation(123, 123, (secret,))
+        self.assertEqual(value['state'], 'observed'); self.assertEqual(value['counts']['CoreSimulatorService'], 1)
+        self.assertEqual(value['counts']['other'], 1); self.assertNotIn(secret, json.dumps(value))
+        self.assertEqual(command.call_args.args[0], ['/bin/ps', '-g', '123', '-o', 'pid=,ppid=,pgid=,uid=,ucomm='])
+        for data in (raw.replace(b' 123 ', b' 999 '), raw.replace(str(uid).encode(), str(uid + 1).encode()), raw * 129):
+            with patch.object(modern.simulator_probe, 'diagnostic_command', return_value=complete(data)):
+                self.assertNotEqual(modern.group_observation(123, 123, ())['state'], 'observed')
+        for status in ({'status': 'commandFailed', 'exit_code': 1},
+                       {'status': 'commandFailed', 'exit_code': 1, 'stdout_bytes': 0, 'stderr_bytes': 10}):
+            with patch.object(modern.simulator_probe, 'diagnostic_command', return_value=(status, b'')):
+                self.assertEqual(modern.group_observation(123, 123, ())['state'], 'unavailable')
+        with patch.object(modern.simulator_probe, 'diagnostic_command', return_value=(
+                {'status': 'commandFailed', 'exit_code': 1, 'stdout_bytes': 0, 'stderr_bytes': 0}, b'')):
+            self.assertEqual(modern.group_observation(123, 123, ())['state'], 'observed')
+
+    def test_live_callback_private_paths_or_unbounded_extra_fields_never_enter_public_result(self):
+        secret = 'private-observer-canary'
+        value = {'state': secret, 'marker': {'state': 'observed', 'stage': secret, 'path': secret},
+                 'host_process': {'state': secret, 'pid': 987}, 'sample': {'state': secret, 'target': secret,
+                    'selection': {'wait_categories': {'mach_message_wait': True, secret: 123}}}, secret: secret}
+        actual = modern.public_live_observation(value)
+        self.assertNotIn(secret, json.dumps(actual)); self.assertNotIn('987', json.dumps(actual))
+        self.assertEqual(actual['sample']['selection']['wait_categories']['mach_message_wait'], 0)
+        self.assertFalse(modern.public_group_observation({**value, 'received_before_retirement': True})['received_before_retirement'])
+        for item in ([], {}, 1, True, None):
+            value = {'state': item, 'marker': {'state': item}, 'host_process': {'state': item}, 'sample': {'target': item, 'state': item}}
+            self.assertEqual(modern.public_live_observation(value)['state'], 'unavailable')
+
+    def test_only_optional_test_zero_rights_accepts_missing_empty_or_xml_empty_signature_output(self):
+        for expected in (None, {}):
+            for readback in ('missing', 'empty', 'xml'):
+                with self.subTest(expected=expected, readback=readback), tempfile.TemporaryDirectory() as directory:
+                    result, _ = self.execute_fixture(Path(directory).resolve(), test_entitlements=expected, test_readback=readback)
+                    self.assertTrue(result['passed']); self.assertTrue(result['tiny_signing']['test']['verified'])
+        with tempfile.TemporaryDirectory() as directory:
+            result, _ = self.execute_fixture(Path(directory).resolve(), test_entitlements={'get-task-allow': True})
+            self.assertFalse(result['passed']); self.assertFalse(result['control']['attempted'])
+
+    def test_live_filesystem_marker_and_kernel_path_uid_proof_choose_only_exact_owned_control_process(self):
+        for failure in (None, 'path', 'uid', 'exited'):
+            with self.subTest(failure=failure), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory).resolve(); containers = owned_fixture(root)
+                marker = containers['data'] / modern.tiny.MARKER_RELATIVE; marker.parent.mkdir(parents=True); marker.write_bytes(b'mainEntered')
+                calls = []; uid = os.getuid()
+                def command(args, secrets, timeout=3):
+                    calls.append((args, timeout))
+                    if args[:4] == ['/bin/ps', '-p', '123', '-o']: return complete(('123 1 123 ' + str(uid) + ' xcodebuild\n').encode())
+                    if args[:3] == ['/usr/bin/pgrep', '-x', '-u']: return complete(b'456\n')
+                    if modern.KERNEL_PATH in args: return complete(str(containers['app'] / modern.CONTROL_APP).encode() if failure != 'path' else b'/private/foreign-executable')
+                    if args[:4] == ['/bin/ps', '-p', '456', '-o']: return complete(('456 ' + str(uid if failure != 'uid' else uid + 1)).encode())
+                    if modern.bootstrap.SAMPLE_EXEC_WRAPPER in args:
+                        Path(args[-1]).write_bytes(b'Call graph:\n    1 Thread_0 DispatchQueue_1: com.apple.main-thread (serial)\n    1 mach_msg2_trap (in libsystem_kernel.dylib) + 0 [0xabc]\nBinary Images:\nprivate-sample-canary\n')
+                        return complete()
+                    raise AssertionError(args)
+                alive = Mock(side_effect=[True, True, False]) if failure == 'exited' else lambda: True
+                with patch.object(modern.Path, 'home', return_value=root), patch.object(modern.bootstrap, 'command', side_effect=command):
+                    observed = modern.live_control_observation(123, 123, IDENTIFIER, modern.control_inventory(containers['app']), (), alive)
+                value = modern.public_live_observation(observed)
+                self.assertNotIn('private-sample-canary', json.dumps(value)); self.assertNotIn(str(root), json.dumps(value))
+                if failure == 'exited':
+                    self.assertFalse(value['marker']['captured_while_child_alive']); self.assertFalse(any(modern.bootstrap.SAMPLE_EXEC_WRAPPER in args for args, _ in calls))
+                else:
+                    self.assertEqual(value['marker'], {'state': 'observed', 'stage': 'mainEntered', 'captured_while_child_alive': True})
+                    self.assertEqual(value['sample']['target'], 'tinyControl' if failure is None else 'xcodebuild')
+                    self.assertTrue(value['sample']['selection']['main_thread_observed'])
+                    self.assertTrue(all(timeout <= 10 for _, timeout in calls))
 
 
 if __name__ == '__main__': unittest.main()

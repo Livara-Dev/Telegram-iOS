@@ -244,7 +244,12 @@ class ProjectionReplayTests(unittest.TestCase):
             with self.subTest(name=name), tempfile.TemporaryDirectory() as directory:
                 root = Path(directory); zipped = archive(root)
                 with zipfile.ZipFile(zipped, 'a') as z:
-                    info = zipfile.ZipInfo(name); info.external_attr = mode << 16; z.writestr(info, b'bad')
+                    info = zipfile.ZipInfo(name); info.external_attr = mode << 16
+                    if name in z.namelist():
+                        with self.assertWarnsRegex(UserWarning, '^Duplicate name:'):
+                            z.writestr(info, b'bad')
+                    else:
+                        z.writestr(info, b'bad')
                 _, artifact = metadata(zipped.stat().st_size, replay.digest(zipped))
                 with patch.object(replay, 'OUTER_SHA256', replay.digest(zipped)), self.assertRaises(ValueError): replay.extract(zipped, artifact, root / 'out')
 
@@ -299,6 +304,134 @@ class ProjectionReplayTests(unittest.TestCase):
             self.assertEqual(status['status'], 'outputLimit'); self.assertEqual(len(data), 1024)
         status, _ = replay.native_command([sys.executable, '-c', 'import time;time.sleep(5)'], timeout=.1)
         self.assertTrue(status['timeout'])
+
+    @staticmethod
+    def post_exit_selection(count=0):
+        counts = dict.fromkeys(replay.POST_EXIT_GROUP_ROLES, 0); counts['other'] = count
+        return {'state': 'observed', 'group_verified': True, 'same_uid': True, 'counts': counts}
+
+    def test_post_exit_observer_default_off_never_queries_a_group(self):
+        with patch.object(replay.os, 'getpgid') as groups:
+            status, _ = replay.native_command([sys.executable, '-c', 'pass'])
+        self.assertEqual(status['status'], 'completed'); self.assertNotIn('post_exit_diagnostic', status)
+        groups.assert_not_called()
+
+    def test_post_exit_observes_a_real_owned_descendant_before_unchanged_group_retirement(self):
+        # The leader exits with a same-group child still alive. Closing its
+        # inherited pipes makes the test observe the actual post-exit boundary.
+        with tempfile.TemporaryDirectory() as directory:
+            marker = Path(directory) / 'late-descendant-side-effect'
+            source = ('import os,time; child=os.fork(); '
+                      '\nif child == 0:'
+                      '\n os.close(1);os.close(2);time.sleep(.6);open(' + repr(str(marker)) + ',"w").write("late");os._exit(0)'
+                      '\nprint(child,flush=True);time.sleep(.05);os._exit(0)')
+            observations, retirements = [], []
+            actual_killpg = os.killpg
+            def observe(pid, group):
+                # Query only the group handed to this invocation; no process
+                # enumeration is needed for this portable lifecycle regression.
+                os.killpg(group, 0)
+                observations.append((pid == group, 'observe'))
+                return self.post_exit_selection(1)
+            def retire(group, sig):
+                if sig == signal.SIGKILL: retirements.append(len(observations))
+                return actual_killpg(group, sig)
+            with patch.object(replay.os, 'killpg', side_effect=retire):
+                status, data = replay.native_command([sys.executable, '-c', source], timeout=2,
+                                                     post_exit_diagnostic=observe)
+            self.assertEqual(status['status'], 'completed'); self.assertEqual(status['exit_code'], 0)
+            self.assertEqual(observations, [(True, 'observe')]); self.assertEqual(retirements, [1])
+            selected = status['post_exit_diagnostic']
+            self.assertEqual(selected, {**self.post_exit_selection(1), 'received_before_retirement': True})
+            self.assertNotIn(data.strip().decode(), json.dumps(status))
+            # Existing cleanup still retires that descendant; observation does
+            # not grant a helper permission to survive a successful invocation.
+            time.sleep(.65); self.assertFalse(marker.exists())
+
+    def test_post_exit_never_observes_nonzero_timeout_or_output_limit(self):
+        for source, options in [('raise SystemExit(7)', {}), ('import time;time.sleep(5)', {'timeout': .1}),
+                                ('print("x"*5000)', {'timeout': 1})]:
+            with self.subTest(source=source), patch.object(replay, 'MAX_OUTPUT', 1024):
+                calls = []
+                status, _ = replay.native_command([sys.executable, '-c', source],
+                    post_exit_diagnostic=lambda *args: calls.append(args), **options)
+            self.assertNotEqual(status['status'], 'completed'); self.assertEqual(calls, [])
+            self.assertEqual(status['post_exit_diagnostic'], {'state': 'notTriggered',
+                'reason': 'commandDidNotSucceed', 'received_before_retirement': False})
+
+    def test_post_exit_does_not_guess_an_exited_leader_group_when_initial_proof_fails(self):
+        for failure in (None, OSError('private-group-canary'), ValueError('private-group-canary')):
+            with self.subTest(failure=type(failure).__name__), patch.object(replay.os, 'getpgid',
+                    return_value=-1, side_effect=failure):
+                calls = []
+                status, _ = replay.native_command([sys.executable, '-c', 'pass'], timeout=1,
+                    post_exit_diagnostic=lambda *args: calls.append(args))
+            self.assertEqual(status['status'], 'completed'); self.assertEqual(calls, [])
+            self.assertEqual(status['post_exit_diagnostic'], {'state': 'unavailable',
+                'reason': 'ownedProcessGroupUnverified', 'received_before_retirement': False})
+
+    def test_post_exit_selection_rejects_arbitrary_fields_types_and_unverified_counts_without_leaking(self):
+        for kind in ('exception', 'extra', 'role', 'boolean', 'oversized', 'sum', 'unverified', 'unknownCounts', 'notDictionary'):
+            with self.subTest(kind=kind):
+                def observe(*args):
+                    if kind == 'exception': raise ValueError('private-observer-canary /private/raw')
+                    value = self.post_exit_selection(1)
+                    if kind == 'extra': value['private-observer-canary'] = '/private/raw'
+                    elif kind == 'role': value['counts']['private-observer-canary'] = 1
+                    elif kind == 'boolean': value['counts']['other'] = True
+                    elif kind == 'oversized': value['counts']['other'] = 100000
+                    elif kind == 'sum': value['counts'] = dict.fromkeys(replay.POST_EXIT_GROUP_ROLES, 20)
+                    elif kind == 'unverified': value['same_uid'] = False
+                    elif kind == 'unknownCounts': value['state'] = 'unavailable'
+                    elif kind == 'notDictionary': return 'private-observer-canary'
+                    return value
+                status, _ = replay.native_command([sys.executable, '-c', 'pass'], timeout=1,
+                                                 post_exit_diagnostic=observe)
+            self.assertEqual(status['status'], 'completed'); self.assertEqual(status['exit_code'], 0)
+            self.assertEqual(status['post_exit_diagnostic'], {'state': 'unavailable',
+                'reason': 'diagnosticPayloadInvalid', 'received_before_retirement': True})
+            self.assertNotIn('private-observer-canary', json.dumps(status)); self.assertNotIn('/private/', json.dumps(status))
+
+    def test_post_exit_slow_selection_cannot_extend_the_command_deadline_or_publish_a_late_result(self):
+        release, finished = threading.Event(), threading.Event()
+        def observe(*args):
+            release.wait(2)
+            finished.set(); return self.post_exit_selection(1)
+        began = time.monotonic()
+        try:
+            status, _ = replay.native_command([sys.executable, '-c', 'pass'], timeout=.2,
+                                             post_exit_diagnostic=observe)
+            self.assertLess(time.monotonic() - began, 1)
+            self.assertEqual(status['status'], 'completed'); self.assertEqual(status['exit_code'], 0)
+            self.assertEqual(status['post_exit_diagnostic'], {'state': 'unavailable',
+                'reason': 'diagnosticDidNotFinishBeforeDeadline', 'received_before_retirement': False})
+        finally:
+            release.set(); self.assertTrue(finished.wait(1))
+        self.assertEqual(status['post_exit_diagnostic']['state'], 'unavailable')
+
+    def test_post_exit_local_budget_is_bounded_even_with_a_longer_command_deadline(self):
+        release, finished = threading.Event(), threading.Event()
+        def observe(*args):
+            release.wait(2); finished.set(); return self.post_exit_selection()
+        began = time.monotonic()
+        try:
+            with patch.object(replay, 'POST_EXIT_DIAGNOSTIC_SECONDS', .05):
+                status, _ = replay.native_command([sys.executable, '-c', 'pass'], timeout=5,
+                                                 post_exit_diagnostic=observe)
+            self.assertLess(time.monotonic() - began, 1)
+            self.assertEqual(status['status'], 'completed')
+            self.assertFalse(status['post_exit_diagnostic']['received_before_retirement'])
+        finally:
+            release.set(); self.assertTrue(finished.wait(1))
+
+    def test_post_exit_thread_failure_does_not_prevent_existing_cleanup_or_change_success(self):
+        with patch.object(replay.threading, 'Thread', side_effect=RuntimeError('private-thread-canary')):
+            status, _ = replay.native_command([sys.executable, '-c', 'pass'], timeout=1,
+                post_exit_diagnostic=lambda *args: self.post_exit_selection())
+        self.assertEqual(status['status'], 'completed'); self.assertEqual(status['exit_code'], 0)
+        self.assertEqual(status['post_exit_diagnostic'], {'state': 'unavailable',
+            'reason': 'diagnosticWorkerUnavailable', 'received_before_retirement': False})
+        self.assertNotIn('private-thread-canary', json.dumps(status))
 
     def test_bootstrap_sampler_is_default_off_and_restricted_to_exact_current_source_before_access(self):
         for source, run_id, enabled in [(replay.SOURCE, replay.RUN, True),

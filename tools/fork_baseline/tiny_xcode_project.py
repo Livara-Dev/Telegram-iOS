@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: GPL-2.0-or-later
 # Created for the AyuGram iOS fork on 2026-11-06.
-"""Write a tiny, unsigned UIKit/XCTest control project without invoking Xcode.
+"""Write a tiny UIKit/XCTest project with ordinary Xcode ad hoc signing.
 
 This draft supplies input for a future Xcode-generated test plan. Writing the
 project does not establish that it builds, launches, or executes a test.
@@ -15,10 +15,89 @@ TEST_NAME = 'AyuProjectionControlTests'
 APP_BUNDLE = 'org.livara.ayugram.tests.modern-projection-control'
 TEST_BUNDLE = 'org.livara.ayugram.tests.modern-projection-controlTests'
 EXPECTED_CASE = 'AyuProjectionControlTests.testRunsInApplicationHost'
+MARKER_RELATIVE = 'Library/Caches/ayu-modern-control/stage'
+STAGES = ('mainEntered', 'didFinish', 'sceneVisible')
 
 APP_SOURCE = '''// SPDX-License-Identifier: GPL-2.0-or-later
 // Created for the AyuGram iOS fork on 2026-11-06.
 #import <UIKit/UIKit.h>
+#include <errno.h>
+#include <fcntl.h>
+#include <limits.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <sys/stat.h>
+#include <unistd.h>
+
+// BEGIN PORTABLE MARKER WRITER
+static void AyuModernWriteStage(const char *directory, const char *stage) {
+    if (directory == NULL || stage == NULL ||
+        (strcmp(stage, "mainEntered") != 0 && strcmp(stage, "didFinish") != 0 &&
+         strcmp(stage, "sceneVisible") != 0)) {
+        return;
+    }
+    size_t length = strlen(stage);
+    if (length == 0 || length > 128) {
+        return;
+    }
+    char temporary[PATH_MAX];
+    int count = snprintf(temporary, sizeof(temporary), "%s/.stage.XXXXXX", directory);
+    if (count <= 0 || (size_t)count >= sizeof(temporary)) {
+        return;
+    }
+    if (mkdir(directory, 0700) != 0 && errno != EEXIST) {
+        return;
+    }
+    int directoryFD = open(directory, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_NONBLOCK);
+    if (directoryFD < 0) {
+        return;
+    }
+    struct stat directoryInfo;
+    if (fstat(directoryFD, &directoryInfo) != 0 || !S_ISDIR(directoryInfo.st_mode) ||
+        directoryInfo.st_uid != getuid() || fchmod(directoryFD, 0700) != 0) {
+        close(directoryFD);
+        return;
+    }
+    int descriptor = mkstemp(temporary);
+    if (descriptor < 0) {
+        close(directoryFD);
+        return;
+    }
+    struct stat fileInfo;
+    int valid = fstat(descriptor, &fileInfo) == 0 && S_ISREG(fileInfo.st_mode) &&
+        fileInfo.st_uid == getuid() && fileInfo.st_nlink == 1 && fchmod(descriptor, 0600) == 0;
+    size_t offset = 0;
+    while (valid && offset < length) {
+        ssize_t amount = write(descriptor, stage + offset, length - offset);
+        if (amount < 0 && errno == EINTR) {
+            continue;
+        }
+        if (amount <= 0) {
+            valid = 0;
+            break;
+        }
+        offset += (size_t)amount;
+    }
+    if (close(descriptor) != 0) {
+        valid = 0;
+    }
+    if (!valid || renameat(AT_FDCWD, temporary, directoryFD, "stage") != 0) {
+        unlink(temporary);
+    }
+    close(directoryFD);
+}
+// END PORTABLE MARKER WRITER
+
+static void AyuModernRecordStage(const char *stage) {
+    @try {
+        NSString *directory = [NSHomeDirectory()
+            stringByAppendingPathComponent:@"Library/Caches/ayu-modern-control"];
+        AyuModernWriteStage([directory fileSystemRepresentation], stage);
+    } @catch (NSException *exception) {
+        (void)exception;
+    }
+}
 
 @interface AyuProjectionControlSceneDelegate : UIResponder <UIWindowSceneDelegate>
 @property(nonatomic, strong) UIWindow *window;
@@ -44,6 +123,7 @@ APP_SOURCE = '''// SPDX-License-Identifier: GPL-2.0-or-later
     ]];
     self.window.rootViewController = controller;
     [self.window makeKeyAndVisible];
+    AyuModernRecordStage("sceneVisible");
 }
 @end
 
@@ -53,6 +133,7 @@ APP_SOURCE = '''// SPDX-License-Identifier: GPL-2.0-or-later
 @implementation AyuProjectionControlAppDelegate
 - (BOOL)application:(UIApplication *)application
         didFinishLaunchingWithOptions:(NSDictionary *)launchOptions {
+    AyuModernRecordStage("didFinish");
     return YES;
 }
 - (UISceneConfiguration *)application:(UIApplication *)application
@@ -67,6 +148,7 @@ APP_SOURCE = '''// SPDX-License-Identifier: GPL-2.0-or-later
 
 int main(int argc, char *argv[]) {
     @autoreleasepool {
+        AyuModernRecordStage("mainEntered");
         return UIApplicationMain(argc, argv, nil,
             NSStringFromClass([AyuProjectionControlAppDelegate class]));
     }
@@ -145,7 +227,7 @@ PROJECT = '''// !$*UTF8*$!
 		800000000000000000000002 /* App Dependency */ = {isa = PBXTargetDependency; target = 500000000000000000000001; targetProxy = 800000000000000000000001; };
 		900000000000000000000001 /* Project Debug */ = {
 			isa = XCBuildConfiguration; name = Debug;
-			buildSettings = {ARCHS = arm64; CLANG_ENABLE_MODULES = YES; CLANG_ENABLE_OBJC_ARC = YES; CODE_SIGNING_ALLOWED = NO; CODE_SIGNING_REQUIRED = NO; DEBUG_INFORMATION_FORMAT = dwarf; ENABLE_TESTABILITY = YES; GCC_C_LANGUAGE_STANDARD = gnu17; GCC_OPTIMIZATION_LEVEL = 0; IPHONEOS_DEPLOYMENT_TARGET = 15.0; ONLY_ACTIVE_ARCH = YES; SDKROOT = iphonesimulator; SUPPORTED_PLATFORMS = iphonesimulator; TARGETED_DEVICE_FAMILY = 1; };
+			buildSettings = {ARCHS = arm64; CLANG_ENABLE_MODULES = YES; CLANG_ENABLE_OBJC_ARC = YES; CODE_SIGNING_ALLOWED = YES; CODE_SIGN_IDENTITY = "-"; CODE_SIGN_STYLE = Manual; CODE_SIGN_INJECT_BASE_ENTITLEMENTS = YES; DEBUG_INFORMATION_FORMAT = dwarf; ENABLE_TESTABILITY = YES; GCC_C_LANGUAGE_STANDARD = gnu17; GCC_OPTIMIZATION_LEVEL = 0; IPHONEOS_DEPLOYMENT_TARGET = 15.0; ONLY_ACTIVE_ARCH = YES; SDKROOT = iphonesimulator; SUPPORTED_PLATFORMS = iphonesimulator; TARGETED_DEVICE_FAMILY = 1; };
 		};
 		900000000000000000000002 /* App Debug */ = {
 			isa = XCBuildConfiguration; name = Debug;

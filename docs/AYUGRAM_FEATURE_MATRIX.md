@@ -312,6 +312,17 @@ the suite total. Historical checkpoints and the older 62546557 IPA do not verify
 later features. New diagnostic results retain their own origins in the
 checkpoints above.
 
+Later artifact-only diagnostics retain separate results in that evidence record.
+[42216084535](https://github.com/Livara-Dev/Telegram-iOS/actions/runs/42216084535)
+verified the corrected XML signature readback, but its manually signed tiny
+control timed out before its one XCTest began; Projection was not attempted.
+[42217329564](https://github.com/Livara-Dev/Telegram-iOS/actions/runs/42217329564)
+verified the owned settings simulator and complete installed bundle/signature,
+but launch and cleanup commands timed out before any actual UI capture. These
+results identify CI boundaries; they add no feature-test passes or physical
+installation evidence. The original compiled applications and successful
+welcome-screen startup evidence remain preserved.
+
 | Candidate change | Current evidence | Remaining qualification or boundary |
 | --- | --- | --- |
 | Welcome-screen startup and current unsigned device package | [42204637743](https://github.com/Livara-Dev/Telegram-iOS/actions/runs/42204637743) passed two actual full-app simulator launches with explicitly seeded private storage and stable account-store directory after restart. Both screenshots and all 390 video frames were reviewed. The main-app-only device artifact retains all 880 retained entries byte-for-byte with matching metadata | Simulator iPhone 15 Pro / iOS 27.0, not physical iOS 27.2. Automatic fallback, login, Apple HTTP 403/signing and installation remain unverified. The device IPA is unsigned; six extensions are absent. Device build 82 and simulator build 1 retain distinct origins; application code was not recompiled |

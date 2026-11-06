@@ -1,11 +1,13 @@
 # SPDX-License-Identifier: GPL-2.0-or-later
 # Created for the AyuGram iOS fork on 2026-11-06.
 """Portable structure and filesystem checks; these do not invoke or verify Xcode."""
+import hashlib
 import json
 import os
 from pathlib import Path
 import plistlib
 import re
+import shutil
 import stat
 import subprocess
 import sys
@@ -182,14 +184,19 @@ class TinyXcodeProjectTests(unittest.TestCase):
         self.assertEqual(proxy['remoteGlobalIDString'], app_id)
         self.assertEqual(proxy['containerPortal'], document['rootObject'])
 
-    def test_debug_settings_are_arm64_simulator_unsigned_and_test_is_hosted(self):
+    def test_debug_settings_are_arm64_simulator_adhoc_signed_and_test_is_hosted(self):
         _, document, objects = self.generate()
         targets = [value for value in objects.values() if value['isa'] == 'PBXNativeTarget']
+        for configuration in (value for value in objects.values() if value['isa'] == 'XCBuildConfiguration'):
+            for key in configuration['buildSettings']:
+                self.assertNotIn(key, {'DEVELOPMENT_TEAM', 'CODE_SIGN_ENTITLEMENTS', 'CODE_SIGNING_REQUIRED'})
+                self.assertFalse(key.startswith('PROVISIONING_PROFILE'))
         for target in targets:
             settings = self.target_settings(document, objects, target)
             for key, expected in {'ARCHS': 'arm64', 'SDKROOT': 'iphonesimulator',
                     'SUPPORTED_PLATFORMS': 'iphonesimulator', 'IPHONEOS_DEPLOYMENT_TARGET': '15.0',
-                    'TARGETED_DEVICE_FAMILY': '1', 'CODE_SIGNING_ALLOWED': 'NO', 'CODE_SIGNING_REQUIRED': 'NO'}.items():
+                    'TARGETED_DEVICE_FAMILY': '1', 'CODE_SIGNING_ALLOWED': 'YES', 'CODE_SIGN_IDENTITY': '-',
+                    'CODE_SIGN_STYLE': 'Manual', 'CODE_SIGN_INJECT_BASE_ENTITLEMENTS': 'YES'}.items():
                 self.assertEqual(settings[key], expected)
             self.assertEqual(settings['PRODUCT_BUNDLE_IDENTIFIER'], APP_BUNDLE if target['name'] == APP else TEST_BUNDLE)
             self.assertEqual(settings['GENERATE_INFOPLIST_FILE'], 'NO')
@@ -265,6 +272,8 @@ class TinyXcodeProjectTests(unittest.TestCase):
         self.generate()
         source = (self.root / TEST / (TEST + '.m')).read_text()
         self.assertEqual(re.findall(r'-\s*\(void\)\s*(test\w+)\s*\{', source), ['testRunsInApplicationHost'])
+        self.assertEqual(hashlib.sha256(source.encode()).hexdigest(),
+                         '2dfa08f8b3c3d87d4a2a23ac445760dccf075d7ecbe024dbccece611efbfb247')
         self.assertIn('@interface ' + TEST + ' : XCTestCase', source)
         self.assertIn('#import <XCTest/XCTest.h>', source)
         self.assertIn('#import <UIKit/UIKit.h>', source)
@@ -337,6 +346,185 @@ class TinyXcodeProjectTests(unittest.TestCase):
                     tiny.create_project(root)
                 self.assertEqual(self.snapshot(self.base), before)
                 self.assertFalse(root.exists())
+
+
+    def test_lifecycle_marker_has_fixed_private_path_and_only_three_ordered_call_sites(self):
+        self.assertEqual(tiny.MARKER_RELATIVE, 'Library/Caches/ayu-modern-control/stage')
+        self.assertEqual(tiny.STAGES, ('mainEntered', 'didFinish', 'sceneVisible'))
+        self.generate()
+        source = (self.root / APP / 'main.m').read_text()
+        self.assertEqual(re.findall(r'AyuModernRecordStage\("([A-Za-z]+)"\)', source),
+                         ['sceneVisible', 'didFinish', 'mainEntered'])
+        main = source[source.index('int main('):]
+        self.assertLess(main.index('@autoreleasepool'), main.index('AyuModernRecordStage("mainEntered")'))
+        self.assertLess(main.index('AyuModernRecordStage("mainEntered")'), main.index('UIApplicationMain('))
+        did_finish = source[source.index('didFinishLaunchingWithOptions:'):source.index('- (UISceneConfiguration *)')]
+        self.assertLess(did_finish.index('AyuModernRecordStage("didFinish")'), did_finish.index('return YES;'))
+        scene = source[source.index('@implementation AyuProjectionControlSceneDelegate'):source.index('@interface AyuProjectionControlAppDelegate')]
+        self.assertLess(scene.index('[self.window makeKeyAndVisible]'), scene.index('AyuModernRecordStage("sceneVisible")'))
+        wrapper = source[source.index('static void AyuModernRecordStage('):source.index('@interface AyuProjectionControlSceneDelegate')]
+        self.assertIn('NSHomeDirectory()', wrapper)
+        self.assertIn('stringByAppendingPathComponent:@"Library/Caches/ayu-modern-control"', wrapper)
+        self.assertIn('AyuModernWriteStage([directory fileSystemRepresentation], stage)', wrapper)
+        self.assertIn('@try', wrapper); self.assertIn('@catch (NSException *exception)', wrapper)
+        for forbidden in ('getenv', 'environ', 'NSLog', 'NSURL', 'NSURLConnection', 'NSURLSession',
+                          'account', 'keychain', 'NSUserDefaults', 'https://', 'http://'):
+            self.assertNotIn(forbidden, source)
+        self.assertNotRegex(source, r'\b(?:printf|fprintf|puts|perror)\s*\(')
+        self.assertEqual(source.count('// BEGIN PORTABLE MARKER WRITER'), 1)
+        self.assertEqual(source.count('// END PORTABLE MARKER WRITER'), 1)
+
+
+class PortableMarkerWriterTests(unittest.TestCase):
+    """Execute the exact C writer, independent of UIKit and any Apple tooling."""
+    @classmethod
+    def setUpClass(cls):
+        compiler = next((path for name in ('cc', 'clang', 'gcc') if (path := shutil.which(name))), None)
+        if compiler is None:
+            raise unittest.SkipTest('A portable C compiler is unavailable')
+        temporary = tempfile.TemporaryDirectory(prefix='ayu-marker-writer-test-')
+        cls.addClassCleanup(temporary.cleanup)
+        cls.build = Path(temporary.name).resolve()
+        cls.source_path = Path(tiny.__file__)
+        cls.original_source = cls.source_path.read_bytes()
+        marker = re.search(r'// BEGIN PORTABLE MARKER WRITER\n(.*?)// END PORTABLE MARKER WRITER',
+                           tiny.APP_SOURCE, re.S)
+        if marker is None:
+            raise AssertionError('Portable marker writer block is missing')
+        headers = '\n'.join(re.findall(r'^#include <[^>]+>$', tiny.APP_SOURCE, re.M))
+        harness = '#define _POSIX_C_SOURCE 200809L\n' + headers + r"""
+static int AyuHarnessMode = 0;
+static unsigned int AyuHarnessWriteCalls = 0;
+static ssize_t AyuHarnessWrite(int descriptor, const void *bytes, size_t length) {
+    if (AyuHarnessMode == 2) { errno = EIO; return -1; }
+    if (AyuHarnessMode == 1 && AyuHarnessWriteCalls++ == 0) { errno = EINTR; return -1; }
+    if (AyuHarnessMode == 1 && length > 1) { length = 1; }
+    return write(descriptor, bytes, length);
+}
+#define write AyuHarnessWrite
+""" + marker[1] + r"""
+#undef write
+int main(int argc, char *argv[]) {
+    if (argc != 3 && argc != 4) { return 2; }
+    if (argc == 4 && strcmp(argv[3], "short-eintr") == 0) { AyuHarnessMode = 1; }
+    if (argc == 4 && strcmp(argv[3], "write-error") == 0) { AyuHarnessMode = 2; }
+    const char *stage = argc == 4 && strcmp(argv[3], "null-stage") == 0 ? NULL : argv[2];
+    AyuModernWriteStage(argv[1], stage);
+    return 0;
+}
+"""
+        code = cls.build / 'marker_writer_harness.c'
+        code.write_text(harness)
+        cls.executable = cls.build / 'marker_writer_harness'
+        result = subprocess.run([compiler, '-std=c11', '-Wall', '-Wextra', '-Werror', str(code),
+                                 '-o', str(cls.executable)], capture_output=True, timeout=30, check=False)
+        if result.returncode:
+            raise AssertionError('Portable marker writer compilation failed:\n' + result.stderr.decode(errors='replace'))
+
+    def setUp(self):
+        temporary = tempfile.TemporaryDirectory(prefix='ayu-marker-filesystem-test-')
+        self.addCleanup(temporary.cleanup)
+        self.base = Path(temporary.name).resolve()
+        self.directory = self.base / 'marker-directory'
+
+    def invoke(self, stage, directory=None, mode=None):
+        arguments = [str(self.executable), str(directory or self.directory), '' if stage is None else stage]
+        if stage is None:
+            mode = 'null-stage'
+        if mode:
+            arguments.append(mode)
+        result = subprocess.run(arguments, capture_output=True, timeout=3, check=False)
+        self.assertEqual(result.returncode, 0)
+        self.assertEqual(result.stdout, b''); self.assertEqual(result.stderr, b'')
+        self.assertEqual(self.source_path.read_bytes(), self.original_source)
+
+    def assert_only_private_stage(self, stage):
+        self.assertEqual({path.name for path in self.directory.iterdir()}, {'stage'})
+        path = self.directory / 'stage'
+        self.assertFalse(path.is_symlink())
+        self.assertEqual(path.read_bytes(), stage.encode('ascii'))
+        self.assertEqual(stat.S_IMODE(path.stat().st_mode), 0o600)
+        self.assertEqual(path.stat().st_nlink, 1)
+        self.assertEqual(path.stat().st_uid, os.getuid())
+        self.assertEqual(stat.S_IMODE(self.directory.stat().st_mode), 0o700)
+
+    def test_writer_atomically_replaces_stage_with_private_file_and_keeps_open_reader_snapshot(self):
+        self.invoke('mainEntered')
+        self.assert_only_private_stage('mainEntered')
+        marker = self.directory / 'stage'
+        with marker.open('rb') as original:
+            previous_inode = os.fstat(original.fileno()).st_ino
+            self.directory.chmod(0o777)
+            marker.chmod(0o666)
+            self.invoke('didFinish')
+            self.assertNotEqual(marker.stat().st_ino, previous_inode)
+            self.assertEqual(original.read(), b'mainEntered')
+        self.assert_only_private_stage('didFinish')
+        self.invoke('sceneVisible')
+        self.assert_only_private_stage('sceneVisible')
+
+    def test_writer_ignores_invalid_empty_long_non_ascii_and_null_stages_without_mutation(self):
+        invalid = ('', 'x', 'MAINENTERED', 'sceneVisible\n', '../stage', 'x' * 129,
+                   'sceneVisible' + 'x' * 10000, '\u00e9', None)
+        for stage in invalid:
+            with self.subTest(stage=str(stage)[:20]):
+                self.invoke(stage)
+                self.assertFalse(self.directory.exists())
+        self.invoke('mainEntered')
+        original = TinyXcodeProjectTests.snapshot(self.base)
+        for stage in invalid:
+            with self.subTest(stage=str(stage)[:20]):
+                self.invoke(stage)
+                self.assertEqual(TinyXcodeProjectTests.snapshot(self.base), original)
+
+    def test_writer_rejects_directory_symlink_file_and_fifo_without_touching_external_content(self):
+        real = self.base / 'external'; real.mkdir(mode=0o755)
+        sentinel = real / 'sentinel'; sentinel.write_bytes(b'untouched external content')
+        self.directory.symlink_to(real, target_is_directory=True)
+        before = TinyXcodeProjectTests.snapshot(self.base)
+        self.invoke('sceneVisible')
+        self.assertEqual(TinyXcodeProjectTests.snapshot(self.base), before)
+        self.directory.unlink()
+        self.directory.write_bytes(b'untouched non-directory')
+        before = TinyXcodeProjectTests.snapshot(self.base)
+        self.invoke('sceneVisible')
+        self.assertEqual(TinyXcodeProjectTests.snapshot(self.base), before)
+        self.directory.unlink()
+        os.mkfifo(self.directory)
+        before = TinyXcodeProjectTests.snapshot(self.base)
+        self.invoke('sceneVisible')
+        self.assertEqual(TinyXcodeProjectTests.snapshot(self.base), before)
+
+    def test_writer_replaces_destination_symlink_or_hardlink_without_modifying_external_target(self):
+        self.directory.mkdir(mode=0o700)
+        target = self.base / 'external-sentinel'; target.write_bytes(b'untouched external target'); target.chmod(0o644)
+        initial = (target.read_bytes(), target.stat().st_ino, target.stat().st_mode)
+        marker = self.directory / 'stage'
+        for kind in ('symlink', 'hardlink'):
+            with self.subTest(kind=kind):
+                if marker.exists() or marker.is_symlink(): marker.unlink()
+                if kind == 'symlink': marker.symlink_to(target)
+                else: os.link(target, marker)
+                self.invoke('didFinish')
+                self.assert_only_private_stage('didFinish')
+                self.assertEqual((target.read_bytes(), target.stat().st_ino, target.stat().st_mode), initial)
+                self.assertEqual(target.stat().st_nlink, 1)
+
+    def test_writer_handles_short_writes_and_eintr_before_publishing_complete_stage(self):
+        self.invoke('sceneVisible', mode='short-eintr')
+        self.assert_only_private_stage('sceneVisible')
+
+    def test_writer_removes_unpublished_temporary_files_after_write_or_rename_failure(self):
+        self.invoke('mainEntered')
+        original = TinyXcodeProjectTests.snapshot(self.directory)
+        self.invoke('sceneVisible', mode='write-error')
+        self.assertEqual(TinyXcodeProjectTests.snapshot(self.directory), original)
+        marker = self.directory / 'stage'; marker.unlink(); marker.mkdir()
+        self.invoke('didFinish')
+        self.assertEqual({path.name for path in self.directory.iterdir()}, {'stage'})
+        self.assertTrue(marker.is_dir())
+        self.assertEqual(list(marker.iterdir()), [])
+
 
 
 if __name__ == '__main__':

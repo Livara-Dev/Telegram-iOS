@@ -27,11 +27,12 @@ import zipfile
 from xml.parsers.expat import ExpatError
 
 import replay_artifact as artifacts
+import launch_smoke
 from custom_options_smoke import BUNDLE, DEVICE_TYPE, RUNTIME
 from simulator_probe import redact_probe_text
 from installer_control import read_json, write_json
 from ipa_inspect import inspect_ipa
-from projection_replay import child_environment, native_command
+from projection_replay import child_environment, clean_environment, native_command
 
 SOURCE = 'c5eafa23fa4aff7e05d588a9b2cd49cd539dcd1c'
 CURRENT_SOURCE = 'c55e19c4f5cbe0d730499035d0a0ef712f6903a9'
@@ -203,6 +204,93 @@ do {
 
 class ReplayError(ValueError):
     pass
+
+
+def simctl_phase(arguments):
+    """Allow only this retained replay's fixed simulator operations."""
+    def identifier(value):
+        return isinstance(value, str) and re.fullmatch(r'[0-9A-Fa-f]{8}(?:-[0-9A-Fa-f]{4}){3}-[0-9A-Fa-f]{12}', value) is not None
+    if arguments in (['xcrun', 'simctl', 'list', 'runtimes', '--json'],
+                     ['xcrun', 'simctl', 'list', '--json', 'devicetypes', 'iPhone 15 Pro'],
+                     ['xcrun', 'simctl', 'list', 'devices', 'available', '--json'],
+                     ['xcrun', 'simctl', 'list', 'devices', '--json']): return 'unknownPhase'
+    if (len(arguments) == 6 and arguments[:3] == ['xcrun', 'simctl', 'create'] and
+            re.fullmatch(r'AYU_OPTIONS_ROOT_[0-9a-f]{32}', arguments[3]) and
+            arguments[4:] == [DEVICE_TYPE, RUNTIME]): return 'createDevice'
+    if len(arguments) == 5 and arguments[:3] == ['xcrun', 'simctl', 'bootstatus'] and identifier(arguments[3]) and arguments[4] == '-b': return 'waitForBoot'
+    if (len(arguments) == 5 and arguments[:3] == ['xcrun', 'simctl', 'install'] and
+            identifier(arguments[3]) and Path(arguments[4]).is_absolute()): return 'installApplication'
+    if (len(arguments) == 6 and arguments[:3] == ['xcrun', 'simctl', 'get_app_container'] and
+            identifier(arguments[3]) and arguments[4:] == [BUNDLE, 'app']): return 'getContainer'
+    if arguments[:3] == ['xcrun', 'simctl', 'launch']:
+        tail = arguments[3:]
+        if tail[:1] == ['--terminate-running-process']: tail = tail[1:]
+        if len(tail) == 6 and identifier(tail[0]) and tail[1:] == [BUNDLE, '-AppleLanguages', '(en)', '-AppleLocale', 'en_US']: return 'launchApplication'
+    if (len(arguments) == 6 and arguments[:3] == ['xcrun', 'simctl', 'io'] and identifier(arguments[3]) and
+            arguments[4] == 'screenshot' and Path(arguments[5]).is_absolute()): return 'captureScreenshot'
+    if len(arguments) == 4 and arguments[:2] == ['xcrun', 'simctl'] and identifier(arguments[3]):
+        if arguments[2] == 'shutdown': return 'shutdownDevice'
+        if arguments[2] == 'delete': return 'deleteDevice'
+    raise ReplayError('settings_simulator_command_not_allowed')
+
+
+SIMCTL_FAILURE_STATES = {'commandTimedOut': 'timedOut', 'commandFailed': 'commandFailed',
+                         'commandUnavailable': 'unavailable', 'commandOutputLimit': 'outputLimit'}
+SIMCTL_STATUS_FIELDS = {'supervisor', 'captured_bytes_scope', 'failure'}
+
+
+def ui_native_command(arguments, timeout=30):
+    """Use the exercised startup supervisor only for the fixed simctl calls.
+
+    That helper returns stripped stdout, not merged raw output. On failure it
+    retains only closed SmokeError evidence, so zero returned bytes must never
+    be read as proof that the child emitted no data. Other commands keep their
+    existing supervisor, including the checker self-test's expected exit1 JSON.
+    """
+    if arguments[:2] != ['xcrun', 'simctl']: return native_command(arguments, timeout=timeout)
+    phase = simctl_phase(arguments)
+    status = {'status': 'unavailable', 'exit_code': None, 'timeout': False, 'output_limit': False,
+              'captured_bytes': 0, 'supervisor': 'launchSmokeCommand',
+              'captured_bytes_scope': 'returnedStdoutPayloadBytes', 'failure': None}
+    try:
+        with clean_environment():
+            text = launch_smoke.command(arguments, timeout=timeout, phase=phase)
+        if not isinstance(text, str): raise TypeError('Invalid supervisor output')
+        data = text.encode('utf-8')
+        if len(data) > launch_smoke.COMMAND_OUTPUT_LIMIT: raise launch_smoke.SmokeError('commandOutputLimit', phase)
+        status.update(status='completed', exit_code=0, captured_bytes=len(data))
+        return status, data
+    except launch_smoke.SmokeError as error:
+        failure = error.evidence()
+        status.update(status=SIMCTL_FAILURE_STATES.get(error.code, 'unavailable'), exit_code=error.return_code,
+                      timeout=error.timeout, output_limit=error.code == 'commandOutputLimit', failure=failure)
+    except (OSError, ValueError, RuntimeError, TypeError, subprocess.SubprocessError):
+        status['failure'] = launch_smoke.SmokeError('commandUnavailable', phase).evidence()
+    return status, b''
+
+
+def validate_simctl_status(status, arguments):
+    """Do not publish arbitrary metadata from a command adapter."""
+    failure = status.get('failure')
+    if (arguments[:2] != ['xcrun', 'simctl'] or status.get('supervisor') != 'launchSmokeCommand' or
+            status.get('captured_bytes_scope') != 'returnedStdoutPayloadBytes' or
+            type(status.get('captured_bytes')) is not int or not 0 <= status['captured_bytes'] <= launch_smoke.COMMAND_OUTPUT_LIMIT):
+        raise ReplayError('settings_command_evidence_invalid')
+    if failure is None:
+        if status['status'] != 'completed' or status['exit_code'] != 0 or status['timeout'] or status['output_limit']:
+            raise ReplayError('settings_command_evidence_invalid')
+        return
+    if (not isinstance(failure, dict) or set(failure) != {'code', 'phase', 'return_code', 'timeout', 'system_errors'} or
+            failure.get('code') not in SIMCTL_FAILURE_STATES or failure.get('phase') != simctl_phase(arguments) or
+            type(failure.get('timeout')) is not bool or not isinstance(failure.get('system_errors'), list)):
+        raise ReplayError('settings_command_evidence_invalid')
+    selected = launch_smoke.SmokeError(failure['code'], failure['phase'], failure['return_code'],
+                                     failure['timeout'], failure['system_errors']).evidence()
+    if (selected != failure or status['status'] != SIMCTL_FAILURE_STATES[failure['code']] or
+            status['exit_code'] != failure['return_code'] or status['timeout'] != failure['timeout'] or
+            status['timeout'] != (failure['code'] == 'commandTimedOut') or
+            status['output_limit'] != (failure['code'] == 'commandOutputLimit') or status['captured_bytes'] != 0):
+        raise ReplayError('settings_command_evidence_invalid')
 
 
 def self_control_report(data):
@@ -633,7 +721,7 @@ class Recording:
                 'exit_code': self.exit_code, **counts, 'output': redact_probe_text(raw, [])}
 
 
-def execute(output=OUTPUT, root=None, command=native_command, pause=time.sleep, popen=subprocess.Popen):
+def execute(output=OUTPUT, root=None, command=ui_native_command, pause=time.sleep, popen=subprocess.Popen):
     root, output = location(output, root); head, count = checkout(root)
     validate_proof(read_json(output / 'verification.json'), head, count)
     if platform.system() != 'Darwin': raise ReplayError('macos_required')
@@ -655,13 +743,15 @@ def execute(output=OUTPUT, root=None, command=native_command, pause=time.sleep, 
     def call(label, args, timeout=30, self_test=False):
         report['phase'] = label
         status, data = command(args, timeout=timeout)
-        if (not isinstance(status, dict) or set(status) != {'status', 'exit_code', 'timeout', 'output_limit', 'captured_bytes'} or
+        fields = {'status', 'exit_code', 'timeout', 'output_limit', 'captured_bytes'}
+        if (not isinstance(status, dict) or set(status) not in (fields, fields | SIMCTL_STATUS_FIELDS) or
                 status.get('status') not in {'completed', 'commandFailed', 'timedOut', 'outputLimit', 'unavailable'} or
                 type(status.get('timeout')) is not bool or type(status.get('output_limit')) is not bool or
                 type(status.get('captured_bytes')) is not int or not 0 <= status['captured_bytes'] <= 1024**2 or
                 not isinstance(data, bytes) or len(data) != status['captured_bytes'] or
                 not (status.get('exit_code') is None or type(status['exit_code']) is int)):
             raise ReplayError('settings_command_evidence_invalid')
+        if set(status) != fields: validate_simctl_status(status, args)
         report['commands'].append({'command': label, **status})
         if self_test:
             if (label != 'testTitleChecker' or args != [str(checker), '--self-test', str(output / 'title-check-positive.png')] or
