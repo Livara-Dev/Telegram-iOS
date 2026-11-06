@@ -26,10 +26,45 @@ final class CustomeOptionsCatalogTests: XCTestCase {
     }
 
     func testSearchBoundsUTF16WorkIncludingAstralCharactersAndCombiningMarks() {
-        for text in [String(repeating: "x", count: 10000), String(repeating: "👩🏽‍💻", count: 1000), "a" + String(repeating: "\u{0301}", count: 10000)] {
+        for text in [String(repeating: "x", count: 10000), String(repeating: "👩🏽‍💻", count: 1000)] {
             XCTAssertLessThanOrEqual(CustomeOptionsCatalog.boundedQuery(text).utf16.count, CustomeOptionsCatalog.maximumQueryUTF16Length)
             XCTAssertTrue(CustomeOptionsCatalog.categories(matching: text).isEmpty)
         }
+
+        let combining = "a" + String(repeating: "\u{0301}", count: 10000)
+        let bounded = CustomeOptionsCatalog.boundedQuery(combining)
+        XCTAssertEqual(bounded, "a" + String(repeating: "\u{0301}", count: CustomeOptionsCatalog.maximumQueryUTF16Length - 1))
+        XCTAssertEqual(bounded.utf16.count, CustomeOptionsCatalog.maximumQueryUTF16Length)
+        // Diacritic-insensitive search legitimately reduces this bounded
+        // grapheme to "a"; a work limit does not make its matches disappear.
+        let expected = CustomeOptionsCatalog.categories(matching: "a")
+        XCTAssertFalse(expected.isEmpty)
+        XCTAssertEqual(CustomeOptionsCatalog.categories(matching: combining), expected)
+    }
+
+    func testBoundedQueryRepairsSplitAstralScalarWithoutExceedingUTF16Limit() {
+        let completePrefix = String(repeating: "x", count: CustomeOptionsCatalog.maximumQueryUTF16Length - 2)
+        let complete = CustomeOptionsCatalog.boundedQuery(completePrefix + "👩" + "ignored")
+        XCTAssertEqual(complete, completePrefix + "👩")
+        XCTAssertEqual(complete.utf16.count, CustomeOptionsCatalog.maximumQueryUTF16Length)
+
+        let splitPrefix = completePrefix + "x"
+        let repaired = CustomeOptionsCatalog.boundedQuery(splitPrefix + "👩" + "ignored")
+        // String(decoding:as:) repairs the trailing high surrogate rather than
+        // reading the low surrogate beyond the fixed work budget.
+        XCTAssertEqual(repaired, splitPrefix + "\u{FFFD}")
+        XCTAssertEqual(repaired.utf16.count, CustomeOptionsCatalog.maximumQueryUTF16Length)
+    }
+
+    func testCombiningSequenceConsumesUTF16BudgetBeforeSearchFolding() {
+        let prefix = "history"
+        let bounded = prefix + String(repeating: "\u{0301}", count: CustomeOptionsCatalog.maximumQueryUTF16Length - prefix.utf16.count)
+        let query = bounded + " does-not-exist-here"
+        XCTAssertEqual(CustomeOptionsCatalog.boundedQuery(query), bounded)
+        XCTAssertEqual(bounded.utf16.count, CustomeOptionsCatalog.maximumQueryUTF16Length)
+        // The combining sequence consumes the budget before folding. A token
+        // after that boundary must not suppress the valid "history" result.
+        XCTAssertEqual(CustomeOptionsCatalog.categories(matching: query), [.deletedMessages])
     }
 
     func testUnavailablePreferencesNeverBecomeEditableDefaultSwitches() {
