@@ -92,6 +92,12 @@ class MetadataTests(unittest.TestCase):
 
 
 class ResultTests(unittest.TestCase):
+    def setUp(self):
+        # Dormant auth-mode parser contracts remain exercised explicitly; the
+        # actual workflow/receipt currently permits only setupOnly publication.
+        review = patch.object(d, 'REVIEWED_EXECUTION_SCOPE', 'authOnly')
+        review.start()
+        self.addCleanup(review.stop)
     def test_accepts_closed_failure_without_copying_raw_data(self):
         result = d.closed_result(); result['failure'] = 'authEvidence'
         self.assertEqual(c.exportable(result), result)
@@ -116,10 +122,11 @@ class ResultTests(unittest.TestCase):
 
     def success(self):
         row = d.closed_result()
-        for key in ['passed', 'driver_compiled', 'signature_checks_passed', 'private_selection_seeded',
+        for key in ['passed', 'setup_completed', 'driver_compiled', 'signature_checks_passed', 'private_selection_seeded',
                 'native_xctest_passed', 'authentication_completed', 'cleanup_passed']:
             row[key] = True
         row['stages'] = list(d.SUCCESS_TRACES[1])
+        row['phase'] = 'authComplete'
         return row
 
     def test_accepts_exact_success_but_still_not_device_or_restart(self):
@@ -206,6 +213,7 @@ class WorkflowTests(unittest.TestCase):
         self.assertIn('paths: [ci/testdc-auth-request.json]', text)
         self.assertIn('branches: [ci/testdc-auth-smoke]', text)
         self.assertIn('cancel-in-progress: false', text)
+        self.assertIn('auth_only_driver.py\" --execute --setup-only', text)
         self.assertNotIn('secrets.', text)
         self.assertNotIn('bazel', text.lower())
         self.assertNotIn('Make.py', text)

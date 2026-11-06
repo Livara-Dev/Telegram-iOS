@@ -1,6 +1,14 @@
 # Retained application TestDC authentication smoke
 
-Reviewed on 6 November 2026. The workflow and driver are enabled for one bounded official public TestDC authentication scenario. **No native authentication result exists at this checkpoint.** Portable fixtures and source review are not native compilation, login or device evidence. This tooling changes no Telegram application source and does not qualify the newer archive application.
+Reviewed on 6 November 2026. **The current workflow is a pre-auth setup-only diagnostic. It cannot invoke the UI authentication test.** The tiny runner compiled and passed signature checks in [run 42284204421](https://github.com/Livara-Dev/Telegram-iOS/actions/runs/42284204421), but setup then failed with the closed `internal` category before private seeding completed. Source ordering places the authentication test afterward, so it was not invoked. Cleanup reported true; this alone does not prove a simulator was created or installed. The exact setup exception is unknown. No authentication or physical-device success is claimed. This tooling changes no Telegram application source and does not qualify the newer archive application.
+
+## Current setup-only diagnostic
+
+The workflow hardcodes `--setup-only`. The reviewed execution scope is temporarily `setupOnly`; an `authOnly` call is rejected before subprocesses. After the same source/signature, fresh-owner, install, private-seed, contacts and integrity checks, setup-only execution stops before `xcodebuild test-without-building` or app authentication. No seed/container ownership requirement was relaxed and no speculative Xcode-selection fix was made.
+
+The result explicitly records `execution_scope: setupOnly` and `setup_completed`. Even a completed setup keeps `passed`, `native_xctest_passed` and `authentication_completed` false, with no auth stages. A green diagnostic job means only setup completed and cleanup succeeded; it is not a login pass. The closed `phase` identifies boundaries such as plan binding, runtime inventory, simulator creation/boot, install, data/app container checks, installed integrity, private seeding, contacts and final integrity. `exception_kind` contains only an exact allowlisted builtin category or `otherException`; messages, arguments, paths and tracebacks are never exported. The existing request remains unchanged until a separate reviewed diagnostic request is published.
+
+The following sections describe the retained-app provenance and the dormant bounded auth scenario. Authentication remains blocked by the current setup-only review scope until a concrete setup repair and a separate internal review permit it.
 
 ## Exact source and evidence
 
@@ -36,7 +44,7 @@ Native stdout/stderr, Xcode activity, automatic attachments, `.xcresult`, entitl
 
 ## Verification boundary
 
-The tiny runner has not compiled or executed at this checkpoint. Code-field accessibility/value/focus at 1×1 / alpha 0.01, generated-plan binding, reinstall preserving the seed, and the server's acceptance/public-account state remain native uncertainties. They must fail honestly without weakening the auth or source checks. A resulting pass can establish only “this retained c55 application reached the genuine authorized root using official public TestDC authentication on a simulator.” It does not establish production DC login, the new archive source, archive/Ghost/filter behavior, durable restart, SideStore installation, physical iPhone success or performance.
+The tiny runner compiled and passed signature checks in the first run; its UI test did not execute. The setup-only diagnostic is not yet run at this checkpoint. Code-field accessibility/value/focus at 1×1 / alpha 0.01, the failing setup boundary, generated-plan binding, reinstall preserving the seed, and the server's acceptance/public-account state remain native uncertainties. They must fail honestly without weakening the auth or source checks. A resulting pass can establish only “this retained c55 application reached the genuine authorized root using official public TestDC authentication on a simulator.” It does not establish production DC login, the new archive source, archive/Ghost/filter behavior, durable restart, SideStore installation, physical iPhone success or performance.
 
 Portable tests run without contacting TestDC or invoking Apple tools:
 
@@ -44,4 +52,4 @@ Portable tests run without contacting TestDC or invoking Apple tools:
 python3 -m unittest discover -s tools/fork_baseline/testdc_auth -q
 ```
 
-The disabled-state tests explicitly patch the execution flag or reviewed run back to false/zero. A separate enabled-state missing-arguments test proves rejection before any subprocess. No test fixture enables or executes native authentication.
+The 107 portable cases include the existing disabled-state and enabled-missing-arguments checks, plus mocked full setup execution. Injected synthetic failures exercise every requested setup boundary without leaking exception content or invoking the authentication command. Setup completion cannot become an auth pass, publication must match the reviewed execution scope, and cleanup failure is not green. These fixtures neither run Apple tools nor diagnose the actual unknown exception. No fixture enables or executes native authentication.

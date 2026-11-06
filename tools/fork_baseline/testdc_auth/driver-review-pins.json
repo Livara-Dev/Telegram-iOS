@@ -14,8 +14,8 @@
     "submodules/TelegramUI/Sources/SharedAccountContext.swift": "34520403d5ca71856e016b6d7b174c49cddd5a3e65b98641090fb33d5072051d"
   },
   "ci_sources": {
-    ".github/workflows/testdc-auth-smoke.yml": "133bd048175c0e4196515db4cb64401b90195539a684ca0410e523bcc0d066e4",
-    "tools/fork_baseline/testdc_auth/ci_gate.py": "6f20d0c4c0eea640928710a5b575eaccc40f4c0f8499043b99a4a1f6fe7d685f"
+    ".github/workflows/testdc-auth-smoke.yml": "0ae0456464ec44a1e15f0929678172a098e3434bea458fd3346ee7ab039bd172",
+    "tools/fork_baseline/testdc_auth/ci_gate.py": "aab1f7a529823ae181971104657b180c7d5dc19fddb896d438cab71881cab212"
   },
   "private_files": {
     "OfficialTestDCAuthenticationSmoke.swift": "847c320fc997bddea009721aafe536d431d25480e1dd43434db7a8e867ad878c",

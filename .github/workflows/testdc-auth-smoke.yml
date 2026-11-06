@@ -1,6 +1,6 @@
-name: Retained c55 official TestDC authentication only
+name: Retained c55 pre-auth setup diagnostic
 
-# Reviewed bounded auth-only workflow; native verification is still pending.
+# One bounded setup-only diagnostic; no UI authentication invocation.
 # Publish reviewed tooling before a separate request
 # commit. Never retarget this workflow to ci/verify-latest or a personal session.
 on:
@@ -17,7 +17,7 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  authentication-only:
+  setup-only:
     if: github.repository == 'Livara-Dev/Telegram-iOS' && github.ref == 'refs/heads/ci/testdc-auth-smoke'
     runs-on: xcode-27
     timeout-minutes: 30
@@ -37,9 +37,9 @@ jobs:
           persist-credentials: false
           fetch-depth: 1
           submodules: false
-      - name: Test closed tooling before any native authentication
+      - name: Test closed tooling before the pre-auth setup diagnostic
         working-directory: auth-tooling/tools/fork_baseline/testdc_auth
-        run: python3 -m unittest -q test_auth_only_driver.py test_ci_gate.py
+        run: python3 -m unittest -q test_auth_only_driver.py test_ci_gate.py test_setup_diagnostics.py
       - name: Admit only the fixed source artifact and actually passed startup job
         env:
           GH_TOKEN: ${{ github.token }}
@@ -69,7 +69,7 @@ jobs:
           github-token: ${{ github.token }}
           merge-multiple: true
           path: ${{ runner.temp }}/ayu-testdc-startup
-      - name: Verify exact retained evidence and attempt one private auth-only test
+      - name: Diagnose exact retained-app setup without invoking UI authentication
         working-directory: auth-tooling
         run: |
           set -euo pipefail
@@ -82,7 +82,7 @@ jobs:
             --review-gate "${auth_tools}/review-gate.REVIEWED.json"
           # Child tool environments are restricted by the driver; no GitHub/API
           # credentials, loader injection or raw native output reach the console.
-          python3 "${auth_tools}/auth_only_driver.py" --execute \
+          python3 "${auth_tools}/auth_only_driver.py" --execute --setup-only \
             --ipa "${RUNNER_TEMP}/ayu-testdc-source/fork-baseline-simulator/Telegram.ipa" \
             --artifact-evidence "${auth_tools}/artifact-evidence.json" \
             --source-root "${GITHUB_WORKSPACE}/application-source" \
@@ -103,7 +103,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
-          name: c55-official-public-testdc-auth-only-${{ github.run_id }}
+          name: c55-retained-preauth-setup-only-${{ github.run_id }}
           path: ${{ runner.temp }}/ayu-testdc-closed/public-result.json
           if-no-files-found: warn
           retention-days: 7

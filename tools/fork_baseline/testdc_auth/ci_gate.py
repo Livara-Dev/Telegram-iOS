@@ -95,8 +95,11 @@ def prepare(source_directory, startup_directory, review_gate):
 
 
 def exportable(value):
-    expected = d.closed_result()
-    d.require(isinstance(value, dict) and set(value) == set(expected))
+    d.require(isinstance(value, dict) and value.get('execution_scope') in {'setupOnly', 'authOnly'})
+    d.require(value['execution_scope'] == d.REVIEWED_EXECUTION_SCOPE)
+    setup_only = value['execution_scope'] == 'setupOnly'
+    expected = d.closed_result(setup_only=setup_only)
+    d.require(set(value) == set(expected))
     for key, template in expected.items():
         if type(template) is bool:
             d.require(type(value[key]) is bool)
@@ -104,14 +107,26 @@ def exportable(value):
                 d.require(value[key] is False)
         elif key == 'failure':
             d.require(value[key] is None or value[key] in d.ERRORS)
+        elif key == 'exception_kind':
+            d.require(value[key] is None or value[key] in d.BUILTIN_EXCEPTION_KINDS)
+        elif key == 'phase':
+            d.require(type(value[key]) is str and value[key] in d.PHASES)
         elif key == 'stages':
             d.require(isinstance(value[key], list) and len(value[key]) <= 5
                 and all(type(item) is str and item in d.STAGES for item in value[key]))
         else:
             d.require(type(value[key]) is type(template) and value[key] == template)
+    if value['setup_completed']:
+        d.require(all(value[field] for field in ('driver_compiled', 'signature_checks_passed', 'private_selection_seeded')))
+    if setup_only:
+        d.require(not value['passed'] and not value['native_xctest_passed']
+            and not value['authentication_completed'] and value['stages'] == [])
+        if value['setup_completed'] and value['failure'] is None and value['cleanup_passed']:
+            d.require(value['phase'] == 'setupComplete' and value['exception_kind'] is None)
     if value['passed']:
-        d.require(value['failure'] is None and tuple(value['stages']) in d.SUCCESS_TRACES
-            and all(value[field] for field in ('driver_compiled', 'signature_checks_passed',
+        d.require(value['failure'] is None and value['exception_kind'] is None
+            and value['phase'] == 'authComplete' and tuple(value['stages']) in d.SUCCESS_TRACES
+            and all(value[field] for field in ('setup_completed', 'driver_compiled', 'signature_checks_passed',
                 'private_selection_seeded', 'native_xctest_passed', 'authentication_completed', 'cleanup_passed')))
     return value
 

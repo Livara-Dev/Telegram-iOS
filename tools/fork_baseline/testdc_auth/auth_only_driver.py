@@ -27,9 +27,10 @@ import time
 import uuid
 
 EXECUTION_REVIEWED = True
-REVIEW_PINS_SHA256 = '4fbb029c4766469a005171c8de61c9f7beebae58dc0158e74b6c1be3a1caf7a2'
+REVIEW_PINS_SHA256 = 'e9793599f378cb4e8fed69ffbf7e3bf8a1c96d2c7aff1f2f3f1812e373d69c55'
 REVIEWED_STARTUP_RUN = 42204637743  # Root reviewed exact source/startup proof; auth result pending.
 STARTUP_CONTROL_RUN = 42204637743
+REVIEWED_EXECUTION_SCOPE = 'setupOnly'  # One pre-auth diagnostic; no UI authentication invocation.
 STARTUP_ARTIFACT = 13495439062
 STARTUP_ARTIFACT_SHA256 = 'aefdac1cb0edc2dff994129577da44490a44045a8e5bcb0ec432fc5eac14aa79'
 STARTUP_RESULT_SHA256 = '6e3a44f2f8b4222ed4164d4d590163cb38be1d4592c5b383ac0ca6d4700173d7'
@@ -57,6 +58,15 @@ ERRORS = frozenset({'disabled', 'reviewGate', 'platform', 'inputIntegrity', 'art
     'toolchain', 'driverCompile', 'driverPlan', 'driverIdentity', 'signature', 'simulatorOwnership',
     'simulatorUnavailable', 'containerOwnership', 'privateSeed', 'authEvidence', 'cleanup', 'internal'})
 MAX_COMMAND_BYTES = 8 * 1024**2
+PHASES = frozenset({'notStarted', 'toolchain', 'artifactExtraction', 'sourceSignature',
+    'privateVariant', 'driverProject', 'driverCompile', 'driverProducts', 'runnerSignature',
+    'planBind', 'runtimeInventory', 'simulatorCreate', 'boot', 'simulatorVerify', 'install',
+    'dataContainer', 'appContainer', 'installedIntegrity', 'privateSeed', 'contacts',
+    'sourceIntegrity', 'setupComplete', 'nativeAuthentication', 'authEvidence',
+    'postAuthIntegrity', 'authComplete', 'cleanup'})
+BUILTIN_EXCEPTION_KINDS = frozenset({'ValueError', 'TypeError', 'KeyError', 'IndexError',
+    'AttributeError', 'OverflowError', 'RuntimeError', 'OSError', 'FileNotFoundError',
+    'PermissionError', 'NotADirectoryError', 'IsADirectoryError', 'TimeoutError', 'otherException'})
 BASE = Path(__file__).resolve().parent
 
 
@@ -191,6 +201,7 @@ class PrivateCommands:
 def expected_review():
     return {'schema': 2, 'reviewed': True, 'public_testdc_auth_only': True,
         'startup_control_run': REVIEWED_STARTUP_RUN, 'application_source': SOURCE,
+        'execution_scope': REVIEWED_EXECUTION_SCOPE,
         'simulator_source_run': SOURCE_RUN, 'simulator_artifact_id': ARTIFACT,
         'simulator_ipa_sha256': IPA_SHA256, 'startup_artifact_id': STARTUP_ARTIFACT,
         'startup_artifact_sha256': STARTUP_ARTIFACT_SHA256,
@@ -519,8 +530,22 @@ def seed_fresh_private(data_path, storage_helper):
     require(storage_helper.valid_private(storage_helper.inspect_storage(preferences)), 'privateSeed')
 
 
-def closed_result():
-    return {'schema': 1, 'role': 'officialPublicTestDCAuthenticationOnly', 'source_commit': SOURCE,
+def builtin_exception_kind(error):
+    # Never inspect message/args/path/traceback. Only known builtin classes escape.
+    kinds = {ValueError: 'ValueError', TypeError: 'TypeError', KeyError: 'KeyError',
+        IndexError: 'IndexError', AttributeError: 'AttributeError', OverflowError: 'OverflowError',
+        RuntimeError: 'RuntimeError', OSError: 'OSError', FileNotFoundError: 'FileNotFoundError',
+        PermissionError: 'PermissionError', NotADirectoryError: 'NotADirectoryError',
+        IsADirectoryError: 'IsADirectoryError', TimeoutError: 'TimeoutError'}
+    return kinds.get(type(error), 'otherException')
+
+
+def closed_result(setup_only=False):
+    require(type(setup_only) is bool)
+    scope = 'setupOnly' if setup_only else 'authOnly'
+    return {'schema': 1, 'role': 'officialPublicTestDCPreAuthSetupOnly' if setup_only else 'officialPublicTestDCAuthenticationOnly',
+        'execution_scope': scope, 'setup_completed': False, 'phase': 'notStarted',
+        'exception_kind': None, 'source_commit': SOURCE,
         'source_run': SOURCE_RUN, 'artifact_id': ARTIFACT, 'ipa_sha256': IPA_SHA256,
         'startup_review_run': REVIEWED_STARTUP_RUN, 'application_recompiled': False,
         'physical_device_verified': False, 'restart_persistence_verified': False,
@@ -529,9 +554,10 @@ def closed_result():
         'stages': [], 'cleanup_passed': False, 'passed': False, 'failure': None}
 
 
-def execute(ipa, artifact_evidence, source_root, gate, output):
-    report = closed_result()
+def execute(ipa, artifact_evidence, source_root, gate, output, setup_only=False):
+    report = closed_result(setup_only=setup_only)
     require(EXECUTION_REVIEWED, 'disabled')
+    require(report['execution_scope'] == REVIEWED_EXECUTION_SCOPE, 'reviewGate')
     validate_review(json_object(gate))
     require(platform.system() == 'Darwin' and platform.machine() == 'arm64', 'platform')
     pins_data = read_file(BASE / 'driver-review-pins.json')
@@ -549,10 +575,13 @@ def execute(ipa, artifact_evidence, source_root, gate, output):
             command = PrivateCommands(private)
             simulator = OwnedSimulator(command)
             try:
+                report['phase'] = 'toolchain'
                 require(command(['xcodebuild', '-version'])[1].decode().strip() == 'Xcode 27.1\nBuild version 27A9275', 'toolchain')
                 require(command(['xcrun', '--sdk', 'iphonesimulator', '--show-sdk-version'])[1].strip() == b'27.1', 'toolchain')
                 app_helpers = helpers['preserved_app']
+                report['phase'] = 'artifactExtraction'
                 app = app_helpers.extract_app(ipa, private / 'Telegram.app')
+                report['phase'] = 'sourceSignature'
                 command(['/usr/bin/codesign', '--verify', '--deep', '--strict', str(app)])
                 # Same verified main-app-only control as retained c55 startup:
                 # remove extensions/reseal only; preserve all application code,
@@ -560,14 +589,17 @@ def execute(ipa, artifact_evidence, source_root, gate, output):
                 signing = private / 'signing'; signing.mkdir(mode=0o700)
                 def signing_run(arguments, **kwargs):
                     return subprocess.run(arguments, env=clean_environment(), **kwargs)
+                report['phase'] = 'privateVariant'
                 proof = app_helpers.main_app_only(app, signing, run=signing_run)
                 require(proof.get('main_code_unchanged') is True and proof.get('other_entitlements_preserved') is True, 'signature')
                 app_snapshot = snapshot_tree(app)
                 code_digest = app_helpers.main_code_digest(app)
                 swift = read_file(BASE / 'OfficialTestDCAuthenticationSmoke.swift')
+                report['phase'] = 'driverProject'
                 project = create_project(helpers['tiny_ui_test_project'], private / 'driver', swift)
                 project_snapshot = snapshot_tree(private / 'driver')
                 derived = private / 'derived'
+                report['phase'] = 'driverCompile'
                 status, _ = command(['xcodebuild', 'build-for-testing', '-project', str(project['project']), '-scheme', TARGET,
                     '-configuration', 'Debug', '-sdk', 'iphonesimulator', '-destination', 'generic/platform=iOS Simulator',
                     '-derivedDataPath', str(derived), 'CODE_SIGNING_ALLOWED=YES', 'CODE_SIGN_IDENTITY=-', 'CODE_SIGN_STYLE=Manual',
@@ -575,55 +607,79 @@ def execute(ipa, artifact_evidence, source_root, gate, output):
                 require(status == 0, 'driverCompile')
                 report['driver_compiled'] = True
                 require(snapshot_tree(private / 'driver') == project_snapshot, 'sourceIntegrity')
+                report['phase'] = 'driverProducts'
                 plans = list((derived / 'Build/Products').glob('*.xctestrun'))
                 require(len(plans) == 1, 'driverPlan')
                 generated = plistlib.loads(read_file(plans[0], 2 * 1024**2))
                 runner, _ = generated_products(generated, plans[0].parent)
+                report['phase'] = 'runnerSignature'
                 command(['/usr/bin/codesign', '--verify', '--deep', '--strict', str(runner)])
                 runner_snapshot = snapshot_tree(runner)
                 report['signature_checks_passed'] = True
                 plan_path = plans[0].parent / 'auth-only.xctestrun'
+                report['phase'] = 'planBind'
                 bind_plan(generated, app, plan_path)
                 plan_digest = sha256(plan_path)
+                report['phase'] = 'runtimeInventory'
                 runtimes = decode_json(command(['xcrun', 'simctl', 'list', 'runtimes', '--json'])[1])
                 require(sum(item.get('identifier') == RUNTIME and item.get('isAvailable') is True for item in runtimes.get('runtimes', [])) == 1, 'simulatorUnavailable')
+                report['phase'] = 'simulatorCreate'
                 identifier = simulator.create()
+                report['phase'] = 'boot'
                 command(['xcrun', 'simctl', 'boot', identifier], timeout=120)
                 command(['xcrun', 'simctl', 'bootstatus', identifier, '-b'], timeout=240)
+                report['phase'] = 'simulatorVerify'
                 simulator.verify()
+                report['phase'] = 'install'
                 command(['xcrun', 'simctl', 'install', identifier, str(app)], timeout=120)
+                report['phase'] = 'dataContainer'
                 data_path = owned_container(command(['xcrun', 'simctl', 'get_app_container', identifier, BUNDLE, 'data'])[1].decode().strip(), simulator, 'data')
+                report['phase'] = 'appContainer'
                 installed = owned_container(command(['xcrun', 'simctl', 'get_app_container', identifier, BUNDLE, 'app'])[1].decode().strip(), simulator, 'app')
+                report['phase'] = 'installedIntegrity'
                 require(snapshot_tree(installed) == app_snapshot, 'sourceIntegrity')
                 command(['/usr/bin/codesign', '--verify', '--deep', '--strict', str(installed)])
+                report['phase'] = 'privateSeed'
                 seed_fresh_private(data_path, helpers['storage_evidence'])
                 report['private_selection_seeded'] = True
+                report['phase'] = 'contacts'
                 command(['xcrun', 'simctl', 'privacy', identifier, 'revoke', 'contacts', BUNDLE])
+                report['phase'] = 'sourceIntegrity'
                 require(snapshot_tree(app) == app_snapshot and snapshot_tree(runner) == runner_snapshot and sha256(plan_path) == plan_digest, 'sourceIntegrity')
-                # One auth-only attempt. No recordings, screenshots, UI tree or
-                # account-container reads follow this call. Raw output is private.
-                exit_code, data = command(['xcodebuild', 'test-without-building', '-xctestrun', str(plan_path),
-                    '-destination', 'platform=iOS Simulator,id=' + identifier, '-parallel-testing-enabled', 'NO',
-                    '-maximum-concurrent-test-simulator-destinations', '1', '-resultBundlePath', str(private / 'test.xcresult')], timeout=600, check=False)
-                report['stages'] = parse_auth_evidence(data, exit_code)
-                report['native_xctest_passed'] = True
-                report['authentication_completed'] = True
-                require(snapshot_tree(app) == app_snapshot and snapshot_tree(runner) == runner_snapshot
-                    and snapshot_tree(private / 'driver') == project_snapshot and sha256(plan_path) == plan_digest
-                    and sha256(ipa) == IPA_SHA256 and app_helpers.main_code_digest(app) == code_digest, 'sourceIntegrity')
-                command(['/usr/bin/codesign', '--verify', '--deep', '--strict', str(app)])
-                command(['/usr/bin/codesign', '--verify', '--deep', '--strict', str(runner)])
+                report['setup_completed'] = True
+                report['phase'] = 'setupComplete'
+                if not setup_only:
+                    # One auth-only attempt. No recordings, screenshots, UI tree or
+                    # account-container reads follow this call. Raw output is private.
+                    report['phase'] = 'nativeAuthentication'
+                    exit_code, data = command(['xcodebuild', 'test-without-building', '-xctestrun', str(plan_path),
+                        '-destination', 'platform=iOS Simulator,id=' + identifier, '-parallel-testing-enabled', 'NO',
+                        '-maximum-concurrent-test-simulator-destinations', '1', '-resultBundlePath', str(private / 'test.xcresult')], timeout=600, check=False)
+                    report['phase'] = 'authEvidence'
+                    report['stages'] = parse_auth_evidence(data, exit_code)
+                    report['native_xctest_passed'] = True
+                    report['authentication_completed'] = True
+                    report['phase'] = 'postAuthIntegrity'
+                    require(snapshot_tree(app) == app_snapshot and snapshot_tree(runner) == runner_snapshot
+                        and snapshot_tree(private / 'driver') == project_snapshot and sha256(plan_path) == plan_digest
+                        and sha256(ipa) == IPA_SHA256 and app_helpers.main_code_digest(app) == code_digest, 'sourceIntegrity')
+                    command(['/usr/bin/codesign', '--verify', '--deep', '--strict', str(app)])
+                    command(['/usr/bin/codesign', '--verify', '--deep', '--strict', str(runner)])
+                    report['phase'] = 'authComplete'
             except Rejected as error:
                 report['failure'] = error.code
-            except Exception:
+            except Exception as error:
                 report['failure'] = 'internal'
+                report['exception_kind'] = builtin_exception_kind(error)
             finally:
                 try:
                     report['cleanup_passed'] = simulator.cleanup()
-                except Exception:
+                except Exception as error:
                     report['cleanup_passed'] = False
+                    report['phase'] = 'cleanup'
                     report['failure'] = 'cleanup'
-            report['passed'] = report['failure'] is None and report['authentication_completed'] and report['native_xctest_passed'] and report['cleanup_passed']
+                    report['exception_kind'] = builtin_exception_kind(error)
+            report['passed'] = not setup_only and report['failure'] is None and report['authentication_completed'] and report['native_xctest_passed'] and report['cleanup_passed']
         # Private commands/xcresult/entitlements disappear before export.
         private_write(output, (json.dumps(report, sort_keys=True, indent=2) + '\n').encode())
         return report
@@ -634,6 +690,7 @@ def execute(ipa, artifact_evidence, source_root, gate, output):
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--execute', action='store_true')
+    parser.add_argument('--setup-only', action='store_true', help='Stop before any UI authentication test invocation')
     parser.add_argument('--ipa', type=Path)
     parser.add_argument('--artifact-evidence', type=Path)
     parser.add_argument('--source-root', type=Path)
@@ -645,9 +702,16 @@ def main(argv=None):
         return 2
     try:
         require(all((arguments.ipa, arguments.artifact_evidence, arguments.source_root, arguments.review_gate, arguments.result)))
-        result = execute(arguments.ipa, arguments.artifact_evidence, arguments.source_root, arguments.review_gate, arguments.result)
-        print(json.dumps({'state': 'passed' if result['passed'] else 'failed', 'failure': result['failure']}))
-        return 0 if result['passed'] else 1
+        result = execute(arguments.ipa, arguments.artifact_evidence, arguments.source_root, arguments.review_gate,
+            arguments.result, setup_only=arguments.setup_only)
+        setup_success = arguments.setup_only and result['execution_scope'] == 'setupOnly' \
+            and result['setup_completed'] and result['cleanup_passed'] and result['failure'] is None \
+            and not result['passed'] and not result['native_xctest_passed'] \
+            and not result['authentication_completed'] and result['stages'] == []
+        auth_success = not arguments.setup_only and result['passed']
+        state = 'setupCompleted' if setup_success else ('passed' if auth_success else 'failed')
+        print(json.dumps({'state': state, 'failure': result['failure'], 'execution_scope': result['execution_scope']}))
+        return 0 if auth_success or setup_success else 1
     except Rejected as error:
         print(json.dumps({'state': 'rejected', 'failure': error.code}))
         return 2
