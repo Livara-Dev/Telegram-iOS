@@ -43,7 +43,8 @@ def checked_file(root, name):
     if (not isinstance(name, str) or not name or parts.is_absolute() or str(parts) != name
             or any(part in ('', '.', '..', '.git') for part in parts.parts)
             or not re.fullmatch(r'[A-Za-z0-9_./-]+', name)
-            or name == REQUEST or name == 'tools/fork_baseline/publish_extended_retention.py'
+            or name == REQUEST or name.startswith('tools/fork_baseline/extended-retention-payload/')
+            or name == 'tools/fork_baseline/publish_extended_retention.py'
             or not (name in FILES or name.startswith(PREFIXES))):
         raise ValueError('Source path is outside the reviewed scope')
     target = root / name
@@ -109,6 +110,30 @@ def apply_request(root, request):
     return sorted(expected)
 
 
+def resolve_payload(root, request):
+    if 'patch_gzip_base64' in request:
+        return request
+    rows = request.get('patch_chunks')
+    if not isinstance(rows, list) or not 1 <= len(rows) <= 32:
+        raise ValueError('Invalid source payload chunks')
+    pieces = []
+    for index, row in enumerate(rows):
+        name = 'tools/fork_baseline/extended-retention-payload/' + str(index).zfill(2) + '.txt'
+        if not isinstance(row, dict) or set(row) != {'path', 'sha256'} or row['path'] != name:
+            raise ValueError('Unexpected payload path')
+        file = root / name
+        if any(item.is_symlink() for item in [file, *file.parents]) or not file.is_file() or file.stat().st_size > 16384:
+            raise ValueError('Unsafe payload chunk')
+        data = file.read_bytes()
+        if digest(data) != row['sha256']:
+            raise ValueError('Payload chunk checksum mismatch')
+        text = data.decode('ascii').rstrip('\n')
+        if not re.fullmatch(r'[A-Za-z0-9+/=]+', text):
+            raise ValueError('Invalid payload encoding')
+        pieces.append(text)
+    return {**request, 'patch_gzip_base64': ''.join(pieces)}
+
+
 def main():
     if os.environ.get('GITHUB_REPOSITORY') != REPOSITORY or os.environ.get('GITHUB_REF') != 'refs/heads/' + BRANCH:
         raise ValueError('Publication is restricted to the requested repository and branch')
@@ -121,7 +146,7 @@ def main():
     path = root / REQUEST
     if path.is_symlink() or path.stat().st_size > 2 * MAX_PATCH:
         raise ValueError('Invalid request file')
-    request = json.loads(path.read_text())
+    request = resolve_payload(root, json.loads(path.read_text()))
     names = apply_request(root, request)
     private = os.environ.copy()
     token = private.pop('PUBLISH_TOKEN')
