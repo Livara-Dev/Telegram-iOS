@@ -1,0 +1,150 @@
+name: Submit fixed retained Projection discovery request
+
+on:
+  push:
+    branches: [ci/qualified-device-delivery]
+    paths: [ci/projection-discovery-request.json]
+
+permissions:
+  contents: read
+  actions: write
+
+concurrency:
+  group: ayugram-projection-discovery-dispatch-bridge
+  cancel-in-progress: false
+
+jobs:
+  submit:
+    if: github.repository == 'Livara-Dev/Telegram-iOS' && github.ref == 'refs/heads/ci/qualified-device-delivery' && github.event_name == 'push'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 3
+    steps:
+      - name: Verify fixed request and submit once
+        env:
+          DISPATCH_TOKEN: ${{ github.token }}
+        run: |
+          python3 - <<'PY'
+          # BEGIN FIXED DISPATCH PROGRAM
+          import base64, hashlib, json, os, re, sys, urllib.error, urllib.request
+
+          REPO = 'Livara-Dev/Telegram-iOS'
+          REF = 'diagnostics/c55-projection-deferred'
+          SOURCE = 'c55e19c4f5cbe0d730499035d0a0ef712f6903a9'
+          REQUEST = 'ci/projection-discovery-request.json'
+          API = 'https://api.github.com/repos/' + REPO
+          SHA = re.compile(r'[0-9a-f]{40}\Z')
+
+          class Rejected(Exception):
+              pass
+
+          class NoRedirect(urllib.request.HTTPRedirectHandler):
+              def redirect_request(self, req, fp, code, msg, headers, newurl):
+                  return None
+
+          def strict_json(raw):
+              def pairs(items):
+                  result = {}
+                  for key, value in items:
+                      if key in result:
+                          raise Rejected('duplicateJsonKey')
+                      result[key] = value
+                  return result
+              def nonfinite(value):
+                  raise Rejected('nonfiniteJson')
+              return json.loads(raw.decode('utf-8'), object_pairs_hook=pairs,
+                                parse_constant=nonfinite)
+
+          def execute(env, opener):
+              result = dict(schema=1, status='rejected', phase='event',
+                            submitted=False, submission_unknown=False,
+                            native_run_verified=False, app_build_requested=False,
+                            validation_scope='projection-discovery-only',
+                            replay_run='42160468600', replay_source=SOURCE)
+              try:
+                  if (env.get('GITHUB_REPOSITORY') != REPO or
+                      env.get('GITHUB_EVENT_NAME') != 'push' or
+                      env.get('GITHUB_REF') != 'refs/heads/ci/qualified-device-delivery' or
+                      env.get('GITHUB_RUN_ATTEMPT') != '1' or
+                      not SHA.fullmatch(env.get('GITHUB_SHA', ''))):
+                      raise Rejected('eventCoordinates')
+                  token = env.get('DISPATCH_TOKEN', '')
+                  if not token or len(token) > 8192 or '\r' in token or '\n' in token:
+                      raise Rejected('missingOrInvalidToken')
+
+                  def api(path, payload=None):
+                      body = None if payload is None else json.dumps(payload).encode()
+                      req = urllib.request.Request(API + path, data=body, headers={
+                          'Authorization': 'Bearer ' + token,
+                          'Accept': 'application/vnd.github+json',
+                          'X-GitHub-Api-Version': '2022-11-28',
+                          'Content-Type': 'application/json'})
+                      with opener.open(req, timeout=20) as response:
+                          raw = response.read(65537)
+                          if len(raw) > 65536:
+                              raise Rejected('apiResponseTooLarge')
+                          if payload is not None:
+                              if response.status != 204 or raw:
+                                  raise Rejected('unexpectedDispatchResponse')
+                              return None
+                          if response.status != 200:
+                              raise Rejected('unexpectedReadResponse')
+                          return strict_json(raw)
+
+                  result['phase'] = 'request'
+                  content = api('/contents/' + REQUEST + '?ref=' + env['GITHUB_SHA'])
+                  if (not isinstance(content, dict) or content.get('type') != 'file' or
+                      content.get('path') != REQUEST or content.get('encoding') != 'base64' or
+                      type(content.get('size')) is not int or not 1 <= content['size'] <= 4096 or
+                      not isinstance(content.get('content'), str) or
+                      not SHA.fullmatch(content.get('sha', ''))):
+                      raise Rejected('requestEnvelope')
+                  raw = base64.b64decode(content['content'].replace('\n', ''), validate=True)
+                  blob_sha = hashlib.sha1(b'blob ' + str(len(raw)).encode() + b'\0' + raw).hexdigest()
+                  if len(raw) != content['size'] or blob_sha != content['sha']:
+                      raise Rejected('requestBlobMismatch')
+                  request = strict_json(raw)
+                  if (not isinstance(request, dict) or
+                      set(request) != {'schema', 'nonce', 'expected_tool_sha'} or
+                      type(request['schema']) is not int or request['schema'] != 1 or
+                      not isinstance(request['nonce'], str) or
+                      not re.fullmatch(r'[a-z0-9][a-z0-9-]{0,63}', request['nonce']) or
+                      not isinstance(request['expected_tool_sha'], str) or
+                      not SHA.fullmatch(request['expected_tool_sha'])):
+                      raise Rejected('requestSchema')
+                  result.update(nonce=request['nonce'], expected_tool_sha=request['expected_tool_sha'])
+                  result['phase'] = 'head'
+                  head = api('/git/ref/heads/' + REF)
+                  if (not isinstance(head, dict) or head.get('ref') != 'refs/heads/' + REF or
+                      not isinstance(head.get('object'), dict) or
+                      head['object'].get('type') != 'commit' or
+                      head['object'].get('sha') != request['expected_tool_sha']):
+                      raise Rejected('diagnosticHeadMismatch')
+                  result['phase'] = 'dispatch'
+                  api('/actions/workflows/archive-integration.yml/dispatches', {
+                      'ref': REF, 'inputs': {'validation_scope': 'projection-discovery-only',
+                      'unsigned_device': False, 'replay_run': '42160468600', 'replay_source': SOURCE}})
+                  result.update(status='submitted', submitted=True)
+                  return result, 0
+              except Exception as error:
+                  if result['phase'] == 'dispatch':
+                      definite = isinstance(error, urllib.error.HTTPError) and error.code in (400, 401, 403, 404, 422)
+                      result['submission_unknown'] = not definite
+                      result['status'] = 'rejected' if definite else 'submissionUnknown'
+                  if isinstance(error, Rejected):
+                      result['reason'] = str(error)
+                  elif isinstance(error, urllib.error.HTTPError):
+                      result['reason'] = 'githubPermissionDenied' if error.code in (401, 403) else 'githubHttpFailure'
+                  else:
+                      result['reason'] = 'invalidDataOrTransportFailure'
+                  return result, 1
+
+          if __name__ == '__main__':
+              result, code = execute(os.environ, urllib.request.build_opener(NoRedirect))
+              summary = json.dumps(result, sort_keys=True)
+              print(summary)
+              if os.environ.get('GITHUB_STEP_SUMMARY'):
+                  with open(os.environ['GITHUB_STEP_SUMMARY'], 'a', encoding='utf-8') as stream:
+                      stream.write('```json\n' + summary + '\n```\n')
+              sys.exit(code)
+          # END FIXED DISPATCH PROGRAM
+          PY

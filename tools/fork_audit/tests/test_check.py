@@ -106,6 +106,13 @@ class SourceGuardTests(unittest.TestCase):
         self.write("ci/unsigned-device-request-extra.json", '{"schema":1}\n')
         self.assertFailure("Addition outside audit/build scope")
 
+    def test_projection_dispatch_additions_are_exact_paths_only(self):
+        self.write(".github/workflows/projection-discovery-dispatch.yml", "name: Fixed native dispatch\n")
+        self.write("ci/projection-discovery-request.json", '{"schema":1}\n')
+        self.assertEqual([], self.failures())
+        self.write("ci/projection-discovery-request-extra.json", '{"schema":1}\n')
+        self.assertFailure("Addition outside audit/build scope")
+
     def test_exact_source_snapshot_workflow_is_tooling_but_neighbor_is_not(self):
         self.write(".github/workflows/ayu-source-snapshot.yml", "name: Tracked source snapshot\n")
         self.assertEqual([], self.failures())
