@@ -27,7 +27,7 @@ import time
 import uuid
 
 EXECUTION_REVIEWED = True
-REVIEW_PINS_SHA256 = 'e9793599f378cb4e8fed69ffbf7e3bf8a1c96d2c7aff1f2f3f1812e373d69c55'
+REVIEW_PINS_SHA256 = '33f894a378779c4ccb8e628ef29789d3ff561f9f4567c49080dbc6112d66bdd9'
 REVIEWED_STARTUP_RUN = 42204637743  # Root reviewed exact source/startup proof; auth result pending.
 STARTUP_CONTROL_RUN = 42204637743
 REVIEWED_EXECUTION_SCOPE = 'setupOnly'  # One pre-auth diagnostic; no UI authentication invocation.
@@ -175,6 +175,17 @@ class PrivateCommands:
                             break
                 if failure:
                     break
+            # EOF can precede normal process exit. Keep the original deadline;
+            # do not kill a healthy child merely because its output pipe closed.
+            if not failure and not selector.get_map() and process.poll() is None:
+                remaining = timeout - (time.monotonic() - started)
+                if remaining <= 0:
+                    failure = 'commandTimeout'
+                else:
+                    try:
+                        process.wait(timeout=remaining)
+                    except subprocess.TimeoutExpired:
+                        failure = 'commandTimeout'
             if failure or process.poll() is None or selector.get_map():
                 try:
                     os.killpg(process.pid, signal.SIGKILL)
@@ -545,7 +556,7 @@ def closed_result(setup_only=False):
     scope = 'setupOnly' if setup_only else 'authOnly'
     return {'schema': 1, 'role': 'officialPublicTestDCPreAuthSetupOnly' if setup_only else 'officialPublicTestDCAuthenticationOnly',
         'execution_scope': scope, 'setup_completed': False, 'phase': 'notStarted',
-        'exception_kind': None, 'source_commit': SOURCE,
+        'exception_kind': None, 'cleanup_failure': None, 'cleanup_exception_kind': None, 'source_commit': SOURCE,
         'source_run': SOURCE_RUN, 'artifact_id': ARTIFACT, 'ipa_sha256': IPA_SHA256,
         'startup_review_run': REVIEWED_STARTUP_RUN, 'application_recompiled': False,
         'physical_device_verified': False, 'restart_persistence_verified': False,
@@ -676,9 +687,14 @@ def execute(ipa, artifact_evidence, source_root, gate, output, setup_only=False)
                     report['cleanup_passed'] = simulator.cleanup()
                 except Exception as error:
                     report['cleanup_passed'] = False
-                    report['phase'] = 'cleanup'
-                    report['failure'] = 'cleanup'
-                    report['exception_kind'] = builtin_exception_kind(error)
+                    report['cleanup_failure'] = 'cleanup'
+                    report['cleanup_exception_kind'] = builtin_exception_kind(error)
+                    # Retain the first failure boundary; cleanup is independent
+                    # evidence and must never erase the setup exception.
+                    if report['failure'] is None:
+                        report['phase'] = 'cleanup'
+                        report['failure'] = 'cleanup'
+                        report['exception_kind'] = report['cleanup_exception_kind']
             report['passed'] = not setup_only and report['failure'] is None and report['authentication_completed'] and report['native_xctest_passed'] and report['cleanup_passed']
         # Private commands/xcresult/entitlements disappear before export.
         private_write(output, (json.dumps(report, sort_keys=True, indent=2) + '\n').encode())

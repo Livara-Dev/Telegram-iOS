@@ -107,8 +107,10 @@ def exportable(value):
                 d.require(value[key] is False)
         elif key == 'failure':
             d.require(value[key] is None or value[key] in d.ERRORS)
-        elif key == 'exception_kind':
+        elif key in {'exception_kind', 'cleanup_exception_kind'}:
             d.require(value[key] is None or value[key] in d.BUILTIN_EXCEPTION_KINDS)
+        elif key == 'cleanup_failure':
+            d.require(value[key] in {None, 'cleanup'})
         elif key == 'phase':
             d.require(type(value[key]) is str and value[key] in d.PHASES)
         elif key == 'stages':
@@ -116,6 +118,12 @@ def exportable(value):
                 and all(type(item) is str and item in d.STAGES for item in value[key]))
         else:
             d.require(type(value[key]) is type(template) and value[key] == template)
+    if value['cleanup_passed']:
+        d.require(value['cleanup_failure'] is None and value['cleanup_exception_kind'] is None)
+    if value['cleanup_failure'] is not None:
+        d.require(not value['cleanup_passed'])
+    if value['cleanup_exception_kind'] is not None:
+        d.require(value['cleanup_failure'] == 'cleanup')
     if value['setup_completed']:
         d.require(all(value[field] for field in ('driver_compiled', 'signature_checks_passed', 'private_selection_seeded')))
     if setup_only:

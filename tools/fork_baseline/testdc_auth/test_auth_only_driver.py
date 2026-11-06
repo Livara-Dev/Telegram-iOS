@@ -427,6 +427,19 @@ class PrivateIOTests(unittest.TestCase):
             self.assertEqual(out.getvalue(), '')
             self.assertEqual((Path(temporary) / 'command-0001.bin').stat().st_mode & 0o777, 0o600)
 
+    def test_successful_child_may_close_output_before_exit_within_original_deadline(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            code, data = d.PrivateCommands(temporary)([sys.executable, '-c',
+                'import os,time; os.close(1); os.close(2); time.sleep(0.1)'], timeout=2)
+            self.assertEqual((code, data), (0, b''))
+
+    def test_child_that_hangs_after_output_eof_still_obeys_original_deadline(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            with self.assertRaises(d.Rejected) as caught:
+                d.PrivateCommands(temporary)([sys.executable, '-c',
+                    'import os,time; os.close(1); os.close(2); time.sleep(3)'], timeout=0.1)
+            self.assertEqual(caught.exception.code, 'commandTimeout')
+
     def test_private_command_timeout_is_closed(self):
         with tempfile.TemporaryDirectory() as temporary:
             with self.assertRaises(d.Rejected) as caught:

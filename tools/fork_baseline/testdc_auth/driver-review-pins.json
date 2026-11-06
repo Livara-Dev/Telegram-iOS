@@ -15,7 +15,7 @@
   },
   "ci_sources": {
     ".github/workflows/testdc-auth-smoke.yml": "0ae0456464ec44a1e15f0929678172a098e3434bea458fd3346ee7ab039bd172",
-    "tools/fork_baseline/testdc_auth/ci_gate.py": "aab1f7a529823ae181971104657b180c7d5dc19fddb896d438cab71881cab212"
+    "tools/fork_baseline/testdc_auth/ci_gate.py": "fd9f3797021ff427b821cb5d40ed80636b58b96b4e8f6380b6efea8e6b9a6b60"
   },
   "private_files": {
     "OfficialTestDCAuthenticationSmoke.swift": "847c320fc997bddea009721aafe536d431d25480e1dd43434db7a8e867ad878c",

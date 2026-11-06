@@ -10,6 +10,12 @@ The result explicitly records `execution_scope: setupOnly` and `setup_completed`
 
 The following sections describe the retained-app provenance and the dormant bounded auth scenario. Authentication remains blocked by the current setup-only review scope until a concrete setup repair and a separate internal review permit it.
 
+## Setup diagnostic follow-up
+
+[Setup-only run 42286579228](https://github.com/Livara-Dev/Telegram-iOS/actions/runs/42286579228) passed 107 portable tooling cases, fixed admission and retained downloads, and again compiled/signed the tiny runner. Its closed result reported `phase: cleanup`, `exception_kind: PermissionError`, `cleanup_passed: false`, with setup, private-seed, native-test and authentication flags false. The cleanup handler had overwritten the earlier setup phase/error, so the original exception is still unknown. No UI authentication test was invoked.
+
+The next setup-only correction preserves the primary phase/error and records cleanup failure separately. Cleanup failure still prevents success. A separate real local subprocess fixture reproduced a supervisor defect: a child that closed both output descriptors, waited 100 ms and exited 0 within a two-second budget was killed and reported failed. The supervisor now waits only the original remaining deadline after EOF. Existing byte limits, inherited-pipe handling, teardown and timeout bounds remain. This reproduced defect is not established as the macOS `PermissionError` cause. Group-signal permission errors remain failures; they are never ignored into success. Ownership and seed checks are unchanged.
+
 ## Exact source and evidence
 
 The smoke reuses the existing full simulator application at `c55e19c4f5cbe0d730499035d0a0ef712f6903a9`, source run `42174474046`, artifact `13490005243`, IPA SHA-256 `df7a313e263440d92f2ab503e7ee1c1afb328774f6d631b3d052169f2f2e8e10`. A device IPA or account-free Settings host cannot substitute for it. The eleven relevant application source files, five Swift/helper files and two CI files are hash-bound by the reviewed manifest; the final driver hash is separately bound by its receipt.
@@ -44,7 +50,7 @@ Native stdout/stderr, Xcode activity, automatic attachments, `.xcresult`, entitl
 
 ## Verification boundary
 
-The tiny runner compiled and passed signature checks in the first run; its UI test did not execute. The setup-only diagnostic is not yet run at this checkpoint. Code-field accessibility/value/focus at 1×1 / alpha 0.01, the failing setup boundary, generated-plan binding, reinstall preserving the seed, and the server's acceptance/public-account state remain native uncertainties. They must fail honestly without weakening the auth or source checks. A resulting pass can establish only “this retained c55 application reached the genuine authorized root using official public TestDC authentication on a simulator.” It does not establish production DC login, the new archive source, archive/Ghost/filter behavior, durable restart, SideStore installation, physical iPhone success or performance.
+The tiny runner compiled and passed signature checks in the first run; its UI test did not execute. The first setup-only diagnostic failed before seeding completed; the next correction has not run at this checkpoint. Code-field accessibility/value/focus at 1×1 / alpha 0.01, the failing setup boundary, generated-plan binding, reinstall preserving the seed, and the server's acceptance/public-account state remain native uncertainties. They must fail honestly without weakening the auth or source checks. A resulting pass can establish only “this retained c55 application reached the genuine authorized root using official public TestDC authentication on a simulator.” It does not establish production DC login, the new archive source, archive/Ghost/filter behavior, durable restart, SideStore installation, physical iPhone success or performance.
 
 Portable tests run without contacting TestDC or invoking Apple tools:
 
@@ -52,4 +58,4 @@ Portable tests run without contacting TestDC or invoking Apple tools:
 python3 -m unittest discover -s tools/fork_baseline/testdc_auth -q
 ```
 
-The 107 portable cases include the existing disabled-state and enabled-missing-arguments checks, plus mocked full setup execution. Injected synthetic failures exercise every requested setup boundary without leaking exception content or invoking the authentication command. Setup completion cannot become an auth pass, publication must match the reviewed execution scope, and cleanup failure is not green. These fixtures neither run Apple tools nor diagnose the actual unknown exception. No fixture enables or executes native authentication.
+The 111 portable cases include the existing disabled-state and enabled-missing-arguments checks, plus mocked full setup execution. Injected synthetic failures exercise every requested setup boundary without leaking exception content or invoking the authentication command. Setup completion cannot become an auth pass, publication must match the reviewed execution scope, and cleanup failure is not green. These fixtures neither run Apple tools nor diagnose the actual unknown exception. No fixture enables or executes native authentication.

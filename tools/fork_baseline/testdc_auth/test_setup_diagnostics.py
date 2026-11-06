@@ -147,6 +147,16 @@ class SetupOnlyTests(unittest.TestCase):
         self.assertEqual(value['failure'], 'cleanup')
         self.assertFalse(value['passed'])
 
+    def test_cleanup_permission_error_does_not_erase_primary_setup_failure(self):
+        value = self.run_setup(fail_phase='runtimeInventory', cleanup_error=True)
+        self.assertEqual(value['phase'], 'runtimeInventory')
+        self.assertEqual(value['failure'], 'internal')
+        self.assertEqual(value['exception_kind'], 'ValueError')
+        self.assertEqual(value['cleanup_failure'], 'cleanup')
+        self.assertEqual(value['cleanup_exception_kind'], 'PermissionError')
+        self.assertFalse(value['cleanup_passed'])
+        self.assertFalse(value['setup_completed'])
+
     def test_current_review_blocks_auth_mode_before_any_subprocess(self):
         with patch('subprocess.Popen', side_effect=AssertionError('No subprocess')), \
                 patch('subprocess.run', side_effect=AssertionError('No subprocess')), self.assertRaises(d.Rejected) as caught:
@@ -185,6 +195,12 @@ class ClosedDiagnosticTests(unittest.TestCase):
         value['stages'] = list(d.SUCCESS_TRACES[1])
         self.assertEqual(d.REVIEWED_EXECUTION_SCOPE, 'setupOnly')
         with self.assertRaises(d.Rejected): c.exportable(value)
+
+    def test_cleanup_metadata_remains_closed_and_consistent_with_cleanup_flag(self):
+        for key, item in [('cleanup_failure', 'private-message'), ('cleanup_exception_kind', 'private-message'),
+                ('cleanup_failure', 'cleanup'), ('cleanup_exception_kind', 'PermissionError')]:
+            value = self.setup_success(); value[key] = item
+            with self.subTest(key=key, item=item), self.assertRaises(d.Rejected): c.exportable(value)
 
     def test_setup_success_cannot_be_relabelled_as_authentication(self):
         for key, item in [('passed', True), ('native_xctest_passed', True), ('authentication_completed', True),
