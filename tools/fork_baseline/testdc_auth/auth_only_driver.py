@@ -27,7 +27,7 @@ import time
 import uuid
 
 EXECUTION_REVIEWED = True
-REVIEW_PINS_SHA256 = '33f894a378779c4ccb8e628ef29789d3ff561f9f4567c49080dbc6112d66bdd9'
+REVIEW_PINS_SHA256 = 'ae1ec79721eb70786b9e07abb9fd372587cec3d1d2f7a7456078b49f7f00c125'
 REVIEWED_STARTUP_RUN = 42204637743  # Root reviewed exact source/startup proof; auth result pending.
 STARTUP_CONTROL_RUN = 42204637743
 REVIEWED_EXECUTION_SCOPE = 'setupOnly'  # One pre-auth diagnostic; no UI authentication invocation.
@@ -260,12 +260,12 @@ def load_helpers(pins):
     require(isinstance(expected, dict) and set(expected) == {
         'OfficialTestDCAuthenticationSmoke.swift', 'private_helpers/ipa_inspect.py',
         'private_helpers/storage_evidence.py', 'private_helpers/tiny_ui_test_project.py',
-        'private_helpers/preserved_app.py'}, 'helperIntegrity')
+        'private_helpers/preserved_app.py', 'private_helpers/owned_simulator_metadata.py'}, 'helperIntegrity')
     for relative, digest in expected.items():
         require(sha256(BASE / relative) == digest, 'helperIntegrity')
     # The verified helper directory is private and modules are imported only here,
     # after the execution/review/platform gates. No helper CLI is called.
-    names = ('ipa_inspect', 'storage_evidence', 'tiny_ui_test_project', 'preserved_app')
+    names = ('ipa_inspect', 'storage_evidence', 'tiny_ui_test_project', 'preserved_app', 'owned_simulator_metadata')
     require(not any(name in sys.modules for name in names), 'helperIntegrity')
     result = {}
     for name in names:
@@ -458,15 +458,16 @@ def device_rows(data):
 
 
 class OwnedSimulator:
-    def __init__(self, command):
+    def __init__(self, command, metadata_helper=None):
         self.command = command
+        self.metadata_helper = metadata_helper
         self.name = 'AYU_TESTDC_AUTH_' + uuid.uuid4().hex
         self.identifier = None
         self.before = set()
         self.created = False
 
     def listing(self):
-        return device_rows(self.command(['xcrun', 'simctl', 'list', 'devices', '--json'])[1])
+        return device_rows(self.command(['xcrun', 'simctl', 'list', 'devices', '--json'], timeout=15)[1])
 
     def recover(self):
         matches = [(identifier, runtime, row) for identifier, runtime, row in self.listing()
@@ -492,6 +493,11 @@ class OwnedSimulator:
 
     def verify(self):
         require(self.created and self.identifier is not None and self.identifier not in self.before, 'simulatorOwnership')
+        if self.metadata_helper is not None:
+            proof = self.metadata_helper.owned_device_identity(self.identifier, self.name)
+            require(proof.get('state') != 'rejected', 'simulatorOwnership')
+            if proof.get('identity_verified') is True:
+                return  # Identity only; bootstatus remains the readiness gate.
         matches = [row for row in self.listing() if row[0] == self.identifier]
         require(len(matches) == 1 and matches[0][1] == RUNTIME and matches[0][2].get('name') == self.name
             and matches[0][2].get('deviceTypeIdentifier') == DEVICE, 'simulatorOwnership')
@@ -511,6 +517,11 @@ class OwnedSimulator:
             except Exception:
                 pass  # Still attempt deletion of only the verified owned UUID.
         self.command(['xcrun', 'simctl', 'delete', self.identifier], timeout=60)
+        if self.metadata_helper is not None:
+            proof = self.metadata_helper.owned_device_absence(self.identifier, self.name)
+            require(proof.get('state') not in {'rejected', 'present'}, 'cleanup')
+            if proof.get('absence_verified') is True:
+                return True
         rows = self.listing()
         require(not any(row[0] == self.identifier or row[2].get('name') == self.name for row in rows), 'cleanup')
         return True
@@ -584,7 +595,7 @@ def execute(ipa, artifact_evidence, source_root, gate, output, setup_only=False)
             private = Path(temporary).resolve()
             private.chmod(0o700)
             command = PrivateCommands(private)
-            simulator = OwnedSimulator(command)
+            simulator = OwnedSimulator(command, helpers['owned_simulator_metadata'])
             try:
                 report['phase'] = 'toolchain'
                 require(command(['xcodebuild', '-version'])[1].decode().strip() == 'Xcode 27.1\nBuild version 27A9275', 'toolchain')

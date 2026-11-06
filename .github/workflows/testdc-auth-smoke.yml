@@ -39,7 +39,7 @@ jobs:
           submodules: false
       - name: Test closed tooling before the pre-auth setup diagnostic
         working-directory: auth-tooling/tools/fork_baseline/testdc_auth
-        run: python3 -m unittest -q test_auth_only_driver.py test_ci_gate.py test_setup_diagnostics.py
+        run: python3 -m unittest -q test_auth_only_driver.py test_ci_gate.py test_setup_diagnostics.py test_owned_simulator_metadata.py
       - name: Admit only the fixed source artifact and actually passed startup job
         env:
           GH_TOKEN: ${{ github.token }}

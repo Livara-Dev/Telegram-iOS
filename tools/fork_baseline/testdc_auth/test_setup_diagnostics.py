@@ -55,7 +55,7 @@ class SetupOnlyTests(unittest.TestCase):
             return Path(path)
 
         class Simulator:
-            def __init__(self, command): pass
+            def __init__(self, command, metadata_helper=None): pass
             def create(self):
                 boundary()
                 return '12345678-1234-4234-8234-123456789012'
@@ -88,7 +88,7 @@ class SetupOnlyTests(unittest.TestCase):
         helpers = {'preserved_app': SimpleNamespace(extract_app=extract,
             main_app_only=lambda *args, **kwargs: {'main_code_unchanged': True, 'other_entitlements_preserved': True},
             main_code_digest=lambda *args: 'SYNTHETIC_CODE_DIGEST'),
-            'storage_evidence': object(), 'tiny_ui_test_project': object()}
+            'storage_evidence': object(), 'tiny_ui_test_project': object(), 'owned_simulator_metadata': object()}
         with tempfile.TemporaryDirectory() as temp, contextlib.ExitStack() as stack:
             replacements = {'closed_result': result, 'PrivateCommands': Commands, 'OwnedSimulator': Simulator,
                 'load_helpers': lambda pins: helpers, 'validate_source': lambda *args: Path(temp),
