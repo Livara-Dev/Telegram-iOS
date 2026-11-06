@@ -564,6 +564,7 @@ class FocusedWorkflowRoutingTests(unittest.TestCase):
             condition = re.search(r'^    if: (.*?)$', section, re.M).group(1)
             self.assertFalse(self.expression(condition, 'workflow_dispatch', scope, False), name)
         section = self.section('native-api-probe')
+        self.assertIn('projection_replay.verify_current_checkout(Path.cwd())', section)
         condition = re.search(r'^    if: (.*?)$', section, re.M).group(1)
         self.assertTrue(self.expression(condition, 'workflow_dispatch', scope, False))
         steps = {name: body for name, body in re.findall(r'(?ms)^      - name: ([^\n]+)\n(.*?)(?=^      - name: |\Z)', section)}

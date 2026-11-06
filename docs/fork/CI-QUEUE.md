@@ -162,6 +162,18 @@ production or original-host qualification implied. The ordinary 41-case parser,
 settings success and successful device build remain preserved. No deferred
 native execution is claimed until its reviewed profile actually runs.
 
+The first deferred run, `42260617887` at `ae19a4dc`, failed during preparation
+after 193 portable preflight cases passed. No compiler or native suite ran.
+Local reproduction identified `application_source_changed`: preserving the
+concurrent exact-source snapshot workflow required edits to two audit-tool files,
+and those exact tooling paths were missing from the retained-source allowlist.
+The fix names only `tools/fork_audit/check.py` and its exact test file; neighboring
+paths remain rejected. The actual checkout guard now runs before the modern/deferred
+portable preflight and artifact preparation. Full preparation passed locally using real GitHub provenance
+metadata and the cached, hash-verified captured artifact, with zero application
+builds or native executions. Closed preparation failures now retain bounded
+reasons without exporting arbitrary exception text or replacing prior evidence.
+
 Only bounded, explicitly selected diagnostics and visuals are uploaded. Modern
 native JSON is limited to 1 MiB per file, logs to 2 MiB and the combined selection
 to 8 MiB. Settings evidence has separate 1 MiB JSON, 2 MiB log, 16 MiB image,

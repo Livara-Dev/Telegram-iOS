@@ -62,6 +62,75 @@ class DeferredError(ValueError):
     pass
 
 
+PREFLIGHT_CODES = {
+    projection.artifacts.ReplayError: frozenset({
+        'application_source_changed', 'submodule_source_changed', 'checkout_provenance_unavailable',
+        'projection_expected_source_invalid', 'projection_expected_cases_changed',
+        'github_read_failed', 'github_metadata_too_large', 'github_metadata_unavailable',
+        'github_artifact_download_failed', 'invalid_artifact_metadata', 'artifact_provenance_mismatch',
+        'artifact_digest_mismatch', 'projection_product_hash_mismatch', 'projection_capture_hash_mismatch',
+        'projection_product_inventory_mismatch'}),
+    modern.PlanError: frozenset({'invalid_modern_plan_output', 'modern_plan_output_already_exists',
+        'modern_fixed_capture_mismatch', 'unsafe_private_file', 'private_file_changed', 'private_file_unavailable'}),
+    DeferredError: frozenset({'deferred_source_mismatch', 'deferred_output_not_fresh',
+        'deferred_prepared_capture_mismatch', 'deferred_prepared_source_mismatch'}),
+}
+
+
+def preflight_failure(error, phase):
+    """Only exact known classes/codes may survive; never stringify an error."""
+    code = 'deferred_preflight_unavailable'
+    allowed = PREFLIGHT_CODES.get(type(error), ())
+    if allowed:
+        arguments = error.args
+        if (type(arguments) is tuple and len(arguments) == 1 and type(arguments[0]) is str
+                and len(arguments[0]) <= 96 and arguments[0] in allowed):
+            code = arguments[0]
+    if type(phase) is not str or phase not in {'prepare', 'runPreflight'}: phase = 'preflight'
+    return {'schema': 1, 'profile': PROFILE, 'role': PROFILE, 'phase': phase,
+        'failure': code, 'passed': False, 'different_harness': True,
+        'requested_source_commit': SOURCE, 'source_verification_passed': False,
+        'application_recompiled': False, 'projection_tests_recompiled': False,
+        'tiny_control_compiled': False, 'wrapper_compiled': False,
+        'control': {'attempted': False, 'expected': 1}, 'projection': {'attempted': False, 'expected': 41},
+        'release_qualified': False, 'physical_device_verified': False}
+
+
+def retain_prepare_failure(output, root, report, initially_fresh):
+    """Use only the fixed private output; preserve any preexisting evidence."""
+    if not initially_fresh: return False
+    directories = []
+    try:
+        root, output = modern.location(output, root)
+        flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_NONBLOCK
+        parent = os.open(root.anchor, flags); directories.append(parent)
+        for part in root.parts[1:]:
+            parent = os.open(part, flags, dir_fd=parent); directories.append(parent)
+            if not stat.S_ISDIR(os.fstat(parent).st_mode): return False
+        if os.fstat(parent).st_uid != os.getuid(): return False
+        # Hold every directory while descending. An ancestor swapped after
+        # validation cannot redirect the exclusive report creation elsewhere.
+        for part in output.relative_to(root).parts:
+            try: child = os.open(part, flags, dir_fd=parent)
+            except FileNotFoundError:
+                os.mkdir(part, mode=0o700, dir_fd=parent)
+                child = os.open(part, flags, dir_fd=parent)
+            directories.append(child); parent = child
+            info = os.fstat(child)
+            if not stat.S_ISDIR(info.st_mode) or info.st_uid != os.getuid(): return False
+        data = json.dumps(report, sort_keys=True).encode('ascii') + b'\n'
+        if len(data) > 4096: return False
+        descriptor = os.open('result.json', os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600, dir_fd=parent)
+        with os.fdopen(descriptor, 'wb') as stream: stream.write(data)
+        return True
+    except Exception:
+        return False
+    finally:
+        for descriptor in reversed(directories):
+            try: os.close(descriptor)
+            except OSError: pass
+
+
 def source_bytes(root):
     value = modern.private_bytes(Path(root) / 'tools/fork_baseline' / WRAPPER_SOURCE)
     if hashlib.sha256(value).hexdigest() != WRAPPER_SHA256: raise DeferredError('deferred_source_mismatch')
@@ -916,9 +985,17 @@ def main(argv=None):
     parser.add_argument('command', choices=('prepare', 'run')); parser.add_argument('--output', type=Path, default=OUTPUT)
     parser.add_argument('--root', type=Path)
     args = parser.parse_args(argv)
+    initially_fresh = False
+    if args.command == 'prepare':
+        try:
+            _, candidate = modern.location(args.output, args.root)
+            initially_fresh = not candidate.exists() and not candidate.is_symlink()
+        except Exception: pass
     try: result = prepare(args.output, args.root) if args.command == 'prepare' else run(args.output, args.root)
-    except Exception:
-        print(json.dumps({'passed': False, 'failure': 'deferred_preflight_unavailable', 'release_qualified': False})); return 1
+    except Exception as error:
+        result = preflight_failure(error, 'prepare' if args.command == 'prepare' else 'runPreflight')
+        retained = args.command == 'prepare' and retain_prepare_failure(args.output, args.root, result, initially_fresh)
+        print(json.dumps({**result, 'failure_report_retained': retained}, sort_keys=True)); return 1
     print(json.dumps({'passed': result.get('passed', False), 'different_harness': True, 'release_qualified': False}))
     return 0 if args.command == 'prepare' or result.get('passed') else 1
 

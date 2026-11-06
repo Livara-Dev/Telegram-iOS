@@ -925,6 +925,36 @@
       "xctest_timeout_seconds": 600
     }
   ],
+  "latest_deferred_profile_preparation": {
+    "actual_checkout_guard_after_fix": "passed",
+    "application_recompiled": false,
+    "compiler_attempted": false,
+    "driver_commit": "ae19a4dc33bdb7ab2c7be0309dd7377b6d4fdf4f",
+    "failure": "application_source_changed",
+    "fix": "exact reviewed audit-tooling paths allowed; neighboring paths rejected",
+    "native_tests_attempted": false,
+    "passed": false,
+    "phase": "prepare",
+    "physical_device_verified": false,
+    "portable_cases_passed": 193,
+    "real_cached_preparation_after_fix": {
+      "application_built": false,
+      "artifact_id": 13482555818,
+      "native_tests_executed": 0,
+      "passed": true,
+      "provenance_from_read_only_github_metadata": true,
+      "source_bytes_reused_from_hash_verified_cached_artifact": true,
+      "source_commit": "c55e19c4f5cbe0d730499035d0a0ef712f6903a9",
+      "wrapper_sha256": "f1441814a16cc66289f70a2f3ac1fc710e5a833b6de7422d0cf0d0307f18335a"
+    },
+    "rejected_paths": [
+      "tools/fork_audit/check.py",
+      "tools/fork_audit/tests/test_check.py"
+    ],
+    "release_qualified": false,
+    "reproduced_locally": true,
+    "run": 42260617887
+  },
   "latest_projection_replay": {
     "all_expected_case_ids_missing": true,
     "alternate_host_attestation": {

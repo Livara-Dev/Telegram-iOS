@@ -4,6 +4,7 @@
 import ast
 import copy
 import hashlib
+import io
 import json
 import os
 from pathlib import Path
@@ -17,6 +18,7 @@ import traceback
 import unittest
 from unittest.mock import patch
 import xml.etree.ElementTree as ET
+from contextlib import redirect_stdout
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -544,6 +546,80 @@ class DeferredRunnerTests(unittest.TestCase):
                 return base.complete()
             with self.assertRaisesRegex(parser.DeferredError, '^deferred_wrapper_rights_changed$'):
                 parser.verify_wrapper_signing(derived, wrapper, raw, mismatch)
+
+    def test_cli_preserves_only_known_preflight_codes_without_native_or_compiler_claims(self):
+        for error in (parser.projection.artifacts.ReplayError('application_source_changed'),
+                      parser.modern.PlanError('modern_fixed_capture_mismatch'), parser.DeferredError('deferred_source_mismatch')):
+            with self.subTest(error=type(error)), tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary).resolve(); output = io.StringIO()
+                with patch.object(parser, 'prepare', side_effect=error), redirect_stdout(output):
+                    code = parser.main(['prepare', '--root', str(root)])
+                value = json.loads(output.getvalue()); self.assertEqual(code, 1)
+                self.assertEqual(value['failure'], error.args[0]); self.assertEqual(value['phase'], 'prepare')
+                self.assertTrue(value['failure_report_retained']); self.assertFalse(value['control']['attempted'])
+                self.assertFalse(value['projection']['attempted']); self.assertFalse(value['tiny_control_compiled'])
+                retained = root / parser.OUTPUT / 'result.json'
+                self.assertEqual(retained.stat().st_mode & 0o777, 0o600)
+                self.assertEqual(json.loads(retained.read_text())['failure'], error.args[0])
+                self.assertNotIn(str(root), output.getvalue())
+
+    def test_unknown_preflight_error_never_calls_str_or_exports_private_arguments(self):
+        class PrivateError(RuntimeError):
+            def __str__(self): raise AssertionError('Stringifying a private exception is forbidden')
+        for error in (PrivateError('private-secret-canary /private/session'),
+                      parser.DeferredError('private-secret-canary /private/session'),
+                      parser.projection.artifacts.ReplayError('application_source_changed', '/private/session')):
+            with self.subTest(error=type(error)), tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary).resolve(); output = io.StringIO()
+                with patch.object(parser, 'prepare', side_effect=error), redirect_stdout(output):
+                    self.assertEqual(parser.main(['prepare', '--root', str(root)]), 1)
+                value = json.loads(output.getvalue()); self.assertEqual(value['failure'], 'deferred_preflight_unavailable')
+                self.assertNotIn('private-secret-canary', output.getvalue()); self.assertNotIn('/private/session', output.getvalue())
+                self.assertNotIn('Traceback', output.getvalue())
+                self.assertNotIn('/private/session', (root / parser.OUTPUT / 'result.json').read_text())
+
+    def test_cli_failure_never_overwrites_or_poison_preexisting_prepared_evidence(self):
+        for existing_result in (False, True):
+            with self.subTest(existing_result=existing_result), tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary).resolve(); directory = root / parser.OUTPUT; directory.mkdir(parents=True)
+                original = directory / ('result.json' if existing_result else 'verification.json')
+                original.write_bytes(b'preserved-evidence')
+                output = io.StringIO()
+                with patch.object(parser, 'prepare', side_effect=parser.modern.PlanError('modern_plan_output_already_exists')), redirect_stdout(output):
+                    self.assertEqual(parser.main(['prepare', '--root', str(root)]), 1)
+                self.assertFalse(json.loads(output.getvalue())['failure_report_retained']); self.assertEqual(original.read_bytes(), b'preserved-evidence')
+                if not existing_result: self.assertFalse((directory / 'result.json').exists())
+
+    def test_cli_failure_does_not_create_reports_through_unsafe_outputs_or_in_run_mode(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve(); outside = root / 'outside'; outside.mkdir()
+            (root / 'build').symlink_to(outside, target_is_directory=True)
+            for action in ('prepare', 'run'):
+                output = io.StringIO()
+                with patch.object(parser, action, side_effect=parser.projection.artifacts.ReplayError('application_source_changed')), redirect_stdout(output):
+                    self.assertEqual(parser.main([action, '--root', str(root)]), 1)
+                self.assertFalse(json.loads(output.getvalue())['failure_report_retained'])
+            self.assertEqual(list(outside.iterdir()), [])
+
+    def test_prepare_failure_writer_uses_held_directory_descriptors_when_ancestor_is_replaced(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve(); outside = root / 'outside'; outside.mkdir()
+            output = root / parser.OUTPUT; old_output = root / 'original-output'
+            opened, swapped = [], []
+            actual_open = os.open
+            def raced_open(path, flags, mode=0o777, *, dir_fd=None):
+                if path == 'result.json':
+                    self.assertIsNotNone(dir_fd)
+                    output.rename(old_output); output.symlink_to(outside, target_is_directory=True); swapped.append(True)
+                descriptor = actual_open(path, flags, mode, dir_fd=dir_fd)
+                opened.append(descriptor); return descriptor
+            report = parser.preflight_failure(parser.projection.artifacts.ReplayError('application_source_changed'), 'prepare')
+            with patch.object(parser.os, 'open', side_effect=raced_open):
+                self.assertTrue(parser.retain_prepare_failure(parser.OUTPUT, root, report, True))
+            self.assertEqual(swapped, [True]); self.assertEqual(list(outside.iterdir()), [])
+            self.assertEqual(json.loads((old_output / 'result.json').read_text())['failure'], 'application_source_changed')
+            for descriptor in opened:
+                with self.assertRaises(OSError): os.fstat(descriptor)
 
 
 if __name__ == '__main__': unittest.main()

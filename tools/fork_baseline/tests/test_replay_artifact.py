@@ -228,8 +228,10 @@ class ReplayArtifactTests(unittest.TestCase):
             with self.assertRaises(replay.ReplayError): replay.coordinates(run, source)
         self.assertEqual(replay.validate_paths(['docs/report.md', 'tools/fork_baseline/replay_artifact.py', replay.WORKFLOW]), 3)
         self.assertEqual(replay.validate_paths([replay.SOURCE_SNAPSHOT_WORKFLOW]), 1)
+        self.assertEqual(replay.validate_paths(sorted(replay.AUDIT_TOOLING_FILES)), 2)
         for name in ['submodules/PasscodeCore/BUILD', 'MODULE.bazel', '.gitmodules', '.github/workflows/other.yml',
                      '.github/workflows/ayu-source-snapshot-extra.yml', '.github/workflows/ayu-source-snapshot.yml/../other.yml',
+                     'tools/fork_audit/network.py', 'tools/fork_audit/tests/test_network.py',
                      'docs/../Telegram/main.m', '/docs/report.md', 'docs\\report.md']:
             with self.subTest(path=name), self.assertRaises(replay.ReplayError): replay.validate_paths([name])
 
@@ -398,6 +400,17 @@ class ReplayArtifactTests(unittest.TestCase):
             git('add', '.'); git('-c', 'commit.gpgsign=false', 'commit', '-qm', 'synthetic docs')
             head, count = replay.verify_checkout(root, source)
             self.assertEqual(head, git('rev-parse', 'HEAD')); self.assertEqual(count, 1)
+            for name in sorted(replay.AUDIT_TOOLING_FILES):
+                path = root / name; path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_text('# reviewed audit tooling\n')
+            self.assertEqual(replay.verify_checkout(root, source)[1], 3)
+            git('add', 'tools/fork_audit')
+            self.assertEqual(replay.verify_checkout(root, source)[1], 3)
+            git('-c', 'commit.gpgsign=false', 'commit', '-qm', 'reviewed audit tooling')
+            self.assertEqual(replay.verify_checkout(root, source)[1], 3)
+            neighbor = root / 'tools/fork_audit/network.py'; neighbor.write_text('# unreviewed neighbor\n')
+            with self.assertRaisesRegex(replay.ReplayError, 'application_source_changed'): replay.verify_checkout(root, source)
+            neighbor.unlink()
             (root / 'app.swift').write_text('changed app')
             with self.assertRaisesRegex(replay.ReplayError, 'application_source_changed'): replay.verify_checkout(root, source)
             (root / 'app.swift').write_text('unchanged app')
