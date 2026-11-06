@@ -52,6 +52,17 @@ write failures, confirmed absence with existing databases, 32-byte key migration
 and metadata recovery. These risks remain open. No production recovery behavior
 was changed to obtain the startup pass or IPA.
 
+## Artifact upload review, 2026-11-06
+
+The November 6 packaging review found that the main-app-only artifact upload
+selected the IPA, manifest and checksums but omitted the three generated license
+and exact-source materials. The upload now selects those three files explicitly.
+The package-to-workflow regression reproduces the previous three missing files,
+then verifies every published checksum reference and excludes an unrelated
+diagnostic canary. This closes that upload omission; it does not certify the full
+dependency license inventory or physical-device startup. No new IPA is implied
+by the portable packaging test.
+
 ## Additional source review at `f295948a`
 
 The [expanded telemetry inventory](fork/TELEMETRY-REVIEW.md) identifies additional

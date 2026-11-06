@@ -4,6 +4,7 @@ import hashlib
 import json
 from pathlib import Path
 import plistlib
+import re
 import stat
 import struct
 import sys
@@ -249,6 +250,22 @@ class DeviceVariantTests(unittest.TestCase):
             for name, value in materials.items():
                 self.assertEqual((root / 'published' / name).read_bytes(), value)
                 self.assertIn(hashlib.sha256(value).hexdigest() + '  ' + name, sums)
+            # Exercise the real workflow's upload glob against the packaged
+            # files, including a canary that must never accompany the IPA.
+            (root / 'published/private-diagnostic.log').write_text('not for distribution')
+            workflow = (Path(__file__).resolve().parents[3] / '.github/workflows/archive-integration.yml').read_text()
+            step = re.search(r'(?ms)^      - name: Publish separate unsigned main-app-only device package\n(.*?)(?=^      - name: |\Z)', workflow)
+            self.assertIsNotNone(step)
+            prefix = '${{ github.workspace }}/fork-source/build/fork-evidence/startup-main-app-only-device/'
+            patterns = [line.strip().removeprefix(prefix) for line in step.group(1).splitlines()
+                        if line.strip().startswith(prefix)]
+            uploaded = {path.name: path.read_bytes() for pattern in patterns
+                        for path in (root / 'published').glob(pattern) if path.is_file()}
+            checksums = dict(line.split('  ', 1)[::-1] for line in sums.splitlines())
+            self.assertEqual(set(uploaded), {'SHA256SUMS', *checksums})
+            self.assertNotIn('private-diagnostic.log', uploaded)
+            for name, digest in checksums.items():
+                self.assertEqual(hashlib.sha256(uploaded[name]).hexdigest(), digest)
 
     def test_output_symlink_or_symlink_ancestor_is_rejected_without_publishing(self):
         with tempfile.TemporaryDirectory() as d:

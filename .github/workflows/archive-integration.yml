@@ -819,6 +819,9 @@ jobs:
             ${{ github.workspace }}/fork-source/build/fork-evidence/startup-main-app-only-device/AyuGram-*-main-app-only-unsigned-device.ipa
             ${{ github.workspace }}/fork-source/build/fork-evidence/startup-main-app-only-device/manifest.json
             ${{ github.workspace }}/fork-source/build/fork-evidence/startup-main-app-only-device/SHA256SUMS
+            ${{ github.workspace }}/fork-source/build/fork-evidence/startup-main-app-only-device/COPYING
+            ${{ github.workspace }}/fork-source/build/fork-evidence/startup-main-app-only-device/LICENSE-NOTICE.md
+            ${{ github.workspace }}/fork-source/build/fork-evidence/startup-main-app-only-device/CORRESPONDING-SOURCE.md
           if-no-files-found: error
           retention-days: 14
           include-hidden-files: false
