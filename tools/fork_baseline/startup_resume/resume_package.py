@@ -234,8 +234,12 @@ def package(source_root, device_zip, simulator_zip, native_zip, original_run, or
     replay = document(startup_root / 'replay.json')
     # The public Mac stager checks this too. Recheck before Linux copies any
     # source-provided proof fields into the downloadable export.
-    from resume_startup import validate_replay_schema
+    from resume_startup import OPTIONAL_PUBLIC, validate_optional_public, validate_replay_schema
     validate_replay_schema(replay)
+    for name in OPTIONAL_PUBLIC:
+        path = startup_root / name
+        if path.exists() or path.is_symlink():
+            validate_optional_public(name, path)
     result = document(startup_root / 'main-app-only/launch-smoke/result.json')
     cleanup = cleanup_proof(startup_root, result)
     source_build_origin = document(startup_root / 'source-build-origin.json')

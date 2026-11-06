@@ -55,6 +55,39 @@ The underlying cause of the original CoreSimulator installation hang has not
 been established. Private-set isolation is a controlled repair path requiring
 native verification, not evidence of a particular Apple service defect.
 
+## SDK initialization and bounded installer observation
+
+Private-set recovery [42300627717](https://github.com/Livara-Dev/Telegram-iOS/actions/runs/42300627717)
+also timed out in installation before any launch; shutdown/deletion failed too.
+Its seven inner checksum references were verified, but it contains no screenshots
+or video. Both failed experiments and both compiled applications are preserved.
+
+The next tooling revision initializes the selected Xcode 27.1 system components
+with noninteractive `sudo xcodebuild -runFirstLaunch`, then requires an actual
+successful `-checkFirstLaunchStatus`. This follows [Apple's component setup
+instructions](https://developer.apple.com/documentation/xcode/downloading-and-installing-additional-xcode-components)
+and [the runner image's normal provisioning](https://github.com/actions/runner-images/blob/0f0ff079cbcc209f7afcd59031a201ac0ace93be/images/macos/scripts/helpers/Xcode.Installer.psm1#L120).
+Readiness and tool-file observations are recorded separately. This is not proof
+that omitted initialization caused either earlier failure.
+
+An explicit opt-in observer runs only after the original install command's
+120-second deadline and exact timeout error. It verifies the actual owned child
+and can collect closed stack-family counters, bounded owned-container metadata
+and numeric host context within a separate 12-second observation budget. It then
+always calls the original kill. Late completion cannot become a startup pass;
+the original failure and all launch, recording, cleanup and packaging gates stay
+in force. No simulator service or unrelated process is killed. Actual elapsed
+time and any budget overrun are reported honestly.
+
+Raw samples remain private and are never staged or uploaded. Forced helper
+retirement can leave a size-limited sample in private runner temporary storage
+until teardown; the receipt distinguishes actual unlink from unverified removal.
+SDK command logs use private files, cooperative size monitoring and bounded reads
+rather than waiting on daemon-inherited pipe EOF. No file-size resource limit is
+applied to SDK installation, since it could also prevent component files being
+written. SDK, runtime and diagnostic child environments exclude GitHub/API tokens. No Telegram source,
+dependency version or application binary changes in this diagnostic revision.
+
 The newer `d020bfd7` Core candidate separately passed 854 cases, including 16
 recipient-expiry and three startup-order regressions. Its coordinator relocation
 is **not present in the frozen source-5d binary**. Neither component tests nor

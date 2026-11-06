@@ -121,6 +121,9 @@ class OwnedDeviceSet:
         self.current = None
         self.original_command = None
         self.original_subprocess = None
+        self.installer_observer = None
+        self.installer_observation = None
+        self.install_started = None
 
     def verify_root(self):
         require(threading.get_ident() == self.thread)
@@ -255,10 +258,13 @@ class OwnedDeviceSet:
     def call_original(self, arguments, timeout, phase, compiler_log=None):
         require(self.current is None)
         self.current = (arguments, timeout, phase, compiler_log)
+        if self.installer_observer is not None and arguments[:3] == ['xcrun', 'simctl', 'install']:
+            self.install_started = time.monotonic()
         try:
             return self.original_command(arguments, timeout=timeout, phase=phase, compiler_log=compiler_log)
         finally:
             self.current = None
+            self.install_started = None
 
     def verify_absence(self):
         self.verify_root()
@@ -312,6 +318,54 @@ class OwnedDeviceSet:
                 'exact_owned_device_only': self.created and self.routing_valid}
 
 
+class OwnedInstallerProcess:
+    """Only observe the verified install child's original timeout/kill boundary.
+
+    The observation module owns its <=12s diagnostic worker budget. No filesystem
+    observation/publication is added here, and the original kill always executes.
+    """
+    def __init__(self, state, process, mapped):
+        self.state, self.process = state, process
+        self.mapped = tuple(mapped)
+        self.started = state.install_started
+        self.attempted = False
+
+    def __getattr__(self, name):
+        return getattr(self.process, name)
+
+    def kill(self):
+        try:
+            if self.attempted:
+                return
+            self.attempted = True
+            error = sys.exc_info()[1]
+            state = self.state
+            # All checks use already-established in-memory context. Never open
+            # paths or scan processes in the stock command's kill/finally block.
+            if not (isinstance(error, state.smoke.SmokeError)
+                    and error.code == 'commandTimedOut' and error.phase == 'installApplication'
+                    and error.timeout is True and error.return_code is None
+                    and state.current is not None and state.current[1:] == (120, 'installApplication', None)
+                    and tuple(state.current[0]) == ('xcrun', 'simctl', 'install', state.identifier,
+                                                  str(state.checker.parent / 'Telegram.app'))
+                    and self.mapped == ('xcrun', 'simctl', '--set', str(state.root), 'install',
+                                        state.identifier, str(state.checker.parent / 'Telegram.app'))
+                    and self.started is not None and self.started == state.install_started
+                    and time.monotonic() - self.started >= 120 and self.process.poll() is None):
+                return
+            state.installer_observation = state.installer_observer.blank()
+            value = state.installer_observer.capture(self.process, mapped_arguments=list(self.mapped),
+                private_root=state.root, root_identity=state.root_identity, identifier=state.identifier,
+                device_name=state.name, command_started=self.started, timeout_seconds=120)
+            state.installer_observation = state.installer_observer.validate_observation(value)
+        except BaseException:
+            # Diagnostic failures must not replace the already-pending stock
+            # SmokeError (including interrupted observation/publication).
+            pass
+        finally:
+            self.process.kill()
+
+
 class LocalSubprocessProxy:
     def __init__(self, state):
         self.state = state
@@ -327,7 +381,11 @@ class LocalSubprocessProxy:
             self.state.routing_valid = False
             phase = self.state.current[2] if self.state.current is not None else 'startRecording'
             raise self.state.smoke.SmokeError('startupPreparationFailed', phase) from None
-        return self.state.original_subprocess.Popen(mapped, **kwargs)
+        process = self.state.original_subprocess.Popen(mapped, **kwargs)
+        if (self.state.installer_observer is not None and self.state.current is not None
+                and arguments[:3] == ['xcrun', 'simctl', 'install']):
+            return OwnedInstallerProcess(self.state, process, mapped)
+        return process
 
 
 @contextlib.contextmanager
@@ -423,7 +481,34 @@ def verify_visual_files(output, uid):
                 and 0 < info.st_size <= maximum)
 
 
-def run(ipa, output, source_root):
+def publish_installer_observation(state, output):
+    """Publish only the validated closed receipt, after the stock helper unwinds.
+
+    Atomic no-replace linking prevents a partial or overwritten public receipt.
+    No raw sample, identifier, path, or arbitrary exception is published.
+    """
+    if state.installer_observer is None:
+        return
+    value = state.installer_observer.validate_observation(state.installer_observation)
+    data = (json.dumps(value, sort_keys=True) + '\n').encode('utf-8')
+    require(0 < len(data) <= 65536)
+    owned_directory(output, state.uid)
+    descriptor, name = tempfile.mkstemp(prefix='.installer-observation-', dir=output)
+    temporary = Path(name)
+    try:
+        with os.fdopen(descriptor, 'wb') as stream:
+            os.fchmod(stream.fileno(), 0o600)
+            stream.write(data)
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.link(temporary, output / 'installer-observation.json', follow_symlinks=False)
+    finally:
+        temporary.unlink()
+
+
+def run(ipa, output, source_root, installer_diagnostics=False):
+    require(type(installer_diagnostics) is bool)
+    observer = importlib.import_module('installer_observation') if installer_diagnostics else None
     require(platform.system() == 'Darwin' and platform.machine() == 'arm64')
     ipa, output = Path(ipa).resolve(strict=True), Path(output).absolute()
     require(ipa.is_file() and digest(ipa) == IPA_SHA256 and not os.path.lexists(output))
@@ -431,6 +516,9 @@ def run(ipa, output, source_root):
     require(output.parent.resolve(strict=True) == output.parent)
     with pinned_modules(source_root) as (smoke, replay):
         state = OwnedDeviceSet(smoke, output)
+        if observer is not None:
+            state.installer_observer = observer
+            state.installer_observation = observer.validate_observation({**observer.blank(), 'state': 'notTriggered'})
         try:
             with adapters(smoke, state):
                 report = replay.replay(ipa, output, startup_variant='main-app-only', private_control_only=True)
@@ -451,6 +539,12 @@ def run(ipa, output, source_root):
             with (output / 'cleanup.json').open('x') as stream:
                 json.dump(state.proof(), stream, sort_keys=True)
                 stream.write('\n')
+            try:
+                publish_installer_observation(state, output)
+            except BaseException:
+                # Optional diagnostic publication never replaces stock failure.
+                # The publisher separately validates any receipt that exists.
+                pass
 
 
 def main():
@@ -458,9 +552,11 @@ def main():
     parser.add_argument('--ipa', type=Path, required=True)
     parser.add_argument('--output', type=Path, required=True)
     parser.add_argument('--source-root', type=Path, required=True)
+    parser.add_argument('--installer-diagnostics', action='store_true',
+                        help='Observe only an owned install timeout; never retries or extends install.')
     args = parser.parse_args()
     try:
-        run(args.ipa, args.output, args.source_root)
+        run(args.ipa, args.output, args.source_root, installer_diagnostics=args.installer_diagnostics)
     except Exception:
         print('Isolated startup verification failed; no startup or cleanup pass recorded.', file=sys.stderr)
         return 1

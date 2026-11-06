@@ -24,6 +24,7 @@ import zipfile
 
 import resume_package as package
 import resume_startup
+import installer_observation
 
 
 def sha(data):
@@ -62,6 +63,17 @@ def tree_bytes(root):
 def cleanup():
     return {'schema': 1, 'owned_device_deleted': True,
             'owned_uuid_absence_verified': True, 'exact_owned_device_only': True}
+
+
+def closed_replay_fixture():
+    return {'mode': 'main_app_only', 'physical_device_verified': False,
+            'startup_variant': 'main-app-only', 'private_control_only': True,
+            'application_recompiled': False, 'passed': True, 'normal_control_passed': False,
+            'no_app_groups_control_attempted': False, 'source_codesign_verified': True,
+            'phase': 'complete', 'simulator_device_type': 'com.apple.CoreSimulator.SimDeviceType.iPhone-15-Pro',
+            'simulator_runtime': 'com.apple.CoreSimulator.SimRuntime.iOS-27-0',
+            'source_simulator_ipa_sha256': package.SIM_IPA_SHA,
+            'private_mode_control': 'explicitFreshPinnedSelection'}
 
 
 class DeploymentLayoutTests(unittest.TestCase):
@@ -242,14 +254,7 @@ class ArchiveAndOriginTests(unittest.TestCase):
                     self.assertFalse((base / 'output').exists())
 
     def test_unknown_replay_proof_field_is_rejected_before_helpers_or_output_derivation(self):
-        proof = {'mode': 'main_app_only', 'physical_device_verified': False,
-                 'startup_variant': 'main-app-only', 'private_control_only': True,
-                 'application_recompiled': False, 'passed': True, 'normal_control_passed': False,
-                 'no_app_groups_control_attempted': False, 'source_codesign_verified': True,
-                 'phase': 'complete', 'simulator_device_type': 'com.apple.CoreSimulator.SimDeviceType.iPhone-15-Pro',
-                 'simulator_runtime': 'com.apple.CoreSimulator.SimRuntime.iOS-27-0',
-                 'source_simulator_ipa_sha256': package.SIM_IPA_SHA,
-                 'private_mode_control': 'explicitFreshPinnedSelection'}
+        proof = closed_replay_fixture()
         # Establish that adding this field, rather than missing required fields,
         # causes the same closed-schema provider used by the Mac stager to fail.
         self.assertEqual(resume_startup.validate_replay_schema(proof), proof)
@@ -282,6 +287,72 @@ class ArchiveAndOriginTests(unittest.TestCase):
                 strip.assert_not_called()
             self.assertFalse((base / 'output').exists())
             self.assertEqual(tree_bytes(fresh), before)
+
+    def test_linux_optional_diagnostic_unknown_fields_and_canaries_reject_before_derivation(self):
+        valid = installer_observation.blank()
+        self.assertEqual(installer_observation.validate_observation(valid), valid)
+        changes = ({'private_canary': 'SYNTHETIC_PRIVATE_MUST_NOT_EXPORT'},
+                   {'source': 'SYNTHETIC_CANARY_MUST_NOT_EXPORT'},
+                   {'host': {**valid['host'], 'raw_path': '/SYNTHETIC_PRIVATE_MUST_NOT_EXPORT'}},
+                   {'startup_verified': True})
+        for changed in changes:
+            with self.subTest(changed=changed), tempfile.TemporaryDirectory() as temporary:
+                base = Path(temporary).resolve()
+                fresh = base / 'fresh'
+                write_tree(fresh, {'replay.json': encode(closed_replay_fixture()),
+                                  'installer-observation.json': encode({**valid, **changed})})
+                before = tree_bytes(fresh)
+                startup_zip = write_zip(base / 'startup.zip', before)
+                paths = {role: write_zip(base / (role + '.zip'), {'fixture.log': role.encode()})
+                         for role in ('device', 'simulator', 'native')}
+                artifacts = {role: {'id': i + 1, 'digest': 'sha256:' + package.digest(path)}
+                             for i, (role, path) in enumerate(paths.items())}
+                startup = {'artifact_sha256': package.digest(startup_zip)}
+                strip = mock.Mock()
+                with contextlib.ExitStack() as stack:
+                    stack.enter_context(mock.patch.object(package.origins, 'original_graph', return_value={'synthetic': True}))
+                    stack.enter_context(mock.patch.object(package.origins, 'validate_startup_origin', return_value=startup))
+                    stack.enter_context(mock.patch.object(package.origins, 'artifact', side_effect=lambda role, _: artifacts[role]))
+                    derive = stack.enter_context(mock.patch.object(package, 'load_helpers', return_value={
+                        'device_variant': types.SimpleNamespace(strip_extensions=strip)}))
+                    validator = stack.enter_context(mock.patch.object(resume_startup, 'validate_optional_public',
+                                                                     wraps=resume_startup.validate_optional_public))
+                    with self.assertRaisesRegex(ValueError, 'installer_observation_rejected'):
+                        package.package(base, paths['device'], paths['simulator'], paths['native'], {}, {}, {}, {},
+                                        fresh, startup, base / 'output', startup_archive=startup_zip)
+                    validator.assert_called_once_with('installer-observation.json', fresh / 'installer-observation.json')
+                    derive.assert_not_called()
+                    strip.assert_not_called()
+                self.assertFalse((base / 'output').exists())
+                self.assertEqual(tree_bytes(fresh), before)
+
+    def test_valid_optional_diagnostic_does_not_replace_required_stock_startup_result(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            base = Path(temporary).resolve()
+            fresh = base / 'fresh'
+            diagnostic = installer_observation.blank()
+            write_tree(fresh, {'replay.json': encode(closed_replay_fixture()),
+                              'installer-observation.json': encode(diagnostic)})
+            startup_zip = write_zip(base / 'startup.zip', tree_bytes(fresh))
+            paths = {role: write_zip(base / (role + '.zip'), {'fixture.log': role.encode()})
+                     for role in ('device', 'simulator', 'native')}
+            artifacts = {role: {'id': i + 1, 'digest': 'sha256:' + package.digest(path)}
+                         for i, (role, path) in enumerate(paths.items())}
+            startup = {'artifact_sha256': package.digest(startup_zip)}
+            with contextlib.ExitStack() as stack:
+                stack.enter_context(mock.patch.object(package.origins, 'original_graph', return_value={'synthetic': True}))
+                stack.enter_context(mock.patch.object(package.origins, 'validate_startup_origin', return_value=startup))
+                stack.enter_context(mock.patch.object(package.origins, 'artifact', side_effect=lambda role, _: artifacts[role]))
+                derive = stack.enter_context(mock.patch.object(package, 'load_helpers'))
+                validator = stack.enter_context(mock.patch.object(resume_startup, 'validate_optional_public',
+                                                                 wraps=resume_startup.validate_optional_public))
+                with self.assertRaisesRegex(package.Rejected, 'documentBounds'):
+                    package.package(base, paths['device'], paths['simulator'], paths['native'], {}, {}, {}, {},
+                                    fresh, startup, base / 'output', startup_archive=startup_zip)
+                validator.assert_called_once_with('installer-observation.json', fresh / 'installer-observation.json')
+                derive.assert_not_called()
+            self.assertFalse(diagnostic['startup_verified'])
+            self.assertFalse((base / 'output').exists())
 
 
 def synthetic_ipa(mode):
@@ -341,6 +412,7 @@ class SyntheticPackageFlowTests(unittest.TestCase):
                             'private_mode_control': 'explicitFreshPinnedSelection', 'private_control_only': True}),
                            'cleanup.json': encode(cleanup()), 'source-build-origin.json': encode(source_receipt),
                            'main-app-only/launch-smoke/result.json': encode({'cleanup_failures': [], 'synthetic_test_fixture_only': True})}
+            fresh_files['installer-observation.json'] = encode(installer_observation.blank())
             fresh_files.update({'main-app-only/launch-smoke/' + name: b'SYNTHETIC VISUAL FIXTURE ONLY'
                                 for name in ('launch-1.png', 'launch-2.png', 'launch.mp4')})
             write_tree(fresh, fresh_files)
@@ -369,6 +441,7 @@ class SyntheticPackageFlowTests(unittest.TestCase):
             # The full plumbing fixture's proof is intentionally synthetic; its
             # schema provider is mocked here and exercised for real above.
             validate_replay = mock.Mock(side_effect=lambda value: value)
+            validate_optional = mock.Mock(wraps=resume_startup.validate_optional_public)
             helpers = {'artifact_licensing': types.SimpleNamespace(
                            read_materials=mock.Mock(return_value=materials), validate_materials=mock.Mock(return_value=licenses),
                            write_materials=write_materials),
@@ -388,6 +461,7 @@ class SyntheticPackageFlowTests(unittest.TestCase):
                     (package.origins, 'original_failure', mock.Mock(return_value={'synthetic_test_fixture_only': True})),
                     (package, 'load_helpers', mock.Mock(return_value=helpers)),
                     (resume_startup, 'validate_replay_schema', validate_replay),
+                    (resume_startup, 'validate_optional_public', validate_optional),
                     (package.native_validation, 'verify_evidence', mock.Mock(return_value=(native_report, {}))),
                     (package.native_validation, 'native_tests', mock.Mock(return_value=({'native_passed_cases': 270,
                                                                                        'synthetic_test_fixture_only': True}, {}))),
@@ -398,12 +472,16 @@ class SyntheticPackageFlowTests(unittest.TestCase):
                                          inventory_path=inventory_path)
             self.assertEqual({role: package.digest(path) for role, path in paths.items()}, before)
             validate_replay.assert_called_once_with(json.loads(fresh_files['replay.json']))
+            validate_optional.assert_called_once_with('installer-observation.json', fresh / 'installer-observation.json')
             self.assertEqual(tree_bytes(fresh), fresh_before)
             self.assertEqual(result['original_delivery']['simulator_job_conclusion'], 'failure')
             self.assertTrue(result['original_delivery']['simulator_compile_step_passed'])
             self.assertFalse(result['application_recompiled'])
             self.assertFalse(result['physical_device_verified'])
             self.assertFalse(result['runtime_verified'])
+            self.assertFalse(package.document(output / 'evidence/fresh-startup/installer-observation.json')['startup_verified'])
+            self.assertEqual((output / 'evidence/fresh-startup/installer-observation.json').read_bytes(),
+                             fresh_files['installer-observation.json'])
             self.assertTrue(result['candidate_only'])
             produced = package.document(output / 'producing-origins.json')
             self.assertEqual(produced['simulator']['source_job_conclusion'], 'failure')

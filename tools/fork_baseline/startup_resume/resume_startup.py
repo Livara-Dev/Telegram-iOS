@@ -25,6 +25,7 @@ PUBLIC = ('replay.json','cleanup.json','source-build-origin.json','original-fail
           'main-app-only/launch-smoke/result.json','main-app-only/launch-smoke/checker-compiler.log',
           'main-app-only/launch-smoke/recording.log','main-app-only/launch-smoke/launch-1.png',
           'main-app-only/launch-smoke/launch-2.png','main-app-only/launch-smoke/launch.mp4')
+OPTIONAL_PUBLIC = ('installer-observation.json','sdk-bootstrap.json')
 
 
 def digest(path):
@@ -211,8 +212,14 @@ def validate_fresh(proof,result,cleanup,parser):
 
 
 def finalize(work,replay,public,helper_root):
-    r.require(work.is_dir() and not work.is_symlink() and replay.is_dir() and not replay.is_symlink()
+    r.require(work.is_dir() and not work.is_symlink() and not replay.is_symlink()
               and not public.exists() and not public.is_symlink(),'publicRoots')
+    optional_bytes={}
+    if not replay.is_dir():
+        r.require(not replay.exists(),'replayRoot')
+        raw=validated_optional_bytes('sdk-bootstrap.json',work/'sdk-bootstrap.json')
+        sdk=r.document(raw,65536);optional_bytes['sdk-bootstrap.json']=raw
+        r.require(sdk.get('success') is False,'missingReplayRequiresFailedSdk')
     source=r.document((work/'source-build-origin.json').read_bytes());r.validate_source_build_origin(source)
     h=helper_modules(helper_root);parser=h['replay_artifact'].prior_smoke_report
     proof=r.document((replay/'replay.json').read_bytes()) if (replay/'replay.json').is_file() else None
@@ -230,6 +237,11 @@ def finalize(work,replay,public,helper_root):
              'original-failure/replay.json':work/'simulator'/OLD/'replay.json',
              'original-failure/result.json':work/'simulator'/OLD/'main-app-only/launch-smoke/result.json'}
     sources.update({name:replay/name for name in PUBLIC if name not in sources and (replay/name).exists()})
+    for name,path in (('installer-observation.json',replay/'installer-observation.json'),
+                      ('sdk-bootstrap.json',work/'sdk-bootstrap.json')):
+        if path.exists() or path.is_symlink():
+            if name not in optional_bytes:optional_bytes[name]=validated_optional_bytes(name,path)
+            sources[name]=path
     total=0
     for name,path in sources.items():
         maximum=96*1024**2 if name.endswith('.mp4') else 16*1024**2 if name.endswith('.png') else 2*1024**2
@@ -237,15 +249,55 @@ def finalize(work,replay,public,helper_root):
                   and path.stat().st_size<=maximum,'publicFileBoundsOrAlias')
         total+=path.stat().st_size
     r.require(total<=128*1024**2,'publicAggregateBounds')
-    if success:r.require(set(sources)==set(PUBLIC),'successfulEvidenceIncomplete')
+    if success:r.require(set(PUBLIC).issubset(sources) and set(sources).issubset(set(PUBLIC)|set(OPTIONAL_PUBLIC)),
+                         'successfulEvidenceIncomplete')
     public.mkdir(mode=0o700)
     for name,path in sources.items():
-        dest=public/name;dest.parent.mkdir(parents=True,exist_ok=True);shutil.copyfile(path,dest);dest.chmod(0o600)
+        dest=public/name;dest.parent.mkdir(parents=True,exist_ok=True)
+        if name in optional_bytes:dest.write_bytes(optional_bytes[name])
+        else:shutil.copyfile(path,dest)
+        dest.chmod(0o600)
     (public/'SHA256SUMS').write_text(''.join(digest(public/name)+'  '+name+'\n' for name in sorted(sources)))
     if os.environ.get('GITHUB_OUTPUT'):
         with Path(os.environ['GITHUB_OUTPUT']).open('a') as stream:
             stream.write('new_startup_verified='+str(success).lower()+'\n')
     print(json.dumps({'schema':1,'new_startup_verified':success,'original_run_remains_failed':True,'application_recompiled':False}))
+
+
+def validate_optional_public(name,path):
+    return r.document(validated_optional_bytes(name,path),65536)
+
+
+def validated_optional_bytes(name,path):
+    r.require(name in OPTIONAL_PUBLIC and path.is_file() and not path.is_symlink()
+              and all(not parent.is_symlink() for parent in path.parents)
+              and 0<path.stat().st_size<=65536,'optionalPublicFileBoundsOrAlias')
+    before=path.lstat();descriptor=os.open(path,os.O_RDONLY|os.O_NOFOLLOW|os.O_NONBLOCK)
+    signature=lambda info:(info.st_dev,info.st_ino,info.st_mode,info.st_uid,info.st_nlink,
+                           info.st_size,info.st_mtime_ns,info.st_ctime_ns)
+    try:
+        r.require(signature(os.fstat(descriptor))==signature(before),'optionalPublicIdentity')
+        data=os.read(descriptor,65537)
+        r.require(len(data)==before.st_size and signature(os.fstat(descriptor))==signature(before)
+                  and signature(path.lstat())==signature(before),'optionalPublicIdentity')
+    finally:os.close(descriptor)
+    value=r.document(data,65536)
+    if name=='installer-observation.json':
+        from installer_observation import validate_observation
+        validate_observation(value)
+    else:
+        from sdk_bootstrap import validate_report
+        validate_report(value)
+    return data
+
+
+def extract_fresh_startup(path,destination):
+    with zipfile.ZipFile(path) as archive:
+        present=set(archive.namelist())
+    selected=set(PUBLIC)|{'SHA256SUMS'}|(set(OPTIONAL_PUBLIC)&present)
+    extract_selected(path,destination,selected)
+    for name in OPTIONAL_PUBLIC:
+        if name in selected:validate_optional_public(name,destination/name)
 
 
 
@@ -288,7 +340,7 @@ def package_resume(output,helper_root):
     with tempfile.TemporaryDirectory(prefix='retained-delivery-resume-') as temporary:
         work=Path(temporary)
         for role,item in {**items,'startup':fresh}.items():download(item,work/(role+'.zip'))
-        extract_selected(work/'startup.zip',work/'startup',set(PUBLIC)|{'SHA256SUMS'})
+        extract_fresh_startup(work/'startup.zip',work/'startup')
         package(Path(helper_root).resolve().parents[1],work/'device.zip',work/'simulator.zip',work/'native.zip',
                 original_run,original_jobs,original_artifacts,native_artifacts,work/'startup',startup,output,
                 startup_archive=work/'startup.zip')

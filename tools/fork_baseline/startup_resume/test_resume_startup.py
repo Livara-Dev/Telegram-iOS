@@ -161,6 +161,22 @@ class SafeExtractionTests(unittest.TestCase):
 
 
 class WorkflowScopeTests(unittest.TestCase):
+    def test_supported_sdk_initialization_precedes_single_opt_in_startup_without_tokens(self):
+        folder=Path(__file__).resolve().parent
+        path=folder/'.github/workflows/resume-qualified-device-delivery.yml'
+        if not path.exists():path=Path(__file__).resolve().parents[3]/'.github/workflows/resume-qualified-device-delivery.yml'
+        text=path.read_text();name='Initialize required Xcode system components without building the application'
+        step=text.split('      - name: '+name+'\n',1)[1].split('      - name:',1)[0]
+        self.assertIn('env -i HOME="$HOME" PATH="$PATH" TMPDIR="$RUNNER_TEMP"',step)
+        self.assertIn('DEVELOPER_DIR=/Applications/Xcode_27.1.app/Contents/Developer',step)
+        self.assertIn('sdk_bootstrap.py',step);self.assertIn('--output work/sdk-bootstrap.json',step)
+        for token in ('github.token','GH_TOKEN','secrets.','simctl','bazel','baseline.py'):
+            self.assertNotIn(token,step)
+        self.assertLess(text.index('resume_startup.py prepare'),text.index('      - name: '+name))
+        self.assertLess(text.index('      - name: '+name),text.index('      - name: '+r.STARTUP_STEP))
+        self.assertEqual(text.count('--installer-diagnostics'),1)
+        self.assertEqual(text.count('isolated_startup.py'),1)
+
     def test_two_jobs_no_application_build_or_credential_at_runtime(self):
         folder=Path(__file__).resolve().parent
         workflow=folder/'.github/workflows/resume-qualified-device-delivery.yml'

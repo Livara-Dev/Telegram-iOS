@@ -61,6 +61,16 @@ jobs:
           python3 tooling/tools/fork_baseline/startup_resume/resume_startup.py prepare \
             --request tooling/ci/qualified-device-startup-resume-request.json \
             --output work --helper-root tooling/tools/fork_baseline
+      - name: Initialize required Xcode system components without building the application
+        run: |
+          set -euo pipefail
+          umask 077
+          # Supported SDK setup only. No simulator has been created yet, and
+          # no token-bearing metadata environment reaches Apple's tools.
+          env -i HOME="$HOME" PATH="$PATH" TMPDIR="$RUNNER_TEMP" \
+            DEVELOPER_DIR=/Applications/Xcode_27.1.app/Contents/Developer \
+            python3 tooling/tools/fork_baseline/startup_resume/sdk_bootstrap.py \
+            --output work/sdk-bootstrap.json
       # Explicitly separate from the token-bearing metadata/download process.
       # No Telegram API credentials, source build, dependency fetch or signing.
       - name: Verify the retained application twice on a fresh owned simulator
@@ -88,7 +98,7 @@ jobs:
             DEVELOPER_DIR=/Applications/Xcode_27.1.app/Contents/Developer \
             python3 tooling/tools/fork_baseline/startup_resume/isolated_startup.py \
             --ipa work/simulator/fork-baseline-simulator/Telegram.ipa \
-            --output replay --source-root source
+            --output replay --source-root source --installer-diagnostics
       - name: Stage only bounded closed startup evidence
         id: public_evidence
         if: always() && steps.retained_source.outcome == 'success'
