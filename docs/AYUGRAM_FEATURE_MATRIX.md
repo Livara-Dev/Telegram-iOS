@@ -152,6 +152,15 @@ binary. No proprietary exteraGram components are copied.
   without another compile. Only 26 of that revision's 124 new methods completed
   successfully; the other 98, including later Core classes, remain unqualified.
   The artifact's outer SHA-256 and all 96 inner references were verified.
+- [42147021107](https://github.com/Livara-Dev/Telegram-iOS/actions/runs/42147021107)
+  at c5eafa23 **passed the complete renderer workflow**: eight controller cases,
+  one XCUI case, twelve stage records and eleven actual appearance observations,
+  with no failures or skips. Apple's exporter exited zero with no stderr; all
+  twelve real PNG attachments were exported and passed the nonblank check.
+  The original variable-rate video is retained. The outer artifact SHA-256 and
+  all 47 inner references were verified. This closes the writable-copy export
+  defect without changing production rendering. It remains an account-free
+  settings fixture, not complete-application startup or physical-device proof.
 
 ## Core features and native integration
 
@@ -163,7 +172,7 @@ follow-up extends that candidate. None is certified by the older 62546557 IPA.
 
 | Candidate change | Current evidence | Remaining qualification or boundary |
 | --- | --- | --- |
-| Prominent **Custome options**, eleven searchable categories, quick toggles | Actual production renderer compiled; 8 controller tests and 1 complete XCUI scenario passed in [42142928776](https://github.com/Livara-Dev/Telegram-iOS/actions/runs/42142928776); twelve recorded stages and eleven actual appearance observations. All twelve settled states visually observed in the original recording | Synthetic account-free host; authenticated Settings entry/routing not proven. Workflow failed afterward during read-only result-bundle conversion in screenshot export; original video retained. Export repair still needs native verification; no device-performance claim |
+| Prominent **Custome options**, eleven searchable categories, quick toggles | Complete renderer workflow passed in [42147021107](https://github.com/Livara-Dev/Telegram-iOS/actions/runs/42147021107): 8 controller tests, 1 complete XCUI scenario, twelve recorded stages, eleven actual appearance observations and twelve exported native PNG attachments. All twelve unchanged settled states visually observed in the earlier original recording | Synthetic account-free host; authenticated Settings entry/routing and full application startup remain unproven. No device-performance claim; dark cosmetics prose still needs a dedicated contrast review |
 | Account-bound archive/Ghost/filter controls and disable-only reset | Source integrated with existing account facades | Current-candidate native suites and real account navigation pending |
 | Browse retained archives with capture disabled; chat search and profile links | Foreground read leases, chat-scoped search, separate saved-media/history destinations | New native tests pending; separate local destinations, not merged server search or canonical media grid |
 | Bulk clear-history/date/thread and author/forward-author deletion capture | Explicit cloud helpers use default-nil Postbox selected-row observers; all 13 new production-path cases passed at b492 in 42114628197 | Current later source needs qualification. Handoff remains capped at 256 records / 8 MiB; overflow increments missed-capture count while canonical deletion proceeds. No extra full history scan; performance unmeasured |
