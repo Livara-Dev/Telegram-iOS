@@ -87,6 +87,22 @@ Both retained historical packages and newly compiled build 79 pass without byte
 changes. These checks neither validate Apple system libraries or `dlopen`
 resources nor establish correct signing, startup or physical installation.
 
+At `c55e19c4`, seven native suites completed 1,473 passing cases with no assertion
+failures, skips or crashes, including all sixteen Passcode and eighteen encrypted
+playback cases. The remaining Projection host failed to start its 41 cases;
+missing result-bundle metadata is a consequence, not an established root cause.
+The post-failure simulator inventory timed out. The same SDK build-version warning
+also appears in passing hosted suites and does not establish causation.
+
+The existing simulator-only baseline workflow is building that exact application
+source in run `42174474046`, with device compilation disabled. It cannot claim a
+passing full native suite. A later startup check may pair its verified simulator
+artifact only with the already verified `c55e19c4` device build 82 from run
+`42160468600`; reports must retain both origins and actual build numbers. The
+test-host signing diagnostic uses only synthetic captured products, must preserve
+all executable code and XCTest content, and cannot sign a production device app
+or relabel the original failed qualification. No physical startup is verified.
+
 ## Additional source review at `f295948a`
 
 The [expanded telemetry inventory](fork/TELEMETRY-REVIEW.md) identifies additional

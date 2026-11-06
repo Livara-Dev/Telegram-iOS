@@ -195,6 +195,33 @@ binary. No proprietary exteraGram components are copied.
   pass; independent review is clean. The new gate also passes against build 79
   without modifying its bytes. Static package checks do not establish signing,
   system-library availability, dynamic loading or successful application startup.
+- Full source `c55e19c4` in
+  [42160468600](https://github.com/Livara-Dev/Telegram-iOS/actions/runs/42160468600)
+  passed **1,473 actual native cases**: Passcode 16, Postbox 201, archive 114,
+  Core 796, encrypted playback 18, TextFormat 270 and Settings 58. There were no
+  assertion failures, skips or crashes. All twelve Core transfer cases and the
+  four previous failing cases passed. Of 133 new methods, 114 passed and nineteen
+  Projection methods were not reached. The Projection host exited 12 before any
+  of its 41 cases started or a result bundle was created; a post-failure device
+  inventory also timed out. This does not establish a signing root cause. The
+  outer native artifact digest and all 96 inner references were verified.
+  Full simulator compilation and launch smoke were blocked by that host gate.
+- The same source produced **unsigned device build 82**:
+  [artifact 13479087810](https://github.com/Livara-Dev/Telegram-iOS/actions/runs/42160468600/artifacts/13479087810),
+  IPA SHA-256
+  `addaaf68000d010b84cea0d9798b9a234f43bfabc62845cdbf18fc5f14c4605e`.
+  All twelve unsigned ARM64 iPhoneOS images, five frameworks, 113 dependency
+  edges, eleven checksum references and three source/license materials were
+  independently verified. Stable bundle metadata is present. This establishes
+  device compilation, not installation or successful application startup.
+- A single simulator-only diagnostic,
+  [42174474046](https://github.com/Livara-Dev/Telegram-iOS/actions/runs/42174474046),
+  builds the unchanged `c55e19c4` application using the existing baseline workflow
+  and TextFormat target; device compilation is explicitly disabled. It is not
+  full native qualification. Any later startup/device pairing must authenticate
+  both actual origins and retain their distinct run IDs. A separate synthetic
+  host signing control must preserve all code, resources and 41 assertions and
+  cannot turn the failed original qualification into a passing result.
 
 ## Core features and native integration
 
@@ -213,7 +240,7 @@ follow-up extends that candidate. None is certified by the older 62546557 IPA.
 | Reconnect/history-fetch replacements, validation removals and media-reference refreshes | Precise Postbox replacement observer, ordinary cloud-load wrappers, cached channel minimum-ID handling and original-request namespace guards; all 28 additional cases passed at b492 in 42114628197 | Current later source needs qualification. Same-second repeated content uses persisted UUIDs and SQLite sequence ordering. One pending-outbox budget scan per upsert batch; no measured latency. Validation removal includes upstream RPC-error fallback and is not proof of remote sender deletion |
 | Legacy group, broadcast and supergroup edit/delete replay | New actual replay fixtures and acknowledged channel-edit coverage | Native execution pending; no live two-client server claim |
 | Deleted/Edited label preferences and current live-version preview | Account-local editor and archive timeline/gallery bindings; later saved-edit marker candidate described below | New native tests pending. The older IPA does not contain the inline marker candidate |
-| Encrypted import/export | Native picker, strict owner/environment binding, authenticated envelope, live-row reconstruction and transactional merge; all 24 library transfer cases passed. Core now reaches all five existing facade cases: two pass and three expose startup-storage availability races; one-request deferred handoff plus seven regressions authored | New coordinator source requires native `core-only` execution. Capture must be explicitly paused, with warned capture gap. Policy/lock/lease/disposal changes revoke pending transfers; authentication remains before destination creation. No AyuSync/network transport |
+| Encrypted import/export | Native picker, strict owner/environment binding, authenticated envelope, live-row reconstruction and transactional merge; all 24 library transfer cases and all 12 Core facade cases passed at `c55e19c4`, including seven pending-transfer authority/cancellation regressions | Native Core source is verified; real account picker/navigation remains unverified. Capture must be explicitly paused, with warned capture gap. Policy/lock/lease/disposal changes revoke pending transfers; authentication remains before destination creation. No AyuSync/network transport |
 | Ordinary GIF, PDF and typed encrypted media playback | All 18 encrypted-playback cases passed at 17033, including real Ogg/Opus PCM, video frames and the PDF fixture; SettingsUI compiled and its eight media-preview cases passed | Complete-app gallery recordings and physical-device playback remain unverified; generated native fixtures do not prove live incoming-media capture |
 | Ordinary read/presence controls, story-opening warning, read after confirmed send | Account-scoped production hooks, bounded acknowledged-send intent, central story gate | New native tests pending; server behavior and other-client interactions unverified, mandatory expiry receipts preserved |
 | Text, bounded-expression, media-type and cached blocked-author filters | Background projection, temporary reveal and native rule editor | New native tests pending; unknown metadata/albums/rich/secret/timed content stays visible |

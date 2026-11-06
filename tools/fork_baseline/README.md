@@ -71,6 +71,22 @@ result-bundle upload is involved. Its separate source-scoped queue preserves
 active qualification jobs. This historical diagnostic cannot qualify a later
 application revision or turn a zero-case source run into a passing run.
 
+The same scope also accepts the separately pinned `c55e19c4f5cbe0d730499035d0a0ef712f6903a9`
+capture from run `42160468600`. `projection_host_control` defaults to `original`;
+the explicit `resealed-host` control is permitted only for this new capture.
+It re-seals an independent copy of the synthetic test host, preserves code,
+entitlements and every test/resource byte, and still requires all 41 cases in
+one bounded invocation. It never signs a device app or overrides a failed
+qualification. Local mocked signing tests do not establish native execution.
+
+The simulator-only fallback build `42174474046` uses that exact application
+source and does not build another device IPA. Startup replay accepts this one
+fixed baseline origin and may pair it only with device build 82 from run
+`42160468600` after both origins and real startup evidence are verified. Reports
+retain both run IDs, artifact hashes and actual available build numbers. A
+same-source pairing does not establish physical installation or full-suite
+qualification.
+
 After qualification passes, advancing `ci/verify-latest` starts the full
 application/device workflow automatically. The simulator application job first
 runs all eight suites and then reuses that invocation's private Bazel outputs
