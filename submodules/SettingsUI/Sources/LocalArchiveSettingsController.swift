@@ -292,7 +292,8 @@ func localArchiveSettingsController(context: AccountContext, peerId: Int64? = ni
         }
         let data = ItemListPresentationData(presentationData)
         let controller = ItemListControllerState(presentationData: data, title: .text("Local Message Archive"), leftNavigationButton: nil, rightNavigationButton: nil, backNavigationButton: ItemListBackButton(title: presentationData.strings.Common_Back), animateChanges: false)
-        return (controller, (ItemListNodeState(presentationData: data, entries: entries, style: .blocks), arguments))
+        // ItemList requires strictly ordered entries, including optional error/chat rows.
+        return (controller, (ItemListNodeState(presentationData: data, entries: entries.sorted(), style: .blocks), arguments))
     }
     |> afterDisposed {
         actionDisposable.dispose()

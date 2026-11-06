@@ -45,6 +45,12 @@ requirement. It must not be described as approved by Telegram or API-compliant.
 The options require explicit confirmation. Their presence is not a security
 certification or a claim of invisible operation.
 
+The archive settings list now sorts optional error, missed-capture and chat rows
+before ItemList's strict ordering precondition. Three source-contract tests cover
+all eight optional-row combinations; these do not establish rendered UI behavior.
+The native catalog assertion follows the new default-off capability contract
+without changing server-entitlement assertions.
+
 ## Evidence at authoring time
 
 The exact production capture-policy model and extracted production resource-key
