@@ -1,0 +1,114 @@
+# SPDX-License-Identifier: GPL-2.0-or-later
+# Private proposal: publish tooling only after review, then submit one request.
+# This standalone exporter does not alter any qualified delivery gate.
+name: Export retained device bytes — UNQUALIFIED
+
+on:
+  push:
+    branches: [ci/unqualified-device-export]
+    paths: [ci/unqualified-device-export-request.json]
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: unqualified-device-export-42279866706-42306472313
+  cancel-in-progress: false
+
+jobs:
+  unqualified-copy-only:
+    if: github.repository == 'Livara-Dev/Telegram-iOS' && github.event_name == 'push' && github.ref == 'refs/heads/ci/unqualified-device-export'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Check out the request-bound export tooling without persistent credentials
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          ref: ${{ github.sha }}
+          path: tooling
+          persist-credentials: false
+          fetch-depth: 1
+          submodules: false
+          sparse-checkout: |
+            tools/fork_baseline/unqualified_export
+            ci
+
+      - name: Check out the frozen schema reader and static helpers without submodules
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          ref: 51728f5ee077af13ade2619d2b8d45b55f2ef80b
+          path: frozen
+          persist-credentials: false
+          fetch-depth: 1
+          submodules: false
+          sparse-checkout: tools/fork_baseline
+
+      - name: Require the fixed repository, push branch and exact tooling origins
+        env:
+          GITHUB_WORKFLOW_SHA: ${{ github.workflow_sha }}
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import os, re, subprocess
+          expected = {
+              'GITHUB_REPOSITORY': 'Livara-Dev/Telegram-iOS',
+              'GITHUB_EVENT_NAME': 'push',
+              'GITHUB_REF': 'refs/heads/ci/unqualified-device-export',
+          }
+          if any(os.environ.get(key) != value for key, value in expected.items()):
+              raise SystemExit('Unsupported unqualified-export trigger.')
+          workflow_sha = os.environ.get('GITHUB_WORKFLOW_SHA', '')
+          request_sha = os.environ.get('GITHUB_SHA', '')
+          if not re.fullmatch(r'[0-9a-f]{40}', request_sha) or workflow_sha != request_sha:
+              raise SystemExit('The workflow and request must share the exact push commit.')
+          for root, commit in (('tooling', request_sha),
+                               ('frozen', '51728f5ee077af13ade2619d2b8d45b55f2ef80b')):
+              actual = subprocess.check_output(['git', '-C', root, 'rev-parse', 'HEAD'], text=True).strip()
+              if actual != commit:
+                  raise SystemExit('Unexpected checked-out export helper origin.')
+          print('Fixed push scope and separate current/frozen tooling origins verified.')
+          PY
+
+      - name: Run portable copy-only provenance and archive guards
+        run: |
+          set -euo pipefail
+          PYTHONDONTWRITEBYTECODE=1 python3 -W error -m unittest discover \
+            -s tooling/tools/fork_baseline/unqualified_export -p 'test_*.py' -v
+
+      - name: Verify completed immutable producers and export UNQUALIFIED device bytes
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GITHUB_WORKFLOW_SHA: ${{ github.workflow_sha }}
+        run: |
+          set -euo pipefail
+          umask 077
+          python3 tooling/tools/fork_baseline/unqualified_export/export_unqualified.py \
+            --request tooling/ci/unqualified-device-export-request.json \
+            --frozen-root frozen --output export
+
+      - name: Publish separately labeled UNQUALIFIED static device export and evidence
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: UNQUALIFIED-main-app-only-unsigned-device-5d241267-42279866706
+          path: export/
+          if-no-files-found: error
+          retention-days: 14
+          include-hidden-files: false
+
+      - name: Record the failed startup boundary without promoting qualification
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import os
+          from pathlib import Path
+          with Path(os.environ['GITHUB_STEP_SUMMARY']).open('a') as stream:
+              stream.write('UNQUALIFIED copy-only export of retained unsigned ARM64 device bytes.\n\n')
+              stream.write('Application source: `5d241267735b3958c225681d173853568bab705d`; original delivery: `42279866706`; failed startup recovery: `42306472313`.\n\n')
+              stream.write('The original simulator job and later startup recovery remain failed. The exported manifest status is `not_runtime_qualified`. ')
+              stream.write('The export retains source/GPL materials, immutable provenance, failure evidence, measured static inspection and SHA-256 checksums. ')
+              stream.write('This job makes no runtime, authentication, physical-device, SideStore installation or release claim. Independent legitimate Apple signing is required before any installation attempt.\n')
+          PY

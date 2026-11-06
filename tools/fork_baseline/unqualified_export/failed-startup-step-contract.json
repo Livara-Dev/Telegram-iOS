@@ -1,0 +1,75 @@
+{
+  "retained-startup": [
+    [
+      1,
+      "Set up job",
+      "success"
+    ],
+    [
+      2,
+      "Check out reviewed recovery tooling without persistent credentials",
+      "success"
+    ],
+    [
+      3,
+      "Check out only the frozen startup helpers without submodules",
+      "success"
+    ],
+    [
+      4,
+      "Test fixed origins and private startup controls",
+      "success"
+    ],
+    [
+      5,
+      "Select the pinned simulator toolchain",
+      "success"
+    ],
+    [
+      6,
+      "Verify original failed graph and download only its compiled simulator",
+      "success"
+    ],
+    [
+      7,
+      "Initialize required Xcode system components without building the application",
+      "success"
+    ],
+    [
+      8,
+      "Verify the retained application twice on a fresh owned simulator",
+      "failure"
+    ],
+    [
+      9,
+      "Stage only bounded closed startup evidence",
+      "success"
+    ],
+    [
+      10,
+      "Publish fresh startup evidence without application or private devices",
+      "success"
+    ],
+    [
+      11,
+      "Require two verified launches and owned cleanup",
+      "failure"
+    ],
+    [
+      21,
+      "Post Check out only the frozen startup helpers without submodules",
+      "success"
+    ],
+    [
+      22,
+      "Post Check out reviewed recovery tooling without persistent credentials",
+      "success"
+    ],
+    [
+      23,
+      "Complete job",
+      "success"
+    ]
+  ],
+  "package": []
+}
