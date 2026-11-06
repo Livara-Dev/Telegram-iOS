@@ -8,7 +8,7 @@ on:
       validation_scope:
         description: Startup replay, host API probe, targeted iOS tests, or full qualification
         type: choice
-        options: [full, native-only, core-only, focused, projection, projection-only, custom-options-ui, custom-options-replay, custom-options-xctest, custom-options-interaction, retained-interaction, probe, retained-clean, retained-modern, projection-plan-only, projection-deferred-load-only, startup]
+        options: [full, native-only, core-only, archive-core, focused, projection, projection-only, custom-options-ui, custom-options-replay, custom-options-xctest, custom-options-interaction, retained-interaction, probe, retained-clean, retained-modern, projection-plan-only, projection-deferred-load-only, startup]
         default: full
       replay_run:
         description: Required for startup or retained Projection probe; artifact run ID
@@ -59,7 +59,7 @@ permissions:
 # Development branches do not start macOS jobs; advance ci/verify-latest once
 # the next reviewed batch is ready. Existing runs retain their original policy.
 concurrency:
-  group: ${{ github.event_name == 'workflow_dispatch' && inputs.validation_scope == 'startup' && format('ayugram-startup-replay-{0}', inputs.replay_source) || github.event_name == 'workflow_dispatch' && (inputs.validation_scope == 'retained-clean' || inputs.validation_scope == 'retained-modern' || (inputs.validation_scope == 'projection-plan-only' || inputs.validation_scope == 'projection-deferred-load-only') || inputs.validation_scope == 'retained-interaction') && 'ayugram-projection-replay-c55e19c4f5cbe0d730499035d0a0ef712f6903a9' || github.event_name == 'workflow_dispatch' && inputs.validation_scope == 'probe' && inputs.replay_run != '' && format('ayugram-projection-replay-{0}', inputs.replay_source) || github.event_name == 'workflow_dispatch' && (inputs.validation_scope == 'custom-options-ui' || inputs.validation_scope == 'custom-options-replay' || inputs.validation_scope == 'custom-options-xctest' || inputs.validation_scope == 'custom-options-interaction') && 'ayugram-ui-qualification' || github.event_name == 'workflow_dispatch' && inputs.validation_scope == 'core-only' && 'ayugram-core-qualification' || 'ayugram-qualification' }}
+  group: ${{ github.event_name == 'workflow_dispatch' && inputs.validation_scope == 'startup' && format('ayugram-startup-replay-{0}', inputs.replay_source) || github.event_name == 'workflow_dispatch' && (inputs.validation_scope == 'retained-clean' || inputs.validation_scope == 'retained-modern' || (inputs.validation_scope == 'projection-plan-only' || inputs.validation_scope == 'projection-deferred-load-only') || inputs.validation_scope == 'retained-interaction') && 'ayugram-projection-replay-c55e19c4f5cbe0d730499035d0a0ef712f6903a9' || github.event_name == 'workflow_dispatch' && inputs.validation_scope == 'probe' && inputs.replay_run != '' && format('ayugram-projection-replay-{0}', inputs.replay_source) || github.event_name == 'workflow_dispatch' && (inputs.validation_scope == 'custom-options-ui' || inputs.validation_scope == 'custom-options-replay' || inputs.validation_scope == 'custom-options-xctest' || inputs.validation_scope == 'custom-options-interaction') && 'ayugram-ui-qualification' || github.event_name == 'workflow_dispatch' && inputs.validation_scope == 'core-only' && 'ayugram-core-qualification' || github.event_name == 'workflow_dispatch' && inputs.validation_scope == 'archive-core' && 'ayugram-core-qualification' || 'ayugram-qualification' }}
   cancel-in-progress: false
 
 jobs:
@@ -186,6 +186,7 @@ jobs:
             projection-only) repair_options+=(--projection-only-tests) ;;
             native-only) ;;
             core-only) repair_options+=(--core-only-tests) ;;
+            archive-core) repair_options+=(--archive-core-tests) ;;
             full) ;;
             *) echo "Invalid validation scope" >&2; exit 1 ;;
           esac

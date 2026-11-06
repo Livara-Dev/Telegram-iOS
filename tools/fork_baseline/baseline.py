@@ -75,6 +75,12 @@ PROJECTION_ONLY_TEST_TARGETS = (PROJECTION_TEST_TARGETS[-1],)
 # Recheck production account/archive changes in their existing native Core suite
 # before requesting another full build. This never substitutes for all suites.
 CORE_ONLY_TEST_TARGETS = ("//submodules/TelegramCore:TelegramCoreTests",)
+# Storage/capture changes need both the independent archive store and Core's
+# production pipeline fixtures, without adding playback or UI/application jobs.
+ARCHIVE_CORE_TEST_TARGETS = (
+    "//submodules/LocalMessageArchive:LocalMessageArchiveTests",
+    "//submodules/TelegramCore:TelegramCoreTests",
+)
 TEST_EVIDENCE_LIMIT = 2 * 1024 * 1024
 
 
@@ -392,7 +398,7 @@ def retain_integration_test_summary(test_results, targets=INTEGRATION_TEST_TARGE
         "source_commit": output(["git", "rev-parse", "HEAD"]),
         "toolchain": json.loads((ROOT / "versions.json").read_text()),
         "tests": {target: test_results.get(target, "not_run") for target in targets},
-        "validation_scope": "core-only" if targets == CORE_ONLY_TEST_TARGETS else "focused" if targets == FOCUSED_TEST_TARGETS else "projection" if targets == PROJECTION_TEST_TARGETS else "projection-only" if targets == PROJECTION_ONLY_TEST_TARGETS else "full",
+        "validation_scope": "archive-core" if targets == ARCHIVE_CORE_TEST_TARGETS else "core-only" if targets == CORE_ONLY_TEST_TARGETS else "focused" if targets == FOCUSED_TEST_TARGETS else "projection" if targets == PROJECTION_TEST_TARGETS else "projection-only" if targets == PROJECTION_ONLY_TEST_TARGETS else "full",
         "full_integration_suite_requested": targets == INTEGRATION_TEST_TARGETS,
         "tests_only": tests_only,
         "full_application_build_requested": not tests_only,
@@ -444,14 +450,14 @@ def publish_artifact(source, destination, mode, bundle_id, build_number, test_re
         staging.rename(destination)
 
 
-def build(mode, env, build_number, integration_tests=False, tests_only=False, focused_tests=False, projection_tests=False, projection_only_tests=False, core_only_tests=False):
+def build(mode, env, build_number, integration_tests=False, tests_only=False, focused_tests=False, projection_tests=False, projection_only_tests=False, core_only_tests=False, archive_core_tests=False):
     if integration_tests and mode != "simulator":
         raise InvalidSetup("Integration tests require simulator mode")
     if tests_only and not (integration_tests and mode == "simulator"):
         raise InvalidSetup("Tests-only requires simulator mode with integration tests")
     if focused_tests and not (mode == "simulator" and integration_tests and tests_only):
         raise InvalidSetup("Focused tests require simulator --integration-tests --tests-only")
-    if sum((focused_tests, projection_tests, projection_only_tests, core_only_tests)) > 1:
+    if sum((focused_tests, projection_tests, projection_only_tests, core_only_tests, archive_core_tests)) > 1:
         raise InvalidSetup("Targeted test scopes are mutually exclusive")
     if projection_tests and not (mode == "simulator" and integration_tests and tests_only):
         raise InvalidSetup("Projection tests require simulator --integration-tests --tests-only")
@@ -459,7 +465,9 @@ def build(mode, env, build_number, integration_tests=False, tests_only=False, fo
         raise InvalidSetup("Projection-only tests require simulator --integration-tests --tests-only")
     if core_only_tests and not (mode == "simulator" and integration_tests and tests_only):
         raise InvalidSetup("Core-only tests require simulator --integration-tests --tests-only")
-    targets = CORE_ONLY_TEST_TARGETS if core_only_tests else PROJECTION_ONLY_TEST_TARGETS if projection_only_tests else PROJECTION_TEST_TARGETS if projection_tests else FOCUSED_TEST_TARGETS if focused_tests else INTEGRATION_TEST_TARGETS
+    if archive_core_tests and not (mode == "simulator" and integration_tests and tests_only):
+        raise InvalidSetup("Archive-core tests require simulator --integration-tests --tests-only")
+    targets = ARCHIVE_CORE_TEST_TARGETS if archive_core_tests else CORE_ONLY_TEST_TARGETS if core_only_tests else PROJECTION_ONLY_TEST_TARGETS if projection_only_tests else PROJECTION_TEST_TARGETS if projection_tests else FOCUSED_TEST_TARGETS if focused_tests else INTEGRATION_TEST_TARGETS
     config = configuration(env, unsigned=mode != "device")
     bazel = preflight(env, simulator=mode == "simulator")
     destination = ROOT / "build" / ("fork-baseline-" + mode)
@@ -596,7 +604,7 @@ def build(mode, env, build_number, integration_tests=False, tests_only=False, fo
                 # contain command arguments, paths or output; never relay them.
                 print("Warning: Bazel shutdown did not complete; temporary build data cleanup will still run.", flush=True)
     if tests_only:
-        scope = "Core-only repair" if core_only_tests else "Projection-only diagnostic" if projection_only_tests else "Projection and shared-host" if projection_tests else "Focused repair" if focused_tests else "Explicit iOS integration"
+        scope = "Archive-core repair" if archive_core_tests else "Core-only repair" if core_only_tests else "Projection-only diagnostic" if projection_only_tests else "Projection and shared-host" if projection_tests else "Focused repair" if focused_tests else "Explicit iOS integration"
         print(scope + " test targets passed. No full application build or IPA was produced.")
     else:
         print(f"Upstream {mode} build completed. IPA requires independent signature/runtime verification.")
@@ -622,6 +630,8 @@ def main():
                        help="With simulator --integration-tests --tests-only, run only the fixed Projection diagnostic suite")
     scope.add_argument("--core-only-tests", action="store_true",
                        help="With simulator --integration-tests --tests-only, run only the fixed TelegramCore native suite")
+    scope.add_argument("--archive-core-tests", action="store_true",
+                       help="With simulator --integration-tests --tests-only, run only the fixed archive-store and TelegramCore native suites")
     args = parser.parse_args()
     try:
         if args.build_number <= 0:
@@ -638,11 +648,13 @@ def main():
             raise InvalidSetup("Projection-only tests require simulator --integration-tests --tests-only")
         if args.core_only_tests and not (args.mode == "simulator" and args.integration_tests and args.tests_only):
             raise InvalidSetup("Core-only tests require simulator --integration-tests --tests-only")
+        if args.archive_core_tests and not (args.mode == "simulator" and args.integration_tests and args.tests_only):
+            raise InvalidSetup("Archive-core tests require simulator --integration-tests --tests-only")
         if args.mode == "preflight":
             preflight(os.environ)
             print("Host, Bazel integrity and recursive checkout preflight passed; no iOS build has run.")
         else:
-            build(args.mode, os.environ, args.build_number, integration_tests=args.integration_tests, tests_only=args.tests_only, focused_tests=args.focused_tests, projection_tests=args.projection_tests, projection_only_tests=args.projection_only_tests, core_only_tests=args.core_only_tests)
+            build(args.mode, os.environ, args.build_number, integration_tests=args.integration_tests, tests_only=args.tests_only, focused_tests=args.focused_tests, projection_tests=args.projection_tests, projection_only_tests=args.projection_only_tests, core_only_tests=args.core_only_tests, archive_core_tests=args.archive_core_tests)
     except (InvalidSetup, OSError, subprocess.SubprocessError) as exc:
         print("Baseline blocked: " + str(exc), file=sys.stderr)
         return 1

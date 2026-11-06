@@ -7,6 +7,7 @@ import json
 import os
 from pathlib import Path
 import re
+import subprocess
 import sys
 import tempfile
 import textwrap
@@ -27,6 +28,7 @@ PROJECTION = EXPECTED + (
     '//submodules/TelegramUI/Components/Chat/ChatHistoryEntry:ChatLocalTextFilterProjectionTests',
 )
 CORE_ONLY = ('//submodules/TelegramCore:TelegramCoreTests',)
+ARCHIVE_CORE = ('//submodules/LocalMessageArchive:LocalMessageArchiveTests', CORE_ONLY[0])
 
 
 def fixture():
@@ -35,7 +37,7 @@ def fixture():
 
 
 class FocusedValidationTests(unittest.TestCase):
-    def run_focused(self, root, fail=None, projection=False, projection_only=False, core_only=False):
+    def run_focused(self, root, fail=None, projection=False, projection_only=False, core_only=False, archive_core=False):
         invoked = []
         def command(args, env, secrets):
             self.assertIn('test', args)
@@ -50,9 +52,9 @@ class FocusedValidationTests(unittest.TestCase):
         with patch.object(baseline, 'ROOT', root), patch.object(baseline, 'preflight', return_value=Path('/bazel')), patch.object(baseline, 'run_redacted', side_effect=command), patch.object(baseline.subprocess, 'run'), patch.object(baseline, 'output', return_value='c' * 40), patch.object(baseline, 'publish_artifact') as publish, contextlib.redirect_stdout(io.StringIO()):
             if fail:
                 with self.assertRaisesRegex(baseline.InvalidSetup, 'synthetic repair failure'):
-                    baseline.build('simulator', fixture(), 1, integration_tests=True, tests_only=True, focused_tests=not (projection or projection_only or core_only), projection_tests=projection, projection_only_tests=projection_only, core_only_tests=core_only)
+                    baseline.build('simulator', fixture(), 1, integration_tests=True, tests_only=True, focused_tests=not (projection or projection_only or core_only or archive_core), projection_tests=projection, projection_only_tests=projection_only, core_only_tests=core_only, archive_core_tests=archive_core)
             else:
-                baseline.build('simulator', fixture(), 1, integration_tests=True, tests_only=True, focused_tests=not (projection or projection_only or core_only), projection_tests=projection, projection_only_tests=projection_only, core_only_tests=core_only)
+                baseline.build('simulator', fixture(), 1, integration_tests=True, tests_only=True, focused_tests=not (projection or projection_only or core_only or archive_core), projection_tests=projection, projection_only_tests=projection_only, core_only_tests=core_only, archive_core_tests=archive_core)
             publish.assert_not_called()
         self.assertFalse((root / 'build/fork-baseline-simulator').exists())
         return invoked, json.loads((root / 'build/fork-evidence/integration-tests.json').read_text())
@@ -155,7 +157,7 @@ class FocusedValidationTests(unittest.TestCase):
         cases = [('simulator', False, False, {}), ('simulator', True, False, {}),
                  ('simulator', False, True, {}), ('unsigned-device', False, False, {}),
                  ('device', True, True, {}), ('preflight', False, False, {})]
-        cases += [('simulator', True, True, {flag: True}) for flag in ('focused_tests', 'projection_tests', 'projection_only_tests')]
+        cases += [('simulator', True, True, {flag: True}) for flag in ('focused_tests', 'projection_tests', 'projection_only_tests', 'archive_core_tests')]
         for mode, integration, tests_only, flags in cases:
             with self.subTest(mode=mode, flags=flags), patch.object(baseline, 'preflight') as preflight, patch.object(baseline, 'configuration') as configuration:
                 with self.assertRaises(baseline.InvalidSetup):
@@ -170,9 +172,10 @@ class FocusedValidationTests(unittest.TestCase):
             build.assert_called_once()
             self.assertEqual(build.call_args.args[0], 'simulator')
             self.assertEqual(build.call_args.kwargs, {'integration_tests': True, 'tests_only': True,
-                'focused_tests': False, 'projection_tests': False, 'projection_only_tests': False, 'core_only_tests': True})
+                'focused_tests': False, 'projection_tests': False, 'projection_only_tests': False, 'core_only_tests': True,
+                'archive_core_tests': False})
             preflight.assert_not_called()
-        for other in ('--focused-tests', '--projection-tests', '--projection-only-tests', '--target=//unreviewed:Target'):
+        for other in ('--focused-tests', '--projection-tests', '--projection-only-tests', '--archive-core-tests', '--target=//unreviewed:Target'):
             with self.subTest(other=other), patch.object(sys, 'argv', valid + [other]), patch.object(baseline, 'preflight') as preflight, patch.object(baseline, 'configuration') as configuration, contextlib.redirect_stderr(io.StringIO()):
                 with self.assertRaises(SystemExit) as error:
                     baseline.main()
@@ -184,6 +187,73 @@ class FocusedValidationTests(unittest.TestCase):
                 self.assertEqual(baseline.main(), 1)
                 preflight.assert_not_called()
                 configuration.assert_not_called()
+
+    def test_archive_core_runs_only_existing_store_and_core_targets_without_ipa_or_projection_probe(self):
+        with tempfile.TemporaryDirectory() as directory, patch.object(baseline, 'capture_projection_launch') as probe, patch.object(baseline, 'retain_projection_products') as products:
+            root = Path(directory)
+            invoked, summary = self.run_focused(root, archive_core=True)
+            for target, evidence in zip(ARCHIVE_CORE, ('local-message-archive', 'telegram-core')):
+                collection = json.loads((root / ('build/fork-evidence/prebuild-' + evidence + '/collection.json')).read_text())
+                self.assertEqual(collection['target'], target)
+            self.assertFalse(any(root.rglob('*.ipa')))
+            probe.assert_not_called()
+            products.assert_not_called()
+        self.assertEqual(baseline.ARCHIVE_CORE_TEST_TARGETS, ARCHIVE_CORE)
+        self.assertTrue(set(ARCHIVE_CORE).issubset(baseline.INTEGRATION_TEST_TARGETS))
+        self.assertTrue(set(ARCHIVE_CORE).issubset(baseline.TEST_TARGET_PATHS))
+        self.assertEqual(tuple(invoked), ARCHIVE_CORE)
+        self.assertEqual(summary['tests'], dict.fromkeys(ARCHIVE_CORE, 'passed'))
+        self.assertEqual(summary['validation_scope'], 'archive-core')
+        self.assertTrue(summary['tests_only'])
+        for field in ('full_integration_suite_requested', 'full_application_build_requested', 'full_application_built', 'physical_device_verified'):
+            self.assertFalse(summary[field], field)
+
+    def test_archive_core_keeps_either_failure_and_still_attempts_both_independent_suites(self):
+        for failed in ARCHIVE_CORE:
+            with self.subTest(failed=failed), tempfile.TemporaryDirectory() as directory:
+                invoked, summary = self.run_focused(Path(directory), fail=failed, archive_core=True)
+            self.assertEqual(tuple(invoked), ARCHIVE_CORE)
+            self.assertEqual(summary['tests'], {target: 'failed' if target == failed else 'passed' for target in ARCHIVE_CORE})
+            self.assertEqual(summary['validation_scope'], 'archive-core')
+            self.assertFalse(summary['full_application_built'])
+
+    def test_archive_core_rejects_invalid_modes_and_every_conflicting_scope_before_credentials(self):
+        cases = [('simulator', False, False, {}), ('simulator', True, False, {}),
+                 ('simulator', False, True, {}), ('unsigned-device', False, False, {}),
+                 ('unsigned-device', True, True, {}), ('device', True, True, {}), ('preflight', False, False, {})]
+        cases += [('simulator', True, True, {flag: True}) for flag in ('focused_tests', 'projection_tests', 'projection_only_tests', 'core_only_tests')]
+        for mode, integration, tests_only, flags in cases:
+            with self.subTest(mode=mode, flags=flags), patch.object(baseline, 'preflight') as preflight, patch.object(baseline, 'configuration') as configuration:
+                with self.assertRaises(baseline.InvalidSetup):
+                    baseline.build(mode, {}, 1, integration_tests=integration, tests_only=tests_only, archive_core_tests=True, **flags)
+                preflight.assert_not_called()
+                configuration.assert_not_called()
+
+    def test_archive_core_cli_routes_fixed_scope_and_rejects_unknown_targets_or_conflicts(self):
+        valid = ['baseline.py', 'simulator', '--integration-tests', '--tests-only', '--archive-core-tests']
+        with patch.object(sys, 'argv', valid), patch.object(baseline, 'build') as build, patch.object(baseline, 'preflight') as preflight:
+            self.assertEqual(baseline.main(), 0)
+            build.assert_called_once()
+            self.assertEqual(build.call_args.args[0], 'simulator')
+            self.assertEqual(build.call_args.kwargs, {'integration_tests': True, 'tests_only': True,
+                'focused_tests': False, 'projection_tests': False, 'projection_only_tests': False,
+                'core_only_tests': False, 'archive_core_tests': True})
+            preflight.assert_not_called()
+        for other in ('--focused-tests', '--projection-tests', '--projection-only-tests', '--core-only-tests', '--target=//unreviewed:Target'):
+            with self.subTest(other=other), patch.object(sys, 'argv', valid + [other]), patch.object(baseline, 'preflight') as preflight, patch.object(baseline, 'configuration') as configuration, contextlib.redirect_stderr(io.StringIO()):
+                with self.assertRaises(SystemExit) as error:
+                    baseline.main()
+                self.assertEqual(error.exception.code, 2)
+                preflight.assert_not_called()
+                configuration.assert_not_called()
+        for args in (['preflight', '--archive-core-tests'], ['simulator', '--archive-core-tests'],
+                     ['simulator', '--integration-tests', '--archive-core-tests'],
+                     ['device', '--integration-tests', '--tests-only', '--archive-core-tests']):
+            with self.subTest(args=args), patch.object(sys, 'argv', ['baseline.py'] + args), patch.object(baseline, 'preflight') as preflight, patch.object(baseline, 'configuration') as configuration, patch.object(baseline, 'build') as build, contextlib.redirect_stderr(io.StringIO()):
+                self.assertEqual(baseline.main(), 1)
+                preflight.assert_not_called()
+                configuration.assert_not_called()
+                build.assert_not_called()
 
     def test_failed_capture_cannot_replace_the_original_projection_failure(self):
         order = []
@@ -292,7 +362,7 @@ class FocusedWorkflowRoutingTests(unittest.TestCase):
                 self.assertTrue(self.condition('integration-tests', 'workflow_dispatch', 'projection', device))
                 for job in ('application-build', 'unsigned-device-build', 'native-api-probe', 'startup-artifact-replay'):
                     self.assertFalse(self.condition(job, 'workflow_dispatch', 'projection', device))
-        self.assertIn('options: [full, native-only, core-only, focused, projection, projection-only, custom-options-ui, custom-options-replay, custom-options-xctest, custom-options-interaction, retained-interaction, probe, retained-clean, retained-modern, projection-plan-only, projection-deferred-load-only, startup]', WORKFLOW.read_text())
+        self.assertIn('options: [full, native-only, core-only, archive-core, focused, projection, projection-only, custom-options-ui, custom-options-replay, custom-options-xctest, custom-options-interaction, retained-interaction, probe, retained-clean, retained-modern, projection-plan-only, projection-deferred-load-only, startup]', WORKFLOW.read_text())
         self.assertIn('projection) repair_options+=(--projection-tests)', WORKFLOW.read_text())
 
     def test_projection_only_dispatch_skips_every_other_build_or_probe(self):
@@ -317,6 +387,39 @@ class FocusedWorkflowRoutingTests(unittest.TestCase):
         self.assertEqual(self.expression(expression, 'workflow_dispatch', 'core-only', False), 'ayugram-core-qualification')
         self.assertEqual(self.expression(expression, 'push', 'core-only', True), 'ayugram-qualification')
         self.assertIn('cancel-in-progress: false', block)
+
+    def test_archive_core_dispatch_runs_only_two_target_native_job_and_keeps_shared_core_queue(self):
+        jobs = ('integration-tests', 'application-build', 'unsigned-device-build', 'custom-options-ui',
+                'native-api-probe', 'startup-artifact-replay', 'custom-options-artifact-replay')
+        for device in (False, True):
+            for retained in (False, True):
+                with self.subTest(device=device, retained=retained):
+                    selected = [job for job in jobs if self.condition(job, 'workflow_dispatch', 'archive-core', device, retained)]
+                    self.assertEqual(selected, ['integration-tests'])
+        self.assertFalse(self.condition('integration-tests', 'push', 'archive-core', False))
+        group = re.search(r'^  group: \$\{\{ (.+) \}\}$', WORKFLOW.read_text(), re.M).group(1)
+        for scope in ('core-only', 'archive-core'):
+            for device in (False, True):
+                self.assertEqual(self.expression(group, 'workflow_dispatch', scope, device), 'ayugram-core-qualification')
+        self.assertEqual(self.expression(group, 'push', 'archive-core', True), 'ayugram-qualification')
+        self.assertIn('cancel-in-progress: false', WORKFLOW.read_text())
+
+    def test_archive_core_workflow_executes_exact_tests_only_flags_without_adding_dispatch_inputs(self):
+        source = self.section('integration-tests')
+        code = 'repair_options=(--integration-tests --tests-only)' + source.split('repair_options=(--integration-tests --tests-only)', 1)[1].split('          python3 tools/fork_baseline/baseline.py simulator', 1)[0]
+        code += '\nprintf "%s\\n" "${repair_options[@]}"\n'
+        for scope, expected in [('archive-core', ['--integration-tests', '--tests-only', '--archive-core-tests']),
+                                ('core-only', ['--integration-tests', '--tests-only', '--core-only-tests'])]:
+            with self.subTest(scope=scope):
+                result = subprocess.run(['bash', '-c', code], env={'VALIDATION_SCOPE': scope}, capture_output=True, text=True, check=False)
+                self.assertEqual(result.returncode, 0)
+                self.assertEqual(result.stdout.splitlines(), expected)
+        rejected = subprocess.run(['bash', '-c', code], env={'VALIDATION_SCOPE': 'archive-core-unreviewed'}, capture_output=True, text=True, check=False)
+        self.assertNotEqual(rejected.returncode, 0)
+        self.assertEqual(rejected.stdout, '')
+        self.assertNotIn('--target=', code)
+        header = WORKFLOW.read_text().split('\npermissions:', 1)[0]
+        self.assertEqual(len(re.findall(r'^      [a-z_]+:', header, re.M)), 10)
 
     def test_startup_scope_runs_only_artifact_replay_without_any_compilation(self):
         for device in (False, True):
