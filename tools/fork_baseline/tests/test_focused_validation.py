@@ -292,7 +292,7 @@ class FocusedWorkflowRoutingTests(unittest.TestCase):
                 self.assertTrue(self.condition('integration-tests', 'workflow_dispatch', 'projection', device))
                 for job in ('application-build', 'unsigned-device-build', 'native-api-probe', 'startup-artifact-replay'):
                     self.assertFalse(self.condition(job, 'workflow_dispatch', 'projection', device))
-        self.assertIn('options: [full, native-only, core-only, focused, projection, projection-only, custom-options-ui, custom-options-replay, custom-options-xctest, custom-options-interaction, retained-interaction, probe, retained-clean, retained-modern, projection-plan-only, projection-deferred-load-only, startup]', WORKFLOW.read_text())
+        self.assertIn('options: [full, native-only, core-only, focused, projection, projection-only, custom-options-ui, custom-options-replay, custom-options-xctest, custom-options-interaction, retained-interaction, probe, retained-clean, retained-modern, projection-plan-only, projection-deferred-load-only, projection-discovery-only, startup]', WORKFLOW.read_text())
         self.assertIn('projection) repair_options+=(--projection-tests)', WORKFLOW.read_text())
 
     def test_projection_only_dispatch_skips_every_other_build_or_probe(self):
@@ -590,6 +590,33 @@ class FocusedWorkflowRoutingTests(unittest.TestCase):
         self.assertEqual(self.expression(group, 'workflow_dispatch', scope, False),
                          'ayugram-projection-replay-c55e19c4f5cbe0d730499035d0a0ef712f6903a9')
         self.assertIn('cancel-in-progress: false', WORKFLOW.read_text())
+
+    def test_discovery_loader_routes_only_native_and_binds_both_preparation_and_execution_profiles(self):
+        source = self.section('native-api-probe')
+        steps = {name: body for name, body in re.findall(r'(?ms)^      - name: ([^\n]+)\n(.*?)(?=^      - name: |\Z)', source)}
+        prepare = steps['Verify the captured Projection products and prepare the tiny diagnostic project']
+        execute = steps['Test Apple-generated hosting before executing all retained Projection cases']
+        for scope, profile in [('projection-discovery-only', 'discovery'), ('projection-deferred-load-only', 'deferred')]:
+            for device in (False, True):
+                self.assertTrue(self.condition('native-api-probe', 'workflow_dispatch', scope, device))
+                for job in ('integration-tests', 'application-build', 'unsigned-device-build', 'startup-artifact-replay',
+                            'custom-options-artifact-replay', 'custom-options-ui'):
+                    self.assertFalse(self.condition(job, 'workflow_dispatch', scope, device), job)
+            for body, action in [(prepare, 'prepare'), (execute, 'run')]:
+                condition = re.search(r'^        if: (.*?)$', body, re.M).group(1)
+                self.assertTrue(self.expression(condition, 'workflow_dispatch', scope, False))
+                expression = re.search(r'^          EXECUTION_PROFILE: \$\{\{ (.*?) \}\}$', body, re.M).group(1)
+                self.assertEqual(self.expression(expression, 'workflow_dispatch', scope, False), profile)
+                self.assertIn('deferred_projection_plan.py ' + action + ' --execution-profile "$EXECUTION_PROFILE"', body)
+            group = re.search(r'^  group: \$\{\{ (.*?) \}\}$', WORKFLOW.read_text(), re.M).group(1)
+            self.assertEqual(self.expression(group, 'workflow_dispatch', scope, False),
+                             'ayugram-projection-replay-c55e19c4f5cbe0d730499035d0a0ef712f6903a9')
+        self.assertNotIn('GH_TOKEN:', execute)
+        self.assertNotIn('secrets.', execute)
+        for title in ('Refresh only the registered current-user simulator service on an exclusive hosted runner',
+                      'Replay verified synthetic Projection products without recompilation'):
+            condition = re.search(r'^        if: (.*?)$', steps[title], re.M).group(1)
+            self.assertFalse(self.expression(condition, 'workflow_dispatch', 'projection-discovery-only', False))
 
     def test_retained_settings_publication_hashes_only_the_explicit_safe_files(self):
         import hashlib

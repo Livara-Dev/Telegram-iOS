@@ -186,22 +186,26 @@ class DeferredXCResultParserTests(unittest.TestCase):
                     self.error_is_private(method, raw, message)
 
 
-def native_log(outcome='passed'):
+def native_log(outcome='passed', execution_profile='deferred'):
     def event(key, state):
         name, method = key.split('.')
         return "Test Case '-[Module." + name + ' ' + method + "]' " + state + '.\n'
+    if execution_profile == 'discovery':
+        return (''.join(event(key, 'started') + event(key, outcome) for key in sorted(parser.EXPECTED)) +
+            event(parser.DISCOVERY_WRAPPER, 'started') + event(parser.DISCOVERY_WRAPPER, 'passed')).replace('Module.', '').encode()
     return (event(parser.WRAPPER, 'started') + ''.join(event(key, 'started') + event(key, outcome)
         for key in sorted(parser.EXPECTED)) + event(parser.WRAPPER, 'passed')).encode()
 
 
-def completed_summary():
-    return {'schema': 1, **parser.COUNTS, **parser.BOOLEANS, **parser.STRINGS}
+def completed_summary(execution_profile='deferred'):
+    booleans, strings, _phases, _failures = parser.summary_configuration(execution_profile)
+    return {'schema': 1, **parser.COUNTS, **booleans, **strings}
 
 
 class DeferredRunnerTests(unittest.TestCase):
     def execute(self, root, mutation=None, control='passed', payload='passed', xc='complete', counter=None,
                 cleanup=False, identity=False, repeated=False, baseline_layout='hostedPlugIns', wrapper_layout='sibling',
-                projection_code=None, projection_raw=None):
+                projection_code=None, projection_raw=None, execution_profile='deferred', prepared_profile=None):
         output = root / parser.OUTPUT; output.mkdir(parents=True)
         original = captured.captured(root, current=True)
         app = original / 'TEST_ROOT' / parser.modern.products.APP
@@ -210,9 +214,10 @@ class DeferredRunnerTests(unittest.TestCase):
         test_info.write_bytes(plistlib.dumps(value)); base.captured_resources(app)
         captured.ProjectionHostControlTests.refresh_capture(original)
         shutil.copytree(original, output / 'private-products')
-        wrapper_source = (Path(__file__).resolve().parents[1] / parser.WRAPPER_SOURCE).read_bytes()
+        selected = parser.profile_configuration(execution_profile)
+        wrapper_source = (Path(__file__).resolve().parents[1] / selected['source']).read_bytes()
         (root / 'tools/fork_baseline').mkdir(parents=True)
-        (root / 'tools/fork_baseline' / parser.WRAPPER_SOURCE).write_bytes(wrapper_source)
+        (root / 'tools/fork_baseline' / selected['source']).write_bytes(wrapper_source)
         (output / 'private-wrapper-source.swift').write_bytes(wrapper_source)
         parser.tiny.create_project(output / 'private-project')
         platform = root / 'SDK/iPhoneSimulator.platform'
@@ -309,12 +314,12 @@ class DeferredRunnerTests(unittest.TestCase):
                 if mutation == 'installed_bytes': (installed / 'en.lproj/Localizable.strings').write_bytes(b'changed')
                 container = device_data / 'Containers/Data/Application' / base.IDENTIFIER; container.mkdir(parents=True)
                 (container / '.com.apple.mobile_container_manager.metadata.plist').write_bytes(plistlib.dumps({'MCMMetadataIdentifier': parser.modern.CONTROL_APP_ID}))
-                summary = completed_summary()
+                summary = completed_summary(execution_profile)
                 if counter: summary[counter] = 0 if summary[counter] else 1
                 directory = container / parser.REPORT_RELATIVE; directory.mkdir(parents=True)
                 (directory / 'stage').write_bytes(b'completed'); (directory / 'summary.json').write_text(json.dumps(summary))
                 if payload == 'timeout': return {'status': 'timedOut', 'exit_code': None, 'timeout': True, 'output_limit': False, 'captured_bytes': 0}, b''
-                return base.complete(native_log(payload) if projection_raw is None else projection_raw,
+                return base.complete(native_log(payload, execution_profile) if projection_raw is None else projection_raw,
                     (0 if payload == 'passed' else 65) if projection_code is None else projection_code)
             if parser.JSON_WRAPPER in args:
                 if '-showBuildSettings' in args:
@@ -326,7 +331,8 @@ class DeferredRunnerTests(unittest.TestCase):
                         'BUNDLE_LOADER': host_executable, 'FULL_PRODUCT_NAME': parser.modern.CONTROL_TEST + '.xctest',
                         'TARGET_BUILD_DIR': str(selected_wrapper.parent), 'CODESIGNING_FOLDER_PATH': str(selected_wrapper)}}]
                 else:
-                    value = invocation() if '--id' not in args else summaries([case(parser.WRAPPER)] if xc == 'wrapperOnly' else None)
+                    expected = parser.PAYLOAD_CASES | {selected['wrapper']}
+                    value = invocation() if '--id' not in args else summaries([case(selected['wrapper'])] if xc == 'wrapperOnly' else [case(key) for key in sorted(expected)])
                     if xc == 'malformed' or xc == 'casesMalformed' and '--id' in args: value = {'private-canary': 'raw'}
                 Path(args[3]).write_text(json.dumps(value)); Path(args[3]).chmod(0o600)
                 return base.complete()
@@ -336,8 +342,8 @@ class DeferredRunnerTests(unittest.TestCase):
              patch.object(parser.modern, 'CAPTURE_SHA256', parser.projection.digest(original / 'capture.json')), \
              patch.object(parser.modern.Path, 'home', return_value=root):
             parser.projection.write(output / 'verification.json', parser.verification(output / 'private-products',
-                parser.projection.validate_products(output / 'private-products', parser.SOURCE)))
-            report = parser.run(root=root, command=command)
+                parser.projection.validate_products(output / 'private-products', parser.SOURCE), execution_profile if prepared_profile is None else prepared_profile))
+            report = parser.run(root=root, command=command, execution_profile=execution_profile)
         return report, calls
 
     def test_complete_pipeline_requires_real_42_result_records_counters_bytes_seals_and_two_clean_devices(self):
@@ -938,6 +944,145 @@ class DeferredXCResultDiagnosticTests(unittest.TestCase):
         self.assertEqual(value['first_rejection']['reason'], 'none'); self.assert_private(value)
         with self.assertRaisesRegex(ValueError, '^Invalid result diagnostic document$'):
             parser.xcresult_structure(encoded(summaries()), ['/private/raw'])
+
+
+class DiscoveryProfileTests(unittest.TestCase):
+    def log(self, wrapper=None):
+        value = native_log(execution_profile='discovery')
+        return value if wrapper is None else value.replace(parser.DISCOVERY_WRAPPER.replace('.', ' ').encode(), wrapper.replace('.', ' ').encode())
+
+    def metadata(self, status='Success'):
+        leaves = [case(key) for key in sorted(parser.PAYLOAD_CASES)]
+        leaves.append(case(parser.DISCOVERY_WRAPPER, status, module='AyuProjectionControlTests'))
+        return summaries(leaves)
+
+    def test_discovery_requires_sequential_41_then_one_wrapper_and_legacy_remains_distinct(self):
+        value = parser.cases(self.log(), parser.DISCOVERY_WRAPPER)
+        self.assertTrue(value['all_expected_passed']); self.assertEqual(value['passed'], 41)
+        self.assertTrue(value['wrapper_passed']); self.assertEqual(value['invalid_case_overlap_count'], 0)
+        self.assertFalse(parser.cases(self.log())['all_expected_passed'])
+        self.assertTrue(parser.cases(native_log())['all_expected_passed'])
+        self.assertFalse(parser.cases(native_log(), parser.DISCOVERY_WRAPPER)['all_expected_passed'])
+
+    def test_nested_overlapping_reordered_duplicate_missing_failed_or_unknown_events_never_qualify(self):
+        text = self.log().decode(); events = text.splitlines(keepends=True)
+        variants = [text + text, ''.join(events[:-2]), ''.join(events[-2:] + events[:-2]),
+                    ''.join([events[0], events[2], events[1], *events[3:]]),
+                    text.replace("passed.", "failed.", 1), text.replace("passed.", "skipped.", 1),
+                    text + "Test Case '-[PrivateTests testSecret]' passed.\n",
+                    text + "Test Case '-[malformed]' failed.\n"]
+        for variant in variants:
+            with self.subTest(size=len(variant)):
+                value = parser.cases(variant.encode(), parser.DISCOVERY_WRAPPER)
+                self.assertFalse(value['all_expected_passed'])
+                self.assertNotIn('PrivateTests', json.dumps(value))
+
+    def test_exact_namespaces_are_required_even_for_known_basename_and_merged_events_are_counted(self):
+        data = self.log()
+        self.assertTrue(parser.cases(b'prefix:' + data.replace(b'\n', b''), parser.DISCOVERY_WRAPPER)['all_expected_passed'])
+        first = sorted(parser.EXPECTED)[0].replace('.', ' ').encode()
+        for prefix in (b'PrivateModule.', b'Wrong.Parent.'):
+            modified = data.replace(first, prefix + first, 1)
+            value = parser.cases(modified, parser.DISCOVERY_WRAPPER)
+            self.assertFalse(value['all_expected_passed']); self.assertGreater(value['unknown_event_count'], 0)
+
+    def test_native_metadata_profile_cannot_substitute_the_wrong_wrapper_or_infer_log_order(self):
+        native = encoded(self.metadata())
+        self.assertTrue(parser.strict_xcresult_cases(native, parser.DISCOVERY_WRAPPER)['all_expected_passed'])
+        self.assertFalse(parser.strict_xcresult_cases(native)['all_expected_passed'])
+        self.assertFalse(parser.strict_xcresult_cases(encoded(summaries()), parser.DISCOVERY_WRAPPER)['all_expected_passed'])
+        self.assertFalse(parser.strict_xcresult_cases(encoded(self.metadata('Failure')), parser.DISCOVERY_WRAPPER)['all_expected_passed'])
+        diagnostic = parser.xcresult_structure(native, 'cases', wrapper=parser.DISCOVERY_WRAPPER)
+        self.assertEqual(diagnostic['case_identities']['known'], 42)
+        self.assertEqual(diagnostic['case_identities']['unknown'], 0)
+        for wrapper in (None, [], 'PrivateTests.testSecret'):
+            with self.subTest(wrapper=repr(wrapper)), self.assertRaisesRegex(ValueError, '^deferred_execution_profile_invalid$'):
+                parser.cases(b'', wrapper)
+
+    def test_only_exact_omitted_empty_typed_array_is_an_allowed_schema_extension(self):
+        empty = {'_type': {'_name': 'Array'}}
+        self.assertEqual(parser._array(empty), [])
+        for value in ({**empty, 'private-canary': []}, {'_type': {'_name': 'Array', 'private-canary': 1}},
+                      {**empty, '_values': None}, {**empty, '_values': False}, {**empty, '_values': {}}, {}):
+            with self.subTest(value=value), self.assertRaises(parser.InvalidXCResult): parser._array(value)
+        raw = self.metadata('Failure')
+        testable = raw['summaries']['_values'][0]['testableSummaries']['_values'][0]
+        testable['tests']['_values'].append(typed('ActionTestSummaryGroup', subtests=empty))
+        actual = parser.strict_xcresult_cases(encoded(raw), parser.DISCOVERY_WRAPPER)
+        self.assertEqual(actual['case_records'], 42); self.assertEqual(actual['passed'], 41)
+        self.assertEqual(actual['failed'], 1); self.assertFalse(actual['all_expected_passed'])
+        raw['private-canary'] = {'tests': empty}
+        with self.assertRaisesRegex(parser.InvalidXCResult, '^xcresult_cases_invalid$'):
+            parser.strict_xcresult_cases(encoded(raw), parser.DISCOVERY_WRAPPER)
+
+    def test_summaries_and_prepared_source_are_strictly_isolated_between_modes(self):
+        for mode in ('deferred', 'discovery'):
+            summary = completed_summary(mode)
+            self.assertTrue(parser.summary_matches(summary, mode))
+            self.assertFalse(parser.summary_matches(summary, 'discovery' if mode == 'deferred' else 'deferred'))
+        summary = completed_summary('discovery'); summary['manual_suite_run_performed'] = True
+        self.assertFalse(parser.summary_matches(summary, 'discovery'))
+        with self.assertRaisesRegex(parser.DeferredError, '^deferred_summary_scope_invalid$'):
+            parser.closed_summary(summary, 'discovery')
+        for mode in (None, [], 'private-canary'):
+            with self.assertRaisesRegex(parser.DeferredError, '^deferred_execution_profile_invalid$'):
+                parser.profile_configuration(mode)
+
+    def test_pipeline_keeps_all_integrity_control_42_native_and_cleanup_gates_in_discovery_mode(self):
+        fixture = DeferredRunnerTests()
+        with tempfile.TemporaryDirectory() as temporary:
+            report, calls = fixture.execute(Path(temporary).resolve(), execution_profile='discovery')
+            self.assertTrue(report['passed'], report.get('failure')); self.assertEqual(report['execution_profile'], 'discovery')
+            self.assertEqual(report['profile'], parser.DISCOVERY_PROFILE)
+            self.assertTrue(report['native_xcresult_case_accounting_verified'])
+            self.assertEqual(report['projection']['xcresult']['case_records'], 42)
+            self.assertTrue(report['original_products_unchanged']); self.assertTrue(report['original_built_products_unchanged'])
+            self.assertFalse(report['application_recompiled']); self.assertFalse(report['projection_tests_recompiled'])
+            self.assertFalse(report['release_qualified']); self.assertFalse(report['original_bazel_host_executed'])
+            self.assertEqual([timeout for args, timeout in calls if 'test-without-building' in args], [600, 600])
+            self.assertFalse(any(args[:3] == ['xcrun', 'simctl', 'bootstatus'] for args, _ in calls))
+        for option in ({'projection_code': 65}, {'xc': 'wrapperOnly'}, {'counter': 'observer_passed'}, {'cleanup': True},
+                       {'mutation': 'payload_bytes'}, {'mutation': 'installed_bytes'}, {'control': 'failed'}):
+            with self.subTest(option=option), tempfile.TemporaryDirectory() as temporary:
+                report, _ = fixture.execute(Path(temporary).resolve(), execution_profile='discovery', **option)
+                self.assertFalse(report['passed']); self.assertFalse(report['native_xcresult_case_accounting_verified'])
+
+    def test_prepare_profile_mismatch_rejects_before_any_build_or_device(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            with self.assertRaisesRegex(parser.DeferredError, '^deferred_prepared_capture_mismatch$'):
+                DeferredRunnerTests().execute(Path(temporary).resolve(), execution_profile='discovery', prepared_profile='deferred')
+
+    def test_new_swift_returns_framework_suite_and_does_not_modify_or_manually_execute_captured_assertions(self):
+        source = (Path(__file__).resolve().parents[1] / parser.DISCOVERY_SOURCE).read_text()
+        self.assertEqual(hashlib.sha256(source.encode()).hexdigest(), parser.DISCOVERY_SHA256)
+        self.assertIn('override class var defaultTestSuite: XCTestSuite', source)
+        self.assertIn('DiscoveryFactory.request(super.defaultTestSuite)', source)
+        self.assertIn('composite.addTest(suite)', source); self.assertIn('composite.addTest(verification)', source)
+        self.assertNotIn('suite.run()', source); self.assertNotIn('.runTest()', source); self.assertNotIn('XCTestSuite.default', source)
+        self.assertIn('prepared.payload.testRun', source); self.assertIn('Bundle(for: type(of: testCase))', source)
+        build = source[source.index('private static func build('):source.index('static func request(')]
+        self.assertLess(build.index('hostIdentity()'), build.index('SandboxReport.emit('))
+        self.assertLess(build.index('hostIdentity()'), build.index('ActiveUIKitProbe()'))
+        self.assertLess(build.index('hostSceneVisible()'), build.index('ActiveUIKitProbe()'))
+        self.assertLess(build.index('guard readiness == .completed'), build.index('bundle.loadAndReturnError()'))
+        scene = source[source.index('static func hostSceneVisible()'):source.index('@MainActor\n    private static func build(')]
+        self.assertNotIn('UIApplication', scene.replace('// This proof uses Foundation/POSIX only; it never creates UIApplication.', ''))
+        self.assertIn('openat(parent, $0, flags)', scene); self.assertIn('O_NOFOLLOW', scene)
+        self.assertIn('info.st_uid == getuid()', scene); self.assertIn('info.st_nlink == 1', scene)
+        self.assertIn('info.st_size <= 128', scene); self.assertIn('Data("sceneVisible".utf8)', scene)
+        self.assertIn('Thread.isMainThread && !hostSceneVisible()', source)
+        expected = set(re.findall(r'"((?:ChatLocalArchiveProjectionTests|ChatLocalArchiveRowRendererTests|ChatLocalTextFilterProjectionTests)\.test\w+)"', source))
+        self.assertEqual(expected, parser.EXPECTED)
+        old = (Path(__file__).resolve().parents[1] / parser.WRAPPER_SOURCE).read_bytes()
+        self.assertEqual(hashlib.sha256(old).hexdigest(), parser.WRAPPER_SHA256)
+
+    def test_cli_selects_exact_discovery_profile_for_prepare_and_run_without_new_public_paths(self):
+        for command in ('prepare', 'run'):
+            with self.subTest(command=command), patch.object(parser, command, return_value={'passed': True}) as selected, redirect_stdout(io.StringIO()):
+                self.assertEqual(parser.main([command, '--execution-profile', 'discovery']), 0)
+                selected.assert_called_once_with(Path(parser.OUTPUT), None, execution_profile='discovery')
+        failure = parser.preflight_failure(parser.DeferredError('deferred_source_mismatch'), 'prepare', 'discovery')
+        self.assertEqual(failure['profile'], parser.DISCOVERY_PROFILE); self.assertFalse(failure['passed'])
 
 
 if __name__ == '__main__': unittest.main()

@@ -62,6 +62,32 @@ class DeferredError(ValueError):
     pass
 
 
+DISCOVERY_PROFILE = 'experimentalDiscoveryPayloadSuite'
+DISCOVERY_WRAPPER = 'AyuDiscoveryProjectionLoaderTests.testVerifiesRetainedProjectionSuiteWasRunByFramework'
+DISCOVERY_SOURCE = 'discovery_projection_tests.swift'
+DISCOVERY_SHA256 = 'b78a499cd605187466fef4d42f60b67680c470d798eb39e3f47d1b1b8f1746e6'
+
+
+def profile_configuration(execution_profile='deferred'):
+    if type(execution_profile) is not str or execution_profile not in {'deferred', 'discovery'}:
+        raise DeferredError('deferred_execution_profile_invalid')
+    if execution_profile == 'discovery':
+        return {'profile': DISCOVERY_PROFILE, 'wrapper': DISCOVERY_WRAPPER, 'source': DISCOVERY_SOURCE,
+                'sha256': DISCOVERY_SHA256}
+    return {'profile': PROFILE, 'wrapper': WRAPPER, 'source': WRAPPER_SOURCE, 'sha256': WRAPPER_SHA256}
+
+
+def summary_configuration(execution_profile='deferred'):
+    selected = profile_configuration(execution_profile)
+    booleans = dict(BOOLEANS)
+    phases, failures = set(PHASES), set(FAILURES)
+    if execution_profile == 'discovery':
+        booleans.update(framework_managed_execution=True, manual_suite_run_performed=False)
+        phases.update({'discoveryEntered', 'suiteReturned'})
+        failures.update({'discoveryConcurrent', 'discoveryThreadTimeout', 'discoveryState', 'hostSceneUnproven'})
+    return booleans, {**STRINGS, 'profile': selected['profile']}, phases, failures
+
+
 PREFLIGHT_CODES = {
     projection.artifacts.ReplayError: frozenset({
         'application_source_changed', 'submodule_source_changed', 'checkout_provenance_unavailable',
@@ -77,7 +103,7 @@ PREFLIGHT_CODES = {
 }
 
 
-def preflight_failure(error, phase):
+def preflight_failure(error, phase, execution_profile='deferred'):
     """Only exact known classes/codes may survive; never stringify an error."""
     code = 'deferred_preflight_unavailable'
     allowed = PREFLIGHT_CODES.get(type(error), ())
@@ -87,7 +113,8 @@ def preflight_failure(error, phase):
                 and len(arguments[0]) <= 96 and arguments[0] in allowed):
             code = arguments[0]
     if type(phase) is not str or phase not in {'prepare', 'runPreflight'}: phase = 'preflight'
-    return {'schema': 1, 'profile': PROFILE, 'role': PROFILE, 'phase': phase,
+    selected = profile_configuration(execution_profile)
+    return {'schema': 1, 'profile': selected['profile'], 'role': selected['profile'], 'phase': phase,
         'failure': code, 'passed': False, 'different_harness': True,
         'requested_source_commit': SOURCE, 'source_verification_passed': False,
         'application_recompiled': False, 'projection_tests_recompiled': False,
@@ -131,26 +158,28 @@ def retain_prepare_failure(output, root, report, initially_fresh):
             except OSError: pass
 
 
-def source_bytes(root):
-    value = modern.private_bytes(Path(root) / 'tools/fork_baseline' / WRAPPER_SOURCE)
-    if hashlib.sha256(value).hexdigest() != WRAPPER_SHA256: raise DeferredError('deferred_source_mismatch')
+def source_bytes(root, execution_profile='deferred'):
+    selected = profile_configuration(execution_profile)
+    value = modern.private_bytes(Path(root) / 'tools/fork_baseline' / selected['source'])
+    if hashlib.sha256(value).hexdigest() != selected['sha256']: raise DeferredError('deferred_source_mismatch')
     return value
 
 
-def verification(original, proof):
+def verification(original, proof, execution_profile='deferred'):
+    selected = profile_configuration(execution_profile)
     return {**modern.verification(original, proof), 'deferred_payload_profile': {
-        'schema': 1, 'profile': PROFILE, 'wrapper_source_sha256': WRAPPER_SHA256,
+        'schema': 1, 'profile': selected['profile'], 'wrapper_source_sha256': selected['sha256'],
         'expected_payload_cases': 41, 'expected_wrapper_cases': 1, 'requires_native_xcresult_cases': 42}}
 
 
-def prepare(output=OUTPUT, root=None, api=projection.artifacts.gh_json, fetch=projection.artifacts.download):
+def prepare(output=OUTPUT, root=None, api=projection.artifacts.gh_json, fetch=projection.artifacts.download, execution_profile='deferred'):
     root, destination = modern.location(output, root)
     projection.verify_current_checkout(root)
-    wrapper = source_bytes(root)
+    wrapper = source_bytes(root, execution_profile)
     modern.prepare(output, root, api, fetch)
     original = destination / 'private-products'
     proof = projection.validate_products(original, SOURCE)
-    expected = verification(original, proof)
+    expected = verification(original, proof, execution_profile)
     # Only this newly created private report is replaced; downloaded inputs are
     # never rewritten and the wrapper source has an independent fixed digest.
     (destination / 'verification.json').unlink()
@@ -161,39 +190,44 @@ def prepare(output=OUTPUT, root=None, api=projection.artifacts.gh_json, fetch=pr
     return expected
 
 
-def summary_matches(value):
-    if not isinstance(value, dict) or set(value) != {'schema'} | set(COUNTS) | set(BOOLEANS) | set(STRINGS): return False
+def summary_matches(value, execution_profile='deferred'):
+    booleans, strings, _phases, _failures = summary_configuration(execution_profile)
+    if not isinstance(value, dict) or set(value) != {'schema'} | set(COUNTS) | set(booleans) | set(strings): return False
     return (type(value.get('schema')) is int and value['schema'] == 1
         and all(type(value.get(key)) is int and value[key] == wanted for key, wanted in COUNTS.items())
-        and all(type(value.get(key)) is bool and value[key] == wanted for key, wanted in BOOLEANS.items())
-        and all(type(value.get(key)) is str and value[key] == wanted for key, wanted in STRINGS.items()))
+        and all(type(value.get(key)) is bool and value[key] == wanted for key, wanted in booleans.items())
+        and all(type(value.get(key)) is str and value[key] == wanted for key, wanted in strings.items()))
 
 
-def closed_summary(value):
+def closed_summary(value, execution_profile='deferred'):
     """Read one fixed synthetic report, never NSError descriptions or paths."""
-    if not isinstance(value, dict) or set(value) != {'schema'} | set(COUNTS) | set(BOOLEANS) | set(STRINGS):
+    booleans, strings, phases, failures = summary_configuration(execution_profile)
+    if not isinstance(value, dict) or set(value) != {'schema'} | set(COUNTS) | set(booleans) | set(strings):
         raise DeferredError('deferred_summary_shape_invalid')
-    if type(value['schema']) is not int or value['schema'] != 1 or value.get('profile') != PROFILE:
+    if type(value['schema']) is not int or value['schema'] != 1 or value.get('profile') != strings['profile']:
         raise DeferredError('deferred_summary_identity_invalid')
-    result = {'schema': 1, 'profile': PROFILE}
+    result = {'schema': 1, 'profile': strings['profile']}
     for key in COUNTS:
         number = value[key]
         if type(number) is not int or not (-2**31 <= number < 2**31 if key == 'load_error_code' else 0 <= number <= 100000):
             raise DeferredError('deferred_summary_counter_invalid')
         result[key] = number
-    for key in BOOLEANS:
+    for key in booleans:
         if type(value[key]) is not bool: raise DeferredError('deferred_summary_boolean_invalid')
         result[key] = value[key]
-    for key, allowed in (('phase', PHASES), ('failure_reason', FAILURES),
+    for key, allowed in (('phase', phases), ('failure_reason', failures),
                          ('load_error_category', {'none', 'cocoa', 'posix', 'osstatus', 'other'})):
         if type(value[key]) is not str or value[key] not in allowed: raise DeferredError('deferred_summary_state_invalid')
         result[key] = value[key]
     if result['release_qualified'] is not False or result['nestedtestmanager_unverified'] is not True:
         raise DeferredError('deferred_summary_scope_invalid')
+    if execution_profile == 'discovery' and (result['framework_managed_execution'] is not True or result['manual_suite_run_performed'] is not False):
+        raise DeferredError('deferred_summary_scope_invalid')
     return result
 
 
-def progress(container):
+def progress(container, execution_profile='deferred'):
+    _booleans, _strings, phases, _failures = summary_configuration(execution_profile)
     if container is None: return {'state': 'unavailable'}
     try:
         directory = Path(container)
@@ -206,8 +240,8 @@ def progress(container):
             try: path.lstat()
             except FileNotFoundError: return {'state': 'absent'}
         stage = modern.private_bytes(directory / 'stage', 64).decode('ascii')
-        if stage not in PHASES: raise DeferredError('deferred_stage_invalid')
-        summary = closed_summary(_bounded_xcresult_json(modern.private_bytes(directory / 'summary.json', 16384))[0])
+        if stage not in phases: raise DeferredError('deferred_stage_invalid')
+        summary = closed_summary(_bounded_xcresult_json(modern.private_bytes(directory / 'summary.json', 16384))[0], execution_profile)
         if summary['phase'] != stage: return {'state': 'incomplete', 'phase': stage}
         return {'state': 'observed', 'phase': stage, 'summary': summary}
     except FileNotFoundError:
@@ -216,20 +250,21 @@ def progress(container):
         return {'state': 'unavailable'}
 
 
-def public_progress(value):
+def public_progress(value, execution_profile='deferred'):
+    _booleans, _strings, phases, _failures = summary_configuration(execution_profile)
     if not isinstance(value, dict): return {'state': 'unavailable'}
     state = value.get('state')
     if type(state) is not str or state not in {'unavailable', 'absent', 'incomplete', 'observed'}:
         return {'state': 'unavailable'}
     if state in {'unavailable', 'absent'}: return {'state': state}
     phase = value.get('phase')
-    if type(phase) is not str or phase not in PHASES: return {'state': 'unavailable'}
+    if type(phase) is not str or phase not in phases: return {'state': 'unavailable'}
     if state == 'incomplete': return {'state': state, 'phase': phase}
-    try: return {'state': 'observed', 'phase': phase, 'summary': closed_summary(value.get('summary'))}
+    try: return {'state': 'observed', 'phase': phase, 'summary': closed_summary(value.get('summary'), execution_profile)}
     except DeferredError: return {'state': 'unavailable'}
 
 
-def live_observation(pid, group, identifier, expected, secrets, alive, name):
+def live_observation(pid, group, identifier, expected, secrets, alive, name, execution_profile='deferred'):
     # The deferred phase is the diagnostic priority. Use the same18-second
     # budget and low-level owned-process proofs as the existing observer.
     deadline = time.monotonic() + 18
@@ -252,7 +287,7 @@ def live_observation(pid, group, identifier, expected, secrets, alive, name):
         if modern.owned_device_identity(identifier, name)['identity_verified'] is True:
             paths, result['containers'] = modern.container_observations(identifier, deadline=deadline)
             result['owned_container_verified'] = all(role in paths for role in ('app', 'data'))
-            candidate = progress(paths.get('data'))
+            candidate = progress(paths.get('data'), execution_profile)
             marker = modern.control_marker(paths['data']) if 'data' in paths else {'state': 'unavailable'}
             if not running(): return result
             result.update(deferred_progress=candidate, deferred_progress_captured_while_child_alive=True,
@@ -303,11 +338,11 @@ def live_observation(pid, group, identifier, expected, secrets, alive, name):
     return result
 
 
-def public_live(value):
+def public_live(value, execution_profile='deferred'):
     result = modern.public_live_observation(value)
     value = value if isinstance(value, dict) else {}
     if value.get('reason') == 'observerDeadline': result['reason'] = 'observerDeadline'
-    result['deferred_progress'] = public_progress(value.get('deferred_progress'))
+    result['deferred_progress'] = public_progress(value.get('deferred_progress'), execution_profile)
     result['deferred_progress_captured_while_child_alive'] = value.get('deferred_progress_captured_while_child_alive') is True
     return result
 
@@ -320,8 +355,79 @@ def verify_control_project(path):
             raise DeferredError('deferred_control_project_changed')
 
 
-def cases(data):
+def _selected_wrapper(wrapper):
+    if type(wrapper) is not str or wrapper not in {WRAPPER, DISCOVERY_WRAPPER}:
+        raise DeferredError('deferred_execution_profile_invalid')
+    return wrapper
+
+DISCOVERY_EVENT = re.compile(
+    r"Test Case '-\[(?:(?P<module>[A-Za-z_][A-Za-z0-9_]*)\.)?"
+    r"(?P<owner>[A-Za-z_][A-Za-z0-9_]*) (?P<method>test[A-Za-z0-9_]*)\]' "
+    r"(?P<state>started|passed|failed|skipped|crashed)(?=$|\W|Test Case '-\[)")
+
+def discovery_cases(data):
+    """Legacy nesting stays unchanged; discovery requires sequential payload-first execution."""
+    wrapper = DISCOVERY_WRAPPER
+    if not isinstance(data, bytes) or len(data) > projection.MAX_OUTPUT:
+        raise DeferredError('deferred_log_limit')
+    text = data.decode('utf-8', errors='replace')
+    allowed = PAYLOAD_CASES | {wrapper}
+    starts, outcomes, offsets = set(), {}, set()
+    unknown = duplicates = invalid_order = overlaps = wrapper_order = 0
+    active = None
+    for event in DISCOVERY_EVENT.finditer(text):
+        offsets.add(event.start())
+        key = event['owner'] + '.' + event['method']
+        modules = WRAPPER_MODULES if key == wrapper else PAYLOAD_MODULES
+        if key not in allowed or event['module'] is not None and event['module'] not in modules:
+            unknown += 1
+            continue
+        state = event['state']
+        if state == 'started':
+            if key in starts:
+                duplicates += 1
+            if active is not None:
+                overlaps += 1
+            if key == wrapper:
+                if not all(outcomes.get(payload) == 'passed' for payload in PAYLOAD_CASES):
+                    wrapper_order += 1
+            elif wrapper in starts:
+                wrapper_order += 1
+            starts.add(key)
+            active = key
+        else:
+            if key in outcomes:
+                duplicates += 1
+            if key not in starts or active != key:
+                invalid_order += 1
+            if key != wrapper and wrapper in starts:
+                wrapper_order += 1
+            if active == key:
+                active = None
+            outcomes.setdefault(key, state)
+    unknown += sum(match.start() not in offsets for match in re.finditer("Test Case '", text))
+    return {
+        'schema': 1, 'profile': 'experimentalDiscoveryPayloadSuite',
+        'expected': 41, 'expected_wrapper_cases': 1, 'expected_event_cases': 42,
+        'started': len(PAYLOAD_CASES & starts),
+        'passed': sum(outcomes.get(key) == 'passed' for key in PAYLOAD_CASES),
+        'failed': sum(outcomes.get(key) == 'failed' for key in PAYLOAD_CASES),
+        'skipped': sum(outcomes.get(key) == 'skipped' for key in PAYLOAD_CASES),
+        'crashed': sum(outcomes.get(key) == 'crashed' for key in PAYLOAD_CASES),
+        'wrapper_started': wrapper in starts, 'wrapper_passed': outcomes.get(wrapper) == 'passed',
+        'missing': sorted(PAYLOAD_CASES - outcomes.keys()), 'unknown_event_count': unknown,
+        'duplicate_event_count': duplicates, 'invalid_case_event_order': invalid_order,
+        'invalid_case_overlap_count': overlaps, 'invalid_wrapper_order_count': wrapper_order,
+        'all_expected_passed': not (unknown or duplicates or invalid_order or overlaps or wrapper_order)
+            and active is None and len(starts) == len(outcomes) == 42
+            and all(outcomes.get(key) == 'passed' for key in allowed),
+        'release_qualified': False,
+    }
+
+def cases(data, wrapper=WRAPPER):
     """A distinct strict42 profile; the legacy41 parser is unchanged."""
+    _selected_wrapper(wrapper)
+    if wrapper == DISCOVERY_WRAPPER: return discovery_cases(data)
     if not isinstance(data, bytes) or len(data) > projection.MAX_OUTPUT: raise DeferredError('deferred_log_limit')
     text = data.decode('utf-8', errors='replace')
     allowed = EXPECTED | {WRAPPER}
@@ -353,12 +459,13 @@ def cases(data):
             and len(starts) == len(outcomes) == 42 and all(outcomes.get(key) == 'passed' for key in allowed)}
 
 
-def create_wrapper_project(root, wrapper):
+def create_wrapper_project(root, wrapper, execution_profile='deferred'):
     """Generate a test-only Xcode target; there is no second app build target."""
+    selected = profile_configuration(execution_profile)
     root = Path(root)
     if root.exists() or not root.parent.is_dir() or any(p.is_symlink() for p in (root, *root.parents)):
         raise DeferredError('deferred_project_location_invalid')
-    if hashlib.sha256(wrapper).hexdigest() != WRAPPER_SHA256: raise DeferredError('deferred_source_mismatch')
+    if hashlib.sha256(wrapper).hexdigest() != selected['sha256']: raise DeferredError('deferred_source_mismatch')
     root.mkdir(mode=0o700)
     for name in ('Tests', 'DeferredProjection.xcodeproj', 'DeferredProjection.xcodeproj/xcshareddata',
                  'DeferredProjection.xcodeproj/xcshareddata/xcschemes'):
@@ -603,8 +710,13 @@ def _string(value, maximum=512):
 
 
 def _array(value):
+    # Apple may serialize an empty legacy collection with no _values member.
+    # Only this EXACT whole object qualifies; residual branches remain scanned.
+    if value == {'_type': {'_name': 'Array'}}:
+        return []
     value = _typed(value, 'Array')
-    if set(value) != {'_type', '_values'} or not isinstance(value['_values'], list): _invalid('arrayShape')
+    if set(value) != {'_type', '_values'} or not isinstance(value['_values'], list):
+        _invalid('arrayShape')
     return value['_values']
 
 
@@ -631,19 +743,22 @@ def strict_xcresult_root(raw):
         raise InvalidXCResult('xcresult_root_invalid') from None
 
 
-def _canonical_xcresult_identity(identifier):
+def _canonical_xcresult_identity(identifier, wrapper=WRAPPER):
+    wrapper = _selected_wrapper(wrapper)
     if not isinstance(identifier, str) or not 0 < len(identifier) <= 512: return None
     match = re.fullmatch(r'(?:(?P<module>[A-Za-z_][A-Za-z0-9_]*)\.)?(?P<class>[A-Za-z_][A-Za-z0-9_]*)/'
                          r'(?P<method>test[A-Za-z0-9_]*)(?:\(\))?', identifier)
     if match is None: return None
     key = match['class'] + '.' + match['method']
-    allowed = WRAPPER_MODULES if key == WRAPPER else PAYLOAD_MODULES
+    allowed = WRAPPER_MODULES if key == wrapper else PAYLOAD_MODULES
     if match['module'] is not None and match['module'] not in allowed: return None
-    return key if key in EXPECTED_XCRESULT_CASES else None
+    return key if key in (PAYLOAD_CASES | {wrapper}) else None
 
 
-def strict_xcresult_cases(raw):
+def strict_xcresult_cases(raw, wrapper=WRAPPER):
     """Select all 41 payload and one wrapper terminal outcomes, never infer starts."""
+    wrapper = _selected_wrapper(wrapper)
+    expected = PAYLOAD_CASES | {wrapper}
     try:
         root, dictionaries = _bounded_xcresult_json(raw)
         _typed(root, 'ActionTestPlanRunSummaries')
@@ -661,7 +776,7 @@ def strict_xcresult_cases(raw):
             elif kind in {'ActionTestMetadata', 'ActionTestSummary'}:
                 if 'subtests' in test: _invalid('leafHasSubtests')
                 identifier, status = _string(test.get('identifier')), _string(test.get('testStatus'))
-                records.append((_canonical_xcresult_identity(identifier), status))
+                records.append((_canonical_xcresult_identity(identifier, wrapper), status))
             else:
                 _invalid('unknownTestNodeType')
         for summary in branch(root, 'summaries'):
@@ -681,7 +796,7 @@ def strict_xcresult_cases(raw):
         cases = {key: ('duplicate' if len(values) != 1 else
                       'passed' if values[0] == 'Success' else 'skipped' if values[0] == 'Skipped' else 'failed')
                  for key, values in sorted(outcomes.items())}
-        missing = sorted(EXPECTED_XCRESULT_CASES - outcomes.keys())
+        missing = sorted(expected - outcomes.keys())
         unknown = sum(key is None for key, _status in records)
         duplicate = any(len(values) != 1 for values in outcomes.values())
         passed = sum(status == 'passed' for status in cases.values())
@@ -690,7 +805,7 @@ def strict_xcresult_cases(raw):
                 'skipped': sum(status == 'skipped' for status in cases.values()), 'missing': missing,
                 'unknown_case_records': unknown, 'unexpected_case_events': unknown != 0,
                 'duplicate_case_events': duplicate, 'nonpassing_group': group_failure,
-                'wrapper_passed': cases.get(WRAPPER) == 'passed', 'payload_passed': sum(cases.get(k) == 'passed' for k in PAYLOAD_CASES),
+                'wrapper_passed': cases.get(wrapper) == 'passed', 'payload_passed': sum(cases.get(k) == 'passed' for k in PAYLOAD_CASES),
                 'cases': cases, 'all_expected_passed': len(records) == 42 and not (missing or unknown or duplicate or group_failure) and passed == 42}
     except InvalidXCResult as error:
         raise InvalidXCResult('xcresult_cases_invalid', error.reason) from None
@@ -698,8 +813,9 @@ def strict_xcresult_cases(raw):
         raise InvalidXCResult('xcresult_cases_invalid') from None
 
 
-def xcresult_structure(raw, document, rejection=None):
+def xcresult_structure(raw, document, rejection=None, wrapper=WRAPPER):
     """Closed diagnostic counts only; this never determines qualification."""
+    wrapper = _selected_wrapper(wrapper)
     if type(document) is not str or document not in {'root', 'cases'}: raise ValueError('Invalid result diagnostic document')
     reason = rejection.reason if type(rejection) is InvalidXCResult else None
     if type(reason) is not str or reason not in XCRESULT_REJECTIONS: reason = 'none'
@@ -736,7 +852,7 @@ def xcresult_structure(raw, document, rejection=None):
             report['test_nodes']['unrecognized_outcomes'] += 1
         if not leaf and not ('testStatus' in value and kind != 'ActionTestSummaryGroup'): continue
         state, identifier = field(value, 'identifier')
-        report['case_identities'][state if state != 'valid' else 'known' if _canonical_xcresult_identity(identifier) else 'unknown'] += 1
+        report['case_identities'][state if state != 'valid' else 'known' if _canonical_xcresult_identity(identifier, wrapper) else 'unknown'] += 1
         state, status = field(value, 'testStatus')
         report['case_statuses'][state if state != 'valid' else {'Success': 'success', 'Failure': 'failure', 'Skipped': 'skipped'}.get(status, 'other')] += 1
     return report
@@ -923,21 +1039,22 @@ def verify_wrapper_signing(derived, wrapper, raw, call):
         'strict_seal_verified': True}
 
 
-def run(output=OUTPUT, root=None, command=projection.native_command):
+def run(output=OUTPUT, root=None, command=projection.native_command, execution_profile='deferred'):
+    selected = profile_configuration(execution_profile)
     root, output = modern.location(output, root)
     projection.verify_current_checkout(root)
-    wrapper_source = source_bytes(root)
+    wrapper_source = source_bytes(root, execution_profile)
     if any((output / name).exists() or (output / name).is_symlink() for name in
            ('result.json', 'control-build.log', 'private-derived', 'private-wrapper-derived', 'private-wrapper-project', 'private-deferred', 'private-deferred-host')):
         raise DeferredError('deferred_output_not_fresh')
     original = output / 'private-products'
     verified = projection.validate_products(original, SOURCE)
-    if _bounded_xcresult_json(modern.private_bytes(output / 'verification.json'))[0] != verification(original, verified):
+    if _bounded_xcresult_json(modern.private_bytes(output / 'verification.json'))[0] != verification(original, verified, execution_profile):
         raise DeferredError('deferred_prepared_capture_mismatch')
     if modern.private_bytes(output / 'private-wrapper-source.swift') != wrapper_source:
         raise DeferredError('deferred_prepared_source_mismatch')
     original_snapshot = projection.snapshot_tree(original)
-    report = {'schema': 1, 'source_commit': SOURCE, 'role': PROFILE, 'profile': PROFILE,
+    report = {'schema': 1, 'source_commit': SOURCE, 'role': selected['profile'], 'profile': selected['profile'], 'execution_profile': execution_profile,
         'different_harness': True, 'original_bazel_host_executed': False,
         'application_recompiled': False, 'projection_tests_recompiled': False,
         'tiny_control_compiled': False, 'wrapper_compiled': False, 'tiny_control_signing_verified': False,
@@ -946,7 +1063,7 @@ def run(output=OUTPUT, root=None, command=projection.native_command):
         'native_xcresult_case_accounting_verified': False,
         'native_control_timeout_seconds': 600, 'native_projection_timeout_seconds': 600,
         'native_destination_timeout_seconds': 600, 'native_projection_observation_after_seconds': 480,
-        'wrapper_source_sha256': WRAPPER_SHA256, 'original_products_unchanged': False,
+        'wrapper_source_sha256': selected['sha256'], 'original_products_unchanged': False,
         'control': {'attempted': False, 'expected': 1}, 'projection': {'attempted': False, 'expected': 41},
         'commands': {}, 'command_timing': {}, 'post_exit_group_observations': {}, 'phase': 'preflight'}
     secrets = tuple(value for key, value in os.environ.items() if value and
@@ -971,7 +1088,7 @@ def run(output=OUTPUT, root=None, command=projection.native_command):
         if isinstance(status, dict):
             status = dict(status)
             if groups: report['post_exit_group_observations'][label] = modern.public_group_observation(status.pop('post_exit_diagnostic', None))
-            if observer is not None: observation = public_live(status.pop('bootstrap_diagnostic', None))
+            if observer is not None: observation = public_live(status.pop('bootstrap_diagnostic', None), execution_profile)
         if (not isinstance(status, dict) or set(status) != {'status', 'exit_code', 'timeout', 'output_limit', 'captured_bytes'}
                 or status.get('status') not in {'completed', 'commandFailed', 'timedOut', 'outputLimit', 'unavailable'}
                 or type(status.get('timeout')) is not bool or type(status.get('output_limit')) is not bool
@@ -996,13 +1113,13 @@ def run(output=OUTPUT, root=None, command=projection.native_command):
             try: reference = strict_xcresult_root(raw)
             except InvalidXCResult as error:
                 return {'state': 'unavailable', 'all_expected_passed': False, 'reason': str(error),
-                    'diagnostic': xcresult_structure(raw, 'root', error)}
+                    'diagnostic': xcresult_structure(raw, 'root', error, selected['wrapper'])}
             raw = query('cases', reference)
-            try: result = strict_xcresult_cases(raw)
+            try: result = strict_xcresult_cases(raw, selected['wrapper'])
             except InvalidXCResult as error:
                 return {'state': 'unavailable', 'all_expected_passed': False, 'reason': str(error),
-                    'diagnostic': xcresult_structure(raw, 'cases', error)}
-            return {'state': 'parsed', **result, 'diagnostic': xcresult_structure(raw, 'cases')}
+                    'diagnostic': xcresult_structure(raw, 'cases', error, selected['wrapper'])}
+            return {'state': 'parsed', **result, 'diagnostic': xcresult_structure(raw, 'cases', wrapper=selected['wrapper'])}
     def suite(label, plan, host):
         identifier = None
         owned = {'attempted': True, 'expected': 1 if label == 'control' else 41,
@@ -1026,7 +1143,7 @@ def run(output=OUTPUT, root=None, command=projection.native_command):
                 if not (status['status'] == 'completed' and status['exit_code'] == 0 and modern.verify_owned_device(data, identifier, name)):
                     raise DeferredError('deferred_owned_identity_unverified')
             expected_code = projection.digest(host / modern.CONTROL_APP)
-            observer = lambda pid, group, alive: live_observation(pid, group, identifier, expected_code, secrets, alive, name)
+            observer = lambda pid, group, alive: live_observation(pid, group, identifier, expected_code, secrets, alive, name, execution_profile)
             with tempfile.TemporaryDirectory(prefix='ayu-deferred-result-') as temporary:
                 result = Path(temporary) / 'test.xcresult'
                 owned.update(xctest_command_attempted=True, xcode_waits_for_device_readiness=True,
@@ -1036,7 +1153,7 @@ def run(output=OUTPUT, root=None, command=projection.native_command):
                     '-derivedDataPath', str(Path(temporary) / 'derived'), '-resultBundlePath', str(result),
                     '-collect-test-diagnostics=never'], 600, False, observer=observer, late=label == 'projection')
                 owned['live_bootstrap'] = status.pop('bootstrap_diagnostic')
-                counts = modern.control_cases(raw) if label == 'control' else cases(raw)
+                counts = modern.control_cases(raw) if label == 'control' else cases(raw, selected['wrapper'])
                 owned.update(counts); owned['tests_started'] = counts['started'] > 0
                 projection.write(output / (label + '-test.log'), modern.compiler_log(raw, secrets), text=True)
                 passed = status['status'] == 'completed' and status['exit_code'] == 0 and counts['all_expected_passed']
@@ -1052,12 +1169,12 @@ def run(output=OUTPUT, root=None, command=projection.native_command):
                             paths, roles = modern.container_observations(identifier)
                             owned['post_test_filesystem'] = {'state': 'observed', 'containers': modern.public_live_observation({'containers': roles})['containers'],
                                 'captured_after_xcode_exit': True}
-                            owned['deferred_progress'] = public_progress(progress(paths.get('data')))
+                            owned['deferred_progress'] = public_progress(progress(paths.get('data'), execution_profile), execution_profile)
                             owned['installed_bytes_match'] = ('app' in paths and byte_tree(paths['app']) == byte_tree(host))
                     except Exception:
                         owned['installed_bytes_match'] = False
                     progress_value = owned['deferred_progress']
-                    counters = (progress_value.get('state') == 'observed' and summary_matches(progress_value.get('summary')))
+                    counters = (progress_value.get('state') == 'observed' and summary_matches(progress_value.get('summary'), execution_profile))
                     owned['actual_run_counters_matched'] = counters
                     passed = passed and counters and owned.get('installed_bytes_match') is True and owned['xcresult']['all_expected_passed'] is True
                     report['actual_native_xcresult_verified'] = owned['xcresult']['all_expected_passed'] is True
@@ -1102,7 +1219,7 @@ def run(output=OUTPUT, root=None, command=projection.native_command):
         report['swift_xctest_dependencies'] = modern.swift_support_available(platform)
         if not report['swift_xctest_dependencies']['both_available']: raise DeferredError('deferred_swift_support_unavailable')
         report['phase'] = 'buildWrapperOnly'
-        project = output / 'private-wrapper-project'; create_wrapper_project(project, wrapper_source)
+        project = output / 'private-wrapper-project'; create_wrapper_project(project, wrapper_source, execution_profile)
         wrapper_derived = output / 'private-wrapper-derived'
         build_host = create_build_host(control, control_test, plans[0].parent, wrapper_derived)
         host_executable = str(build_host['host'] / modern.CONTROL_APP)
@@ -1176,6 +1293,7 @@ def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('command', choices=('prepare', 'run')); parser.add_argument('--output', type=Path, default=OUTPUT)
     parser.add_argument('--root', type=Path)
+    parser.add_argument('--execution-profile', choices=('deferred', 'discovery'), default='deferred')
     args = parser.parse_args(argv)
     initially_fresh = False
     if args.command == 'prepare':
@@ -1183,9 +1301,9 @@ def main(argv=None):
             _, candidate = modern.location(args.output, args.root)
             initially_fresh = not candidate.exists() and not candidate.is_symlink()
         except Exception: pass
-    try: result = prepare(args.output, args.root) if args.command == 'prepare' else run(args.output, args.root)
+    try: result = prepare(args.output, args.root, execution_profile=args.execution_profile) if args.command == 'prepare' else run(args.output, args.root, execution_profile=args.execution_profile)
     except Exception as error:
-        result = preflight_failure(error, 'prepare' if args.command == 'prepare' else 'runPreflight')
+        result = preflight_failure(error, 'prepare' if args.command == 'prepare' else 'runPreflight', args.execution_profile)
         retained = args.command == 'prepare' and retain_prepare_failure(args.output, args.root, result, initially_fresh)
         print(json.dumps({**result, 'failure_report_retained': retained}, sort_keys=True)); return 1
     print(json.dumps({'passed': result.get('passed', False), 'different_harness': True, 'release_qualified': False}))

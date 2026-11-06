@@ -437,6 +437,16 @@ final error, so its cause is not established. This is observed native assertion
 coverage, not original-host, authenticated-conversation or release qualification.
 No Telegram application, captured feature code or device package was rebuilt.
 
+The instrumented repeat [42269497024](https://github.com/Livara-Dev/Telegram-iOS/actions/runs/42269497024)
+again observed all 41 payload methods and the wrapper report success, then
+captured an XCTest IDE-session completion assertion and termination. Xcode
+restarted with zero tests and exited 65. Closed native metadata contains 42 known
+identities with 41 successes and one failure; its structural parser also rejected
+an array shape. The public wrapper pass line is therefore not a verified Apple
+wrapper pass. Both cleanup and installed/source integrity gates passed. A separate
+standard-discovery profile is under review; no parser relaxation or ignored exit
+status can turn this failed nested-execution run into successful qualification.
+
 | Candidate change | Current evidence | Remaining qualification or boundary |
 | --- | --- | --- |
 | Welcome-screen startup and current unsigned device package | [42204637743](https://github.com/Livara-Dev/Telegram-iOS/actions/runs/42204637743) passed two actual full-app simulator launches with explicitly seeded private storage and stable account-store directory after restart. Both screenshots and all 390 video frames were reviewed. The main-app-only device artifact retains all 880 retained entries byte-for-byte with matching metadata | Simulator iPhone 15 Pro / iOS 27.0, not physical iOS 27.2. Automatic fallback, login, Apple HTTP 403/signing and installation remain unverified. The device IPA is unsigned; six extensions are absent. Device build 82 and simulator build 1 retain distinct origins; application code was not recompiled |

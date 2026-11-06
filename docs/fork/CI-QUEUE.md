@@ -206,6 +206,29 @@ The next diagnostic retains bounded redacted head/tail logs and closed JSON
 structure/rejection counts. Exit status, accepted schemas, all case counters,
 source/signature and cleanup gates remain unchanged.
 
+The instrumented repeat `42269497024` at `cb5acc9b` retained the missing tail.
+All 41 payload methods and the wrapper report success, followed by XCTest IDE
+session completion/failure-recording assertions and termination. Its automatic
+restart ran zero tests. Native metadata has 42 known identities, 41 successes and
+one failure; strict parsing independently rejects an array shape. Xcode exit 65
+remains fatal. Do not repeat the unchanged nested-execution profile or equate its
+wrapper stdout pass with an Apple result pass. Standard discovery is the next
+separate experimental profile; every native result and integrity gate remains
+required.
+
+The explicit `projection-discovery-only` scope selects
+`--execution-profile discovery` for both preparation and execution. It compiles
+only a new diagnostic wrapper, preserving the original f144 wrapper and all
+captured feature bytes. Public `defaultTestSuite` returns the validated payload
+hierarchy followed by its verification case; XCTest performs all execution.
+Process/platform identity and the owned host's `sceneVisible` marker precede
+UIKit or payload access. Background synchronization is bounded; main-thread
+discovery without the marker fails closed. Native exit zero, all 42 sequential
+case outcomes, observer/run counters, exact native result records, signatures,
+source immutability and cleanup remain mandatory. Portable fixtures do not prove
+that the pinned SDK compiles or runs this discovery lifecycle. This profile
+does not build Telegram or an IPA and retains the same no-cancellation queue.
+
 The retained c55 diagnostic continues on `diagnostics/c55-projection-deferred`.
 Concurrent source-publication/build workflow additions on `integration/ayu-current`
 are preserved on that branch. The isolated diagnostic avoids changing their
