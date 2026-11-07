@@ -3191,7 +3191,7 @@ private func privacySearchableItems(context: AccountContext, privacySettings: Ac
 
 private func customeOptionsSearchableItems() -> [SettingsSearchableItem] {
     var items = [SettingsSearchableItem(id: "ayugram/custom-options", title: CustomeOptionsCatalog.title,
-        alternate: ["AyuGram", "custom options", "customization", "local settings"], icon: .appearance,
+        alternate: ["More Features", "AyuGram", "custom options", "customization", "local settings", "Smart Inbox", "Chat Studio", "Media Vault", "Ultra Battery Saver"], icon: .appearance,
         breadcrumbs: [], present: { context, _, present in
             present(.push, customeOptionsController(context: context))
         })]
@@ -3203,7 +3203,7 @@ private func customeOptionsSearchableItems() -> [SettingsSearchableItem] {
             }))
     }
     for (id, title, aliases) in [
-        ("accent", "Custome options accent", ["Ayu", "violet", "ocean", "forest", "sunset", "rose", "local colors"]),
+        ("accent", "Local Premium colors", ["Ayu", "violet", "ocean", "forest", "sunset", "rose", "midnight", "emerald", "crimson", "amber", "graphite", "ice", "lavender", "local colors"]),
         ("motion", "Reduce dashboard motion", ["reduced motion", "animations", "local cosmetics"]),
         ("icons", "Bundled Premium icons", ["local Premium", "app icons", "client cosmetics"])
     ] {
