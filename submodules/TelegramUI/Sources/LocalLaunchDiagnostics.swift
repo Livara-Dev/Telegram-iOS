@@ -36,6 +36,7 @@ final class LocalLaunchDiagnostics {
     private weak var window: UIWindow?
     private var stage: Stage = .applicationEntered
     private var failure: Failure?
+    private var diagnosticCode: Int?
     private var route: Route?
     private var isReady = false
     private var watchdog: DispatchWorkItem?
@@ -76,10 +77,11 @@ final class LocalLaunchDiagnostics {
         self.writeMarker()
     }
 
-    func fail(_ failure: Failure) {
+    func fail(_ failure: Failure, diagnosticCode: Int? = nil) {
         precondition(Thread.isMainThread)
         guard !self.isReady else { return }
         self.failure = failure
+        self.diagnosticCode = diagnosticCode
         self.stage = .failed
         self.watchdog?.cancel()
         self.updateWindowIdentifier()
@@ -103,6 +105,7 @@ final class LocalLaunchDiagnostics {
               window.windowScene != nil, !window.isHidden else { return false }
         self.isReady = true
         self.failure = nil
+        self.diagnosticCode = nil
         self.stage = route == .authorization ? .authorizationVisible : .conversationsVisible
         self.watchdog?.cancel()
         self.overlay?.removeFromSuperview()
@@ -119,7 +122,8 @@ final class LocalLaunchDiagnostics {
     private func writeMarker() {
         let marker: [String: Any] = [
             "stage": self.stage.rawValue,
-            "failure": self.failure.map { $0.rawValue as Any } ?? NSNull()
+            "failure": self.failure.map { $0.rawValue as Any } ?? NSNull(),
+            "diagnosticCode": self.diagnosticCode.map { $0 as Any } ?? NSNull()
         ]
         guard let data = try? JSONSerialization.data(withJSONObject: marker, options: [.sortedKeys]),
               data.count < 1024,
@@ -171,20 +175,21 @@ final class LocalLaunchDiagnostics {
         title.adjustsFontForContentSizeCategory = true
         title.textColor = .label
         title.numberOfLines = 0
-        title.text = self.failure == nil ? "Startup is taking longer than expected" : "AyuGram could not finish starting"
+        title.text = self.failure == nil ? "Startup is taking longer than expected" : "Telegram could not finish starting"
 
         let detail = UILabel()
         detail.font = .preferredFont(forTextStyle: .body)
         detail.adjustsFontForContentSizeCategory = true
         detail.textColor = .secondaryLabel
         detail.numberOfLines = 0
-        detail.text = "This screen does not reset your data. Keep the same SideStore app identity and signing account when updating. You can copy the local startup status for diagnosis.\n\nStatus: " + self.stage.rawValue + (self.failure.map { " / " + $0.rawValue } ?? "")
+        let codeText = self.diagnosticCode.map { " / OSStatus: " + String($0) } ?? ""
+        detail.text = "This screen does not reset your data. Keep the same SideStore app identity and signing account when updating. You can copy the local startup status for diagnosis.\n\nStatus: " + self.stage.rawValue + (self.failure.map { " / " + $0.rawValue } ?? "") + codeText
 
         let copy = UIButton(type: .system)
         copy.setTitle("Copy startup status", for: .normal)
         copy.addAction(UIAction { [weak self] _ in
             guard let self else { return }
-            UIPasteboard.general.string = "AyuGram startup: " + self.stage.rawValue + (self.failure.map { " / " + $0.rawValue } ?? "")
+            UIPasteboard.general.string = "Telegram startup: " + self.stage.rawValue + (self.failure.map { " / " + $0.rawValue } ?? "") + (self.diagnosticCode.map { " / OSStatus: " + String($0) } ?? "")
         }, for: .touchUpInside)
 
         let wait = UIButton(type: .system)
