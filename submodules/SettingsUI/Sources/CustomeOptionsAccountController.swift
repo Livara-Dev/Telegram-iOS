@@ -77,8 +77,11 @@ private func applyUltraBatterySaver(context: AccountContext, enabled: Bool, comp
 
     if enabled {
         let current = context.sharedContext.currentAutomaticMediaDownloadSettings
-        if defaults.data(forKey: UltraBatterySaverStorage.energySnapshot) == nil,
-           let data = try? JSONEncoder().encode(current.energyUsageSettings) {
+        if defaults.data(forKey: UltraBatterySaverStorage.energySnapshot) == nil {
+            guard let data = try? JSONEncoder().encode(current.energyUsageSettings) else {
+                completion(false)
+                return
+            }
             defaults.set(data, forKey: UltraBatterySaverStorage.energySnapshot)
             defaults.set(current.downloadInBackground, forKey: UltraBatterySaverStorage.backgroundSnapshot)
         }
@@ -139,6 +142,7 @@ private func applyUltraBatterySaver(context: AccountContext, enabled: Bool, comp
 private func presentUltraBatterySaver(context: AccountContext, navigation: CustomeOptionsNavigation) {
     let defaults = UserDefaults.standard
     let enabled = defaults.bool(forKey: UltraBatterySaverStorage.active)
+    let previousMotion = defaults.bool(forKey: UltraBatterySaverStorage.reduceMotionSnapshot)
     let alert = UIAlertController(
         title: enabled ? "Ultra Battery Saver is on" : "Enable Ultra Battery Saver?",
         message: enabled
@@ -150,7 +154,7 @@ private func presentUltraBatterySaver(context: AccountContext, navigation: Custo
     alert.addAction(UIAlertAction(title: enabled ? "Restore settings" : "Enable", style: .default, handler: { _ in
         applyUltraBatterySaver(context: context, enabled: !enabled, completion: { success in
             DispatchQueue.main.async {
-                navigation.reducedMotion = !enabled
+                navigation.reducedMotion = enabled ? previousMotion : true
                 let result = UIAlertController(
                     title: success ? (enabled ? "Settings restored" : "Ultra Battery Saver enabled") : "Some settings were unavailable",
                     message: success ? "The selected profile has been applied." : "Power settings were applied where supported. A local motion preference may be unavailable in this account version.",
