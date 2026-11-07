@@ -599,7 +599,9 @@ private func extractAccountManagerState(records: AccountRecordsView<TelegramAcco
         do {
             try PasscodeEnvironment.shared.validateKeychainAccess()
         } catch {
-            self.launchDiagnostics.fail(.keychainUnavailable)
+            // OSStatus identifies the entitlement, accessibility or keychain
+            // failure without exposing account identifiers or secret material.
+            self.launchDiagnostics.fail(.keychainUnavailable, diagnosticCode: (error as NSError).code)
             return true
         }
         let maybeAppGroupUrl: URL? = storageLocation.baseURL
