@@ -1,0 +1,254 @@
+[
+  {
+    "post": "AyuGramReleases/44",
+    "dates": [
+      "2025-12-31T16:02:59+00:00"
+    ],
+    "text": "🪟 Windows\n💻 v6.3.10",
+    "links": [
+      "https://t.me/AyuGramReleases",
+      "https://t.me/AyuGramReleases",
+      "https://t.me/AyuGramReleases/44",
+      "https://github.com/AyuGram/AyuGramDesktop/releases/tag/v6.3.10",
+      "https://t.me/AyuGramReleases/44",
+      "https://t.me/AyuGramReleases/44"
+    ]
+  },
+  {
+    "post": "AyuGramReleases/45",
+    "dates": [
+      "2025-12-31T16:03:00+00:00"
+    ],
+    "text": "🤖 Android (based on exteraGram v12.2.10)\n\n[RU]:\n- Исправления крашей и багов\n\nДля подробностей читайте заметки к релизам @exteragram.\n\n[EN]:\n- Minor improvements and crash fixes\n\nFor more info, read notes at @exteragram.",
+    "links": [
+      "https://t.me/AyuGramReleases",
+      "https://t.me/AyuGramReleases",
+      "https://t.me/exteraGram/190",
+      "https://t.me/exteragram",
+      "https://t.me/exteragram",
+      "https://t.me/AyuGramReleases/45",
+      "https://t.me/AyuGramReleases/45"
+    ]
+  },
+  {
+    "post": "AyuGramReleases/46",
+    "dates": [
+      "2025-12-31T16:03:00+00:00"
+    ],
+    "text": "🤖 Android\n📅 20251231 (based on exteraGram v12.2.10)\n\n[RU]:\n⚠ Отличие full от lite, или \"какой файл скачивать\"\n\nfull версия включает в себя:\n• Поддержку плагинов\n• Яндекс Карты\n\nЕсли эти функции вам не нужны — выбирайте lite (второй файл).\n\nВерсии взаимозаменяемы: можно установить другой APK поверх уже установленного приложения.\n\n[EN]:\n⚠ Difference between full and lite, or \"which file to download\"\n\nThe full version includes:\n• Plugin support\n• Yandex Maps\n\nIf you don't need these features — choose lite (second file).\n\nThe versions are interchangeable: you can install a different APK over the already installed app.\n\n➡ FCM",
+    "links": [
+      "https://t.me/AyuGramReleases",
+      "https://t.me/AyuGramReleases",
+      "https://t.me/AyuGramReleases/46?single",
+      "https://t.me/AyuGramReleases/47?single",
+      "https://t.me/ayugramfcm",
+      "https://t.me/AyuGramReleases/47?single",
+      "https://t.me/AyuGramReleases/46"
+    ]
+  },
+  {
+    "post": "AyuGramReleases/48",
+    "dates": [
+      "2025-12-31T16:05:02+00:00"
+    ],
+    "text": "Happy New Year, by the way 🥰",
+    "links": [
+      "https://t.me/AyuGramReleases",
+      "https://t.me/AyuGramReleases",
+      "https://t.me/AyuGramReleases/48",
+      "https://t.me/AyuGramReleases/48"
+    ]
+  },
+  {
+    "post": "AyuGramReleases/49",
+    "dates": [
+      "2026-01-10T20:56:52+00:00"
+    ],
+    "text": "🤖 Android (based on exteraGram v12.2.10)\n\n[RU]:\n- Исправлено чрезмерное потребление места\n- Исправлена очистка папки с сохраненными файлами\n- Исправлены некоторые вылеты\n\nЕсли вы обновляетесь с версии от 31 декабря, рекомендуем проверить размер папки со вложениями и очистить её, если она слишком большая.\n\n[EN]:\n- Fixed excessive storage consumption\n- Fixed saved attachments folder cleanup\n- Fixed some crashes\n  \nIf you're updating from the December 31st version, we recommend checking your attachments folder size and clearing it if it's too large.",
+    "links": [
+      "https://t.me/AyuGramReleases",
+      "https://t.me/AyuGramReleases",
+      "https://t.me/exteraGram/190",
+      "https://t.me/ayuSettings?s=clearDatabase",
+      "https://t.me/ayuSettings?s=clearDatabase",
+      "https://t.me/AyuGramReleases/49",
+      "https://t.me/AyuGramReleases/49"
+    ]
+  },
+  {
+    "post": "AyuGramReleases/50",
+    "dates": [
+      "2026-01-10T20:56:53+00:00"
+    ],
+    "text": "🤖 Android\n📅 20260110 (based on exteraGram v12.2.10)\n\n[RU]:\n⚠ Отличие full от lite, или \"какой файл скачивать\"\n\nfull версия включает в себя:\n• Поддержку плагинов\n• Яндекс Карты\n\nЕсли эти функции вам не нужны — выбирайте lite (второй файл).\n\nВерсии взаимозаменяемы: можно установить другой APK поверх уже установленного приложения.\n\n[EN]:\n⚠ Difference between full and lite, or \"which file to download\"\n\nThe full version includes:\n• Plugin support\n• Yandex Maps\n\nIf you don't need these features — choose lite (second file).\n\nThe versions are interchangeable: you can install a different APK over the already installed app.\n\n➡ FCM",
+    "links": [
+      "https://t.me/AyuGramReleases",
+      "https://t.me/AyuGramReleases",
+      "https://t.me/AyuGramReleases/50?single",
+      "https://t.me/AyuGramReleases/51?single",
+      "https://t.me/ayugramfcm",
+      "https://t.me/AyuGramReleases/51?single",
+      "https://t.me/AyuGramReleases/50"
+    ]
+  },
+  {
+    "post": "AyuGramReleases/52",
+    "dates": [
+      "2026-03-29T19:31:03+00:00"
+    ],
+    "text": "🤖 Android (based on exteraGram v12.5.1)\n\n[RU]:\n- Виджет для строки поиска — показ последнего онлайна\n- Поддержка пересылки из личных чатов с запретом на копирование\n- Исправления крашей и багов, связанных с секцией с удалёнными сообщениями, статусом призрака в диалогах, полупрозрачными удалёнками и фильтрами\n\nБольшинство изменений произошло в @exteraGram — читайте заметки к релизу!\nP. S. Если у вас ошибки в плагинах — убедитесь, что стоит последняя версия Python SDK.\n\n[EN]:\n- Search bar widget — showing last seen online status\n- Support for forwarding from private chats with copy restriction\n- Crash and bug fixes related to the deleted messages section, ghost status in dialogs, semi-transparent deleted messages, and filters\n\nMost of the changes happened in @exteraGram — read the release notes!\nP. S. If you have errors in plugins — make sure you have the latest Python SDK installed.",
+    "links": [
+      "https://t.me/AyuGramReleases",
+      "https://t.me/AyuGramReleases",
+      "https://t.me/exteraGram/191",
+      "https://t.me/exteraGram",
+      "https://t.me/exteraSettings?s=pluginsPySdkCheckUpdates",
+      "https://t.me/exteraGram",
+      "https://t.me/exteraSettings?s=pluginsPySdkCheckUpdates",
+      "https://t.me/AyuGramReleases/52",
+      "https://t.me/AyuGramReleases/52"
+    ]
+  },
+  {
+    "post": "AyuGramReleases/53",
+    "dates": [
+      "2026-03-29T19:31:03+00:00"
+    ],
+    "text": "🤖 Android\n📅 20260329 (based on exteraGram v12.5.1)\n\n[RU]:\n⚠ Отличие full от lite, или \"какой файл скачивать\"\n\nfull версия включает в себя:\n• Поддержку плагинов\n• Яндекс Карты\n\nЕсли эти функции вам не нужны — выбирайте lite (второй файл).\n\nВерсии взаимозаменяемы: можно установить другой APK поверх уже установленного приложения.\n\n[EN]:\n⚠ Difference between full and lite, or \"which file to download\"\n\nThe full version includes:\n• Plugin support\n• Yandex Maps\n\nIf you don't need these features — choose lite (second file).\n\nThe versions are interchangeable: you can install a different APK over the already installed app.\n\n➡ FCM",
+    "links": [
+      "https://t.me/AyuGramReleases",
+      "https://t.me/AyuGramReleases",
+      "https://t.me/AyuGramReleases/53?single",
+      "https://t.me/AyuGramReleases/54?single",
+      "https://t.me/ayugramfcm",
+      "https://t.me/AyuGramReleases/54?single",
+      "https://t.me/AyuGramReleases/53"
+    ]
+  },
+  {
+    "post": "AyuGramReleases/55",
+    "dates": [
+      "2026-04-27T17:45:07+00:00"
+    ],
+    "text": "💻 Desktop\n\n[RU]:\n- Разделение режима призрака на аккаунты\n- Полупрозрачные удалённые сообщения\n- Ответы на удалённые сообщения\n- Настройка скругления аватарок и сообщений\n- Фильтр \"Zalgo\"\n- Предложение включить режим призрака при открытии сторис\n- Возможность посмотреть отфильтрованные сообщения в чате\n- Улучшение превью ссылок на соц. сети\n- Поиск по настройкам\n- Сохранение настроек снимка сообщений\n- Новое отображение времени для сервисных сообщений\n- Режим стримера на macOS\n- Honorable mentions\n  - Иконка для взаимных контактов от Ireina\n  - Улучшена работа фильтров от Ireina\n  - Очистка удалёнок в чате от Ireina\n  - Скрытие тегов при снимке сообщений от Ireina\n  - Раскрытие спойлеров при снимке сообщений от People-11\n  - Отключение предупреждения при открытии ссылок от People-11\n  - Улучшение логики \"Повторить\" от People-11\n  - Скрытие премиум статусов в списке чатов от drizt\n  - Исправление скрытия счётчика на горизонтальных папках от dderg\n  - Пересылка из личных чатов с запретом на копирование от Bush2021\n  - Доп. информация о сессии от starius\n\n[EN]:\n- Per-account Ghost Mode\n- Semi-transparent deleted messages\n- Replies to deleted messages\n- Avatar and message corner rounding customization\n- \"Zalgo\" filter\n- Suggest enabling Ghost Mode before opening story\n- Show / hide filtered messages in current chat\n- Improve social media link previews\n- Settings search\n- Persist message shot settings\n- New timestamp display for service messages\n- Streamer Mode on macOS\n- Honorable mentions\n  - Mutual contacts icon by Ireina\n  - Improved filters by Ireina\n  - Clear deleted messages in chat by Ireina\n  - Hide top-right badges in message shots by Ireina\n  - Reveal spoilers in message shots by People-11\n  - Disable open link warning by People-11\n  - Improved \"Repeat\" logic by People-11\n  - Hide premium statuses in the chat list by drizt\n  - Fixed hidden counter in horizontal folders by dderg\n  - Forwarding from private chats with copy protection by Bush2021\n  - Additional session information by starius\n\n📄 Full Changelog: https://github.com/AyuGram/AyuGramDesktop/compare/v6.3.10...v6.7.8\n💻 v6.7.8",
+    "links": [
+      "https://t.me/AyuGramReleases",
+      "https://t.me/AyuGramReleases",
+      "https://github.com/AyuGram/AyuGramDesktop/compare/v6.3.10...v6.7.8",
+      "https://github.com/AyuGram/AyuGramDesktop/releases/tag/v6.7.8",
+      "https://t.me/AyuGramReleases/55",
+      "https://t.me/AyuGramReleases/55"
+    ]
+  },
+  {
+    "post": "AyuGramReleases/56",
+    "dates": [
+      "2026-04-27T17:45:08+00:00"
+    ],
+    "text": "🪟 Windows\n💻 v6.7.8",
+    "links": [
+      "https://t.me/AyuGramReleases",
+      "https://t.me/AyuGramReleases",
+      "https://t.me/AyuGramReleases/56",
+      "https://github.com/AyuGram/AyuGramDesktop/releases/tag/v6.7.8",
+      "https://t.me/AyuGramReleases/56",
+      "https://t.me/AyuGramReleases/56"
+    ]
+  },
+  {
+    "post": "AyuGramReleases/57",
+    "dates": [
+      "2026-08-08T02:55:18+00:00"
+    ],
+    "text": "💻 Desktop\n\n[RU]:\nИсправлены некоторые краши и баги\n\n[EN]:\nGeneral bug fixes and improvements\n\n📄 Full Changelog: https://github.com/AyuGram/AyuGramDesktop/compare/v6.7.8...v7.0.9\n💻 v7.0.9",
+    "links": [
+      "https://t.me/AyuGramReleases",
+      "https://t.me/AyuGramReleases",
+      "https://github.com/AyuGram/AyuGramDesktop/compare/v6.7.8...v7.0.9",
+      "https://github.com/AyuGram/AyuGramDesktop/releases/tag/v7.0.9",
+      "https://t.me/AyuGramReleases/57",
+      "https://t.me/AyuGramReleases/57"
+    ]
+  },
+  {
+    "post": "AyuGramReleases/58",
+    "dates": [
+      "2026-08-08T02:55:18+00:00"
+    ],
+    "text": "🪟 Windows\n💻 v7.0.9",
+    "links": [
+      "https://t.me/AyuGramReleases",
+      "https://t.me/AyuGramReleases",
+      "https://t.me/AyuGramReleases/58",
+      "https://github.com/AyuGram/AyuGramDesktop/releases/tag/v7.0.9",
+      "https://t.me/AyuGramReleases/58",
+      "https://t.me/AyuGramReleases/58"
+    ]
+  },
+  {
+    "post": "AyuGramReleases/59",
+    "dates": [
+      "2026-10-05T06:16:58+00:00"
+    ],
+    "text": "💻 Desktop\n\n[EN]:\nOver the past few hours I've received several messages about a possible RCE in AyuGram Desktop. Two people who say they were affected contacted me directly. One couldn't provide any useful details; the other had downloaded and run a malicious executable themselves.\n\nSince then I've audited the full codebase several times and found nothing in AyuGram's changes that could allow remote code execution. A few people who audited it independently came to the same conclusion. They did point out one issue: in some cases the confirmation wasn't shown for links to local or network files. This couldn't be abused through messages - I tested it, and Telegram strips such links for both users and bots. Still, I've hardened link handling.\n\nI'm also releasing an update based on the latest upstream version, with several memory bugs and crashes fixed, in case outdated dependencies or older upstream code played any part.\n\nAlso, I haven't forgotten about the 35 open pull requests on GitHub. I'll review them and merge or close them soon; I just haven't had the time yet, sorry.\nAndroid update will be released later today.\n\nAs always, download AyuGram only from official sources: GitHub or @AyuGramReleases.\n\n📄 Full Changelog: https://github.com/AyuGram/AyuGramDesktop/compare/v7.0.9...v7.2.9\n💻 v7.2.9",
+    "links": [
+      "https://t.me/AyuGramReleases",
+      "https://t.me/AyuGramReleases",
+      "https://github.com/AyuGram/AyuGramDesktop",
+      "https://t.me/AyuGramReleases",
+      "https://github.com/AyuGram/AyuGramDesktop/compare/v7.0.9...v7.2.9",
+      "https://github.com/AyuGram/AyuGramDesktop/releases/tag/v7.2.9",
+      "https://t.me/AyuGramReleases/59",
+      "https://t.me/AyuGramReleases/59"
+    ]
+  },
+  {
+    "post": "AyuGramReleases/60",
+    "dates": [
+      "2026-10-05T06:16:58+00:00"
+    ],
+    "text": "🪟 Windows\n💻 v7.2.9",
+    "links": [
+      "https://t.me/AyuGramReleases",
+      "https://t.me/AyuGramReleases",
+      "https://t.me/AyuGramReleases/60",
+      "https://github.com/AyuGram/AyuGramDesktop/releases/tag/v7.2.9",
+      "https://t.me/AyuGramReleases/60",
+      "https://t.me/AyuGramReleases/60"
+    ]
+  },
+  {
+    "post": "AyuGramReleases/61",
+    "dates": [
+      "2026-10-05T20:02:21+00:00"
+    ],
+    "text": "🤖 Android (based on exteraGram v12.10.6)\n\n[RU]:\n- Сделан небольшой редизайн настроек\n- Добавлены новые опции при импорте\\экспорте базы данных AyuGram\n- Добавлено отображение удаленных фото\\видео\\файлов в профиле чата\n- Добавлен поиск по удалённым сообщениям в обычном поиске по чату\n- Добавлены исключения для сохранения удалённых сообщений\n- В локальный премиум добавлены локальные цвета для папок и теги\n- Исправлены некоторые проблемы со входом в аккаунты\n- Исправлены прочие баги\n\nПо поводу остальных изменений можете прочитать в канале exteraGram: 12.9.0 и 12.10.6!\n\n[EN]:\n- Minor redesign of the settings\n- Added new options for AyuGram database import/export\n- Added display of deleted photos/videos/files in the chat profile\n- Added search through deleted messages in the regular chat search\n- Added exceptions for saving deleted messages\n- Added local folder colors and tags to local premium\n- Fixed some issues with logging into accounts\n- Fixed other bugs\n\nFor other changes, read release notes for exteraGram 12.9.0 and 12.10.6!",
+    "links": [
+      "https://t.me/AyuGramReleases",
+      "https://t.me/AyuGramReleases",
+      "https://t.me/exteraGram/193",
+      "https://t.me/exteraGram/192",
+      "https://t.me/exteraGram/193",
+      "https://t.me/exteraGram/192",
+      "https://t.me/exteraGram/193",
+      "https://t.me/AyuGramReleases/61",
+      "https://t.me/AyuGramReleases/61"
+    ]
+  },
+  {
+    "post": "AyuGramReleases/62",
+    "dates": [
+      "2026-10-05T20:02:21+00:00"
+    ],
+    "text": "🤖 Android\n📅 20261005 (based on exteraGram v12.10.6)\n\n[RU]:\n⚠ Отличие full от lite, или \"какой файл скачивать\"\n\nfull версия включает в себя поддержку плагинов. Если вы не планируете их использовать — выбирайте lite (второй файл).\n\nВерсии взаимозаменяемы: можно установить другой APK поверх уже установленного приложения.\n\n[EN]:\n⚠ Difference between full and lite, or \"which file to download\"\n\nThe full version includes plugin support. If you don't plan on using them — choose lite (second file).\n\nThe versions are interchangeable: you can install a different APK over the already installed app.\n\n➡ FCM",
+    "links": [
+      "https://t.me/AyuGramReleases",
+      "https://t.me/AyuGramReleases",
+      "https://t.me/AyuGramReleases/62?single",
+      "https://t.me/AyuGramReleases/63?single",
+      "https://t.me/ayugramfcm",
+      "https://t.me/AyuGramReleases/63?single",
+      "https://t.me/AyuGramReleases/62"
+    ]
+  }
+]

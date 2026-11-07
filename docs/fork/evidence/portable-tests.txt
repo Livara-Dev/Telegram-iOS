@@ -1,0 +1,75 @@
+$ python3 -m unittest discover -s tools/fork_baseline/tests -v
+test_missing_secrets_fail_without_value_disclosure (test_baseline.ConfigurationTests.test_missing_secrets_fail_without_value_disclosure) ... ok
+test_rejects_injection_and_official_credentials (test_baseline.ConfigurationTests.test_rejects_injection_and_official_credentials) ... ok
+test_unsigned_marker_cannot_sign (test_baseline.ConfigurationTests.test_unsigned_marker_cannot_sign) ... ok
+test_unsigned_requires_no_apple_identity (test_baseline.ConfigurationTests.test_unsigned_requires_no_apple_identity) ... ok
+test_valid_config_disables_optional_cloud_services (test_baseline.ConfigurationTests.test_valid_config_disables_optional_cloud_services) ... ok
+test_binary_hash_checked_before_execution (test_baseline.PreflightTests.test_binary_hash_checked_before_execution) ... ok
+test_device_signing_not_disabled_and_version_clean (test_baseline.PreflightTests.test_device_signing_not_disabled_and_version_clean) ... ok
+test_linux_fails_before_tools_or_credentials (test_baseline.PreflightTests.test_linux_fails_before_tools_or_credentials) ... ok
+test_partial_divergent_conflicted_submodule_rejected (test_baseline.PreflightTests.test_partial_divergent_conflicted_submodule_rejected) ... ok
+test_unsigned_proxy_disables_signing_and_remote_services (test_baseline.PreflightTests.test_unsigned_proxy_disables_signing_and_remote_services) ... ok
+test_build_captures_ipa_before_test_changes_bazel_bin (test_baseline.PrivacyAndArtifactsTests.test_build_captures_ipa_before_test_changes_bazel_bin) ... ok
+test_existing_config_never_overwritten (test_baseline.PrivacyAndArtifactsTests.test_existing_config_never_overwritten) ... ok
+test_failed_copy_never_publishes_partial_artifact (test_baseline.PrivacyAndArtifactsTests.test_failed_copy_never_publishes_partial_artifact) ... ok
+test_failed_test_does_not_publish_build_artifact (test_baseline.PrivacyAndArtifactsTests.test_failed_test_does_not_publish_build_artifact) ... ok
+test_generated_config_private_and_cleanup_even_on_failure (test_baseline.PrivacyAndArtifactsTests.test_generated_config_private_and_cleanup_even_on_failure) ... ok
+test_manifest_hash_and_no_false_runtime_claim (test_baseline.PrivacyAndArtifactsTests.test_manifest_hash_and_no_false_runtime_claim) ... ok
+test_subprocess_output_redaction_and_failure (test_baseline.PrivacyAndArtifactsTests.test_subprocess_output_redaction_and_failure) ... ok
+test_convenience_symlink_outside_private_root_rejected (test_baseline.TestEvidenceTests.test_convenience_symlink_outside_private_root_rejected) ... ok
+test_evidence_destination_symlink_rejected (test_baseline.TestEvidenceTests.test_evidence_destination_symlink_rejected) ... ok
+test_only_target_files_retained_with_both_secrets_redacted (test_baseline.TestEvidenceTests.test_only_target_files_retained_with_both_secrets_redacted) ... ok
+test_oversized_file_omitted_without_truncated_xml (test_baseline.TestEvidenceTests.test_oversized_file_omitted_without_truncated_xml) ... ok
+test_redaction_expansion_is_also_bounded (test_baseline.TestEvidenceTests.test_redaction_expansion_is_also_bounded) ... ok
+test_target_directory_symlink_rejected (test_baseline.TestEvidenceTests.test_target_directory_symlink_rejected) ... ok
+test_target_file_symlink_rejected_even_within_private_root (test_baseline.TestEvidenceTests.test_target_file_symlink_rejected_even_within_private_root) ... ok
+test_correct_digest_installs_executable (test_prepare_host.VerifiedDownloadTests.test_correct_digest_installs_executable) ... ok
+test_existing_staging_file_is_not_removed (test_prepare_host.VerifiedDownloadTests.test_existing_staging_file_is_not_removed) ... ok
+test_invalid_pin_never_downloads (test_prepare_host.VerifiedDownloadTests.test_invalid_pin_never_downloads) ... ok
+test_tamper_cannot_replace_existing_binary (test_prepare_host.VerifiedDownloadTests.test_tamper_cannot_replace_existing_binary) ... ok
+
+----------------------------------------------------------------------
+Ran 28 tests in 0.031s
+
+OK
+
+$ python3 -m unittest discover -s tools/fork_audit/tests -v
+test_broken_symlink_rejected (test_check.SourceGuardTests.test_broken_symlink_rejected) ... ok
+test_clean_baseline_and_audit_addition_pass (test_check.SourceGuardTests.test_clean_baseline_and_audit_addition_pass) ... ok
+test_committed_application_edit_rejected (test_check.SourceGuardTests.test_committed_application_edit_rejected) ... ok
+test_legacy_publish_workflow_only_removal_allowed (test_check.SourceGuardTests.test_legacy_publish_workflow_only_removal_allowed) ... ok
+test_literal_hash_is_rejected_without_disclosure (test_check.SourceGuardTests.test_literal_hash_is_rejected_without_disclosure) ... ok
+test_new_application_file_rejected (test_check.SourceGuardTests.test_new_application_file_rejected) ... ok
+test_only_synthetic_fixture_hash_is_allowed (test_check.SourceGuardTests.test_only_synthetic_fixture_hash_is_allowed) ... ok
+test_other_top_level_document_not_implicitly_allowed (test_check.SourceGuardTests.test_other_top_level_document_not_implicitly_allowed) ... ok
+test_placeholder_assignment_passes (test_check.SourceGuardTests.test_placeholder_assignment_passes) ... ok
+test_private_key_is_rejected_without_disclosure (test_check.SourceGuardTests.test_private_key_is_rejected_without_disclosure) ... ok
+test_provenance_missing_rejected (test_check.SourceGuardTests.test_provenance_missing_rejected) ... ok
+test_provenance_tamper_rejected (test_check.SourceGuardTests.test_provenance_tamper_rejected) ... ok
+test_requested_top_level_documents_allowed (test_check.SourceGuardTests.test_requested_top_level_documents_allowed) ... ok
+test_signing_file_rejected (test_check.SourceGuardTests.test_signing_file_rejected) ... ok
+test_staged_application_edit_rejected (test_check.SourceGuardTests.test_staged_application_edit_rejected) ... ok
+test_staged_secret_cannot_hide_behind_safe_worktree (test_check.SourceGuardTests.test_staged_secret_cannot_hide_behind_safe_worktree) ... ok
+test_staged_source_change_cannot_hide_behind_restored_worktree (test_check.SourceGuardTests.test_staged_source_change_cannot_hide_behind_restored_worktree) ... ok
+test_staged_symlink_cannot_hide_behind_regular_worktree (test_check.SourceGuardTests.test_staged_symlink_cannot_hide_behind_regular_worktree) ... ok
+test_stdlib_tool_passes (test_check.SourceGuardTests.test_stdlib_tool_passes) ... ok
+test_symlink_rejected (test_check.SourceGuardTests.test_symlink_rejected) ... ok
+test_unreviewed_dependency_rejected (test_check.SourceGuardTests.test_unreviewed_dependency_rejected) ... ok
+test_worktree_application_edit_rejected (test_check.SourceGuardTests.test_worktree_application_edit_rejected) ... ok
+
+----------------------------------------------------------------------
+Ran 22 tests in 1.276s
+
+OK
+
+$ python3 -m unittest discover -s build-system/Make/tests
+............................................
+----------------------------------------------------------------------
+Ran 44 tests in 0.522s
+
+OK
+
+$ python3 tools/fork_audit/check.py
+PASS: audit-stage source integrity and added-file checks; no runtime security claim.
+
+$ git diff --check

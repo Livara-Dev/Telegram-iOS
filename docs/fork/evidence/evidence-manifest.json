@@ -1,0 +1,60 @@
+{
+  "retrieved_date_utc": "2026-11-04",
+  "repositories": {
+    "AyuGram4A": {
+      "head": "7013145676d36d82ee13c02a89f72097b7490dcd",
+      "author_date": "2023-07-28T12:02:11Z",
+      "committer_date": "2023-07-28T12:16:39Z",
+      "shallow": false,
+      "source_tree_clean": true
+    },
+    "AyuGramDesktop": {
+      "head": "0f2a31bb420de98f331990432265b131b8d836b5",
+      "author_date": "2026-10-20T22:08:03+03:00",
+      "committer_date": "2026-10-20T22:08:03+03:00",
+      "shallow": true,
+      "source_tree_clean": true
+    },
+    "AyuGramDocs": {
+      "head": "42f5f32c6b05aab4a69a5f8d0bf7652e1cb11a9b",
+      "author_date": "2025-01-08T08:09:07+04:00",
+      "committer_date": "2025-01-08T08:09:07+04:00",
+      "shallow": false,
+      "source_tree_clean": true
+    }
+  },
+  "snapshots": {
+    "saving.html": {
+      "sha256": "2ff452e96ad9efa8b4cebbaaaa20909f6ba0130f49ea8a8ecc4b7046f197dfcc",
+      "bytes": 25045
+    },
+    "releases.html": {
+      "sha256": "cdf92ff42da84e2f11a0cb5cee3e0b3f6d689479279b60e1734192c1a458b79d",
+      "bytes": 123449
+    },
+    "android.html": {
+      "sha256": "66496b01c8c032ce1d03e9f1a347b8dce11785364e570a3823527dc4256cd8cb",
+      "bytes": 23857
+    },
+    "releases.json": {
+      "sha256": "d194a80f7ed66b5cba42a29a49049ec88b1a837f19d18c3c0442e7f7685c6d8d",
+      "bytes": 18757
+    },
+    "ghost.html": {
+      "sha256": "eaf9fa15c750b5c42e8802c8baa30e8826322296e3597d993816c64e5b27d401",
+      "bytes": 27680
+    },
+    "channel.html": {
+      "sha256": "6fb04d394e36910ed6889bf96c391c546a1f81175ff8718b4bd8a56615225640",
+      "bytes": 105358
+    }
+  },
+  "android_october_2026_git_commits": 0,
+  "android_advertised_refs": [
+    "refs/heads/rewrite"
+  ],
+  "android_github_releases": [],
+  "android_october_release_note": "https://t.me/AyuGramReleases/61",
+  "android_october_release_build": "20261005",
+  "runtime_verification": false
+}
