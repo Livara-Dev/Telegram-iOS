@@ -1,4 +1,4 @@
-# Refresh source snapshot after the b9d4f424 build-103 refinement publication.
+# Refresh exact source after build 104 for gallery export and More Features.
 name: AyuGram exact-revision source snapshot
 
 on:
