@@ -1,4 +1,4 @@
-# Refresh exact source after build 104 for gallery export and More Features.
+# Refresh exact source for received-media sharing and screenshot controls.
 name: AyuGram exact-revision source snapshot
 
 on:
