@@ -92,6 +92,7 @@ private enum UltraBatterySaverStorage {
     static let energySnapshot = "org.livara.telegram.ultra-battery.energy.v1"
     static let backgroundSnapshot = "org.livara.telegram.ultra-battery.background.v1"
     static let reduceMotionSnapshot = "org.livara.telegram.ultra-battery.motion.v1"
+    static let animationsEnabledSnapshot = "org.livara.telegram.ultra-battery.animations.v1"
 }
 
 private func applyUltraBatterySaver(context: AccountContext, enabled: Bool, completion: @escaping (Bool) -> Void) {
@@ -107,6 +108,7 @@ private func applyUltraBatterySaver(context: AccountContext, enabled: Bool, comp
             }
             defaults.set(data, forKey: UltraBatterySaverStorage.energySnapshot)
             defaults.set(current.downloadInBackground, forKey: UltraBatterySaverStorage.backgroundSnapshot)
+            defaults.set(UIView.areAnimationsEnabled, forKey: UltraBatterySaverStorage.animationsEnabledSnapshot)
         }
 
         let _ = (cosmetics.settings |> take(1) |> deliverOnMainQueue).startStandalone(next: { state in
@@ -121,6 +123,7 @@ private func applyUltraBatterySaver(context: AccountContext, enabled: Bool, comp
             }
             let _ = update.startStandalone()
             let _ = (cosmetics.setReducedMotion(true) |> deliverOnMainQueue).startStandalone(next: { saved in
+                UIView.setAnimationsEnabled(false)
                 defaults.set(true, forKey: UltraBatterySaverStorage.active)
                 completion(saved)
             })
@@ -133,16 +136,19 @@ private func applyUltraBatterySaver(context: AccountContext, enabled: Bool, comp
         }
         let previousBackground = defaults.bool(forKey: UltraBatterySaverStorage.backgroundSnapshot)
         let previousMotion = defaults.bool(forKey: UltraBatterySaverStorage.reduceMotionSnapshot)
+        let previousAnimationsEnabled = defaults.bool(forKey: UltraBatterySaverStorage.animationsEnabledSnapshot)
         let update = updateMediaDownloadSettingsInteractively(accountManager: context.sharedContext.accountManager) { current in
             restoringUltraBatterySaverSettings(from: current, energy: previousEnergy, downloadInBackground: previousBackground)
         }
         let _ = update.startStandalone()
         let _ = (cosmetics.setReducedMotion(previousMotion) |> deliverOnMainQueue).startStandalone(next: { saved in
             if saved {
+                UIView.setAnimationsEnabled(previousAnimationsEnabled)
                 defaults.removeObject(forKey: UltraBatterySaverStorage.active)
                 defaults.removeObject(forKey: UltraBatterySaverStorage.energySnapshot)
                 defaults.removeObject(forKey: UltraBatterySaverStorage.backgroundSnapshot)
                 defaults.removeObject(forKey: UltraBatterySaverStorage.reduceMotionSnapshot)
+                defaults.removeObject(forKey: UltraBatterySaverStorage.animationsEnabledSnapshot)
             }
             completion(saved)
         })
