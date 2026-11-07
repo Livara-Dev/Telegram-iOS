@@ -234,6 +234,13 @@ public func customeOptionsController(context: AccountContext, category: CustomeO
             case .privacySettings: navigation.push(makePrivacyAndSecurityController(context: context))
             case .messageFilters: navigation.push(localMessageFilterSettingsController(context: context))
             case .appearance: navigation.push(localAppearanceOptionsController(context: context))
+            case .bubbleSettings:
+                let _ = (context.sharedContext.accountManager.sharedData(keys: Set([ApplicationSpecificSharedDataKeys.presentationThemeSettings]))
+                |> take(1)
+                |> deliverOnMainQueue).start(next: { view in
+                    let settings = view.entries[ApplicationSpecificSharedDataKeys.presentationThemeSettings]?.get(PresentationThemeSettings.self) ?? PresentationThemeSettings.defaultSettings
+                    navigation.push(BubbleSettingsController(context: context, presentationThemeSettings: settings))
+                })
             case .chatFolders:
                 navigation.push(localFolderAppearanceController(context: context))
             case .animationSettings: navigation.push(energySavingSettingsScreen(context: context))
