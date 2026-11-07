@@ -3,7 +3,6 @@ name: AyuGram extended retention source and device build
 on:
   push:
     branches: [integration/ayu-current]
-    paths: [tools/fork_baseline/extended-retention-request.json]
   workflow_dispatch:
 
 permissions:
@@ -17,37 +16,17 @@ jobs:
   publish-reviewed-source:
     if: github.repository == 'Livara-Dev/Telegram-iOS' && github.ref == 'refs/heads/integration/ayu-current'
     runs-on: ubuntu-latest
-    timeout-minutes: 15
-    permissions:
-      contents: write
+    timeout-minutes: 2
     outputs:
-      source_sha: ${{ steps.publish.outputs.source_sha }}
+      source_sha: ${{ steps.source.outputs.source_sha }}
     steps:
-      - name: Check out the exact review request without persistent credentials
-        env:
-          CHECKOUT_TOKEN: ${{ github.token }}
+      - name: Pin the exact committed source revision
+        id: source
         shell: bash
         run: |
           set -euo pipefail
-          python3 - <<'PY'
-          import base64, os, re, subprocess
-          sha = os.environ['GITHUB_SHA']
-          if os.environ['GITHUB_REPOSITORY'] != 'Livara-Dev/Telegram-iOS' or not re.fullmatch(r'[0-9a-f]{40}', sha):
-              raise SystemExit('Unexpected source request')
-          subprocess.run(['git', 'init', '-q'], check=True)
-          subprocess.run(['git', 'remote', 'add', 'origin', 'https://github.com/Livara-Dev/Telegram-iOS.git'], check=True)
-          private = os.environ.copy()
-          token = private.pop('CHECKOUT_TOKEN')
-          private.update(GIT_CONFIG_COUNT='1', GIT_CONFIG_KEY_0='http.https://github.com/.extraheader',
-              GIT_CONFIG_VALUE_0='AUTHORIZATION: basic ' + base64.b64encode(('x-access-token:' + token).encode()).decode())
-          subprocess.run(['git', 'fetch', '--no-tags', '--depth=1', 'origin', sha], env=private, check=True, timeout=600)
-          subprocess.run(['git', 'checkout', '--detach', sha], check=True)
-          PY
-      - name: Apply exact reviewed source and fast-forward only the authorized branch
-        id: publish
-        env:
-          PUBLISH_TOKEN: ${{ github.token }}
-        run: python3 tools/fork_baseline/publish_extended_retention.py
+          [[ "$GITHUB_SHA" =~ ^[0-9a-f]{40}$ ]]
+          echo "source_sha=$GITHUB_SHA" >> "$GITHUB_OUTPUT"
 
   portable-tests:
     needs: publish-reviewed-source
