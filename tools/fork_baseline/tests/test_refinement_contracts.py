@@ -17,7 +17,7 @@ class RefinementContracts(unittest.TestCase):
             self.assertIn('title: "Account limit"', body)
     def test_compact_settings_have_no_main_description_footer(self):
         body = self.read("submodules/SettingsUI/Sources/CustomeOptionsController.swift")
-        self.assertIn("self.showsSearch ? 60.0 : 8.0", body)
+        self.assertIn("self.showsSearch ? 124.0 : 8.0", body)
         self.assertNotIn("CAGradientLayer", body)
         footer = body.split("titleForFooterInSection", 1)[1].split("cellForRowAt", 1)[0]
         self.assertNotIn("explanation", footer)
