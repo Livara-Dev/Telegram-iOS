@@ -52,6 +52,7 @@ ADDED_FILES = {
     "submodules/SettingsUI/Sources/LocalPrivacyAdsSettingsController.swift",
     "submodules/SettingsUI/Sources/LocalTimedMediaInformationController.swift",
     "submodules/SettingsUI/Tests/CustomeOptionsCatalogTests.swift",
+    "submodules/SettingsUI/Tests/UltraBatterySaverTests.swift",
     "submodules/TelegramCore/Tests/LocalPrivacyAdsTests.swift",
     "Tests/NativeSecurityHost/BUILD",
     "Tests/NativeSecurityHost/NativeSecurityTestHost.swift",
