@@ -18,7 +18,7 @@ final class CustomeOptionsCatalogTests: XCTestCase {
 
     func testNewFeatureHubsOnlyRouteToExistingFunctionalDestinations() {
         XCTAssertEqual(CustomeOptionsCatalog.links(for: .smartInbox).map { $0.action }, [.messageFilters, .chatFolders, .archiveSettings])
-        XCTAssertEqual(CustomeOptionsCatalog.links(for: .chatStudio).map { $0.action }, [.appearance, .localCosmetics, .chatFolders])
+        XCTAssertEqual(CustomeOptionsCatalog.links(for: .chatStudio).map { $0.action }, [.appearance, .bubbleSettings, .localCosmetics, .chatFolders])
         XCTAssertEqual(CustomeOptionsCatalog.links(for: .mediaVault).map { $0.action }, [.archiveGallery, .archiveBackup, .mediaSaving, .storageUsage])
         XCTAssertEqual(CustomeOptionsCatalog.links(for: .ultraBatterySaver).map { $0.action }, [.ultraBatterySaver, .animationSettings])
         XCTAssertTrue(CustomeOptionsCatalog.explanation(for: .ultraBatterySaver).contains("20% activation threshold"))
