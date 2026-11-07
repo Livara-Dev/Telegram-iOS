@@ -137,12 +137,12 @@ private func applyUltraBatterySaver(context: AccountContext, enabled: Bool, comp
             restoringUltraBatterySaverSettings(from: current, energy: previousEnergy, downloadInBackground: previousBackground)
         }
         let _ = update.startStandalone()
-        let _ = (cosmetics.setReducedMotion(previousMotion) |> deliverOnMainQueue).startStandalone(next: { _ in
+        let _ = (cosmetics.setReducedMotion(previousMotion) |> deliverOnMainQueue).startStandalone(next: { saved in
             defaults.removeObject(forKey: UltraBatterySaverStorage.active)
             defaults.removeObject(forKey: UltraBatterySaverStorage.energySnapshot)
             defaults.removeObject(forKey: UltraBatterySaverStorage.backgroundSnapshot)
             defaults.removeObject(forKey: UltraBatterySaverStorage.reduceMotionSnapshot)
-            completion(true)
+            completion(saved)
         })
     }
 }
