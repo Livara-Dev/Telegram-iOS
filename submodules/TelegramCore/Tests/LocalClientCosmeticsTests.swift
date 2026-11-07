@@ -104,7 +104,7 @@ final class LocalClientCosmeticsTests: XCTestCase {
     }
 
     func testAllPresetCodesRoundTripInProductionPreferenceCodec() throws {
-        XCTAssertEqual(LocalClientAccentPreset.allCases.map { $0.rawValue }, [0, 1, 2, 3, 4, 5])
+        XCTAssertEqual(LocalClientAccentPreset.allCases.map { $0.rawValue }, Array(0...12))
         for accent in LocalClientAccentPreset.allCases {
             XCTAssertTrue(try self.localArchiveValue(self.context.setAccent(accent)))
             XCTAssertEqual(try self.settings().accent, accent)
