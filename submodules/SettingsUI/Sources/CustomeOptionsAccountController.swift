@@ -64,6 +64,29 @@ private func customeGhostDetail(_ settings: LocalGhostSettings, story: LocalStor
 }
 
 
+func ultraBatterySaverSettings(from current: MediaAutoDownloadSettings) -> MediaAutoDownloadSettings {
+    var updated = current
+    var energy = updated.energyUsageSettings
+    energy.activationThreshold = 20
+    energy.autoplayVideo = false
+    energy.autoplayGif = false
+    energy.loopStickers = false
+    energy.loopEmoji = false
+    energy.fullTranslucency = false
+    energy.extendBackgroundWork = false
+    energy.autodownloadInBackground = false
+    updated.energyUsageSettings = energy
+    updated.downloadInBackground = false
+    return updated
+}
+
+func restoringUltraBatterySaverSettings(from current: MediaAutoDownloadSettings, energy: EnergyUsageSettings, downloadInBackground: Bool) -> MediaAutoDownloadSettings {
+    var updated = current
+    updated.energyUsageSettings = energy
+    updated.downloadInBackground = downloadInBackground
+    return updated
+}
+
 private enum UltraBatterySaverStorage {
     static let active = "org.livara.telegram.ultra-battery.active.v1"
     static let energySnapshot = "org.livara.telegram.ultra-battery.energy.v1"
@@ -94,19 +117,7 @@ private func applyUltraBatterySaver(context: AccountContext, enabled: Bool, comp
             }
 
             let update = updateMediaDownloadSettingsInteractively(accountManager: context.sharedContext.accountManager) { current in
-                var updated = current
-                var energy = updated.energyUsageSettings
-                energy.activationThreshold = 20
-                energy.autoplayVideo = false
-                energy.autoplayGif = false
-                energy.loopStickers = false
-                energy.loopEmoji = false
-                energy.fullTranslucency = false
-                energy.extendBackgroundWork = false
-                energy.autodownloadInBackground = false
-                updated.energyUsageSettings = energy
-                updated.downloadInBackground = false
-                return updated
+                ultraBatterySaverSettings(from: current)
             }
             let _ = update.startStandalone()
             let _ = (cosmetics.setReducedMotion(true) |> deliverOnMainQueue).startStandalone(next: { saved in
@@ -123,10 +134,7 @@ private func applyUltraBatterySaver(context: AccountContext, enabled: Bool, comp
         let previousBackground = defaults.bool(forKey: UltraBatterySaverStorage.backgroundSnapshot)
         let previousMotion = defaults.bool(forKey: UltraBatterySaverStorage.reduceMotionSnapshot)
         let update = updateMediaDownloadSettingsInteractively(accountManager: context.sharedContext.accountManager) { current in
-            var updated = current
-            updated.energyUsageSettings = previousEnergy
-            updated.downloadInBackground = previousBackground
-            return updated
+            restoringUltraBatterySaverSettings(from: current, energy: previousEnergy, downloadInBackground: previousBackground)
         }
         let _ = update.startStandalone()
         let _ = (cosmetics.setReducedMotion(previousMotion) |> deliverOnMainQueue).startStandalone(next: { _ in
