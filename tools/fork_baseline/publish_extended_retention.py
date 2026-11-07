@@ -2,7 +2,7 @@
 """Apply one checksum-bound source review and publish only its integration branch.
 
 The request contains an ordinary unified source diff. It cannot change workflows,
-credentials, dependencies or unlisted files. This tool never starts an iOS build.
+credentials, dependency versions or unlisted files. This tool never starts an iOS build.
 """
 import base64
 import gzip
@@ -27,8 +27,13 @@ FILES = {'tools/fork_audit/check.py',
          'submodules/TelegramCore/Sources/TelegramEngine/Messages/MarkMessageContentAsConsumedInteractively.swift',
          'submodules/SettingsUI/Sources/LocalTimedMediaInformationController.swift',
          'submodules/SettingsUI/Sources/CustomeOptionsCatalog.swift'}
-# Exact reviewed refinement seams; credentials, authentication and dependencies remain out of scope.
+# Exact reviewed refinement seams; credentials, authentication and dependency versions remain out of scope.
 FILES.update({
+    'Telegram/BUILD',
+    'Telegram/Telegram-iOS/ar.lproj/InfoPlist.strings',
+    'Telegram/Telegram-iOS/ko.lproj/InfoPlist.strings',
+    'submodules/SettingsUI/BUILD',
+    'submodules/SettingsUI/Tests/LocalArchiveMediaPreviewTests.swift',
     'Tests/CustomeOptionsHost/CustomeOptionsControllerTests.swift',
     'Tests/CustomeOptionsHost/CustomeOptionsInteractionTests.swift',
     'submodules/AccountUtils/Sources/AccountUtils.swift',
@@ -114,7 +119,6 @@ def apply_request(root, request):
     if len(patch) > MAX_PATCH or digest(patch) != request.get('patch_sha256'):
         raise ValueError('Patch checksum or size mismatch')
     patch.decode('utf-8', errors='strict')
-    # Git verifies paths and hunk context independently of the before/after hashes.
     with tempfile.TemporaryDirectory(prefix='ayu-reviewed-source-') as temporary:
         file = Path(temporary) / 'reviewed.patch'
         file.write_bytes(patch)
@@ -180,10 +184,9 @@ def main():
     if len(remote) != 2 or remote[0] != parent:
         raise ValueError('Integration branch advanced; refusing concurrent overwrite')
     git(root, '-c', 'user.name=AyuGram source build', '-c', 'user.email=41898282+github-actions[bot]@users.noreply.github.com',
-        'commit', '-m', 'Refine AyuGram settings, retained media and account capacity')
+        'commit', '-m', 'Fix archived-media playback and compact bubbles; apply requested display name and icon')
     source = git(root, 'rev-parse', 'HEAD')
     git(root, 'push', 'origin', 'HEAD:refs/heads/' + BRANCH, env=private)
-    # A normal fast-forward push is the final concurrency guard; never force.
     with open(os.environ['GITHUB_OUTPUT'], 'a') as output:
         output.write('source_sha=' + source + '\n')
     print(json.dumps({'source_commit': source, 'changed_files': len(names),
