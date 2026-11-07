@@ -170,7 +170,7 @@ jobs:
       - name: Compile new device IPA or execute all fixed native suites
         env:
           MODE: ${{ matrix.mode }}
-          BUILD_NUMBER: ${{ github.run_number }}
+          BUILD_NUMBER: 5
           TELEGRAM_API_ID: ${{ secrets.TELEGRAM_API_ID }}
           TELEGRAM_API_HASH: ${{ secrets.TELEGRAM_API_HASH }}
           IOS_BUNDLE_ID: org.livara.ayugram
@@ -191,7 +191,7 @@ jobs:
         if: always()
         env:
           MODE: ${{ matrix.mode }}
-          BUILD_NUMBER: ${{ github.run_number }}
+          BUILD_NUMBER: 5
         run: |
           python3 - <<'PY'
           import hashlib, json, os
