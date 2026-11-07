@@ -40,33 +40,54 @@ public struct CustomeOptionsPalette {
 
 private final class CustomeOptionsHeader: UIView {
     let search = UISearchBar()
+    private let titleLabel = UILabel()
+    private let subtitleLabel = UILabel()
     private let showsSearch: Bool
 
     init(mode: CustomeOptionsMode) {
         self.showsSearch = mode == .dashboard
         super.init(frame: .zero)
         self.search.searchBarStyle = .minimal
-        self.search.placeholder = "Search settings"
+        self.search.placeholder = "Search features"
         self.search.accessibilityIdentifier = "ayugram.custom-options.search"
         self.accessibilityIdentifier = "ayugram.custom-options.header"
-        if self.showsSearch { self.addSubview(self.search) }
+        self.titleLabel.text = "More Features"
+        self.titleLabel.font = UIFont.systemFont(ofSize: 27.0, weight: .bold)
+        self.titleLabel.adjustsFontForContentSizeCategory = true
+        self.titleLabel.accessibilityIdentifier = "more-features.hero-title"
+        self.subtitleLabel.text = "Make Telegram yours."
+        self.subtitleLabel.font = UIFont.preferredFont(forTextStyle: .subheadline)
+        self.subtitleLabel.adjustsFontForContentSizeCategory = true
+        self.subtitleLabel.accessibilityIdentifier = "more-features.hero-subtitle"
+        if self.showsSearch {
+            self.addSubview(self.titleLabel)
+            self.addSubview(self.subtitleLabel)
+            self.addSubview(self.search)
+        }
     }
 
     required init?(coder: NSCoder) { fatalError("init(coder:) is not supported") }
 
     func update(palette: CustomeOptionsPalette) {
+        self.titleLabel.textColor = palette.text
+        self.subtitleLabel.textColor = palette.secondaryText
         self.search.overrideUserInterfaceStyle = palette.dark ? .dark : .light
         self.search.tintColor = palette.accent
         self.search.searchTextField.textColor = palette.text
+        self.search.searchTextField.backgroundColor = palette.surface
+        self.search.searchTextField.layer.cornerRadius = 13.0
+        self.search.searchTextField.layer.masksToBounds = true
     }
 
     func height(for width: CGFloat) -> CGFloat {
-        return self.showsSearch ? 60.0 : 8.0
+        return self.showsSearch ? 124.0 : 8.0
     }
 
     override func layoutSubviews() {
         super.layoutSubviews()
-        self.search.frame = CGRect(x: 8.0, y: 4.0, width: max(0, self.bounds.width - 16.0), height: 52.0)
+        self.titleLabel.frame = CGRect(x: 20.0, y: 8.0, width: max(0, self.bounds.width - 40.0), height: 34.0)
+        self.subtitleLabel.frame = CGRect(x: 20.0, y: 40.0, width: max(0, self.bounds.width - 40.0), height: 20.0)
+        self.search.frame = CGRect(x: 8.0, y: 62.0, width: max(0, self.bounds.width - 16.0), height: 54.0)
     }
 }
 
@@ -107,6 +128,8 @@ public final class CustomeOptionsController: ViewController, UITableViewDataSour
         self.table.dataSource = self
         self.table.delegate = self
         self.table.rowHeight = UITableView.automaticDimension
+        self.table.separatorStyle = .none
+        if #available(iOS 15.0, *) { self.table.sectionHeaderTopPadding = 10.0 }
         self.table.estimatedRowHeight = 52.0
         self.table.keyboardDismissMode = .interactive
         self.table.contentInsetAdjustmentBehavior = .never
@@ -211,7 +234,7 @@ public final class CustomeOptionsController: ViewController, UITableViewDataSour
 
     public func tableView(_ tableView: UITableView, titleForHeaderInSection section: Int) -> String? {
         switch self.mode {
-        case .dashboard: return self.showsQuickControls && section == 0 ? "Quick toggles" : "Settings"
+        case .dashboard: return self.showsQuickControls && section == 0 ? "QUICK CONTROLS" : "EXPLORE"
         case .category: return nil
         }
     }
@@ -226,8 +249,11 @@ public final class CustomeOptionsController: ViewController, UITableViewDataSour
         let identifier = isToggle ? "custom-toggle" : "custom-link"
         let cell = tableView.dequeueReusableCell(withIdentifier: identifier) ?? UITableViewCell(style: .subtitle, reuseIdentifier: identifier)
         cell.backgroundColor = self.palette.surface
+        cell.contentView.backgroundColor = self.palette.surface
+        cell.contentView.layer.cornerRadius = 15.0
+        cell.contentView.layer.masksToBounds = true
         cell.textLabel?.textColor = self.palette.text
-        cell.textLabel?.font = UIFont.preferredFont(forTextStyle: .body)
+        cell.textLabel?.font = UIFont.systemFont(ofSize: 16.0, weight: .semibold)
         cell.textLabel?.numberOfLines = 2
         cell.textLabel?.adjustsFontForContentSizeCategory = true
         cell.detailTextLabel?.textColor = self.palette.secondaryText
