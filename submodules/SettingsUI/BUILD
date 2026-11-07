@@ -168,6 +168,7 @@ swift_library(
     deps = [
         ":SettingsUI",
         "//submodules/TelegramCore:TelegramCore",
+        "//submodules/TelegramUIPreferences:TelegramUIPreferences",
         "//submodules/SSignalKit/SwiftSignalKit:SwiftSignalKit",
         "//submodules/TelegramUI/Components/Chat/ChatMessageDateAndStatusNode:ChatMessageDateAndStatusNode",
     ],
