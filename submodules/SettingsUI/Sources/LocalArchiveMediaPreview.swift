@@ -18,6 +18,10 @@ func localArchiveMediaRoute(kind: String, mimeType: String) -> LocalArchiveMedia
     guard mimeType.utf8.count <= 256, !mimeType.contains("\0") else { return .unsupported }
     let raw = mimeType.split(separator: ";", maxSplits: 1).first.map(String.init) ?? ""
     let mime = raw.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+    // A video/voice label with an image MIME is a mismatched or thumbnail-only
+    // record, not a playable saved message. Never silently open it as a photo.
+    if ["video", "videoMessage"].contains(kind), !mime.hasPrefix("video/") { return .unsupported }
+    if kind == "voice", !mime.hasPrefix("audio/") { return .unsupported }
     if mime == "image/gif" { return .animatedGIF }
     if ["image/jpeg", "image/png", "image/heic", "image/heif", "image/webp", "image/tiff", "image/bmp"].contains(mime) { return .image }
     if mime == "application/pdf" { return .pdf }

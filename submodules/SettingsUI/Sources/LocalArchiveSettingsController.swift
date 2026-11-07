@@ -6,6 +6,7 @@ import AVFoundation
 import AVKit
 import QuartzCore
 import LocalArchivePlayback
+import TelegramAudio
 import AsyncDisplayKit
 import Display
 import SwiftSignalKit
@@ -743,7 +744,7 @@ private func localArchiveMessagesController(context: AccountContext, archive: Lo
                     guard mediaVisible, mediaReadable, UIApplication.shared.applicationState == .active,
                           model.state.records.contains(where: { $0.sequence == sequence }) else { return }
                     let presentation = context.sharedContext.currentPresentationData.with { $0 }
-                    localArchiveOpenMediaPreview(result, archive: archive, eventKey: record.eventKey, slot: slot,
+                    localArchiveOpenMediaPreview(result, context: context, archive: archive, eventKey: record.eventKey, slot: slot,
                         presentationData: presentation, push: { pushController?($0) }, information: { text in
                             presentController?(textAlertController(context: context, title: "Preview unavailable", text: text,
                                 actions: [TextAlertAction(type: .defaultAction, title: presentation.strings.Common_OK, action: {})]))
@@ -891,7 +892,7 @@ private func localArchiveMessagesController(context: AccountContext, archive: Lo
 private enum LocalArchiveMediaPreviewResult {
     case image(UIImage)
     case animatedGIF(LocalArchiveGIFPreview)
-    case playback
+    case playback(kind: String)
     case pdf(LocalArchivePDFPreview)
     case unavailable(String)
 }
@@ -904,7 +905,7 @@ private func localArchiveLoadMediaPreview(archive: LocalArchiveCoordinator, even
     |> mapToSignal { info -> Signal<LocalArchiveMediaPreviewResult, NoError> in
         guard let info else { return .single(.unavailable("The file bytes were not retained or are no longer available in this archive.")) }
         let route = localArchiveMediaRoute(kind: info.kind, mimeType: info.mimeType)
-        if route == .playback { return .single(.playback) }
+        if route == .playback { return .single(.playback(kind: info.kind)) }
         if route == .unsupported { return .single(.unavailable("This file is preserved locally, but a preview is not available for its format.")) }
         return archive.mediaData(eventKey: eventKey, slot: slot)
         |> mapToSignal { data -> Signal<LocalArchiveMediaPreviewResult, NoError> in
@@ -940,7 +941,7 @@ private func localArchiveLoadMediaPreview(archive: LocalArchiveCoordinator, even
     }
 }
 
-private func localArchiveOpenMediaPreview(_ result: LocalArchiveMediaPreviewResult, archive: LocalArchiveCoordinator,
+private func localArchiveOpenMediaPreview(_ result: LocalArchiveMediaPreviewResult, context: AccountContext, archive: LocalArchiveCoordinator,
                                          eventKey: String, slot: Int, presentationData: PresentationData,
                                          push: (ViewController) -> Void, information: (String) -> Void) {
     switch result {
@@ -949,8 +950,8 @@ private func localArchiveOpenMediaPreview(_ result: LocalArchiveMediaPreviewResu
     case let .animatedGIF(animation):
         guard let first = animation.frames.first else { information("The animation has no decodable frames."); return }
         push(LocalArchivedImageController(image: first, animation: animation, archive: archive, presentationData: presentationData))
-    case .playback:
-        push(LocalArchivedPlaybackController(archive: archive, eventKey: eventKey, slot: slot, presentationData: presentationData))
+    case let .playback(kind):
+        push(LocalArchivedPlaybackController(context: context, archive: archive, eventKey: eventKey, slot: slot, kind: kind, presentationData: presentationData))
     case let .pdf(pdf):
         push(LocalArchivedPDFController(preview: pdf, archive: archive, presentationData: presentationData))
     case let .unavailable(message):
@@ -968,10 +969,42 @@ public func openLocalArchiveSavedMedia(context: AccountContext, eventKey: String
     let lease = archive.acquireReadAccess()
     let request = (localArchiveLoadMediaPreview(archive: archive, eventKey: eventKey, slot: slot)
     |> deliverOnMainQueue).start(next: { result in
-        localArchiveOpenMediaPreview(result, archive: archive, eventKey: eventKey, slot: slot,
+        localArchiveOpenMediaPreview(result, context: context, archive: archive, eventKey: eventKey, slot: slot,
             presentationData: context.sharedContext.currentPresentationData.with { $0 }, push: push, information: information)
     })
     return ActionDisposable { request.dispose(); lease.dispose() }
+}
+
+/// A bounded in-memory preview from the actual encrypted video. This never
+/// writes an image into the media slot or substitutes it for the saved movie.
+public func localArchiveSavedVideoThumbnail(context: AccountContext, eventKey: String, slot: Int) -> Signal<UIImage?, NoError> {
+    guard let archive = context.account.localArchive else { return .single(nil) }
+    return Signal { subscriber in
+        let lease = archive.acquireReadAccess()
+        let request = (archive.mediaInfo(eventKey: eventKey, slot: slot)
+        |> mapToSignal { info -> Signal<UIImage?, NoError> in
+            guard let info, ["video", "videoMessage", "animation"].contains(info.kind),
+                  localArchiveMediaRoute(kind: info.kind, mimeType: info.mimeType) == .playback else { return .single(nil) }
+            guard #available(iOS 16.0, *) else { return .single(nil) }
+            return Signal { inner in
+                let loader = ArchivePlaybackAsset(source: LocalArchivePlaybackSource(archive: archive, eventKey: eventKey, slot: slot))
+                let generator = AVAssetImageGenerator(asset: loader.asset)
+                generator.appliesPreferredTrackTransform = true
+                generator.maximumSize = CGSize(width: 400, height: 400)
+                let task = Task {
+                    do {
+                        let frame = try await generator.image(at: .zero).image
+                        if !Task.isCancelled { inner.putNext(UIImage(cgImage: frame)); inner.putCompletion() }
+                    } catch {
+                        if !Task.isCancelled { inner.putNext(nil); inner.putCompletion() }
+                    }
+                }
+                return ActionDisposable { task.cancel(); generator.cancelAllCGImageGeneration(); loader.stop() }
+            }
+        }
+        |> timeout(8, queue: Queue.concurrentDefaultQueue(), alternate: .single(nil))).start(next: { subscriber.putNext($0) }, completed: { subscriber.putCompletion() })
+        return ActionDisposable { request.dispose(); lease.dispose() }
+    }
 }
 
 private final class LocalArchiveAnimationTarget: NSObject {
@@ -1212,56 +1245,203 @@ private final class LocalArchivePlaybackSource: ArchivePlaybackSource {
     }
 }
 
+private final class LocalArchiveVideoSurface: UIView {
+    override class var layerClass: AnyClass { return AVPlayerLayer.self }
+    var playerLayer: AVPlayerLayer { return self.layer as! AVPlayerLayer }
+}
+
+/// Explicit controls are owned by this screen, not a child AVKit controller whose
+/// appearance callbacks may not be forwarded by Display's custom navigation host.
 private final class LocalArchivedPlaybackController: ViewController {
+    private let context: AccountContext
     private let loader: ArchivePlaybackAsset
-    private let playback = AVPlayerViewController()
+    private let surface = LocalArchiveVideoSurface()
     private let player = AVPlayer()
+    private let playButton = UIButton(type: .system)
+    private let scrubber = UISlider()
+    private let clockLabel = UILabel()
     private let messageLabel = UILabel()
     private let statusDisposable = MetaDisposable()
+    private let audioDisposable = MetaDisposable()
+    private var readLease: Disposable?
     private var inactiveObserver: NSObjectProtocol?
+    private var endedObserver: NSObjectProtocol?
     private var itemObservation: NSKeyValueObservation?
+    private var timeObserver: Any?
+    private var intent = ArchivePlaybackIntent()
+    private var closed = false
+    private var seeking = false
+    private var ended = false
+    private let kind: String
 
-    init(archive: LocalArchiveCoordinator, eventKey: String, slot: Int, presentationData: PresentationData) {
+    init(context: AccountContext, archive: LocalArchiveCoordinator, eventKey: String, slot: Int,
+         kind: String, presentationData: PresentationData) {
+        self.context = context
+        self.kind = kind
         self.loader = ArchivePlaybackAsset(source: LocalArchivePlaybackSource(archive: archive, eventKey: eventKey, slot: slot))
+        self.readLease = archive.acquireReadAccess()
         super.init(navigationBarPresentationData: NavigationBarPresentationData(presentationTheme: presentationData.theme, presentationStrings: presentationData.strings))
-        self.title = "Archived media"
+        self.title = kind == "voice" ? "Voice message" : kind == "videoMessage" ? "Video message" : "Video"
+        self.surface.playerLayer.player = self.player
+        self.surface.playerLayer.videoGravity = kind == "videoMessage" ? .resizeAspectFill : .resizeAspect
+        self.surface.clipsToBounds = true
+        self.surface.accessibilityIdentifier = "AyuGram.ArchivePlayer.video"
+        self.playButton.tintColor = .white
+        self.playButton.accessibilityIdentifier = "AyuGram.ArchivePlayer.play"
+        self.playButton.addTarget(self, action: #selector(self.togglePlayback), for: .touchUpInside)
+        self.scrubber.minimumValue = 0
+        self.scrubber.maximumValue = 1
+        self.scrubber.accessibilityLabel = "Playback position"
+        self.scrubber.accessibilityIdentifier = "AyuGram.ArchivePlayer.position"
+        self.scrubber.addTarget(self, action: #selector(self.beginSeeking), for: .touchDown)
+        self.scrubber.addTarget(self, action: #selector(self.seekPlayback), for: [.touchUpInside, .touchUpOutside, .touchCancel])
+        self.clockLabel.font = .monospacedDigitSystemFont(ofSize: 12, weight: .regular)
+        self.clockLabel.textColor = .white
+        self.clockLabel.textAlignment = .right
+        self.clockLabel.accessibilityIdentifier = "AyuGram.ArchivePlayer.time"
+        self.messageLabel.text = "Loading…"
         self.messageLabel.textColor = .white
         self.messageLabel.textAlignment = .center
-        self.messageLabel.numberOfLines = 0
-        self.playback.player = self.player
-        self.playback.allowsPictureInPicturePlayback = false
+        self.messageLabel.numberOfLines = 2
+        self.messageLabel.isUserInteractionEnabled = false
         let item = AVPlayerItem(asset: self.loader.asset)
-        self.itemObservation = item.observe(\.status, options: [.new]) { [weak self] item, _ in
-            if item.status == .failed {
-                DispatchQueue.main.async { [weak self] in self?.messageLabel.text = "This attachment is unavailable or its format cannot be played by iOS." }
+        self.itemObservation = item.observe(\.status, options: [.new, .initial]) { [weak self] item, _ in
+            DispatchQueue.main.async { [weak self] in
+                guard let self, !self.closed else { return }
+                self.intent.isReady = item.status == .readyToPlay
+                self.messageLabel.text = item.status == .failed ? "This file cannot be played." : self.intent.isReady ? nil : "Loading…"
+                self.applyPlaybackIntent()
             }
         }
         self.player.replaceCurrentItem(with: item)
+        self.timeObserver = self.player.addPeriodicTimeObserver(forInterval: CMTime(seconds: 0.25, preferredTimescale: 600), queue: .main) { [weak self] _ in
+            self?.updateControls()
+        }
+        self.endedObserver = NotificationCenter.default.addObserver(forName: .AVPlayerItemDidPlayToEndTime, object: item, queue: .main) { [weak self] _ in
+            guard let self else { return }
+            self.ended = true
+            self.intent.wantsPlayback = false
+            self.applyPlaybackIntent()
+        }
         self.statusDisposable.set((archive.status |> deliverOnMainQueue).start(next: { [weak self] status in
-            if !localArchiveCanRead(status) { self?.closeMedia() }
+            guard let self else { return }
+            self.intent.isReadable = localArchiveCanRead(status)
+            if !self.intent.isReadable { self.closeMedia() }
         }))
         self.inactiveObserver = NotificationCenter.default.addObserver(forName: UIApplication.willResignActiveNotification, object: nil, queue: .main) { [weak self] _ in
             self?.closeMedia()
         }
+        self.updateControls()
     }
 
     required init(coder: NSCoder) { fatalError("init(coder:) is not supported") }
 
     deinit {
         self.statusDisposable.dispose()
+        self.audioDisposable.dispose()
+        self.readLease?.dispose()
         if let observer = self.inactiveObserver { NotificationCenter.default.removeObserver(observer) }
+        if let observer = self.endedObserver { NotificationCenter.default.removeObserver(observer) }
+        if let observer = self.timeObserver { self.player.removeTimeObserver(observer) }
         self.player.pause()
         self.loader.stop()
     }
 
+    private func acquireAudio() {
+        guard !self.closed, self.intent.isVisible else { return }
+        self.audioDisposable.set(self.context.sharedContext.mediaManager.audioSession.push(
+            audioSessionType: .play(mixWithOthers: false), once: true,
+            activate: { [weak self] _ in
+                Queue.mainQueue().async {
+                    guard let self, !self.closed else { return }
+                    self.intent.hasAudioSession = true
+                    self.applyPlaybackIntent()
+                }
+            }, deactivate: { [weak self] _ in
+                return Signal { subscriber in
+                    Queue.mainQueue().async {
+                        if let self {
+                            self.intent.hasAudioSession = false
+                            self.intent.wantsPlayback = false
+                            self.applyPlaybackIntent()
+                        }
+                        subscriber.putCompletion()
+                    }
+                    return EmptyDisposable
+                }
+            }))
+    }
+
+    private func applyPlaybackIntent() {
+        guard !self.closed else { return }
+        if self.intent.shouldPlay && !self.seeking { self.player.play() }
+        else { self.player.pause() }
+        self.updateControls()
+    }
+
+    @objc private func togglePlayback() {
+        guard !self.closed, self.intent.isReady, self.intent.isReadable else { return }
+        self.intent.wantsPlayback.toggle()
+        if self.intent.wantsPlayback && !self.intent.hasAudioSession { self.acquireAudio() }
+        if self.ended && self.intent.wantsPlayback {
+            self.ended = false
+            self.player.seek(to: .zero, toleranceBefore: .zero, toleranceAfter: .zero) { [weak self] _ in
+                Queue.mainQueue().async { self?.applyPlaybackIntent() }
+            }
+        } else { self.applyPlaybackIntent() }
+    }
+
+    @objc private func beginSeeking() {
+        guard !self.closed else { return }
+        self.seeking = true
+        self.player.pause()
+    }
+
+    @objc private func seekPlayback() {
+        guard !self.closed else { return }
+        self.seeking = false
+        let duration = self.player.currentItem.map { CMTimeGetSeconds($0.duration) } ?? 0
+        guard duration.isFinite, duration > 0 else { self.applyPlaybackIntent(); return }
+        self.ended = false
+        self.player.seek(to: CMTime(seconds: duration * Double(self.scrubber.value), preferredTimescale: 600), toleranceBefore: .zero, toleranceAfter: .zero) { [weak self] _ in
+            Queue.mainQueue().async { self?.applyPlaybackIntent() }
+        }
+    }
+
+    private func updateControls() {
+        let current = CMTimeGetSeconds(self.player.currentTime())
+        let duration = self.player.currentItem.map { CMTimeGetSeconds($0.duration) } ?? 0
+        let playing = !self.closed && self.intent.shouldPlay
+        self.playButton.setImage(UIImage(systemName: playing ? "pause.fill" : "play.fill"), for: .normal)
+        self.playButton.accessibilityLabel = playing ? "Pause" : self.ended ? "Replay" : "Play"
+        self.playButton.isEnabled = !self.closed && self.intent.isReady && self.intent.isReadable
+        self.scrubber.isEnabled = self.playButton.isEnabled && duration.isFinite && duration > 0
+        if !self.seeking { self.scrubber.value = duration.isFinite && duration > 0 && current.isFinite ? Float(max(0, min(1, current / duration))) : 0 }
+        self.clockLabel.text = ArchivePlaybackIntent.clock(current) + " / " + ArchivePlaybackIntent.clock(duration)
+    }
+
     private func closeMedia() {
-        self.itemObservation?.invalidate()
-        self.itemObservation = nil
+        guard !self.closed else { return }
+        self.closed = true
+        self.intent.stop()
+        self.itemObservation?.invalidate(); self.itemObservation = nil
         self.player.pause()
         self.player.replaceCurrentItem(with: nil)
-        self.playback.player = nil
+        self.surface.playerLayer.player = nil
         self.loader.stop()
-        self.messageLabel.text = "Preview closed. Reopen the attachment to continue."
+        self.audioDisposable.set(nil)
+        self.readLease?.dispose(); self.readLease = nil
+        self.messageLabel.text = "Playback closed. Reopen to play."
+        self.updateControls()
+    }
+
+    override func viewDidAppear(_ animated: Bool) {
+        super.viewDidAppear(animated)
+        guard !self.closed else { return }
+        self.intent.isVisible = true
+        self.intent.wantsPlayback = true
+        self.acquireAudio()
+        self.applyPlaybackIntent()
     }
 
     override func viewWillDisappear(_ animated: Bool) {
@@ -1272,17 +1452,27 @@ private final class LocalArchivedPlaybackController: ViewController {
     override func loadDisplayNode() {
         super.loadDisplayNode()
         self.displayNode.backgroundColor = .black
-        self.addChild(self.playback)
-        self.displayNode.view.addSubview(self.playback.view)
-        self.playback.didMove(toParent: self)
-        self.displayNode.view.addSubview(self.messageLabel)
+        for view in [self.surface, self.playButton, self.scrubber, self.clockLabel, self.messageLabel] as [UIView] {
+            self.displayNode.view.addSubview(view)
+        }
     }
 
     override func containerLayoutUpdated(_ layout: ContainerViewLayout, transition: ContainedViewLayoutTransition) {
         super.containerLayoutUpdated(layout, transition: transition)
         let top = self.navigationLayout(layout: layout).navigationFrame.maxY
-        self.playback.view.frame = CGRect(x: 0, y: top, width: layout.size.width, height: max(0, layout.size.height - top - layout.intrinsicInsets.bottom))
-        self.messageLabel.frame = CGRect(x: 24, y: top + max(0, layout.size.height - top - 120) * 0.5, width: max(0, layout.size.width - 48), height: 120)
+        let controlsY = max(top, layout.size.height - layout.intrinsicInsets.bottom - 88)
+        let availableHeight = max(0, controlsY - top - 12)
+        var videoFrame = CGRect(x: 0, y: top, width: layout.size.width, height: availableHeight)
+        if self.kind == "videoMessage" {
+            let side = max(0, min(layout.size.width - 32, availableHeight))
+            videoFrame = CGRect(x: (layout.size.width - side) * 0.5, y: top + (availableHeight - side) * 0.5, width: side, height: side)
+            self.surface.layer.cornerRadius = side * 0.5
+        }
+        self.surface.frame = videoFrame
+        self.playButton.frame = CGRect(x: 12, y: controlsY + 6, width: 48, height: 48)
+        self.scrubber.frame = CGRect(x: 72, y: controlsY + 10, width: max(0, layout.size.width - 92), height: 40)
+        self.clockLabel.frame = CGRect(x: 72, y: controlsY + 52, width: max(0, layout.size.width - 92), height: 20)
+        self.messageLabel.frame = CGRect(x: 24, y: top + max(0, availableHeight - 60) * 0.5, width: max(0, layout.size.width - 48), height: 60)
     }
 }
 
@@ -1646,7 +1836,7 @@ private final class LocalArchiveGalleryController: ViewController, UICollectionV
         self.preview.set((localArchiveLoadMediaPreview(archive: self.archive, eventKey: item.eventKey, slot: item.slot)
             |> deliverOnMainQueue).start(next: { [weak self] result in
                 guard let self, self.readable, self.foreground, self.token == token else { return }
-                localArchiveOpenMediaPreview(result, archive: self.archive, eventKey: item.eventKey, slot: item.slot,
+                localArchiveOpenMediaPreview(result, context: self.context, archive: self.archive, eventKey: item.eventKey, slot: item.slot,
                     presentationData: presentation, push: { [weak self] controller in
                         (self?.navigationController as? NavigationController)?.pushViewController(controller)
                     }, information: { [weak self] text in self?.showInformation(title: "Preview unavailable", text: text) })

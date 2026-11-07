@@ -88,12 +88,12 @@ final class ChatLocalArchiveRowRendererTests: XCTestCase {
             let view = ChatLocalArchiveRowView(frame: CGRect(x: 0, y: 0, width: 361, height: 240))
             view.update(row: row, theme: light, openHistory: {})
             view.layoutIfNeeded()
-            XCTAssertEqual(view.backgroundColor, light.list.itemBlocksBackgroundColor)
+            XCTAssertEqual(view.backgroundColor, bubbleColorComponents(theme: light, incoming: true, wallpaper: true).fill.first)
             let lightTextColors = view.subviews.compactMap { ($0 as? UILabel)?.textColor }
             view.update(row: row, theme: dark, openHistory: {})
             view.layoutIfNeeded()
-            XCTAssertEqual(view.backgroundColor, dark.list.itemBlocksBackgroundColor)
-            XCTAssertNotEqual(view.backgroundColor, light.list.itemBlocksBackgroundColor)
+            XCTAssertEqual(view.backgroundColor, bubbleColorComponents(theme: dark, incoming: true, wallpaper: true).fill.first)
+            XCTAssertNotEqual(view.backgroundColor, bubbleColorComponents(theme: light, incoming: true, wallpaper: true).fill.first)
             let darkTextColors = view.subviews.compactMap { ($0 as? UILabel)?.textColor }
             XCTAssertNotEqual(lightTextColors, darkTextColors)
             row.content.revoke()
@@ -116,6 +116,41 @@ final class ChatLocalArchiveRowRendererTests: XCTestCase {
             buttons[0].sendActions(for: .touchUpInside)
             XCTAssertEqual(slots, [0])
             XCTAssertNil(view.accessibilityCustomActions)
+        }
+    }
+
+    func testCompactTextBubbleDoesNotExpandToTheWholeScreen() {
+        self.onMain {
+            let row = self.row(text: "Hi", media: 0, unavailable: 0)
+            let width = ChatLocalArchiveRowView.bubbleWidth(row: row, available: 361)
+            XCTAssertLessThan(width, 300)
+            XCTAssertGreaterThan(width, 100)
+        }
+    }
+
+    func testRoundVideoHasRoundPreviewAndAnActualPlayableSlot() {
+        self.onMain {
+            let row = LocalArchiveDeletedHistoryItem(peerId: .init(namespace: Namespaces.Peer.CloudUser, id: ._internalFromInt64Value(7111)),
+                messageId: 7, sequence: 3, eventKey: "round-fixture", sentAt: 800, deletedAt: 900, marker: "Deleted",
+                storedMediaCount: 1, unavailableMediaCount: 0, moreAvailable: false,
+                content: LocalArchiveDeletedHistoryContent(text: ""), mediaKinds: ["videoMessage"], storedMediaSlots: [0])
+            let width = ChatLocalArchiveRowView.bubbleWidth(row: row, available: 361)
+            XCTAssertLessThanOrEqual(width, 224)
+            let view = ChatLocalArchiveRowView(frame: CGRect(x: 0, y: 0, width: width, height: ChatLocalArchiveRowView.height(row: row, width: width)))
+            var opened: [Int] = []
+            view.update(row: row, theme: defaultPresentationData().theme, openHistory: {}, openMedia: { opened.append($0) })
+            view.layoutIfNeeded()
+            let image = view.subviews.compactMap { $0 as? UIImageView }.first!
+            XCTAssertEqual(image.frame.width, image.frame.height, accuracy: 0.5)
+            XCTAssertEqual(image.layer.cornerRadius, image.frame.height * 0.5, accuracy: 0.5)
+            let button = view.subviews.compactMap { $0 as? UIButton }.first!
+            XCTAssertTrue(button.isEnabled)
+            XCTAssertTrue(image.frame.contains(button.frame))
+            button.sendActions(for: .touchUpInside)
+            XCTAssertEqual(opened, [0])
+            row.content.revoke()
+            XCTAssertNil(image.image)
+            XCTAssertTrue(view.isHidden)
         }
     }
 

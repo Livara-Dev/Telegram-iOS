@@ -152,4 +152,15 @@ final class LocalArchiveMediaPreviewTests: XCTestCase {
         let preview = try XCTUnwrap(LocalArchivePDFPreview(data: bytes))
         XCTAssertNil(preview.image(pageIndex: 0, cancelled: { cancellation.isCancelled }))
     }
+    func testVideoAndVoiceNeverSilentlyRouteAThumbnailAsTheCompleteFile() {
+        for kind in ["video", "videoMessage", "voice"] {
+            for mime in ["image/jpeg", "image/png", "image/gif"] {
+                XCTAssertEqual(localArchiveMediaRoute(kind: kind, mimeType: mime), .unsupported)
+            }
+        }
+        XCTAssertEqual(localArchiveMediaRoute(kind: "photo", mimeType: "image/jpeg"), .image)
+        XCTAssertEqual(localArchiveMediaRoute(kind: "video", mimeType: "video/mp4"), .playback)
+        XCTAssertEqual(localArchiveMediaRoute(kind: "voice", mimeType: "audio/ogg"), .playback)
+    }
+
 }

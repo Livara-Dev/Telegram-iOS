@@ -350,7 +350,7 @@ alternate_icon_folders = [
     "PremiumTurbo",
 ]
 
-composer_icon_folders = ["AyuGram"]
+composer_icon_folders = ["Telegram"]
 
 [
     filegroup(
@@ -650,7 +650,7 @@ plist_fragment(
     template =
     """
     <key>CFBundleDisplayName</key>
-    <string>AyuGram</string>
+    <string>Telegram</string>
     """
 )
 
@@ -1705,7 +1705,7 @@ plist_fragment(
     <key>CFBundleDevelopmentRegion</key>
     <string>en</string>
     <key>CFBundleDisplayName</key>
-    <string>AyuGram</string>
+    <string>Telegram</string>
     <key>CFBundleIdentifier</key>
     <string>{telegram_bundle_id}</string>
     <key>AyuGramBaseBundleIdentifier</key>

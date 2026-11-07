@@ -228,6 +228,7 @@ final class ArchivePlaybackTests: XCTestCase {
         if await self.assertMovieDecodes(playback.asset, stage: "encrypted-archive-loader", diagnostics: { source.diagnosticCounts + ", " + playback.diagnosticSummary }) {
             XCTAssertFalse(source.requestedLengths.isEmpty)
             XCTAssertTrue(source.requestedLengths.allSatisfy { $0 > 0 && $0 <= 64 * 1024 })
+            await self.assertPlayerAdvances(playback.asset)
         }
         playback.stop()
         await close(reopened)
@@ -340,4 +341,38 @@ final class ArchivePlaybackTests: XCTestCase {
         cancellation.cancel()
         XCTAssertEqual(cancelled, 2)
     }
+    @MainActor
+    private func assertPlayerAdvances(_ asset: AVAsset) async {
+        let player = AVPlayer(playerItem: AVPlayerItem(asset: asset))
+        player.isMuted = true
+        let progressed = expectation(description: "saved movie advances beyond the poster frame")
+        let observation = player.addBoundaryTimeObserver(forTimes: [NSValue(time: CMTime(seconds: 0.08, preferredTimescale: 600))], queue: .main) {
+            progressed.fulfill()
+        }
+        defer { player.pause(); player.removeTimeObserver(observation); player.replaceCurrentItem(with: nil) }
+        player.play()
+        await fulfillment(of: [progressed], timeout: 15)
+        XCTAssertGreaterThan(CMTimeGetSeconds(player.currentTime()), 0.05)
+    }
+
+    func testPlaybackIntentRequiresEveryLifecyclePermission() {
+        for bits in 0..<32 {
+            var intent = ArchivePlaybackIntent()
+            intent.isVisible = bits & 1 != 0
+            intent.isReadable = bits & 2 != 0
+            intent.isReady = bits & 4 != 0
+            intent.hasAudioSession = bits & 8 != 0
+            intent.wantsPlayback = bits & 16 != 0
+            XCTAssertEqual(intent.shouldPlay, bits == 31)
+            intent.stop()
+            XCTAssertFalse(intent.shouldPlay)
+        }
+    }
+
+    func testPlaybackClockRejectsInvalidDurationsAndFormatsHours() {
+        for value in [Double.nan, Double.infinity, -1, 1e100] { XCTAssertEqual(ArchivePlaybackIntent.clock(value), "0:00") }
+        XCTAssertEqual(ArchivePlaybackIntent.clock(63.8), "1:03")
+        XCTAssertEqual(ArchivePlaybackIntent.clock(3602), "1:00:02")
+    }
+
 }

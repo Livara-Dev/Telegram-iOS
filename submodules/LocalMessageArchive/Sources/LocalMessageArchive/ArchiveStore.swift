@@ -895,6 +895,10 @@ public final class ArchiveStore {
             // file contains no usable media, even if it has a completed-path name.
             guard size > 0 || kind == "document" else { return false }
             guard expectedSize.map({ $0 == size }) ?? true else { return false }
+            var prefix = [UInt8](repeating: 0, count: 16)
+            let prefixCount = prefix.withUnsafeMutableBytes { Darwin.pread(fd, $0.baseAddress, $0.count, 0) }
+            guard prefixCount >= 0 else { throw ArchiveError.protectionUnavailable }
+            guard !ArchiveMediaPayloadGuard.rejectsStillImage(kind: kind, prefix: Data(prefix.prefix(prefixCount))) else { return false }
             return try self.transaction {
                 let current = try self.captureGeneration()
                 guard current == generation else { throw ArchiveError.generationMismatch(expected: current, received: generation) }

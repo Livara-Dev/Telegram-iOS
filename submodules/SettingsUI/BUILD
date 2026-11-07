@@ -21,6 +21,7 @@ swift_library(
         "//submodules/Display:Display",
         "//submodules/TelegramCore:TelegramCore",
         "//submodules/LocalMessageArchive:LocalArchivePlayback",
+        "//submodules/TelegramAudio:TelegramAudio",
         "//submodules/MtProtoKit:MtProtoKit",
         "//submodules/TelegramPresentationData:TelegramPresentationData",
         "//submodules/AccountContext:AccountContext",

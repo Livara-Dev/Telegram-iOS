@@ -15,12 +15,15 @@ public final class ChatLocalArchiveItem: ListViewItem {
     public let presentationData: ChatPresentationData
     private let controllerInteraction: ChatControllerInteraction
     fileprivate let loadThumbnail: ((String, Int) -> Signal<Data?, NoError>)?
+    fileprivate let loadVideoThumbnail: ((String, Int) -> Signal<UIImage?, NoError>)?
     public var neighborDescriptor: AnyEquatable { return AnyEquatable.noNeighborInfluence }
 
     public init(row: LocalArchiveDeletedHistoryItem, presentationData: ChatPresentationData,
-                controllerInteraction: ChatControllerInteraction, loadThumbnail: ((String, Int) -> Signal<Data?, NoError>)? = nil) {
+                controllerInteraction: ChatControllerInteraction, loadThumbnail: ((String, Int) -> Signal<Data?, NoError>)? = nil,
+                loadVideoThumbnail: ((String, Int) -> Signal<UIImage?, NoError>)? = nil) {
         self.row = row; self.presentationData = presentationData; self.controllerInteraction = controllerInteraction
         self.loadThumbnail = loadThumbnail
+        self.loadVideoThumbnail = loadVideoThumbnail
     }
 
     public func nodeConfiguredForParams(async: @escaping (@escaping () -> Void) -> Void, params: ListViewItemLayoutParams,
@@ -73,20 +76,21 @@ public final class ChatLocalArchiveItemNode: ListViewItemNode {
     }
 
     fileprivate func measuredLayout(item: ChatLocalArchiveItem, params: ListViewItemLayoutParams) -> ListViewItemNodeLayout {
-        let width = min(420.0, max(1.0, params.width - params.leftInset - params.rightInset - 32.0))
+        let width = ChatLocalArchiveRowView.bubbleWidth(row: item.row, available: max(1, params.width - params.leftInset - params.rightInset - 24))
         return ListViewItemNodeLayout(contentSize: CGSize(width: params.width,
             height: ChatLocalArchiveRowView.height(row: item.row, width: width)),
-            insets: UIEdgeInsets(top: 6.0, left: 0.0, bottom: 6.0, right: 0.0))
+            insets: UIEdgeInsets(top: 2.0, left: 0.0, bottom: 2.0, right: 0.0))
     }
 
     fileprivate func apply(item: ChatLocalArchiveItem, params: ListViewItemLayoutParams) {
         self.item = item
         let height = ChatLocalArchiveRowView.height(row: item.row,
-            width: min(420.0, max(1.0, params.width - params.leftInset - params.rightInset - 32.0)))
-        let width = min(420.0, max(1.0, params.width - params.leftInset - params.rightInset - 32.0))
+            width: ChatLocalArchiveRowView.bubbleWidth(row: item.row, available: max(1, params.width - params.leftInset - params.rightInset - 24)))
+        let width = ChatLocalArchiveRowView.bubbleWidth(row: item.row, available: max(1, params.width - params.leftInset - params.rightInset - 24))
         self.bodyNode.frame = CGRect(x: params.leftInset + 16.0, y: 0.0, width: width, height: height)
         (self.bodyNode.view as? ChatLocalArchiveRowView)?.update(row: item.row, theme: item.presentationData.theme.theme,
             openHistory: { [weak item] in item?.openHistory() }, loadThumbnail: item.loadThumbnail,
+            loadVideoThumbnail: item.loadVideoThumbnail,
             openMedia: { [weak item] slot in item?.openMedia(slot: slot) })
     }
 

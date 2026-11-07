@@ -22,9 +22,11 @@ def inspect_branding(ipa, bundle_id):
         info = plistlib.loads(archive.read(entry))
         if (not isinstance(info, dict) or info.get('CFBundleIdentifier') != bundle_id or
                 info.get('AyuGramBaseBundleIdentifier') != bundle_id or
-                info.get('CFBundleDisplayName') != 'AyuGram' or info.get('CFBundleExecutable') != 'Telegram'):
+                info.get('CFBundleDisplayName') != 'Telegram' or info.get('CFBundleExecutable') != 'Telegram'):
             raise ValueError('Compiled fork branding or stable identity is missing')
-    return {'display_name_verified': True, 'stable_bundle_identity_verified': True,
+        if info.get('CFBundleIcons', {}).get('CFBundlePrimaryIcon', {}).get('CFBundleIconName') != 'Telegram':
+            raise ValueError('Requested default Telegram icon is not active')
+    return {'default_icon_verified': True, 'display_name_verified': True, 'stable_bundle_identity_verified': True,
             'base_bundle_metadata_verified': True, 'executable_identity_preserved': True,
             'runtime_verified': False, 'physical_device_verified': False}
 
@@ -45,7 +47,7 @@ def main():
     with args.output.open('x') as output:
         json.dump(report, output, indent=2)
         output.write('\n')
-    print('Compiled AyuGram name and stable application identity verified.')
+    print('Requested Telegram display name/icon and distinct stable fork identity verified.')
 
 
 if __name__ == '__main__':

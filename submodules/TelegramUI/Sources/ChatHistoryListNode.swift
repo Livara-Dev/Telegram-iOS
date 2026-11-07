@@ -41,6 +41,7 @@ import TextFormat
 import ChatNewThreadInfoItem
 import PhoneNumberFormat
 import Postbox
+import SettingsUI
 
 struct ChatTopVisibleMessageRange: Equatable {
     var lowerBound: MessageIndex
@@ -326,6 +327,8 @@ private func mappedInsertEntries(context: AccountContext, chatLocation: ChatLoca
                     stableId: entry.entry.stableId, item: ChatLocalArchiveItem(row: row, presentationData: presentationData,
                     controllerInteraction: controllerInteraction, loadThumbnail: { key, slot in
                         context.account.localArchive?.mediaData(eventKey: key, slot: slot) ?? .single(nil)
+                    }, loadVideoThumbnail: { key, slot in
+                        localArchiveSavedVideoThumbnail(context: context, eventKey: key, slot: slot)
                     }), directionHint: nil)
             case let .MessageEntry(message, presentationData, read, location, selection, attributes):
                 let item: ListViewItem
@@ -387,6 +390,8 @@ private func mappedUpdateEntries(context: AccountContext, chatLocation: ChatLoca
                     stableId: entry.entry.stableId, item: ChatLocalArchiveItem(row: row, presentationData: presentationData,
                     controllerInteraction: controllerInteraction, loadThumbnail: { key, slot in
                         context.account.localArchive?.mediaData(eventKey: key, slot: slot) ?? .single(nil)
+                    }, loadVideoThumbnail: { key, slot in
+                        localArchiveSavedVideoThumbnail(context: context, eventKey: key, slot: slot)
                     }), directionHint: nil)
             case let .MessageEntry(message, presentationData, read, location, selection, attributes):
                 let item: ListViewItem

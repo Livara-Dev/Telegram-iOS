@@ -636,6 +636,36 @@ final class ArchiveStoreTests: XCTestCase {
         store.close { done.fulfill() }
         wait(for: [done], timeout: 10)
     }
+    func testJPEGThumbnailCannotOccupyAnAudiovisualArchiveSlot() throws {
+        let store = try self.open()
+        _ = try self.write(store, [self.event("thumbnail-confusion")])
+        let source = self.directory.appendingPathComponent("completed-media")
+        let jpeg = Data([0xff, 0xd8, 0xff, 0xe0, 0, 0, 0, 0, 1, 2, 3, 4])
+        try jpeg.write(to: source)
+        for kind in ["video", "videoMessage", "voice"] {
+            let stored: Bool = try awaitResult { store.recordMediaFile(eventKey: "thumbnail-confusion", slot: 0,
+                kind: kind, mimeType: kind == "voice" ? "audio/ogg" : "video/mp4", source: source,
+                expectedSize: Int64(jpeg.count), generation: 0, completion: $0) }
+            XCTAssertFalse(stored)
+            let info: ArchivedMediaInfo? = try awaitResult { store.mediaInfo(eventKey: "thumbnail-confusion", slot: 0, completion: $0) }
+            XCTAssertNil(info)
+        }
+        let savedPhoto: Bool = try awaitResult { store.recordMediaFile(eventKey: "thumbnail-confusion", slot: 0,
+            kind: "photo", mimeType: "image/jpeg", source: source, expectedSize: Int64(jpeg.count), generation: 0, completion: $0) }
+        XCTAssertTrue(savedPhoto, "The guard is not a replacement image decoder")
+    }
+
+    func testKnownImageSignaturesAreRejectedOnlyForAudioAndVideoKinds() {
+        let prefixes = [Data([0xff, 0xd8, 0xff]), Data([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]),
+            Data("GIF89a".utf8), Data("RIFF0000WEBP".utf8)]
+        for prefix in prefixes {
+            for kind in ["video", "videoMessage", "voice"] { XCTAssertTrue(ArchiveMediaPayloadGuard.rejectsStillImage(kind: kind, prefix: prefix)) }
+            for kind in ["photo", "animation", "document"] { XCTAssertFalse(ArchiveMediaPayloadGuard.rejectsStillImage(kind: kind, prefix: prefix)) }
+        }
+        XCTAssertFalse(ArchiveMediaPayloadGuard.rejectsStillImage(kind: "video", prefix: Data([0, 0, 0, 32, 0x66, 0x74, 0x79, 0x70])))
+        XCTAssertFalse(ArchiveMediaPayloadGuard.rejectsStillImage(kind: "voice", prefix: Data("OggS".utf8)))
+    }
+
     private func event(_ key: String, text: String = "message", account: Int64 = 1, peer: Int64 = 42,
                        message: Int32 = 10, kind: ArchiveEventKind = .deleted, observed: Int64 = 900,
                        edit: Int64? = nil, author: Int64? = 7, entities: Data = Data()) -> ArchiveEvent {
