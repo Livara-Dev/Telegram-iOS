@@ -354,6 +354,9 @@ private func extractAccountManagerState(records: AccountRecordsView<TelegramAcco
         precondition(!testIsLaunched)
         testIsLaunched = true
         self.launchDiagnostics.begin()
+        if UserDefaults.standard.bool(forKey: "org.livara.telegram.ultra-battery.active.v1") {
+            UIView.setAnimationsEnabled(false)
+        }
         CrashReportCollector.shared.start()
         
         let _ = voipTokenPromise.get().start(next: { token in
