@@ -112,6 +112,7 @@ public enum CustomeOptionsAction: Equatable {
     case privacySettings
     case messageFilters
     case appearance
+    case bubbleSettings
     case chatFolders
     case animationSettings
     case localCosmetics
@@ -257,7 +258,7 @@ public enum CustomeOptionsCatalog {
         case .smartInbox:
             return [.init(title: "Message filter rules", detail: "Prioritize or hide content locally", symbol: "line.3.horizontal.decrease.circle.fill", action: .messageFilters), .init(title: "Chat folders", detail: "Organize conversations", symbol: "folder.fill", action: .chatFolders), archive]
         case .chatStudio:
-            return [appearance, .init(title: "Local colors, icons & motion", detail: "Client-side appearance controls", symbol: "sparkles", action: .localCosmetics), .init(title: "Chat folders & layout", detail: "Native chat organization", symbol: "rectangle.3.group", action: .chatFolders)]
+            return [appearance, .init(title: "Message bubble design", detail: "Preview and tune bubble corners", symbol: "bubble.left.and.bubble.right", action: .bubbleSettings), .init(title: "Local colors, icons & motion", detail: "Client-side appearance controls", symbol: "sparkles", action: .localCosmetics), .init(title: "Chat folders & layout", detail: "Native chat organization", symbol: "rectangle.3.group", action: .chatFolders)]
         case .mediaVault:
             return [gallery, .init(title: "Encrypted import & export", detail: "Move an archive using a password", symbol: "lock.doc.fill", action: .archiveBackup), .init(title: "Download & Photos settings", detail: "Native media and gallery controls", symbol: "arrow.down.circle.fill", action: .mediaSaving), .init(title: "Storage usage", detail: "Review cache and archive storage", symbol: "externaldrive.fill", action: .storageUsage)]
         case .ultraBatterySaver:
