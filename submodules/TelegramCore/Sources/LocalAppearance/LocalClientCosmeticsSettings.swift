@@ -8,6 +8,13 @@ public enum LocalClientAccentPreset: Int32, CaseIterable {
     case sunset = 3
     case rose = 4
     case nativeTheme = 5
+    case midnight = 6
+    case emerald = 7
+    case crimson = 8
+    case amber = 9
+    case graphite = 10
+    case ice = 11
+    case lavender = 12
 
     public var title: String {
         switch self {
@@ -17,6 +24,13 @@ public enum LocalClientAccentPreset: Int32, CaseIterable {
         case .sunset: return "Sunset"
         case .rose: return "Rose"
         case .nativeTheme: return "Use Telegram theme accent"
+        case .midnight: return "Midnight"
+        case .emerald: return "Emerald"
+        case .crimson: return "Crimson"
+        case .amber: return "Amber"
+        case .graphite: return "Graphite"
+        case .ice: return "Ice"
+        case .lavender: return "Lavender"
         }
     }
 
@@ -29,6 +43,13 @@ public enum LocalClientAccentPreset: Int32, CaseIterable {
         case .sunset: return 0xd76542
         case .rose: return 0xbc447c
         case .nativeTheme: return nil
+        case .midnight: return 0x52658f
+        case .emerald: return 0x159b78
+        case .crimson: return 0xc7445c
+        case .amber: return 0xd28b24
+        case .graphite: return 0x64748b
+        case .ice: return 0x38a9d6
+        case .lavender: return 0x9674d8
         }
     }
 }
