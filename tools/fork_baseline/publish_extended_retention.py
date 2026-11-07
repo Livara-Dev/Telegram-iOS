@@ -55,6 +55,12 @@ FILES.update({
     'submodules/TelegramUI/Components/PeerInfo/PeerInfoScreen/Sources/PeerInfoScreenSettingsActions.swift',
     'submodules/TelegramUI/Sources/ChatController.swift',
     'submodules/TelegramUI/Sources/ChatHistoryListNode.swift',
+    'submodules/SettingsUI/Sources/CustomeOptionsAccountController.swift',
+    'submodules/SettingsUI/Sources/Search/SettingsSearchableItems.swift',
+    'submodules/SettingsUI/Tests/LocalArchiveExtrasTests.swift',
+    'submodules/TelegramCore/Sources/LocalAppearance/LocalClientCosmeticsSettings.swift',
+    'submodules/TelegramCore/Tests/LocalClientCosmeticsTests.swift',
+    'submodules/TelegramUI/Components/PeerInfo/PeerInfoScreen/Sources/PeerInfoSettingsItems.swift',
 })
 MAX_PATCH = 1024 * 1024
 
@@ -184,7 +190,7 @@ def main():
     if len(remote) != 2 or remote[0] != parent:
         raise ValueError('Integration branch advanced; refusing concurrent overwrite')
     git(root, '-c', 'user.name=AyuGram source build', '-c', 'user.email=41898282+github-actions[bot]@users.noreply.github.com',
-        'commit', '-m', 'Fix archived-media playback and compact bubbles; apply requested display name and icon')
+        'commit', '-m', 'Add original-media Photos and Files export, enhanced gallery and More Features settings')
     source = git(root, 'rev-parse', 'HEAD')
     git(root, 'push', 'origin', 'HEAD:refs/heads/' + BRANCH, env=private)
     with open(os.environ['GITHUB_OUTPUT'], 'a') as output:
