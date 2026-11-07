@@ -5,15 +5,24 @@ import XCTest
 
 final class CustomeOptionsCatalogTests: XCTestCase {
     func testAllRequestedCategoriesHaveStableIdentifiersAndActionableDestinations() {
-        XCTAssertEqual(CustomeOptionsCatalog.title, "AyuGram")
-        XCTAssertEqual(CustomeOptionsCategory.allCases.count, 11)
-        XCTAssertEqual(Set(CustomeOptionsCategory.allCases.map { $0.rawValue }).count, 11)
+        XCTAssertEqual(CustomeOptionsCatalog.title, "More Features")
+        XCTAssertEqual(CustomeOptionsCategory.allCases.count, 15)
+        XCTAssertEqual(Set(CustomeOptionsCategory.allCases.map { $0.rawValue }).count, 15)
         for category in CustomeOptionsCategory.allCases {
             XCTAssertFalse(category.title.isEmpty)
             XCTAssertFalse(category.detail.isEmpty)
             XCTAssertFalse(CustomeOptionsCatalog.links(for: category).isEmpty)
             XCTAssertFalse(CustomeOptionsCatalog.explanation(for: category).isEmpty)
         }
+    }
+
+    func testNewFeatureHubsOnlyRouteToExistingFunctionalDestinations() {
+        XCTAssertEqual(CustomeOptionsCatalog.links(for: .smartInbox).map { $0.action }, [.messageFilters, .chatFolders, .archiveSettings])
+        XCTAssertEqual(CustomeOptionsCatalog.links(for: .chatStudio).map { $0.action }, [.appearance, .localCosmetics, .chatFolders])
+        XCTAssertEqual(CustomeOptionsCatalog.links(for: .mediaVault).map { $0.action }, [.archiveGallery, .archiveBackup, .mediaSaving, .storageUsage])
+        XCTAssertEqual(CustomeOptionsCatalog.links(for: .ultraBatterySaver).map { $0.action }, [.ultraBatterySaver, .animationSettings])
+        XCTAssertTrue(CustomeOptionsCatalog.explanation(for: .ultraBatterySaver).contains("20% activation threshold"))
+        XCTAssertTrue(CustomeOptionsCatalog.explanation(for: .smartInbox).contains("only affect this device"))
     }
 
     func testSearchUsesAllTokensAndFindsFeatureTermsOutsideCategoryTitles() {
