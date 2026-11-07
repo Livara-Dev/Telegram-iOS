@@ -15,6 +15,10 @@ public enum CustomeOptionsCategory: String, CaseIterable {
     case chatInterface
     case advanced
     case storageBackup
+    case smartInbox
+    case chatStudio
+    case mediaVault
+    case ultraBatterySaver
 
     public var title: String {
         switch self {
@@ -22,7 +26,11 @@ public enum CustomeOptionsCategory: String, CaseIterable {
         case .deletedMessages: return "Message History"
         case .timedMedia: return "Timed Media"
         case .mediaSaving: return "Media Saving"
-        case .localPremium: return "Extra Appearance"
+        case .localPremium: return "Local Premium"
+        case .smartInbox: return "Smart Inbox"
+        case .chatStudio: return "Chat Studio"
+        case .mediaVault: return "Media Vault"
+        case .ultraBatterySaver: return "Ultra Battery Saver"
         case .privacyAds: return "Privacy & Ads"
         case .messageFilters: return "Message Filters"
         case .appearance: return "Appearance"
@@ -45,6 +53,10 @@ public enum CustomeOptionsCategory: String, CaseIterable {
         case .chatInterface: return "Chat appearance and folders"
         case .advanced: return "Reset controls and account preferences"
         case .storageBackup: return "Storage usage and archive management"
+        case .smartInbox: return "Priority, filters and chat organization"
+        case .chatStudio: return "Build a personal chat appearance"
+        case .mediaVault: return "Browse, play and export saved media"
+        case .ultraBatterySaver: return "One-touch power and visual-effects profile"
         }
     }
 
@@ -61,6 +73,10 @@ public enum CustomeOptionsCategory: String, CaseIterable {
         case .chatInterface: return "bubble.left.and.bubble.right.fill"
         case .advanced: return "slider.horizontal.3"
         case .storageBackup: return "externaldrive.fill"
+        case .smartInbox: return "tray.full.fill"
+        case .chatStudio: return "paintbrush.pointed.fill"
+        case .mediaVault: return "play.rectangle.on.rectangle.fill"
+        case .ultraBatterySaver: return "battery.100percent"
         }
     }
 
@@ -77,6 +93,10 @@ public enum CustomeOptionsCategory: String, CaseIterable {
         case .chatInterface: return "folder tag bubble chat wallpaper font text size"
         case .advanced: return "reset defaults disable account experimental limitations"
         case .storageBackup: return "retention quota size usage clear purge encrypted archive import export backup sync"
+        case .smartInbox: return "priority important unread inbox filter folders organize messages response"
+        case .chatStudio: return "bubble style wallpaper themes font colors corners appearance customize"
+        case .mediaVault: return "gallery video voice audio photo export photos files duplicate storage playback"
+        case .ultraBatterySaver: return "ultra battery saver low power reduce motion translucency autoplay background preload"
         }
     }
 }
@@ -98,6 +118,7 @@ public enum CustomeOptionsAction: Equatable {
     case archiveBackup
     case storageUsage
     case resetActiveFeatures
+    case ultraBatterySaver
 }
 
 public enum CustomeOptionsToggle: String, CaseIterable {
@@ -189,7 +210,7 @@ public struct CustomeOptionsLink: Equatable {
 }
 
 public enum CustomeOptionsCatalog {
-    public static let title = "AyuGram"
+    public static let title = "More Features"
     public static let maximumQueryUTF16Length = 512
 
     public static func boundedQuery(_ query: String) -> String {
@@ -233,6 +254,14 @@ public enum CustomeOptionsCatalog {
             return [.init(title: "Reset active features", detail: "Turn features off without deleting saved messages", symbol: "arrow.counterclockwise", action: .resetActiveFeatures)]
         case .storageBackup:
             return [archive, gallery, .init(title: "Encrypted import & export", detail: "Password-protected archive files you control", symbol: "lock.doc.fill", action: .archiveBackup), .init(title: "Telegram cache usage", detail: "Normal cache and archive storage are separate", symbol: "externaldrive.fill", action: .storageUsage)]
+        case .smartInbox:
+            return [.init(title: "Message filter rules", detail: "Prioritize or hide content locally", symbol: "line.3.horizontal.decrease.circle.fill", action: .messageFilters), .init(title: "Chat folders", detail: "Organize conversations", symbol: "folder.fill", action: .chatFolders), archive]
+        case .chatStudio:
+            return [appearance, .init(title: "Local colors, icons & motion", detail: "Client-side appearance controls", symbol: "sparkles", action: .localCosmetics), .init(title: "Chat folders & layout", detail: "Native chat organization", symbol: "rectangle.3.group", action: .chatFolders)]
+        case .mediaVault:
+            return [gallery, .init(title: "Encrypted import & export", detail: "Move an archive using a password", symbol: "lock.doc.fill", action: .archiveBackup), .init(title: "Download & Photos settings", detail: "Native media and gallery controls", symbol: "arrow.down.circle.fill", action: .mediaSaving), .init(title: "Storage usage", detail: "Review cache and archive storage", symbol: "externaldrive.fill", action: .storageUsage)]
+        case .ultraBatterySaver:
+            return [.init(title: "Toggle Ultra Battery Saver", detail: "Reduce motion, translucency, autoplay and background work", symbol: "battery.100percent", action: .ultraBatterySaver), .init(title: "Fine-tune power settings", detail: "Battery threshold and individual controls", symbol: "slider.horizontal.3", action: .animationSettings)]
         }
     }
 
@@ -260,6 +289,14 @@ public enum CustomeOptionsCatalog {
             return "Resetting active features changes only this account’s local AyuGram switches. Existing archives, filter rules, exclusions, Telegram sessions and encryption keys are kept. No application code is downloaded or executed."
         case .storageBackup:
             return "The archive remains local. Import/export uses a password and a file destination you explicitly choose; there is no automatic synchronization or developer-operated upload service. Quotas and deletion controls are in Capture & history settings. Clearing the normal cache does not clear the archive; removing the account can remove its storage."
+        case .smartInbox:
+            return "Smart Inbox combines local message filters with Telegram’s native chat folders. Filters only affect this device; server-side folder limits and Premium entitlements remain unchanged."
+        case .chatStudio:
+            return "Chat Studio collects native themes, wallpapers, chat folders, local accents, bundled icons and motion controls. It does not grant server-side Premium features."
+        case .mediaVault:
+            return "Media Vault opens the encrypted local archive, export tools and native download settings. A thumbnail is never treated as a complete video or voice file; only fully captured media can be played or exported."
+        case .ultraBatterySaver:
+            return "Ultra Battery Saver applies a reversible local profile: reduced motion, reduced translucency, autoplay off, sticker and emoji loops off, background work off, preloading off, and a 20% activation threshold. It does not change iOS system settings or guarantee that iOS stops all background activity."
         }
     }
 }
